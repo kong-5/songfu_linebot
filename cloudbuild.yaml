@@ -29,8 +29,6 @@ steps:
       - "--add-cloudsql-instances"
       - "${_INSTANCE}"
       - "--set-env-vars"
-      - "PORT=8080"
-      - "--set-env-vars"
       - "LINE_CHANNEL_ACCESS_TOKEN=${_LINE_TOKEN}"
       - "--set-env-vars"
       - "LINE_CHANNEL_SECRET=${_LINE_SECRET}"
