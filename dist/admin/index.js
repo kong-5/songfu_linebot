@@ -45,7 +45,16 @@ const index_js_1 = require("../db/index.js");
 const id_js_1 = require("../lib/id.js");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("file");
-const TOP_NAV = '<p style="margin-bottom:1rem;"><a href="/">回首頁</a> | <a href="/admin">回後台</a></p>';
+const ADMIN_STYLE = `
+  :root { --admin-primary: #166534; --admin-primary-hover: #14532d; --admin-bg: #fafafa; --admin-card: #fff; --admin-border: #e5e7eb; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif; background: var(--admin-bg); color: #37352f; line-height: 1.5; }
+  a { color: var(--admin-primary); text-decoration: none; }
+  .btn, a.btn { display: inline-block; padding: 0.5rem 1rem; border-radius: 6px; background: var(--admin-card); border: 1px solid var(--admin-border); color: var(--admin-primary); font-size: 0.875rem; margin: 0.25rem 0.25rem 0.25rem 0; }
+  .btn:hover, a.btn:hover { background: var(--admin-primary); color: #fff; border-color: var(--admin-primary); }
+  .card { background: var(--admin-card); border-radius: 8px; border: 1px solid var(--admin-border); padding: 1.25rem; margin-bottom: 1rem; }
+  table { border-collapse: collapse; width: 100%; } th, td { border: 1px solid var(--admin-border); padding: 0.5rem 0.75rem; }
+`;
+const TOP_NAV = '<nav style="margin-bottom:1.5rem;"><a href="/" class="btn">← 回首頁</a> <a href="/admin" class="btn">回後台</a></nav>';
 function createAdminRouter() {
     const router = express_1.default.Router();
     const db = (0, index_js_1.getDb)(dbPath);
@@ -62,35 +71,40 @@ function createAdminRouter() {
       <!DOCTYPE html>
       <html>
       <head><meta charset="utf-8"><title>松富叫貨－後台</title>
-      <style>body{font-family:'Segoe UI',sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem;background:#f5f5f5;} a{color:#0d6efd;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:0.5rem;} select,button{padding:0.35rem 0.75rem;} .block{margin:1rem 0;padding:1rem;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08);} .block h2{margin-top:0;font-size:1.1rem;} .sidebar{position:fixed;right:1rem;top:5rem;width:200px;background:#fff;padding:1rem;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08);} .main{max-width:720px;} .btn{margin-right:0.5rem;margin-bottom:0.5rem;padding:0.5rem 1rem;border-radius:6px;border:1px solid #0d6efd;background:#fff;color:#0d6efd;text-decoration:none;display:inline-block;} .btn:hover{background:#0d6efd;color:#fff;}</style>
+      <style>${ADMIN_STYLE} .page{max-width:720px;margin:2rem auto;padding:0 1.5rem;} .page h1{font-size:1.5rem;font-weight:600;margin-bottom:1.5rem;color:#37352f;} .page h2{font-size:0.95rem;font-weight:600;margin:0 0 0.75rem 0;color:#37352f;} .btn-wrap{display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;}</style>
       </head>
       <body>
-        ${TOP_NAV}
-        <h1>松富叫貨 － 後台</h1>
-        <div class="main">
-          <div class="block">
+        <div class="page">
+          ${TOP_NAV}
+          <h1>松富叫貨 － 後台</h1>
+          <div class="card">
             <h2>查詢與維護</h2>
-            <p><a href="/admin/orders" class="btn"><strong>客戶訂單查詢</strong></a>（${orderTotalNum} 筆）</p>
-            <p>
+            <p class="btn-wrap"><a href="/admin/orders" class="btn"><strong>客戶訂單查詢</strong></a>（${orderTotalNum} 筆）</p>
+            <p class="btn-wrap">
               <a href="/admin/review" class="btn">待確認品名（補對照）${reviewNum > 0 ? " " + reviewNum + " 項" : ""}</a>
               <a href="/admin/specs" class="btn">單品規格表（顆／粒／根）${specsPendingNum > 0 ? " " + specsPendingNum + " 項待補" : ""}</a>
               <a href="/admin/export" class="btn">批次匯出</a>
               <a href="/admin/orders?need_review=1" class="btn">只看有待確認的訂單${needReviewOrderNum > 0 ? " " + needReviewOrderNum + " 筆" : ""}</a>
             </p>
-            <ul>
-              <li><a href="/admin/customers">客戶管理</a>、<a href="/admin/customers/new">新增客戶</a></li>
-              <li><a href="/admin/products">品項與俗名</a></li>
-            </ul>
+            <p class="btn-wrap">
+              <a href="/admin/customers" class="btn">客戶管理</a>
+              <a href="/admin/customers/new" class="btn">新增客戶</a>
+              <a href="/admin/products" class="btn">品項與俗名</a>
+            </p>
+          </div>
+          <div class="card" style="margin-top:1.5rem;">
+            <h2>📥 資料匯入</h2>
+            <p class="btn-wrap">
+              <a href="/admin/import-customers" class="btn">匯入客戶</a>
+              <a href="/admin/import" class="btn">匯入品項</a>
+              <a href="/admin/import-teraoka" class="btn">寺岡資料對照</a>
+            </p>
+          </div>
+          <div class="card">
+            <h2>⚙️ 設定</h2>
+            <p class="btn-wrap"><a href="/admin/settings" class="btn">結轉時間等</a></p>
           </div>
         </div>
-        <div class="sidebar">
-          <h2 style="margin-top:0;font-size:1rem;">📥 資料匯入</h2>
-          <p><a href="/admin/import-customers">匯入客戶</a></p>
-          <p><a href="/admin/import">匯入品項</a></p>
-          <p><a href="/admin/import-teraoka">寺岡資料對照</a></p>
-          <p><a href="/admin/settings">⚙️ 設定（結轉時間等）</a></p>
-        </div>
-        <p><a href="/">← 回首頁</a></p>
       </body>
       </html>
     `);
@@ -101,16 +115,19 @@ function createAdminRouter() {
         const msg = req.query.ok === "1" ? "<p style='color:green'>已儲存。</p>" : "";
         res.type("text/html").send(`
       <!DOCTYPE html><html><head><meta charset="utf-8"><title>後台設定</title>
-      <style>body{font-family:sans-serif;max-width:480px;margin:2rem auto;} label{display:block;margin:0.5rem 0;}</style></head><body>
-        ${TOP_NAV}<h1>後台設定</h1>${msg}
+      <style>${ADMIN_STYLE} .page{max-width:480px;margin:2rem auto;padding:0 1.5rem;} label{display:block;margin:0.75rem 0;} input[type=text]{padding:0.5rem;border:1px solid var(--admin-border);border-radius:6px;width:100%;box-sizing:border-box;} button.btn{background:var(--admin-primary);color:#fff;border:none;cursor:pointer;} button.btn:hover{background:var(--admin-primary-hover);}</style></head><body>
+        <div class="page">${TOP_NAV}
+        <h1>後台設定</h1>${msg}
+        <div class="card">
         <form method="post" action="/admin/settings">
           <label><strong>訂單結轉時間</strong>（例：17:00，留空表示不限制）<br>
             <input type="text" name="order_cutoff_time" value="${escapeAttr(cutoff)}" placeholder="HH:MM"></label>
-          <p><button type="submit">儲存</button></p>
+          <p><button type="submit" class="btn">儲存</button></p>
         </form>
-        <p>結轉時間可作為當日訂單截止時點，供後續流程或報表使用。實際邏輯需在相關功能中讀取此設定。</p>
-        <p><a href="/admin">← 回後台</a></p>
-      </body></html>`);
+        <p style="color:#6b7280;font-size:0.875rem;">結轉時間可作為當日訂單截止時點，供後續流程或報表使用。</p>
+        </div>
+        <p><a href="/admin" class="btn">← 回後台</a></p>
+        </div></body></html>`);
     });
     router.post("/settings", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const cutoff = (req.body.order_cutoff_time || "").trim();
@@ -279,18 +296,18 @@ function createAdminRouter() {
         const reviewNum = (reviewCount && reviewCount.c != null) ? reviewCount.c : 0;
         const needReviewOrderNum = (needReviewOrderCount && needReviewOrderCount.c != null) ? needReviewOrderCount.c : 0;
         const filterLink = onlyNeedReview
-            ? `<a href="/admin/orders">顯示全部訂單</a>`
-            : `<a href="/admin/orders?need_review=1">只看有待確認的訂單（${needReviewOrderNum} 筆）</a>`;
+            ? `<a href="/admin/orders" class="btn">顯示全部訂單</a>`
+            : `<a href="/admin/orders?need_review=1" class="btn">只看有待確認的訂單（${needReviewOrderNum} 筆）</a>`;
         res.type("text/html").send(`
       <!DOCTYPE html>
       <html>
       <head><meta charset="utf-8"><title>訂單查詢</title>
-      <style>body{font-family:sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:0.5rem;} pre{font-size:0.9em;} .btn{margin-right:0.5rem;padding:0.4rem 0.8rem;border-radius:6px;border:1px solid #0d6efd;background:#fff;color:#0d6efd;text-decoration:none;display:inline-block;} .btn:hover{background:#0d6efd;color:#fff;} .filters{margin-bottom:1rem;}</style>
+      <style>${ADMIN_STYLE} .page{max-width:1100px;margin:2rem auto;padding:0 1.5rem;} .btn-wrap{display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem;} pre{font-size:0.9em;} .filters{margin-bottom:1rem;} .filters label{margin-right:1rem;} .filters input[type=date],.filters button{padding:0.4rem 0.6rem;border-radius:6px;border:1px solid var(--admin-border);} #exportTableJpg{margin-left:0.5rem;}</style>
       </head>
       <body>
-        ${TOP_NAV}
+        <div class="page">${TOP_NAV}
         <h1>訂單查詢</h1>
-        <p>
+        <p class="btn-wrap">
           <a href="/admin/review" class="btn">待確認品名（補對照）${reviewNum > 0 ? " " + reviewNum + " 項" : ""}</a>
           <a href="/admin/specs" class="btn">單品規格表</a>
           <a href="/admin/export" class="btn">批次匯出</a>
@@ -301,9 +318,9 @@ function createAdminRouter() {
             ${onlyNeedReview ? '<input type="hidden" name="need_review" value="1">' : ""}
             <label>日期起 <input type="date" name="from" value="${escapeAttr(from)}"></label>
             <label>日期訖 <input type="date" name="to" value="${escapeAttr(to)}"></label>
-            <button type="submit">篩選</button>
+            <button type="submit" class="btn">篩選</button>
           </form>
-          <button type="button" id="exportTableJpg" style="margin-left:1rem;">匯出表格為 JPG</button>
+          <button type="button" id="exportTableJpg" class="btn">匯出表格為 JPG</button>
         </div>
         <div id="orders-table-wrap">
         <table>
@@ -311,7 +328,8 @@ function createAdminRouter() {
           <tbody>${rows.length ? rows : "<tr><td colspan='6'>無訂單</td></tr>"}</tbody>
         </table>
         </div>
-        <p><a href="/admin">← 回後台</a></p>
+        <p><a href="/admin" class="btn">← 回後台</a></p>
+        </div>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
         <script>
         document.getElementById('exportTableJpg').onclick=function(){
@@ -392,14 +410,14 @@ function createAdminRouter() {
       <!DOCTYPE html>
       <html>
       <head><meta charset="utf-8"><title>訂單明細</title>
-      <style>body{font-family:sans-serif;max-width:1200px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.5rem;} input[type=number]{text-align:right;} tr.row-excluded{background:#e9ecef;} tr.row-excluded td{color:#6c757d;}</style>
+      <style>${ADMIN_STYLE} .page{max-width:1200px;margin:2rem auto;padding:0 1.5rem;} input[type=number]{text-align:right;} tr.row-excluded{background:#e9ecef;} tr.row-excluded td{color:#6c757d;} pre{background:var(--admin-bg);padding:0.75rem;border-radius:6px;border:1px solid var(--admin-border);}</style>
       </head>
       <body>
-        ${TOP_NAV}
+        <div class="page">${TOP_NAV}
         <h1>訂單明細</h1>
-        <p>日期：${escapeHtml(order.order_date)}　客戶：<a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a>　狀態：${escapeHtml(order.status)}</p>
+        <p>日期：${escapeHtml(order.order_date)}　客戶：<a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders" class="btn">${escapeHtml(order.customer_name)}</a>　狀態：${escapeHtml(order.status)}</p>
         ${needReviewNote}
-        <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet">匯出訂貨單格式（含條碼）</a>　<a href="/admin/export" class="btn">批次匯出</a></p>
+        <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet" class="btn">匯出訂貨單格式（含條碼）</a> <a href="/admin/export" class="btn">批次匯出</a></p>
         <pre style="background:#f5f5f5;padding:0.5rem;">${escapeHtml(order.raw_message ?? "")}</pre>
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items" enctype="application/x-www-form-urlencoded">
           <table>
@@ -407,9 +425,10 @@ function createAdminRouter() {
             <tr><th>品名</th><th>數量</th><th>單位</th><th>勾選</th><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>寺岡料號</th><th>寺岡條碼</th><th>備註</th><th>推算公斤</th></tr></thead>
             <tbody>${itemsRows}</tbody>
           </table>
-          <p><button type="submit">儲存數量與單位</button></p>
+          <p><button type="submit" class="btn" style="background:var(--admin-primary);color:#fff;border:none;">儲存數量與單位</button></p>
         </form>
-        <p><a href="/admin/orders">← 回訂單列表</a></p>
+        <p><a href="/admin/orders" class="btn">← 回訂單列表</a></p>
+        </div>
         <script>
         document.querySelectorAll('.inc-export-cb').forEach(function(cb){
           cb.addEventListener('change',function(){
@@ -629,9 +648,9 @@ function createAdminRouter() {
         const errMsg = req.query.err === "no_customer" ? "<p style='color:red'>請至少選擇一位客戶。</p>" : "";
         res.type("text/html").send(`
       <!DOCTYPE html><html><head><meta charset="utf-8"><title>批次匯出</title>
-      <style>body{font-family:sans-serif;max-width:600px;margin:2rem auto;} label{display:block;margin:0.5rem 0;} .cust-list{max-height:200px;overflow:auto;border:1px solid #ddd;padding:0.5rem;}</style></head><body>
-        ${TOP_NAV}<h1>批次匯出</h1>${errMsg}
-        <form method="get" action="/admin/export">
+      <style>${ADMIN_STYLE} .page{max-width:600px;margin:2rem auto;padding:0 1.5rem;} label{display:block;margin:0.5rem 0;} .cust-list{max-height:200px;overflow:auto;border:1px solid var(--admin-border);padding:0.75rem;border-radius:6px;background:var(--admin-card);} .cust-list label{margin:0.35rem 0;}</style></head><body>
+        <div class="page">${TOP_NAV}<h1>批次匯出</h1>${errMsg}
+        <div class="card"><form method="get" action="/admin/export">
           <label>日期起 <input type="date" name="from" value="${escapeAttr(from)}"></label>
           <label>日期訖 <input type="date" name="to" value="${escapeAttr(to)}"></label>
           <p>客戶（至少選一）：</p>
@@ -641,15 +660,15 @@ function createAdminRouter() {
             <br>${customerOptions}
           </div>
           <p>
-            <button type="submit" name="action" value="summary">看總表</button>
-            <button type="submit" name="action" value="report">匯出報表（多筆訂貨單）</button>
+            <button type="submit" name="action" value="summary" class="btn" style="background:var(--admin-primary);color:#fff;border:none;">看總表</button>
+            <button type="submit" name="action" value="report" class="btn" style="background:var(--admin-primary);color:#fff;border:none;">匯出報表（多筆訂貨單）</button>
           </p>
-        </form>
+        </form></div>
         <script>
         document.getElementById('selAll').onclick=function(){ document.querySelectorAll('input[name=customer_id]').forEach(function(c){c.checked=true;}); };
         document.getElementById('selNone').onclick=function(){ document.querySelectorAll('input[name=customer_id]').forEach(function(c){c.checked=false;}); };
         </script>
-        <p><a href="/admin/orders">← 回訂單查詢</a></p></body></html>`);
+        <p><a href="/admin/orders" class="btn">← 回訂單查詢</a></p></div></body></html>`);
     });
     router.get("/specs", (req, res) => {
         const specRows = db.prepare(`
@@ -697,11 +716,11 @@ function createAdminRouter() {
         }).join("");
         res.type("text/html").send(`
       <!DOCTYPE html><html><head><meta charset="utf-8"><title>單品規格表</title>
-      <style>body{font-family:sans-serif;max-width:900px;margin:2rem auto;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.5rem;} input[type=text],input[type=number]{padding:0.3rem;}</style></head><body>
-        ${TOP_NAV}<h1>單品規格表（顆／粒／根）</h1>${msg}
-        <p>以下為訂單曾出現的品項＋單位，或手動新增的規格。可填<strong>備註</strong>（如「1顆」）與<strong>推算公斤</strong>，訂單明細會顯示推算結果。</p>
+      <style>${ADMIN_STYLE} .page{max-width:900px;margin:2rem auto;padding:0 1.5rem;} input[type=text],input[type=number]{padding:0.4rem;border:1px solid var(--admin-border);border-radius:6px;}</style></head><body>
+        <div class="page">${TOP_NAV}<h1>單品規格表（顆／粒／根）</h1>${msg}
+        <div class="card"><p style="color:#6b7280;font-size:0.875rem;margin-top:0;">以下為訂單曾出現的品項＋單位，或手動新增的規格。可填<strong>備註</strong>（如「1顆」）與<strong>推算公斤</strong>，訂單明細會顯示推算結果。</p>
         <table><thead><tr><th>品項</th><th>單位</th><th>狀態</th><th>備註</th><th>推算公斤</th><th></th></tr></thead><tbody>${tableRows || "<tr><td colspan='6'>尚無資料</td></tr>"}</tbody></table>
-        <p><a href="/admin">← 回後台</a></p></body></html>`);
+        </div><p><a href="/admin" class="btn">← 回後台</a></p></div></body></html>`);
     });
     router.post("/specs/update", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const specId = (req.body.spec_id || "").trim();
