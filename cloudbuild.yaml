@@ -1,0 +1,18 @@
+# Cloud Build：建置 Docker 映像並部署到 Cloud Run
+# 觸發條件：GitHub 某分支 push 時執行（需在 GCP 主控台建立觸發程式）
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'asia-east1-docker.pkg.dev/$PROJECT_ID/linebot/linebot:latest', '.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-east1-docker.pkg.dev/$PROJECT_ID/linebot/linebot:latest']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'songfu-linebot'
+      - '--image=asia-east1-docker.pkg.dev/$PROJECT_ID/linebot/linebot:latest'
+      - '--region=asia-east1'
+      - '--platform=managed'
+options:
+  logging: CLOUD_LOGGING_ONLY
