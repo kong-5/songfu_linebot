@@ -22,25 +22,46 @@ gcloud services enable cloudbuild.googleapis.com run.googleapis.com --project=ha
 ## 3. 建立 Cloud Build 觸發程式
 
 1. 開啟 [Cloud Build 觸發程式](https://console.cloud.google.com/cloud-build/triggers?project=handy-implement-457807-u0)
-2. **建立觸發程式**
+2. **建立觸發程式**（或編輯現有的）
 3. 設定：
    - **名稱**：例如 `songfu-line-bot-deploy`
    - **事件**：推送到分支
    - **來源**：連線你的 GitHub（或 Cloud Source Repo），選 **songfu_linebot** 對應的 repo
    - **分支**：`^main$` 或你用的預設分支
-   - **設定**：選 **Cloud Build 設定檔**，設定檔路徑填 `cloudbuild.yaml`（在 repo 根目錄就是 `cloudbuild.yaml`）
-4. **進階** → **替換變數**：新增下列變數（值填你的實際內容，不要提交到 Git）：
+   - **設定 (Configuration)**：**一定要選「Cloud Build 設定檔 (yaml 或 json)」**，不要選 Dockerfile。
+   - **位置**：選「儲存庫」，設定檔路徑填 `cloudbuild.yaml`
+4. **替換變數 (Substitution variables)**：
+   - 只有當上面選了「Cloud Build 設定檔」時，表單**往下捲**才會出現「Substitution variables」／「替換變數」區塊（有時在進階裡）。
+   - 在該區塊按 **新增變數**，依序加入（名稱與值都要填）：
 
-   | 變數名稱       | 值 |
-   |----------------|----|
-   | `_LINE_TOKEN`  | LINE Channel Access Token |
-   | `_LINE_SECRET` | LINE Channel Secret |
-   | `_VISION_KEY` | Google Cloud Vision API 金鑰 |
-   | `_DATABASE_URL` | `postgresql://postgres:你的密碼@/songfu?host=/cloudsql/handy-implement-457807-u0:asia-east1:你的執行個體ID` |
+   | 名稱 | 值（範例，請改成你的） |
+   |------|------------------------|
+   | `_LINE_TOKEN` | 你的 LINE Channel Access Token |
+   | `_LINE_SECRET` | 你的 LINE Channel Secret |
+   | `_VISION_KEY` | 你的 Google Cloud Vision API 金鑰 |
+   | `_DATABASE_URL` | `postgresql://postgres:密碼@/songfu?host=/cloudsql/handy-implement-457807-u0:asia-east1:songfu-line-bot` |
 
-   若 Cloud SQL 執行個體 ID 不是 `songfu-line-bot`，請把上面連線名稱裡的執行個體 ID 改成實際的。
+   若 Cloud SQL 執行個體 ID 不是 `songfu-line-bot`，請把 `_DATABASE_URL` 裡的執行個體 ID 改成實際的。
 
 5. 儲存觸發程式。
+
+---
+
+### 做法 B：找不到「替換變數」時（推薦）
+
+1. **觸發程式**：設定檔路徑改填 **`cloudbuild-no-secrets.yaml`**（不用 `cloudbuild.yaml`）。  
+   這樣觸發程式**不會**帶任何金鑰，只做：建置映像 → 推送 → 部署到 Cloud Run，並掛上 Cloud SQL 連線。
+
+2. **在 Cloud Run 設一次環境變數**：  
+   到 [Cloud Run](https://console.cloud.google.com/run?project=handy-implement-457807-u0) → 點 **songfu-line-bot** → **編輯並部署新修訂版本** → **變數與密碼**，新增：
+
+   - `PORT` = `8080`
+   - `LINE_CHANNEL_ACCESS_TOKEN` = 你的 LINE Token
+   - `LINE_CHANNEL_SECRET` = 你的 LINE Secret
+   - `GOOGLE_CLOUD_VISION_API_KEY` = 你的 Vision 金鑰
+   - `DATABASE_URL` = `postgresql://postgres:hh168888@/songfu?host=/cloudsql/handy-implement-457807-u0:asia-east1:songfu-line-bot`（密碼或執行個體 ID 不同請改掉）
+
+   儲存後部署。之後每次 **git push** 只會更新映像，這些變數會保留，不用再設。
 
 ---
 
