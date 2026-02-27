@@ -50,7 +50,8 @@ app.get("/", (_req, res) => {
 app.get("/health", (_req, res) => {
     res.json({ ok: true, service: "songfu_linebot" });
 });
-app.listen(PORT, () => {
-    console.log(`songfu_linebot listening on http://localhost:${PORT}`);
+// Cloud Run 需監聽 0.0.0.0，且 PORT 由環境變數提供
+app.listen(PORT, "0.0.0.0", () => {
+    console.log(`songfu_linebot listening on http://0.0.0.0:${PORT}`);
     console.log(`LINE webhook: POST ${webhookPath}`);
 });
