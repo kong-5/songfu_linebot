@@ -9,6 +9,8 @@ exports.closeDb = closeDb;
 const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
 const fs_1 = require("fs");
 const path_1 = require("path");
+const url_1 = require("url");
+const __dirname = (0, path_1.dirname)((0, url_1.fileURLToPath)(import.meta.url));
 const schemaPath = (0, path_1.join)(__dirname, "schema.sql");
 let db = null;
 function getDb(dbPath) {
@@ -60,12 +62,6 @@ function initDb(dbPath) {
     }
     try {
         database.exec("ALTER TABLE customers ADD COLUMN default_unit TEXT");
-    }
-    catch {
-        /* column may already exist */
-    }
-    try {
-        database.exec("ALTER TABLE order_items ADD COLUMN include_export INTEGER NOT NULL DEFAULT 1");
     }
     catch {
         /* column may already exist */

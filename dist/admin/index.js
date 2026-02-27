@@ -45,94 +45,39 @@ const index_js_1 = require("../db/index.js");
 const id_js_1 = require("../lib/id.js");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("file");
-const ADMIN_STYLE = `
-  :root { --admin-primary: #166534; --admin-primary-hover: #14532d; --admin-bg: #fafafa; --admin-card: #fff; --admin-border: #e5e7eb; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif; background: var(--admin-bg); color: #37352f; line-height: 1.5; }
-  a { color: var(--admin-primary); text-decoration: none; }
-  .btn, a.btn { display: inline-block; padding: 0.5rem 1rem; border-radius: 6px; background: var(--admin-card); border: 1px solid var(--admin-border); color: var(--admin-primary); font-size: 0.875rem; margin: 0.25rem 0.25rem 0.25rem 0; }
-  .btn:hover, a.btn:hover { background: var(--admin-primary); color: #fff; border-color: var(--admin-primary); }
-  .card { background: var(--admin-card); border-radius: 8px; border: 1px solid var(--admin-border); padding: 1.25rem; margin-bottom: 1rem; }
-  table { border-collapse: collapse; width: 100%; } th, td { border: 1px solid var(--admin-border); padding: 0.5rem 0.75rem; }
-`;
-const TOP_NAV = '<nav style="margin-bottom:1.5rem;"><a href="/" class="btn">← 回首頁</a> <a href="/admin" class="btn">回後台</a></nav>';
+const TOP_NAV = '<p style="margin-bottom:1rem;"><a href="/">回首頁</a> | <a href="/admin">回後台</a></p>';
 function createAdminRouter() {
     const router = express_1.default.Router();
     const db = (0, index_js_1.getDb)(dbPath);
     router.get("/", (_req, res) => {
-        const reviewCount = db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE need_review = 1").get();
-        const needReviewOrders = db.prepare("SELECT COUNT(DISTINCT order_id) AS c FROM order_items WHERE need_review = 1").get();
-        const specsPending = db.prepare("SELECT COUNT(*) AS c FROM product_unit_specs WHERE (note_label IS NULL OR TRIM(COALESCE(note_label,'')) = '') OR conversion_kg IS NULL").get();
-        const specsPendingNum = (specsPending && specsPending.c != null) ? specsPending.c : 0;
-        const orderTotal = db.prepare("SELECT COUNT(*) AS c FROM orders").get();
-        const orderTotalNum = (orderTotal && orderTotal.c != null) ? orderTotal.c : 0;
-        const reviewNum = (reviewCount && reviewCount.c != null) ? reviewCount.c : 0;
-        const needReviewOrderNum = (needReviewOrders && needReviewOrders.c != null) ? needReviewOrders.c : 0;
         res.type("text/html").send(`
       <!DOCTYPE html>
       <html>
       <head><meta charset="utf-8"><title>松富叫貨－後台</title>
-      <style>${ADMIN_STYLE} .page{max-width:720px;margin:2rem auto;padding:0 1.5rem;} .page h1{font-size:1.5rem;font-weight:600;margin-bottom:1.5rem;color:#37352f;} .page h2{font-size:0.95rem;font-weight:600;margin:0 0 0.75rem 0;color:#37352f;} .btn-wrap{display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;}</style>
+      <style>body{font-family:sans-serif;max-width:800px;margin:2rem auto;padding:0 1rem;} a{color:#0d6efd;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:0.5rem;} select,button{padding:0.35rem 0.75rem;} .block{margin:1.5rem 0;padding:1rem;background:#f8f9fa;border-radius:8px;} .block h2{margin-top:0;font-size:1.1rem;} .block a{margin-right:1rem;}</style>
       </head>
       <body>
-        <div class="page">
-          ${TOP_NAV}
-          <h1>松富叫貨 － 後台</h1>
-          <div class="card">
-            <h2>查詢與維護</h2>
-            <p class="btn-wrap"><a href="/admin/orders" class="btn"><strong>客戶訂單查詢</strong></a>（${orderTotalNum} 筆）</p>
-            <p class="btn-wrap">
-              <a href="/admin/review" class="btn">待確認品名（補對照）${reviewNum > 0 ? " " + reviewNum + " 項" : ""}</a>
-              <a href="/admin/specs" class="btn">單品規格表（顆／粒／根）${specsPendingNum > 0 ? " " + specsPendingNum + " 項待補" : ""}</a>
-              <a href="/admin/export" class="btn">批次匯出</a>
-              <a href="/admin/orders?need_review=1" class="btn">只看有待確認的訂單${needReviewOrderNum > 0 ? " " + needReviewOrderNum + " 筆" : ""}</a>
-            </p>
-            <p class="btn-wrap">
-              <a href="/admin/customers" class="btn">客戶管理</a>
-              <a href="/admin/customers/new" class="btn">新增客戶</a>
-              <a href="/admin/products" class="btn">品項與俗名</a>
-            </p>
-          </div>
-          <div class="card" style="margin-top:1.5rem;">
-            <h2>📥 資料匯入</h2>
-            <p class="btn-wrap">
-              <a href="/admin/import-customers" class="btn">匯入客戶</a>
-              <a href="/admin/import" class="btn">匯入品項</a>
-              <a href="/admin/import-teraoka" class="btn">寺岡資料對照</a>
-            </p>
-          </div>
-          <div class="card">
-            <h2>⚙️ 設定</h2>
-            <p class="btn-wrap"><a href="/admin/settings" class="btn">結轉時間等</a></p>
-          </div>
+        ${TOP_NAV}
+        <h1>松富叫貨 － 後台</h1>
+        <div class="block">
+          <h2>📥 資料匯入</h2>
+          <p><a href="/admin/import-customers"><strong>匯入客戶</strong></a>（CSV / Excel，含 CustName 格式）</p>
+          <p><a href="/admin/import"><strong>匯入品項</strong></a>（標準品名、ERP、寺岡條碼）</p>
+          <p><a href="/admin/import-teraoka"><strong>寺岡資料對照</strong></a>（依品名寫入寺岡條碼）</p>
         </div>
+        <div class="block">
+          <h2>查詢與維護</h2>
+          <ul>
+            <li><a href="/admin/review">待確認品名</a> － 補正俗名／客戶別名</li>
+            <li><a href="/admin/orders">訂單查詢</a></li>
+            <li><a href="/admin/customers">客戶管理</a>、<a href="/admin/customers/new">新增客戶</a></li>
+            <li><a href="/admin/products">品項與俗名</a></li>
+          </ul>
+        </div>
+        <p><a href="/">← 回首頁</a></p>
       </body>
       </html>
     `);
-    });
-    router.get("/settings", (req, res) => {
-        const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get("order_cutoff_time");
-        const cutoff = (row && row.value) ? String(row.value).trim() : "";
-        const msg = req.query.ok === "1" ? "<p style='color:green'>已儲存。</p>" : "";
-        res.type("text/html").send(`
-      <!DOCTYPE html><html><head><meta charset="utf-8"><title>後台設定</title>
-      <style>${ADMIN_STYLE} .page{max-width:480px;margin:2rem auto;padding:0 1.5rem;} label{display:block;margin:0.75rem 0;} input[type=text]{padding:0.5rem;border:1px solid var(--admin-border);border-radius:6px;width:100%;box-sizing:border-box;} button.btn{background:var(--admin-primary);color:#fff;border:none;cursor:pointer;} button.btn:hover{background:var(--admin-primary-hover);}</style></head><body>
-        <div class="page">${TOP_NAV}
-        <h1>後台設定</h1>${msg}
-        <div class="card">
-        <form method="post" action="/admin/settings">
-          <label><strong>訂單結轉時間</strong>（例：17:00，留空表示不限制）<br>
-            <input type="text" name="order_cutoff_time" value="${escapeAttr(cutoff)}" placeholder="HH:MM"></label>
-          <p><button type="submit" class="btn">儲存</button></p>
-        </form>
-        <p style="color:#6b7280;font-size:0.875rem;">結轉時間可作為當日訂單截止時點，供後續流程或報表使用。</p>
-        </div>
-        <p><a href="/admin" class="btn">← 回後台</a></p>
-        </div></body></html>`);
-    });
-    router.post("/settings", express_1.default.urlencoded({ extended: true }), (req, res) => {
-        const cutoff = (req.body.order_cutoff_time || "").trim();
-        db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("order_cutoff_time", cutoff);
-        res.redirect("/admin/settings?ok=1");
     });
     // 待確認品名：列出 need_review=1 的明細，可選擇對應品項並加入俗名
     router.get("/review", (req, res) => {
@@ -252,37 +197,23 @@ function createAdminRouter() {
     });
     router.get("/orders", (req, res) => {
         const onlyNeedReview = req.query.need_review === "1";
-        const from = (req.query.from || "").trim();
-        const to = (req.query.to || "").trim();
         let orders = db.prepare(`
       SELECT o.id, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
       FROM orders o
       JOIN customers c ON c.id = o.customer_id
       ORDER BY o.order_date DESC, o.created_at DESC
-      LIMIT 500
+      LIMIT 200
     `).all();
-        if (from) {
-            orders = orders.filter((o) => o.order_date >= from);
-        }
-        if (to) {
-            orders = orders.filter((o) => o.order_date <= to);
-        }
         if (onlyNeedReview) {
             orders = orders.filter((o) => (o.need_review_count ?? 0) > 0);
         }
-        const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
-        const getWeekday = (dateStr) => {
-            const d = new Date(dateStr + "T12:00:00");
-            return weekdays[d.getDay()];
-        };
         const rows = orders
             .map((o) => {
             const n = o.need_review_count ?? 0;
-            const wd = getWeekday(o.order_date);
             const needReviewCell = n > 0 ? `<span style="color:red">${n} 項待確認</span>` : "—";
             return `<tr>
-            <td>${escapeHtml(o.order_date)}（${wd}）</td>
+            <td>${escapeHtml(o.order_date)}</td>
             <td><a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders">${escapeHtml(o.customer_name)}</a></td>
             <td>${escapeHtml(o.status)}</td>
             <td>${needReviewCell}</td>
@@ -291,58 +222,24 @@ function createAdminRouter() {
           </tr>`;
         })
             .join("");
-        const reviewCount = db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE need_review = 1").get();
-        const needReviewOrderCount = db.prepare("SELECT COUNT(DISTINCT order_id) AS c FROM order_items WHERE need_review = 1").get();
-        const reviewNum = (reviewCount && reviewCount.c != null) ? reviewCount.c : 0;
-        const needReviewOrderNum = (needReviewOrderCount && needReviewOrderCount.c != null) ? needReviewOrderCount.c : 0;
         const filterLink = onlyNeedReview
-            ? `<a href="/admin/orders" class="btn">顯示全部訂單</a>`
-            : `<a href="/admin/orders?need_review=1" class="btn">只看有待確認的訂單（${needReviewOrderNum} 筆）</a>`;
+            ? `<a href="/admin/orders">顯示全部訂單</a>`
+            : `<a href="/admin/orders?need_review=1">只看有待確認的訂單</a>`;
         res.type("text/html").send(`
       <!DOCTYPE html>
       <html>
       <head><meta charset="utf-8"><title>訂單查詢</title>
-      <style>${ADMIN_STYLE} .page{max-width:1100px;margin:2rem auto;padding:0 1.5rem;} .btn-wrap{display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem;} pre{font-size:0.9em;} .filters{margin-bottom:1rem;} .filters label{margin-right:1rem;} .filters input[type=date],.filters button{padding:0.4rem 0.6rem;border-radius:6px;border:1px solid var(--admin-border);} #exportTableJpg{margin-left:0.5rem;}</style>
+      <style>body{font-family:sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:0.5rem;} pre{font-size:0.9em;}</style>
       </head>
       <body>
-        <div class="page">${TOP_NAV}
+        ${TOP_NAV}
         <h1>訂單查詢</h1>
-        <p class="btn-wrap">
-          <a href="/admin/review" class="btn">待確認品名（補對照）${reviewNum > 0 ? " " + reviewNum + " 項" : ""}</a>
-          <a href="/admin/specs" class="btn">單品規格表</a>
-          <a href="/admin/export" class="btn">批次匯出</a>
-          ${filterLink}
-        </p>
-        <div class="filters">
-          <form method="get" action="/admin/orders" style="display:inline;">
-            ${onlyNeedReview ? '<input type="hidden" name="need_review" value="1">' : ""}
-            <label>日期起 <input type="date" name="from" value="${escapeAttr(from)}"></label>
-            <label>日期訖 <input type="date" name="to" value="${escapeAttr(to)}"></label>
-            <button type="submit" class="btn">篩選</button>
-          </form>
-          <button type="button" id="exportTableJpg" class="btn">匯出表格為 JPG</button>
-        </div>
-        <div id="orders-table-wrap">
+        <p><a href="/admin/review">待確認品名</a>（補對照）　${filterLink}</p>
         <table>
           <thead><tr><th>日期</th><th>客戶</th><th>狀態</th><th>待確認</th><th>原始訊息</th><th></th></tr></thead>
           <tbody>${rows.length ? rows : "<tr><td colspan='6'>無訂單</td></tr>"}</tbody>
         </table>
-        </div>
-        <p><a href="/admin" class="btn">← 回後台</a></p>
-        </div>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-        <script>
-        document.getElementById('exportTableJpg').onclick=function(){
-          if(typeof html2canvas==='undefined'){ alert('無法載入匯出功能，請稍後再試'); return; }
-          var el=document.getElementById('orders-table-wrap');
-          html2canvas(el,{scale:2,useCORS:true,logging:false}).then(function(canvas){
-            var a=document.createElement('a');
-            a.download='訂單查詢_'+new Date().toISOString().slice(0,10)+'.jpg';
-            a.href=canvas.toDataURL('image/jpeg',0.9);
-            a.click();
-          }).catch(function(err){ alert('匯出失敗：'+err); });
-        };
-        </script>
+        <p><a href="/admin">← 回後台</a></p>
       </body>
       </html>
     `);
@@ -358,13 +255,9 @@ function createAdminRouter() {
             return;
         }
         const items = db.prepare(`
-      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.need_review, oi.include_export,
-        p.id AS product_id, p.erp_code, p.name AS product_name, p.teraoka_barcode,
-        s.note_label AS spec_note, s.conversion_kg AS spec_kg
-      FROM order_items oi
-      LEFT JOIN products p ON p.id = oi.product_id
-      LEFT JOIN product_unit_specs s ON s.product_id = oi.product_id AND s.unit = oi.unit
-      WHERE oi.order_id = ?
+      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.need_review,
+        p.id AS product_id, p.erp_code, p.name AS product_name, p.teraoka_barcode
+      FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
     `).all(orderId);
         const needReviewCount = items.filter((i) => i.need_review === 1).length;
         const needReviewNote = needReviewCount > 0
@@ -374,9 +267,9 @@ function createAdminRouter() {
         const unitOptions = units.map((u) => `<option value="${escapeAttr(u)}">${escapeHtml(u)}</option>`).join("");
         const itemsRows = items
             .map((i) => {
-            const includeExport = (i.include_export === 1 || i.include_export == null);
             const q = Number(i.quantity);
             const u = (i.unit && i.unit.trim()) || "";
+            const unitSelect = `<select name="unit_${i.item_id}" form="itemsForm">${unitOptions}</select>`;
             const unitSelectWithVal = units.includes(u)
                 ? `<select name="unit_${i.item_id}" form="itemsForm"><option value="">—</option>${units.map((x) => `<option value="${escapeAttr(x)}" ${x === u ? "selected" : ""}>${escapeHtml(x)}</option>`).join("")}</select>`
                 : `<select name="unit_${i.item_id}" form="itemsForm"><option value="">—</option>${unitOptions}</select>`;
@@ -386,23 +279,13 @@ function createAdminRouter() {
             const barcodeImg = i.teraoka_barcode && i.teraoka_barcode.trim()
                 ? `<img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="條碼" style="height:36px;vertical-align:middle;">`
                 : "—";
-            const specNote = (i.spec_note && i.spec_note.trim()) ? escapeHtml(i.spec_note) : "—";
-            const specKg = i.spec_kg != null && Number.isFinite(i.spec_kg) ? (q * i.spec_kg).toFixed(2) : "—";
-            const rowClass = includeExport ? "" : " class=\"row-excluded\"";
-            const checkVal = includeExport ? "1" : "0";
-            return `<tr${rowClass}>
-            <td style="background:#e9ecef;">${escapeHtml(i.raw_name ?? "")}</td>
-            <td style="background:#e9ecef;">${q}</td>
-            <td style="background:#e9ecef;">${escapeHtml(u)}</td>
-            <td><input type="hidden" name="inc_${i.item_id}" value="${checkVal}"><input type="checkbox" form="itemsForm" class="inc-export-cb" ${includeExport ? "checked" : ""} data-item-id="${escapeAttr(i.item_id)}"></td>
+            return `<tr>
             <td>${escapeHtml(erp)}</td>
             <td>${pname}</td>
             <td><input type="number" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0" style="width:5rem;"></td>
             <td>${unitSelectWithVal}</td>
             <td>${teraoka}</td>
             <td>${barcodeImg}</td>
-            <td>${specNote}</td>
-            <td>${specKg}</td>
           </tr>`;
         })
             .join("");
@@ -410,43 +293,23 @@ function createAdminRouter() {
       <!DOCTYPE html>
       <html>
       <head><meta charset="utf-8"><title>訂單明細</title>
-      <style>${ADMIN_STYLE} .page{max-width:1200px;margin:2rem auto;padding:0 1.5rem;} input[type=number]{text-align:right;} tr.row-excluded{background:#e9ecef;} tr.row-excluded td{color:#6c757d;} pre{background:var(--admin-bg);padding:0.75rem;border-radius:6px;border:1px solid var(--admin-border);}</style>
+      <style>body{font-family:sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.5rem;} input[type=number]{text-align:right;}</style>
       </head>
       <body>
-        <div class="page">${TOP_NAV}
+        ${TOP_NAV}
         <h1>訂單明細</h1>
-        <p>日期：${escapeHtml(order.order_date)}　客戶：<a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders" class="btn">${escapeHtml(order.customer_name)}</a>　狀態：${escapeHtml(order.status)}</p>
+        <p>日期：${escapeHtml(order.order_date)}　客戶：<a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a>　狀態：${escapeHtml(order.status)}</p>
         ${needReviewNote}
-        <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet" class="btn">匯出訂貨單格式（含條碼）</a> <a href="/admin/export" class="btn">批次匯出</a></p>
+        <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet">匯出訂貨單格式（含條碼）</a></p>
         <pre style="background:#f5f5f5;padding:0.5rem;">${escapeHtml(order.raw_message ?? "")}</pre>
-        <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items" enctype="application/x-www-form-urlencoded">
+        <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items">
           <table>
-            <thead><tr><th colspan="3">客戶原始</th><th>確認</th><th colspan="7">我們輸出</th></tr>
-            <tr><th>品名</th><th>數量</th><th>單位</th><th>勾選</th><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>寺岡料號</th><th>寺岡條碼</th><th>備註</th><th>推算公斤</th></tr></thead>
+            <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>寺岡料號</th><th>寺岡條碼</th></tr></thead>
             <tbody>${itemsRows}</tbody>
           </table>
-          <p><button type="submit" class="btn" style="background:var(--admin-primary);color:#fff;border:none;">儲存數量與單位</button></p>
+          <p><button type="submit">儲存數量與單位</button></p>
         </form>
-        <p><a href="/admin/orders" class="btn">← 回訂單列表</a></p>
-        </div>
-        <script>
-        document.querySelectorAll('.inc-export-cb').forEach(function(cb){
-          cb.addEventListener('change',function(){
-            var prev = this.previousElementSibling;
-            var row = this.closest('tr');
-            if(!this.checked){
-              if(!confirm('確定不匯出此項？（此列將不會出現在訂貨單與批次匯出）')){
-                this.checked = true;
-                if(prev) prev.value = '1';
-                if(row) row.classList.remove('row-excluded');
-                return;
-              }
-            }
-            if(prev) prev.value = this.checked ? '1' : '0';
-            if(row) row.classList.toggle('row-excluded', !this.checked);
-          });
-        });
-        </script>
+        <p><a href="/admin/orders">← 回訂單列表</a></p>
       </body>
       </html>
     `);
@@ -471,11 +334,6 @@ function createAdminRouter() {
                 const itemId = key.slice(5);
                 const unit = (body[key] ?? "").trim() || null;
                 db.prepare("UPDATE order_items SET unit = ? WHERE id = ? AND order_id = ?").run(unit, itemId, orderId);
-            }
-            else if (key.startsWith("inc_")) {
-                const itemId = key.slice(4);
-                const inc = (body[key] === "1" || body[key] === 1) ? 1 : 0;
-                db.prepare("UPDATE order_items SET include_export = ? WHERE id = ? AND order_id = ?").run(inc, itemId, orderId);
             }
         }
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=items");
@@ -513,8 +371,7 @@ function createAdminRouter() {
         }
         const items = db.prepare(`
       SELECT oi.quantity, oi.unit, p.erp_code, p.name AS product_name, p.teraoka_barcode
-      FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-      WHERE oi.order_id = ? AND (oi.include_export = 1 OR oi.include_export IS NULL)
+      FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
     `).all(orderId);
         const rows = items.map((i) => {
             const erp = i.erp_code ?? "—";
@@ -553,198 +410,6 @@ function createAdminRouter() {
       </body>
       </html>
     `);
-    });
-    router.get("/api/products/search", (req, res) => {
-        const q = (req.query.q || "").trim();
-        if (!q) {
-            res.json([]);
-            return;
-        }
-        const terms = q.split(/\s+/).filter(Boolean).map((t) => "%" + t + "%");
-        if (terms.length === 0) {
-            res.json([]);
-            return;
-        }
-        const placeholders = terms.map(() => "(p.name LIKE ? OR p.erp_code LIKE ? OR pa.alias LIKE ?)").join(" AND ");
-        const params = terms.flatMap((t) => [t, t, t]);
-        const rows = db.prepare(`
-      SELECT DISTINCT p.id, p.name, p.erp_code, p.teraoka_barcode, p.unit
-      FROM products p
-      LEFT JOIN product_aliases pa ON pa.product_id = p.id
-      WHERE (p.active IS NULL OR p.active = 1) AND (${placeholders})
-      ORDER BY p.name LIMIT 50
-    `).all(...params);
-        res.json(rows);
-    });
-    router.get("/export", (req, res) => {
-        const from = (req.query.from || "").trim();
-        const to = (req.query.to || "").trim();
-        const customerIds = req.query.customer_id;
-        const ids = Array.isArray(customerIds) ? customerIds : (customerIds ? [customerIds] : []);
-        const action = (req.query.action || "").trim();
-        const customers = db.prepare("SELECT id, name FROM customers WHERE (active IS NULL OR active = 1) ORDER BY name").all();
-        const customerOptions = customers.map((c) => `<label><input type="checkbox" name="customer_id" value="${escapeAttr(c.id)}" ${ids.includes(c.id) ? "checked" : ""}> ${escapeHtml(c.name)}</label>`).join("<br>");
-        if (action === "summary" || action === "report") {
-            if (ids.length === 0) {
-                res.redirect("/admin/export?err=no_customer&from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to));
-                return;
-            }
-            let orders = db.prepare(`
-      SELECT o.id, o.order_date, o.customer_id, c.name AS customer_name
-      FROM orders o JOIN customers c ON c.id = o.customer_id
-      WHERE o.customer_id IN (${ids.map(() => "?").join(",")})
-      ORDER BY o.order_date DESC, o.created_at DESC
-      LIMIT 500
-    `).all(...ids);
-            if (from)
-                orders = orders.filter((o) => o.order_date >= from);
-            if (to)
-                orders = orders.filter((o) => o.order_date <= to);
-            if (action === "summary") {
-                const rows = orders.map((o) => {
-                    const itemCount = db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ? AND (include_export = 1 OR include_export IS NULL)").get(o.id);
-                    const n = (itemCount && itemCount.c != null) ? itemCount.c : 0;
-                    return `<tr><td>${escapeHtml(o.order_date)}</td><td>${escapeHtml(o.customer_name)}</td><td>${n}</td><td><a href="/admin/orders/${encodeURIComponent(o.id)}">明細</a>　<a href="/admin/orders/${encodeURIComponent(o.id)}/order-sheet">訂貨單</a></td></tr>`;
-                }).join("");
-                res.type("text/html").send(`
-      <!DOCTYPE html><html><head><meta charset="utf-8"><title>批次匯出－總表</title>
-      <style>body{font-family:sans-serif;max-width:900px;margin:2rem auto;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.5rem;}</style></head><body>
-        ${TOP_NAV}<h1>批次匯出－總表</h1>
-        <p>日期：${escapeHtml(from || "—")} ～ ${escapeHtml(to || "—")}　已選 ${ids.length} 位客戶</p>
-        <table><thead><tr><th>日期</th><th>客戶</th><th>品項數</th><th>操作</th></tr></thead><tbody>${rows || "<tr><td colspan='4'>無訂單</td></tr>"}</tbody></table>
-        <p><a href="/admin/export">← 重選條件</a></p></body></html>`);
-                return;
-            }
-            const htmlBlocks = orders.map((o) => {
-                const items = db.prepare(`
-          SELECT oi.quantity, oi.unit, p.erp_code, p.name AS product_name, p.teraoka_barcode
-          FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-          WHERE oi.order_id = ? AND (oi.include_export = 1 OR oi.include_export IS NULL)
-        `).all(o.id);
-                const order = db.prepare("SELECT o.order_date, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?").get(o.id);
-                const rows = items.map((i) => {
-                    const erp = i.erp_code ?? "—";
-                    const pname = i.product_name ?? "待確認";
-                    const teraoka = i.teraoka_barcode && i.teraoka_barcode.trim() ? i.teraoka_barcode : "—";
-                    const barcodeImg = i.teraoka_barcode && i.teraoka_barcode.trim() ? `<img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="" style="height:48px;">` : "—";
-                    return `<tr><td>${escapeHtml(erp)}</td><td>${escapeHtml(pname)}</td><td>${i.quantity}</td><td>${escapeHtml(i.unit || "")}</td><td>${escapeHtml(teraoka)}</td><td>${barcodeImg}</td></tr>`;
-                }).join("");
-                const custBarcode = order.customer_teraoka_code && order.customer_teraoka_code.trim() ? `<p><strong>客戶條碼</strong>　<img src="/admin/barcode?code=${encodeURIComponent(order.customer_teraoka_code.trim())}" alt="" style="height:56px;"></p>` : "";
-                return `<div class="order-block" style="margin-bottom:3rem; page-break-after:always;">
-        <h2>訂貨單　${escapeHtml(order.order_date)}　${escapeHtml(order.customer_name)}</h2>
-        <table><thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>寺岡料號</th><th>寺岡條碼</th></tr></thead><tbody>${rows}</tbody></table>
-        ${custBarcode}
-        <p>${items.filter((i) => i.teraoka_barcode && i.teraoka_barcode.trim()).map((i) => `<span style="display:inline-block;margin:0.5rem;"><img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="" style="height:56px;"><br><small>${escapeHtml(i.product_name ?? "")}</small></span>`).join("")}</p>
-        </div>`;
-            }).join("");
-            res.type("text/html").send(`
-      <!DOCTYPE html><html><head><meta charset="utf-8"><title>批次匯出報表</title>
-      <style>body{font-family:sans-serif;max-width:900px;margin:2rem auto;} table{border-collapse:collapse;} th,td{border:1px solid #333;padding:0.5rem;} @media print{.no-print{display:none;}}</style></head><body>
-        <div class="no-print">${TOP_NAV}<p><button onclick="window.print()">列印／另存 PDF</button></p></div>
-        ${htmlBlocks}
-      </body></html>`);
-            return;
-        }
-        const errMsg = req.query.err === "no_customer" ? "<p style='color:red'>請至少選擇一位客戶。</p>" : "";
-        res.type("text/html").send(`
-      <!DOCTYPE html><html><head><meta charset="utf-8"><title>批次匯出</title>
-      <style>${ADMIN_STYLE} .page{max-width:600px;margin:2rem auto;padding:0 1.5rem;} label{display:block;margin:0.5rem 0;} .cust-list{max-height:200px;overflow:auto;border:1px solid var(--admin-border);padding:0.75rem;border-radius:6px;background:var(--admin-card);} .cust-list label{margin:0.35rem 0;}</style></head><body>
-        <div class="page">${TOP_NAV}<h1>批次匯出</h1>${errMsg}
-        <div class="card"><form method="get" action="/admin/export">
-          <label>日期起 <input type="date" name="from" value="${escapeAttr(from)}"></label>
-          <label>日期訖 <input type="date" name="to" value="${escapeAttr(to)}"></label>
-          <p>客戶（至少選一）：</p>
-          <div class="cust-list">
-            <label><input type="checkbox" id="selAll"> 全選</label>
-            <label><input type="checkbox" id="selNone"> 全不選</label>
-            <br>${customerOptions}
-          </div>
-          <p>
-            <button type="submit" name="action" value="summary" class="btn" style="background:var(--admin-primary);color:#fff;border:none;">看總表</button>
-            <button type="submit" name="action" value="report" class="btn" style="background:var(--admin-primary);color:#fff;border:none;">匯出報表（多筆訂貨單）</button>
-          </p>
-        </form></div>
-        <script>
-        document.getElementById('selAll').onclick=function(){ document.querySelectorAll('input[name=customer_id]').forEach(function(c){c.checked=true;}); };
-        document.getElementById('selNone').onclick=function(){ document.querySelectorAll('input[name=customer_id]').forEach(function(c){c.checked=false;}); };
-        </script>
-        <p><a href="/admin/orders" class="btn">← 回訂單查詢</a></p></div></body></html>`);
-    });
-    router.get("/specs", (req, res) => {
-        const specRows = db.prepare(`
-      SELECT s.id, s.product_id, s.unit, s.note_label, s.conversion_kg, p.name AS product_name
-      FROM product_unit_specs s JOIN products p ON p.id = s.product_id ORDER BY p.name, s.unit
-    `).all();
-        const orderCombos = db.prepare(`
-      SELECT DISTINCT oi.product_id, oi.unit FROM order_items oi
-      WHERE LOWER(TRIM(oi.unit)) IN ('顆','粒','根') AND oi.product_id IS NOT NULL
-    `).all();
-        const comboKey = (r) => (r.product_id || "") + "|" + (r.unit || "");
-        const specMap = new Map();
-        specRows.forEach((r) => specMap.set(comboKey(r), r));
-        const seen = new Set(orderCombos.map(comboKey));
-        const productNames = new Map(db.prepare("SELECT id, name FROM products").all().map((r) => [r.id, r.name]));
-        const rows = [];
-        orderCombos.forEach((c) => {
-            const key = comboKey(c);
-            const spec = specMap.get(key);
-            rows.push({
-                product_id: c.product_id,
-                unit: c.unit,
-                product_name: productNames.get(c.product_id) || "—",
-                spec_id: spec ? spec.id : null,
-                note_label: spec ? spec.note_label : null,
-                conversion_kg: spec ? spec.conversion_kg : null,
-                from_orders: true,
-            });
-        });
-        specRows.forEach((s) => {
-            if (!seen.has(comboKey(s)))
-                rows.push({ product_id: s.product_id, unit: s.unit, product_name: s.product_name, spec_id: s.id, note_label: s.note_label, conversion_kg: s.conversion_kg, from_orders: false });
-        });
-        rows.sort((a, b) => (a.product_name || "").localeCompare(b.product_name || "") || (a.unit || "").localeCompare(b.unit || ""));
-        const msg = req.query.ok === "1" ? "<p style='color:green'>已儲存。</p>" : "";
-        const tableRows = rows.map((r) => {
-            const pending = !r.spec_id || (r.note_label == null || String(r.note_label).trim() === "") || r.conversion_kg == null;
-            const badge = pending ? "<span style='color:red'>待補</span>" : "";
-            const noteVal = (r.note_label != null && r.note_label !== "") ? escapeHtml(r.note_label) : "";
-            const kgVal = r.conversion_kg != null ? String(r.conversion_kg) : "";
-            if (r.spec_id) {
-                return `<tr><td>${escapeHtml(r.product_name)}</td><td>${escapeHtml(r.unit)}</td><td>${badge}</td><td><form method="post" action="/admin/specs/update" style="display:inline;"><input type="hidden" name="spec_id" value="${escapeAttr(r.spec_id)}"><input type="text" name="note_label" value="${escapeAttr(noteVal)}" placeholder="備註"></td><td><input type="number" name="conversion_kg" value="${escapeAttr(kgVal)}" step="any" placeholder="推算公斤" style="width:6rem;"></td><td><button type="submit">儲存</button></form></td></tr>`;
-            }
-            return `<tr><td>${escapeHtml(r.product_name)}</td><td>${escapeHtml(r.unit)}</td><td>${badge}</td><td colspan="3"><form method="post" action="/admin/specs/new" style="display:inline;"><input type="hidden" name="product_id" value="${escapeAttr(r.product_id)}"><input type="hidden" name="unit" value="${escapeAttr(r.unit)}"><input type="text" name="note_label" placeholder="備註"><input type="number" name="conversion_kg" step="any" placeholder="推算公斤" style="width:6rem;"><button type="submit">新增規格</button></form></td></tr>`;
-        }).join("");
-        res.type("text/html").send(`
-      <!DOCTYPE html><html><head><meta charset="utf-8"><title>單品規格表</title>
-      <style>${ADMIN_STYLE} .page{max-width:900px;margin:2rem auto;padding:0 1.5rem;} input[type=text],input[type=number]{padding:0.4rem;border:1px solid var(--admin-border);border-radius:6px;}</style></head><body>
-        <div class="page">${TOP_NAV}<h1>單品規格表（顆／粒／根）</h1>${msg}
-        <div class="card"><p style="color:#6b7280;font-size:0.875rem;margin-top:0;">以下為訂單曾出現的品項＋單位，或手動新增的規格。可填<strong>備註</strong>（如「1顆」）與<strong>推算公斤</strong>，訂單明細會顯示推算結果。</p>
-        <table><thead><tr><th>品項</th><th>單位</th><th>狀態</th><th>備註</th><th>推算公斤</th><th></th></tr></thead><tbody>${tableRows || "<tr><td colspan='6'>尚無資料</td></tr>"}</tbody></table>
-        </div><p><a href="/admin" class="btn">← 回後台</a></p></div></body></html>`);
-    });
-    router.post("/specs/update", express_1.default.urlencoded({ extended: true }), (req, res) => {
-        const specId = (req.body.spec_id || "").trim();
-        const noteLabel = (req.body.note_label || "").trim() || null;
-        const conversionKg = req.body.conversion_kg !== undefined && req.body.conversion_kg !== "" ? parseFloat(req.body.conversion_kg) : null;
-        if (!specId) {
-            res.redirect("/admin/specs?err=id");
-            return;
-        }
-        db.prepare("UPDATE product_unit_specs SET note_label = ?, conversion_kg = ?, updated_at = datetime('now') WHERE id = ?").run(noteLabel, conversionKg, specId);
-        res.redirect("/admin/specs?ok=1");
-    });
-    router.post("/specs/new", express_1.default.urlencoded({ extended: true }), (req, res) => {
-        const productId = (req.body.product_id || "").trim();
-        const unit = (req.body.unit || "").trim();
-        const noteLabel = (req.body.note_label || "").trim() || null;
-        const conversionKg = req.body.conversion_kg !== undefined && req.body.conversion_kg !== "" ? parseFloat(req.body.conversion_kg) : null;
-        if (!productId || !unit) {
-            res.redirect("/admin/specs?err=missing");
-            return;
-        }
-        const id = (0, id_js_1.newId)("spec");
-        db.prepare("INSERT OR IGNORE INTO product_unit_specs (id, product_id, unit, note_label, conversion_kg) VALUES (?, ?, ?, ?, ?)").run(id, productId, unit, noteLabel, conversionKg);
-        res.redirect("/admin/specs?ok=1");
     });
     router.get("/customers/new", (req, res) => {
         res.type("text/html").send(`
@@ -976,17 +641,17 @@ function createAdminRouter() {
         const tbody = rows
             .map((r) => {
             const active = r.active === undefined || r.active === null || r.active === 1;
-            return `<tr data-customer-id="${escapeAttr(r.id)}">
+            return `<tr>
             <td>${escapeHtml(r.name)}</td>
             <td>${escapeHtml(r.teraoka_code ?? "")}</td>
             <td>${escapeHtml(r.hq_cust_code ?? "")}</td>
             <td>${escapeHtml(r.line_group_name ?? "")}</td>
             <td>${r.line_group_id ? "已綁定" : "—"}</td>
             <td>${escapeHtml(r.contact ?? "")}</td>
-            <td class="cust-status">${active ? "<span style='color:green'>啟用</span>" : "<span style='color:gray'>停用</span>"}</td>
+            <td>${active ? "<span style='color:green'>啟用</span>" : "<span style='color:gray'>停用</span>"}</td>
             <td>
               <a href="/admin/customers/${encodeURIComponent(r.id)}/edit">編輯</a>
-              | <button type="button" class="toggle-cust" data-id="${escapeAttr(r.id)}">${active ? "停用" : "啟用"}</button>
+              | <form method="post" action="/admin/customers/${encodeURIComponent(r.id)}/toggle" style="display:inline;"><button type="submit">${active ? "停用" : "啟用"}</button></form>
               | <a href="/admin/customers/${encodeURIComponent(r.id)}/delete">刪除</a>
             </td>
           </tr>`;
@@ -997,7 +662,7 @@ function createAdminRouter() {
       <!DOCTYPE html>
       <html>
       <head><meta charset="utf-8"><title>客戶管理</title>
-      <style>body{font-family:sans-serif;max-width:1200px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.5rem;} input[type=search]{padding:0.4rem 0.6rem;width:220px;} .search-form{display:flex;gap:0.5rem;align-items:center;margin-bottom:1rem;} button.toggle-cust{padding:0.2rem 0.5rem;cursor:pointer;}</style>
+      <style>body{font-family:sans-serif;max-width:1200px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.5rem;} input[type=search]{padding:0.4rem 0.6rem;width:220px;} .search-form{display:flex;gap:0.5rem;align-items:center;margin-bottom:1rem;}</style>
       </head>
       <body>
         ${TOP_NAV}
@@ -1015,38 +680,19 @@ function createAdminRouter() {
           <tbody>${tbody}</tbody>
         </table>
         <p><a href="/admin">← 回後台</a></p>
-        <script>
-        document.querySelectorAll('.toggle-cust').forEach(function(btn){
-          btn.onclick=function(){
-            var id=this.dataset.id; var self=this;
-            fetch('/admin/customers/'+encodeURIComponent(id)+'/toggle',{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/x-www-form-urlencoded'},body:''})
-              .then(function(r){return r.json();}).then(function(d){
-                if(d.ok){
-                  var row=document.querySelector('tr[data-customer-id="'+id.replace(/"/g,'\\"')+'"]');
-                  if(row){ var statusTd=row.querySelector('.cust-status'); if(statusTd) statusTd.innerHTML=d.active===1?"<span style=\\"color:green\\">啟用</span>":"<span style=\\"color:gray\\">停用</span>"; self.textContent=d.active===1?'停用':'啟用'; }
-                }
-              });
-          };
-        });
-        </script>
       </body>
       </html>
     `);
     });
     router.post("/customers/:id/toggle", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const id = req.params.id;
-        const wantsJson = /application\/json/i.test(req.get("Accept") || "");
         const row = db.prepare("SELECT active FROM customers WHERE id = ?").get(id);
         if (!row) {
-            if (wantsJson)
-                return res.status(404).json({ ok: false, error: "客戶不存在" });
             res.redirect("/admin/customers?err=" + encodeURIComponent("客戶不存在"));
             return;
         }
         const next = (row.active === 1 ? 0 : 1);
         db.prepare("UPDATE customers SET active = ?, updated_at = datetime('now') WHERE id = ?").run(next, id);
-        if (wantsJson)
-            return res.json({ ok: true, active: next });
         res.redirect("/admin/customers?ok=toggle");
     });
     router.get("/customers/:id/delete", (req, res) => {
@@ -1116,22 +762,21 @@ function createAdminRouter() {
         const okMsg = req.query.ok === "del" ? "已刪除品項。" : req.query.ok === "edit" ? "已儲存。" : req.query.ok === "toggle" ? "已更新狀態。" : "";
         const msg = okMsg ? "<p style='color:green'>" + okMsg + "</p>" : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const tbody = products
-            .map((p) => {
-            const active = p.active === 1;
-            return `<tr data-product-id="${escapeAttr(p.id)}">
+            .map((p) => `<tr>
             <td>${escapeHtml(p.name)}</td>
             <td>${escapeHtml(p.erp_code ?? "")}</td>
             <td>${escapeHtml(p.teraoka_barcode ?? "")}</td>
             <td>${escapeHtml(p.unit)}</td>
             <td>${(aliasesByProduct.get(p.id) ?? []).map((a) => escapeHtml(a)).join("、") || "—"} <a href="/admin/products/${encodeURIComponent(p.id)}/aliases">管理</a></td>
-            <td class="prod-status">${active ? "啟用" : "<span style='color:#888'>停用</span>"}</td>
+            <td>${p.active === 1 ? "啟用" : "<span style='color:#888'>停用</span>"}</td>
             <td>
               <a href="/admin/products/${encodeURIComponent(p.id)}/edit">編輯</a>
-              | <button type="button" class="toggle-prod" data-id="${escapeAttr(p.id)}">${active ? "停用" : "啟用"}</button>
+              ${p.active === 1
+            ? ` | <form method="post" action="/admin/products/${encodeURIComponent(p.id)}/toggle" style="display:inline;"><button type="submit">停用</button></form>`
+            : ` | <form method="post" action="/admin/products/${encodeURIComponent(p.id)}/toggle" style="display:inline;"><button type="submit">啟用</button></form>`}
               | <a href="/admin/products/${encodeURIComponent(p.id)}/delete">刪除</a>
             </td>
-          </tr>`;
-        })
+          </tr>`)
             .join("");
         const filterLink = showInactive
             ? `<a href="/admin/products${q ? "?q=" + encodeURIComponent(q) : ""}">只看啟用</a>`
@@ -1152,53 +797,14 @@ function createAdminRouter() {
           <input type="search" name="q" value="${escapeAttr(q)}" placeholder="搜尋品名、料號、條碼">
           <button type="submit">搜尋</button>
         </form>
-        <p><strong>查詢俗名</strong>（排查重複）：輸入俗名可查目前對應哪個品項　<a href="/admin/alias-lookup">前往查詢</a></p>
         <table>
           <thead><tr><th>標準品名</th><th>凌越料號</th><th>寺岡條碼</th><th>單位</th><th>俗名</th><th>狀態</th><th>操作</th></tr></thead>
           <tbody>${tbody.length ? tbody : "<tr><td colspan='7'>無符合的品項</td></tr>"}</tbody>
         </table>
         <p><a href="/admin">← 回後台</a></p>
-        <script>
-        document.querySelectorAll('.toggle-prod').forEach(function(btn){
-          btn.onclick=function(){ var id=this.dataset.id; var self=this;
-            fetch('/admin/products/'+encodeURIComponent(id)+'/toggle',{method:'POST',headers:{'Accept':'application/json'}})
-              .then(function(r){return r.json();}).then(function(d){
-                if(d.ok){ var row=document.querySelector('tr[data-product-id="'+id.replace(/"/g,'\\\\"')+'"]');
-                  if(row){ var statusTd=row.querySelector('.prod-status'); if(statusTd) statusTd.innerHTML=d.active===1?'啟用':"<span style=\\"color:#888\\">停用</span>"; self.textContent=d.active===1?'停用':'啟用'; }
-                }
-              });
-          };
-        });
-        </script>
       </body>
       </html>
     `);
-    });
-    router.get("/alias-lookup", (req, res) => {
-        const q = (req.query.q || "").trim();
-        let result = "";
-        if (q) {
-            const row = db.prepare("SELECT pa.alias, p.id AS product_id, p.name AS product_name FROM product_aliases pa JOIN products p ON p.id = pa.product_id WHERE LOWER(TRIM(pa.alias)) = ?").get(q.toLowerCase().trim());
-            const custRows = db.prepare("SELECT cpa.alias, c.name AS customer_name, p.name AS product_name FROM customer_product_aliases cpa JOIN products p ON p.id = cpa.product_id JOIN customers c ON c.id = cpa.customer_id WHERE LOWER(TRIM(cpa.alias)) = ?").all(q.toLowerCase().trim());
-            if (row)
-                result = "<p>俗名「" + escapeHtml(q) + "」對應品項：<strong>" + escapeHtml(row.product_name) + "</strong>（" + escapeHtml(row.product_id) + "）</p>";
-            else if (custRows.length > 0)
-                result = "<p>俗名「" + escapeHtml(q) + "」為<strong>客戶專用別名</strong>：</p><ul>" + custRows.map((r) => "<li>" + escapeHtml(r.customer_name) + " → " + escapeHtml(r.product_name) + "</li>").join("") + "</ul>";
-            else
-                result = "<p>查無俗名「" + escapeHtml(q) + "」的對照。</p>";
-        }
-        res.type("text/html").send(`
-      <!DOCTYPE html><html><head><meta charset="utf-8"><title>查詢俗名</title>
-      <style>body{font-family:sans-serif;max-width:560px;margin:2rem auto;} label{display:block;margin:0.5rem 0;}</style></head><body>
-        ${TOP_NAV}<h1>查詢俗名</h1>
-        <p>輸入俗名可查目前對應哪個品項（排查重複用）。</p>
-        <form method="get" action="/admin/alias-lookup">
-          <label>俗名 <input type="text" name="q" value="${escapeAttr(q)}" placeholder="例：大陸妹"></label>
-          <button type="submit">查詢</button>
-        </form>
-        ${result}
-        <p><a href="/admin/products">← 回品項與俗名</a></p>
-      </body></html>`);
     });
     router.get("/products/:id/aliases", (req, res) => {
         const productId = req.params.id;
@@ -1366,18 +972,13 @@ function createAdminRouter() {
     });
     router.post("/products/:id/toggle", (req, res) => {
         const id = req.params.id;
-        const wantsJson = /application\/json/i.test(req.get("Accept") || "");
         const row = db.prepare("SELECT id, active FROM products WHERE id = ?").get(id);
         if (!row) {
-            if (wantsJson)
-                return res.status(404).json({ ok: false, error: "找不到此品項" });
             res.redirect("/admin/products?err=" + encodeURIComponent("找不到此品項"));
             return;
         }
         const next = row.active === 1 ? 0 : 1;
         db.prepare("UPDATE products SET active = ?, updated_at = datetime('now') WHERE id = ?").run(next, id);
-        if (wantsJson)
-            return res.json({ ok: true, active: next });
         res.redirect("/admin/products?ok=toggle");
     });
     router.get("/products/:id/delete", (req, res) => {

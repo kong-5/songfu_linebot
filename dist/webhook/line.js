@@ -10,36 +10,12 @@ const index_js_1 = require("../db/index.js");
 const parse_order_message_js_1 = require("../lib/parse-order-message.js");
 const resolve_product_js_1 = require("../lib/resolve-product.js");
 const id_js_1 = require("../lib/id.js");
-const vision_ocr_js_1 = require("../lib/vision-ocr.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
 const hasLineConfig = Boolean(channelAccessToken && channelSecret);
 /** 收單模式：群組 ID -> 正在累加的那筆訂單 */
 const collectingByGroup = new Map();
-/** 依後台設定的結轉時間回傳當日或次日訂單日期（YYYY-MM-DD，以 Asia/Taipei 為準） */
-function getOrderDateByCutoff(db) {
-    const now = new Date();
-    const todayStr = now.toLocaleDateString("en-CA", { timeZone: "Asia/Taipei" });
-    const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get("order_cutoff_time");
-    const cutoff = (row && row.value) ? String(row.value).trim() : "";
-    if (!cutoff) {
-        return todayStr;
-    }
-    const match = cutoff.match(/^(\d{1,2}):(\d{2})$/);
-    const cutoffMinutes = match ? parseInt(match[1], 10) * 60 + parseInt(match[2], 10) : 0;
-    const fmt = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false });
-    const parts = fmt.formatToParts(now);
-    const hour = parseInt(parts.find((p) => p.type === "hour").value, 10);
-    const minute = parseInt(parts.find((p) => p.type === "minute").value, 10);
-    const currentMinutes = hour * 60 + minute;
-    if (currentMinutes >= cutoffMinutes) {
-        const taiwanNoon = new Date(todayStr + "T12:00:00+08:00");
-        const nextDay = new Date(taiwanNoon.getTime() + 86400000);
-        return nextDay.toLocaleDateString("en-CA", { timeZone: "Asia/Taipei" });
-    }
-    return todayStr;
-}
 function createLineWebhook() {
     const router = express_1.default.Router();
     const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
@@ -73,7 +49,7 @@ function createLineWebhook() {
                     const customer = groupId
                         ? db.prepare("SELECT id, name FROM customers WHERE line_group_id = ? AND (active IS NULL OR active = 1)").get(groupId)
                         : null;
-                    // 照片：收單中且已設定 Vision 則 OCR 辨識；否則請補文字
+                    // 照片：收單中請補文字；未收單請先傳「收單」
                     if (msgType === "image") {
                         if (groupId && !customer) {
                             await reply(lineClient, event.replyToken, "此群組尚未綁定客戶，無法收單。若需取得本群組 ID 請傳：取得群組ID");
@@ -84,56 +60,8 @@ function createLineWebhook() {
                             continue;
                         }
                         const inCollecting = groupId ? collectingByGroup.has(groupId) : false;
-                        if (inCollecting && lineClient && (0, vision_ocr_js_1.isVisionConfigured)()) {
-                            try {
-                                const contentStream = await lineClient.getMessageContent(event.message.id);
-                                const chunks = [];
-                                for await (const chunk of contentStream) {
-                                    chunks.push(chunk);
-                                }
-                                const imageBuffer = Buffer.concat(chunks);
-                                const ocrText = await (0, vision_ocr_js_1.getTextFromImageBuffer)(imageBuffer);
-                                if (ocrText && ocrText.trim()) {
-                                    const session = collectingByGroup.get(groupId);
-                                    const { orderId, customerId: cid } = session;
-                                    let orderRow = db.prepare("SELECT id, raw_message FROM orders WHERE id = ?").get(orderId);
-                                    if (orderRow) {
-                                        const newRaw = (orderRow.raw_message ? orderRow.raw_message + "\n" : "") + ocrText.trim();
-                                        db.prepare("UPDATE orders SET raw_message = ?, updated_at = datetime('now') WHERE id = ?").run(newRaw, orderId);
-                                    }
-                                    const parsed = (0, parse_order_message_js_1.parseOrderMessage)(ocrText.trim());
-                                    console.log("[LINE] 照片 OCR 辨識 筆數:", parsed.length, parsed.length ? "品項:" + parsed.map((p) => p.rawName + " " + p.quantity).join(", ") : "");
-                                    const custRow = db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(cid);
-                                    const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
-                                    const needReview = [];
-                                    for (const item of parsed) {
-                                        const resolved = (0, resolve_product_js_1.resolveProductName)(db, item.rawName, cid);
-                                        const itemId = (0, id_js_1.newId)("item");
-                                        const productId = resolved?.productId ?? null;
-                                        const needReviewFlag = resolved ? 0 : 1;
-                                        if (!resolved)
-                                            needReview.push(item.rawName);
-                                        const unit = item.unit && item.unit.trim() ? item.unit.trim() : fallbackUnit;
-                                        db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, needReviewFlag);
-                                    }
-                                    const replyText = parsed.length > 0
-                                        ? `已記入（本則照片 ${parsed.length} 項）${needReview.length > 0 ? "。以下尚未對應：" + needReview.join("、") : ""}`
-                                        : "照片中沒有辨識到品名與數量，請用「品名 數量 單位」格式傳文字或重拍。";
-                                    await reply(lineClient, event.replyToken, replyText);
-                                    console.log("[LINE] 訂單已寫入（照片）", orderId);
-                                }
-                                else {
-                                    await reply(lineClient, event.replyToken, "無法辨識照片中的文字，請改傳文字或重拍。");
-                                }
-                            }
-                            catch (imgErr) {
-                                console.error("[LINE] 照片辨識錯誤:", imgErr);
-                                await reply(lineClient, event.replyToken, "照片辨識時發生錯誤，請改傳文字。");
-                            }
-                        }
-                        else if (inCollecting) {
-                            await reply(lineClient, event.replyToken, "請用文字說明品項與數量（例如：高麗菜 5 斤）。若已設定照片辨識仍無法辨識，請改傳文字或重拍。");
+                        if (inCollecting) {
+                            await reply(lineClient, event.replyToken, "請用文字說明品項與數量（例如：高麗菜 5 斤），照片無法自動辨識。");
                         }
                         // 未在收單中傳照片：不回覆，省則數
                         continue;
@@ -159,10 +87,9 @@ function createLineWebhook() {
                         continue;
                     }
                     const customerId = customer.id;
-                    const orderDate = getOrderDateByCutoff(db);
-                    // 僅當「整則訊息完全符合」以下關鍵字才進入收單模式，避免「叫貨 高麗菜」等被誤觸發
-                    const startOrderTriggers = ["收單", "開始收單", "我要叫貨", "叫貨"];
-                    if (startOrderTriggers.includes(text)) {
+                    const orderDate = new Date().toISOString().slice(0, 10);
+                    // 「收單」或「開始收單」→ 進入收單模式，可多則累加，傳完說「完成」
+                    if (text === "收單" || text === "開始收單") {
                         let orderRow = db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
                         let orderId;
                         if (orderRow) {
@@ -175,7 +102,7 @@ function createLineWebhook() {
                         }
                         if (groupId)
                             collectingByGroup.set(groupId, { orderId, customerId });
-                        await reply(lineClient, event.replyToken, "開始收單。請您開始傳送叫貨內容（可多則）；結束時請記得回傳「完成」喔");
+                        await reply(lineClient, event.replyToken, "開始收單。請客戶傳叫貨內容（可多則）；我方傳「以上X收單」即結束並告知已收幾項。");
                         continue;
                     }
                     // 「完成」「結束收單」或「以上X收單」（由我方觸發結束，X 可半形或全形數字）
@@ -190,7 +117,7 @@ function createLineWebhook() {
                             await reply(lineClient, event.replyToken, `完成，已收 ${n} 項。`);
                         }
                         else {
-                            await reply(lineClient, event.replyToken, "目前沒有在收單。請先輸入「收單」或「我要叫貨」開始，傳完後請回傳「完成」結束。");
+                            await reply(lineClient, event.replyToken, "目前沒有在收單。請先由我方傳「收單」開始，客戶傳完叫貨後再傳「以上X收單」結束。");
                         }
                         continue;
                     }

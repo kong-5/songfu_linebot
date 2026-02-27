@@ -1,18 +1,44 @@
-# Cloud Build：建置 Docker 映像並部署到 Cloud Run
-# 觸發條件：GitHub 某分支 push 時執行（需在 GCP 主控台建立觸發程式）
+# 推送到 Git 後由 Cloud Build 建置映像並部署到 Cloud Run
+# 需在 GCP 建立觸發程式，並設定替換變數（見下方說明）
+
 steps:
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'asia-east1-docker.pkg.dev/$PROJECT_ID/linebot/linebot:latest', '.']
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'asia-east1-docker.pkg.dev/$PROJECT_ID/linebot/linebot:latest']
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest"
+      - "."
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest"
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
-      - 'run'
-      - 'deploy'
-      - 'songfu-linebot'
-      - '--image=asia-east1-docker.pkg.dev/$PROJECT_ID/linebot/linebot:latest'
-      - '--region=asia-east1'
-      - '--platform=managed'
+      - "run"
+      - "deploy"
+      - "${_SERVICE}"
+      - "--image"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest"
+      - "--region"
+      - "${_REGION}"
+      - "--platform"
+      - "managed"
+      - "--allow-unauthenticated"
+      - "--add-cloudsql-instances"
+      - "${_INSTANCE}"
+      - "--set-env-vars"
+      - "PORT=8080,LINE_CHANNEL_ACCESS_TOKEN=${_LINE_TOKEN},LINE_CHANNEL_SECRET=${_LINE_SECRET},GOOGLE_CLOUD_VISION_API_KEY=${_VISION_KEY},DATABASE_URL=${_DATABASE_URL}"
 options:
   logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _REGION: asia-east1
+  _REPO: linebot
+  _IMAGE: linebot
+  _SERVICE: songfu-line-bot
+  _INSTANCE: handy-implement-457807-u0:asia-east1:songfu-line-bot
+  _LINE_TOKEN: ""
+  _LINE_SECRET: ""
+  _VISION_KEY: ""
+  _DATABASE_URL: ""

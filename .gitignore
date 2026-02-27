@@ -1,16 +1,6 @@
-# 依賴與環境（不要推上去）
 node_modules/
 .env
-.env.*
-!.env.example
-
-# 本機資料庫（不推上去）
-data/*.db
-data/*.db-shm
-data/*.db-wal
-
-# 日誌與暫存
-*.log
-.DS_Store
-
-# 注意：dist/ 不要忽略，Cloud Build 需要 dist/ 建置映像
+.env.local
+*.local
+# 含密碼的暫存檔，加入 .env 後可刪除
+scripts/env-cloudsql-add.txt
