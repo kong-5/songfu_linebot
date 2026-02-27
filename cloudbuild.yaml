@@ -12,6 +12,7 @@ steps:
     args:
       - "push"
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest"
+  # 每個變數單獨 --set-env-vars，避免值內逗號或特殊字元導致失敗
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
@@ -28,7 +29,15 @@ steps:
       - "--add-cloudsql-instances"
       - "${_INSTANCE}"
       - "--set-env-vars"
-      - "PORT=8080,LINE_CHANNEL_ACCESS_TOKEN=${_LINE_TOKEN},LINE_CHANNEL_SECRET=${_LINE_SECRET},GOOGLE_CLOUD_VISION_API_KEY=${_VISION_KEY},DATABASE_URL=${_DATABASE_URL}"
+      - "PORT=8080"
+      - "--set-env-vars"
+      - "LINE_CHANNEL_ACCESS_TOKEN=${_LINE_TOKEN}"
+      - "--set-env-vars"
+      - "LINE_CHANNEL_SECRET=${_LINE_SECRET}"
+      - "--set-env-vars"
+      - "GOOGLE_CLOUD_VISION_API_KEY=${_VISION_KEY}"
+      - "--set-env-vars"
+      - "DATABASE_URL=${_DATABASE_URL}"
 options:
   logging: CLOUD_LOGGING_ONLY
 
