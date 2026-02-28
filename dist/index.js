@@ -22,7 +22,7 @@ const index_js_2 = require("./admin/index.js");
 const PORT = Number(process.env.PORT) || 4000;
 const webhookPath = process.env.LINE_WEBHOOK_PATH ?? "/webhook";
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
-console.log("[startup] PORT=%s dbPath=%s", PORT, dbPath);
+console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process.env.DATABASE_URL ? "已設定(Cloud SQL)" : "未設定(SQLite)");
 (async () => {
     if (!process.env.DATABASE_URL) {
         const dir = (0, path_1.dirname)(dbPath);

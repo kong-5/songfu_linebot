@@ -32,18 +32,19 @@ gcloud services enable cloudbuild.googleapis.com run.googleapis.com --project=ha
    - **位置**：選「儲存庫」，設定檔路徑填 `cloudbuild.yaml`
 4. **替換變數 (Substitution variables)**：
    - 只有當上面選了「Cloud Build 設定檔」時，表單**往下捲**才會出現「Substitution variables」／「替換變數」區塊（有時在進階裡）。
-   - 在該區塊按 **新增變數**，依序加入（名稱與值都要填）：
+   - 在該區塊按 **新增變數**，依序加入（**不要**在這裡設 `_DATABASE_URL`，改在 Cloud Run 主控台設，見下方）：
 
    | 名稱 | 值（範例，請改成你的） |
    |------|------------------------|
    | `_LINE_TOKEN` | 你的 LINE Channel Access Token |
    | `_LINE_SECRET` | 你的 LINE Channel Secret |
    | `_VISION_KEY` | 你的 Google Cloud Vision API 金鑰 |
-   | `_DATABASE_URL` | `postgresql://postgres:密碼@/songfu?host=/cloudsql/handy-implement-457807-u0:asia-east1:songfu-line-bot` |
 
-   若 Cloud SQL 執行個體 ID 不是 `songfu-line-bot`，請把 `_DATABASE_URL` 裡的執行個體 ID 改成實際的。
+5. **在 Cloud Run 主控台設 DATABASE_URL（必做，否則部署後資料會消失）**：  
+   到 [Cloud Run](https://console.cloud.google.com/run?project=handy-implement-457807-u0) → **songfu-line-bot** → **編輯並部署新修訂版本** → **連線** 新增你的 Cloud SQL 執行個體 → **變數與密碼** 新增 `DATABASE_URL` = `postgresql://postgres:密碼@/songfu?host=/cloudsql/專案:區域:執行個體ID`。  
+   部署時會**保留**主控台已設的變數，客戶／品項才會持久保存。
 
-5. 儲存觸發程式。
+6. 儲存觸發程式。
 
 ---
 

@@ -108,8 +108,10 @@ async function initPg() {
 }
 function initDb(dbPath) {
     if (DATABASE_URL) {
+        console.log("[startup] 使用 PostgreSQL (Cloud SQL)");
         return initPg();
     }
+    console.log("[startup] 使用 SQLite（部署後資料不會保留，請在 Cloud Run 設定 DATABASE_URL）");
     initSqlite(dbPath);
 }
 async function closeDb() {
