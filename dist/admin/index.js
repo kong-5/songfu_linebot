@@ -48,8 +48,9 @@ const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage()
 const NOTION_STYLE = `
   :root { --notion-bg:#fff; --notion-sidebar:#f7f6f3; --notion-border:#e3e2e0; --notion-text:#37352f; --notion-text-muted:#787774; --notion-accent:#2383e2; --notion-hover:#f1f1ef; --notion-radius:6px; }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif; background: var(--notion-bg); color: var(--notion-text); line-height: 1.5; min-height: 100vh; display: flex; }
-  .notion-layout { display: flex; width: 100%; min-height: 100vh; }
+  html, body { margin: 0; width: 100%; max-width: 100vw; min-height: 100vh; }
+  body { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif; background: var(--notion-bg); color: var(--notion-text); line-height: 1.5; display: flex; }
+  .notion-layout { display: flex; width: 100%; max-width: 100%; min-height: 100vh; flex: 1; min-width: 0; }
   .notion-sidebar { width: 240px; min-width: 240px; background: var(--notion-sidebar); border-right: 1px solid var(--notion-border); padding: 12px 0; flex-shrink: 0; }
   .notion-sidebar a { display: block; padding: 6px 14px; color: var(--notion-text); text-decoration: none; font-size: 14px; border-radius: var(--notion-radius); }
   .notion-sidebar a:hover { background: var(--notion-hover); }
@@ -62,7 +63,8 @@ const NOTION_STYLE = `
   .notion-sidebar .sidebar-group[open] .sidebar-group-title::after { content: "▲"; }
   .notion-sidebar .sidebar-group .sidebar-links { padding: 0 0 8px 0; }
   .notion-sidebar .sidebar-group .sidebar-links a { padding: 6px 14px 6px 20px; }
-  .notion-main { flex: 1; padding: 32px 40px 48px; max-width: none; width: 100%; }
+  .notion-main-wrap { flex: 1; min-width: 0; width: 100%; display: flex; flex-direction: column; max-width: 100%; }
+  .notion-main { flex: 1; min-width: 0; width: 100%; max-width: 100%; padding: 32px 40px 48px; }
   .notion-page-title { font-size: 28px; font-weight: 700; margin: 0 0 8px; color: var(--notion-text); }
   .notion-breadcrumb { font-size: 13px; color: var(--notion-text-muted); margin-bottom: 20px; }
   .notion-breadcrumb a { color: var(--notion-accent); text-decoration: none; }
@@ -126,7 +128,6 @@ const NOTION_SIDEBAR = (active) => `
       <div class="sidebar-links">
         <a href="/admin/products">品項與俗名</a>
         <a href="/admin/import">批次匯入品項</a>
-        <a href="/admin/specs">單品規格表</a>
       </div>
     </details>
     <details class="sidebar-group" open>
@@ -148,11 +149,13 @@ async function getWorkingDate(database) {
     return tomorrow.toISOString().slice(0, 10);
 }
 function renderTopBar(workingDate, canUndo) {
+    const d = new Date(workingDate + "T12:00:00");
+    const dateLabel = d.toLocaleDateString("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit", weekday: "long" });
     return `
     <div class="notion-topbar no-print">
       <div class="topbar-date">
-        <span>目前日期：</span>
-        <form method="post" action="/admin/api/working-date" style="display:inline-flex;align-items:center;gap:8px;">
+        <span>結轉日期（收訂單用）：<strong>${escapeHtml(dateLabel)}</strong></span>
+        <form method="post" action="/admin/api/working-date" style="display:inline-flex;align-items:center;gap:8px;margin-left:12px;">
           <input type="date" name="date" value="${escapeAttr(workingDate)}" required>
           <button type="submit" class="btn">套用</button>
         </form>
@@ -1013,15 +1016,29 @@ function createAdminRouter() {
                 aliasesByProduct.set(a.product_id, []);
             aliasesByProduct.get(a.product_id).push(a.alias);
         }
+        const specsByProduct = new Map();
+        try {
+            const specRows = await db.prepare("SELECT product_id, unit, note_label, conversion_kg FROM product_unit_specs").all();
+            for (const s of specRows) {
+                if (!specsByProduct.has(s.product_id))
+                    specsByProduct.set(s.product_id, []);
+                const t = s.conversion_kg != null ? `${s.unit}（${s.conversion_kg}kg）` : (s.note_label || s.unit);
+                specsByProduct.get(s.product_id).push(t);
+            }
+        }
+        catch (_) { /* product_unit_specs 可能尚未建立 */ }
         const okMsg = req.query.ok === "del" ? "已刪除品項。" : req.query.ok === "edit" ? "已儲存。" : req.query.ok === "toggle" ? "已更新狀態。" : "";
         const msg = okMsg ? "<p style='color:green'>" + okMsg + "</p>" : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const tbody = products
-            .map((p) => `<tr>
+            .map((p) => {
+                const specSummary = (specsByProduct.get(p.id) ?? []).map((x) => escapeHtml(x)).join("、") || "—";
+                return `<tr>
             <td>${escapeHtml(p.name)}</td>
             <td>${escapeHtml(p.erp_code ?? "")}</td>
             <td>${escapeHtml(p.teraoka_barcode ?? "")}</td>
             <td>${escapeHtml(p.unit)}</td>
             <td>${(aliasesByProduct.get(p.id) ?? []).map((a) => escapeHtml(a)).join("、") || "—"} <a href="/admin/products/${encodeURIComponent(p.id)}/aliases">管理</a></td>
+            <td>${specSummary} <a href="/admin/products/${encodeURIComponent(p.id)}/aliases#specs">設定</a></td>
             <td>${p.active === 1 ? "啟用" : "<span style='color:#888'>停用</span>"}</td>
             <td>
               <a href="/admin/products/${encodeURIComponent(p.id)}/edit">編輯</a>
@@ -1030,7 +1047,8 @@ function createAdminRouter() {
             : ` | <form method="post" action="/admin/products/${encodeURIComponent(p.id)}/toggle" style="display:inline;"><button type="submit">啟用</button></form>`}
               | <a href="/admin/products/${encodeURIComponent(p.id)}/delete">刪除</a>
             </td>
-          </tr>`)
+          </tr>`;
+            })
             .join("");
         const filterLink = showInactive
             ? `<a href="/admin/products${q ? "?q=" + encodeURIComponent(q) : ""}">只看啟用</a>`
@@ -1047,8 +1065,8 @@ function createAdminRouter() {
         </form>
         <div class="notion-card">
           <table>
-            <thead><tr><th>標準品名</th><th>凌越料號</th><th>寺岡條碼</th><th>單位</th><th>俗名</th><th>狀態</th><th>操作</th></tr></thead>
-            <tbody>${tbody.length ? tbody : "<tr><td colspan='7'>無符合的品項</td></tr>"}</tbody>
+            <thead><tr><th>標準品名</th><th>凌越料號</th><th>寺岡條碼</th><th>單位</th><th>俗名</th><th>規格</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody>${tbody.length ? tbody : "<tr><td colspan='8'>無符合的品項</td></tr>"}</tbody>
           </table>
         </div>
       `;
@@ -1062,6 +1080,12 @@ function createAdminRouter() {
             return;
         }
         const aliases = await db.prepare("SELECT id, alias FROM product_aliases WHERE product_id = ? ORDER BY alias").all(productId);
+        let specs = [];
+        try {
+            specs = await db.prepare("SELECT id, unit, note_label, conversion_kg FROM product_unit_specs WHERE product_id = ? ORDER BY unit").all(productId);
+        }
+        catch (_) { /* 表可能尚未存在 */ }
+        const specMsg = req.query.spec_ok === "1" ? "<p style='color:green'>規格已新增。</p>" : req.query.spec_del ? "<p style='color:green'>規格已刪除。</p>" : "";
         const msg = req.query.ok === "1" ? "<p style='color:green'>已儲存。</p>" : req.query.ok === "del" ? "<p style='color:green'>已刪除。</p>" : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const rows = aliases
             .map((a) => `<tr>
@@ -1069,11 +1093,20 @@ function createAdminRouter() {
             <td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit">編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td>
           </tr>`)
             .join("");
+        const specRows = specs
+            .map((s) => `<tr>
+            <td>${escapeHtml(s.unit)}</td>
+            <td>${escapeHtml(s.note_label ?? "")}</td>
+            <td>${s.conversion_kg != null ? s.conversion_kg : "—"}</td>
+            <td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete" style="display:inline;"><button type="submit" class="btn">刪除</button></form></td>
+          </tr>`)
+            .join("");
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/products">品項與俗名</a> / 俗名管理</div>
         <h1 class="notion-page-title">俗名管理：${escapeHtml(product.name)}</h1>
-        ${msg}
+        ${msg}${specMsg}
         <div class="notion-card">
+          <h2>俗名</h2>
           <table>
             <thead><tr><th>俗名（別名）</th><th>操作</th></tr></thead>
             <tbody>${rows || "<tr><td colspan='2'>尚無俗名</td></tr>"}</tbody>
@@ -1087,9 +1120,59 @@ function createAdminRouter() {
             <p style="margin-top:12px;"><button type="submit" class="btn btn-primary">新增</button></p>
           </form>
         </div>
+        <div class="notion-card" id="specs">
+          <h2>品項規格</h2>
+          <p style="color:var(--notion-text-muted);font-size:13px;margin:0 0 12px;">單位、備註標籤、換算公斤（選填）</p>
+          <table>
+            <thead><tr><th>單位</th><th>備註標籤</th><th>換算公斤</th><th>操作</th></tr></thead>
+            <tbody>${specRows || "<tr><td colspan='4'>尚無規格</td></tr>"}</tbody>
+          </table>
+          <h2 style="margin-top:16px;">新增規格</h2>
+          <form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs">
+            <label>單位 <input type="text" name="unit" required placeholder="例：斤、包" style="width:120px;"></label>
+            <label>備註標籤 <input type="text" name="note_label" placeholder="選填" style="width:160px;"></label>
+            <label>換算公斤 <input type="number" name="conversion_kg" step="0.001" placeholder="選填" style="width:100px;"></label>
+            <p style="margin-top:12px;"><button type="submit" class="btn btn-primary">新增規格</button></p>
+          </form>
+        </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
       `;
         res.type("text/html").send(notionPage("俗名管理", body, "", res.locals.topBarHtml));
+    });
+    router.post("/products/:id/specs", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const productId = req.params.id;
+        const product = await db.prepare("SELECT id FROM products WHERE id = ?").get(productId);
+        if (!product) {
+            res.redirect("/admin/products?err=" + encodeURIComponent("找不到此品項"));
+            return;
+        }
+        const unit = (req.body?.unit ?? "").trim();
+        if (!unit) {
+            res.redirect("/admin/products/" + encodeURIComponent(productId) + "/aliases?err=" + encodeURIComponent("請填寫單位"));
+            return;
+        }
+        const noteLabel = (req.body?.note_label ?? "").trim() || null;
+        const conversionKg = req.body?.conversion_kg !== undefined && req.body.conversion_kg !== "" ? parseFloat(req.body.conversion_kg) : null;
+        const specId = (0, id_js_1.newId)("pus");
+        try {
+            await db.prepare("INSERT INTO product_unit_specs (id, product_id, unit, note_label, conversion_kg) VALUES (?, ?, ?, ?, ?)").run(specId, productId, unit, noteLabel, conversionKg);
+        }
+        catch (e) {
+            res.redirect("/admin/products/" + encodeURIComponent(productId) + "/aliases?err=" + encodeURIComponent("新增失敗：" + (e.message || "")));
+            return;
+        }
+        res.redirect("/admin/products/" + encodeURIComponent(productId) + "/aliases?spec_ok=1#specs");
+    });
+    router.post("/products/:id/specs/:specId/delete", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const productId = req.params.id;
+        const specId = req.params.specId;
+        const row = await db.prepare("SELECT id FROM product_unit_specs WHERE id = ? AND product_id = ?").get(specId, productId);
+        if (!row) {
+            res.redirect("/admin/products/" + encodeURIComponent(productId) + "/aliases?err=" + encodeURIComponent("找不到此規格"));
+            return;
+        }
+        await db.prepare("DELETE FROM product_unit_specs WHERE id = ?").run(specId);
+        res.redirect("/admin/products/" + encodeURIComponent(productId) + "/aliases?spec_del=1#specs");
     });
     router.get("/aliases/:id/edit", async (req, res) => {
         const id = req.params.id;
