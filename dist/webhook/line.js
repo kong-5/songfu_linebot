@@ -43,11 +43,11 @@ function createLineWebhook() {
                         continue;
                     }
                     const msgType = event.message.type;
-                    const groupId = event.source.type === "group" ? event.source.groupId : null;
+                    const groupId = event.source.type === "group" ? (event.source.groupId || "").trim() : null;
                     if (groupId)
                         console.log("[LINE] 群組 ID：", groupId);
                     const customer = groupId
-                        ? db.prepare("SELECT id, name FROM customers WHERE line_group_id = ? AND (active IS NULL OR active = 1)").get(groupId)
+                        ? db.prepare("SELECT id, name FROM customers WHERE LOWER(TRIM(COALESCE(line_group_id, ''))) = LOWER(?) AND (active IS NULL OR active = 1)").get(groupId)
                         : null;
                     // 照片：收單中請補文字；未收單請先傳「收單」
                     if (msgType === "image") {
