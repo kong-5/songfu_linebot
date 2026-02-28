@@ -78,37 +78,111 @@ const NOTION_STYLE = `
   .notion-msg { padding: 10px 14px; border-radius: var(--notion-radius); margin-bottom: 16px; font-size: 14px; }
   .notion-msg.ok { background: #e7f5e9; color: #2e7d32; }
   .notion-msg.err { background: #ffebee; color: #c62828; }
-  @media print { .notion-sidebar, .no-print { display: none !important; } .notion-main { max-width: none; } }
+  .notion-topbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 20px; background: var(--notion-sidebar); border-bottom: 1px solid var(--notion-border); }
+  .notion-topbar .topbar-date { font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .notion-topbar .topbar-date input[type=date] { padding: 6px 10px; }
+  .notion-rollover-btn { background: #2e7d32; color: #fff; border: none; padding: 8px 16px; border-radius: var(--notion-radius); font-weight: 600; cursor: pointer; }
+  .notion-rollover-btn:hover { background: #1b5e20; }
+  .notion-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  .notion-modal { background: var(--notion-bg); border-radius: var(--notion-radius); padding: 20px; max-width: 420px; width: 90%; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+  .notion-modal h3 { margin: 0 0 12px; font-size: 16px; }
+  .notion-modal-actions { margin-top: 16px; display: flex; gap: 8px; }
+  .notion-modal-search { width: 100%; padding: 8px 10px; margin-bottom: 12px; }
+  .notion-modal-list { max-height: 280px; overflow-y: auto; border: 1px solid var(--notion-border); border-radius: var(--notion-radius); }
+  .notion-modal-list div { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--notion-border); }
+  .notion-modal-list div:hover { background: var(--notion-hover); }
+  .teraoka-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+  .teraoka-cell .code { font-weight: 600; }
+  .teraoka-cell .name { font-size: 12px; color: var(--notion-text-muted); }
+  @media print { .notion-sidebar, .no-print, .notion-topbar { display: none !important; } .notion-main { max-width: none; } }
 `;
 const NOTION_SIDEBAR = (active) => `
   <nav class="notion-sidebar">
-    <a href="/" class="${active === "home" ? "active" : ""}">← 回首頁</a>
-    <a href="/admin" class="${active === "dashboard" ? "active" : ""}">工作台</a>
-    <div class="group">資料匯入</div>
-    <a href="/admin/import-customers">匯入客戶</a>
-    <a href="/admin/import">匯入品項</a>
-    <a href="/admin/import-teraoka">寺岡對照</a>
-    <div class="group">查詢與維護</div>
-    <a href="/admin/review">待確認品名</a>
-    <a href="/admin/orders">訂單查詢</a>
-    <a href="/admin/customers">客戶管理</a>
+    <a href="/admin" class="${active === "dashboard" ? "active" : ""}">回後台</a>
+    <a href="javascript:history.back()">上一頁</a>
+    <div class="group">日期結轉</div>
+    <a href="/admin">結轉日期</a>
+    <div class="group">客戶管理</div>
     <a href="/admin/customers/new">新增客戶</a>
+    <a href="/admin/customers">客戶管理</a>
+    <a href="/admin/import-customers">批次匯入客戶</a>
+    <div class="group">貨品管理</div>
     <a href="/admin/products">品項與俗名</a>
-    <div class="group">其他</div>
-    <a href="/admin/export">批次匯出</a>
+    <a href="/admin/import">批次匯入品項</a>
     <a href="/admin/specs">單品規格表</a>
-    <a href="/admin/settings">結轉時間設定</a>
+    <div class="group">訂單管理</div>
+    <a href="/admin/orders">訂單查詢</a>
+    <a href="/admin/review">待確認品項</a>
+    <a href="/admin/export">資料匯出</a>
   </nav>
 `;
-function notionPage(title, body, active = "") {
-    return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富叫貨後台</title><style>${NOTION_STYLE}</style></head><body><div class="notion-layout">${NOTION_SIDEBAR(active)}<main class="notion-main">${body}</main></div></body></html>`;
+function getWorkingDate(database) {
+    const row = database.prepare("SELECT value FROM app_settings WHERE key = ?").get("working_date");
+    if (row && row.value)
+        return row.value;
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().slice(0, 10);
+}
+function renderTopBar(workingDate, canUndo) {
+    return `
+    <div class="notion-topbar no-print">
+      <div class="topbar-date">
+        <span>目前日期：</span>
+        <form method="post" action="/admin/api/working-date" style="display:inline-flex;align-items:center;gap:8px;">
+          <input type="date" name="date" value="${escapeAttr(workingDate)}" required>
+          <button type="submit" class="btn">套用</button>
+        </form>
+      </div>
+      <div>
+        ${canUndo ? `<form method="post" action="/admin/api/rollover-undo" style="display:inline;"><button type="submit" class="btn">反悔結轉</button></form> ` : ""}
+        <button type="button" class="notion-rollover-btn" onclick="if(confirm('確定要結轉？結轉後工作日期將改為下一日。')) document.getElementById('rolloverForm').submit();">結轉</button>
+        <form id="rolloverForm" method="post" action="/admin/api/rollover" style="display:none;"></form>
+      </div>
+    </div>`;
+}
+function notionPage(title, body, active = "", topBar = "") {
+    const main = topBar ? `<div class="notion-main-wrap">${topBar}<main class="notion-main">${body}</main></div>` : `<main class="notion-main">${body}</main>`;
+    return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富叫貨後台</title><style>${NOTION_STYLE}</style></head><body><div class="notion-layout">${NOTION_SIDEBAR(active)}${main}</div></body></html>`;
 }
 function createAdminRouter() {
     const router = express_1.default.Router();
     const db = (0, index_js_1.getDb)(dbPath);
+    router.use((_req, res, next) => {
+        const workingDate = getWorkingDate(db);
+        const prev = db.prepare("SELECT value FROM app_settings WHERE key = ?").get("previous_working_date");
+        res.locals.topBarHtml = renderTopBar(workingDate, !!(prev && prev.value));
+        next();
+    });
+    router.post("/api/working-date", express_1.default.urlencoded({ extended: true }), (req, res) => {
+        const date = req.body.date?.trim();
+        if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            res.redirect("/admin?err=date");
+            return;
+        }
+        db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("working_date", date);
+        res.redirect(req.get("Referrer") || "/admin");
+    });
+    router.post("/api/rollover", (req, res) => {
+        const current = getWorkingDate(db);
+        const next = new Date(current + "T12:00:00");
+        next.setDate(next.getDate() + 1);
+        const nextStr = next.toISOString().slice(0, 10);
+        db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("previous_working_date", current);
+        db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("working_date", nextStr);
+        res.redirect(req.get("Referrer") || "/admin");
+    });
+    router.post("/api/rollover-undo", (req, res) => {
+        const prev = db.prepare("SELECT value FROM app_settings WHERE key = ?").get("previous_working_date");
+        if (prev && prev.value) {
+            db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("working_date", prev.value);
+            db.prepare("DELETE FROM app_settings WHERE key = ?").run("previous_working_date");
+        }
+        res.redirect(req.get("Referrer") || "/admin");
+    });
     router.get("/", (_req, res) => {
         const body = `
-        <div class="notion-breadcrumb"><a href="/">首頁</a> / 工作台</div>
+        <div class="notion-breadcrumb">工作台</div>
         <h1 class="notion-page-title">工作台</h1>
         <div class="notion-card">
           <h2>資料匯入</h2>
@@ -126,7 +200,7 @@ function createAdminRouter() {
           </ul>
         </div>
       `;
-        res.type("text/html").send(notionPage("工作台", body, "dashboard"));
+        res.type("text/html").send(notionPage("工作台", body, "dashboard", res.locals.topBarHtml));
     });
     // 待確認品名：列出 need_review=1 的明細，可選擇對應品項並加入俗名
     router.get("/review", (req, res) => {
@@ -137,7 +211,7 @@ function createAdminRouter() {
       JOIN orders o ON o.id = oi.order_id
       JOIN customers c ON c.id = o.customer_id
       WHERE oi.need_review = 1
-      ORDER BY oi.created_at DESC
+      ORDER BY oi.id
     `).all();
         const products = db.prepare("SELECT id, name, erp_code FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all();
         const productOptions = products.map((p) => {
@@ -202,7 +276,7 @@ function createAdminRouter() {
           })();
         </script>
       `;
-        res.type("text/html").send(notionPage("待確認品名", body));
+        res.type("text/html").send(notionPage("待確認品名", body, "", res.locals.topBarHtml));
     });
     router.post("/alias", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const { alias, product_id, customer_id, scope, redirect } = req.body;
@@ -245,7 +319,7 @@ function createAdminRouter() {
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
       FROM orders o
       JOIN customers c ON c.id = o.customer_id
-      ORDER BY o.order_date DESC, o.created_at DESC
+      ORDER BY o.order_date DESC, o.id DESC
       LIMIT 200
     `).all();
         if (onlyNeedReview) {
@@ -279,7 +353,101 @@ function createAdminRouter() {
           </table>
         </div>
       `;
-        res.type("text/html").send(notionPage("訂單查詢", body));
+        res.type("text/html").send(notionPage("訂單查詢", body, "", res.locals.topBarHtml));
+    });
+    router.get("/export", (req, res) => {
+        const workingDate = getWorkingDate(db);
+        const date = (req.query.date || workingDate).toString().trim();
+        const customerId = req.query.customer_id?.trim() || "";
+        const customers = db.prepare("SELECT id, name FROM customers WHERE active = 1 ORDER BY name").all();
+        let orders = [];
+        if (date) {
+            orders = db.prepare(`
+              SELECT o.id, o.order_date, o.customer_id, c.name AS customer_name
+              FROM orders o JOIN customers c ON c.id = o.customer_id
+              WHERE o.order_date = ?
+              ORDER BY c.name
+            `).all(date);
+            if (customerId)
+                orders = orders.filter((o) => o.customer_id === customerId);
+        }
+        const customerOptions = customers.map((c) => `<option value="${escapeAttr(c.id)}" ${c.id === customerId ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("");
+        const rows = orders.map((o) => `<tr><td>${escapeHtml(o.order_date)}</td><td>${escapeHtml(o.customer_name)}</td><td><a href="/admin/orders/${encodeURIComponent(o.id)}">明細</a></td></tr>`).join("");
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 資料匯出</div>
+        <h1 class="notion-page-title">資料匯出</h1>
+        <div class="notion-card">
+          <form method="get" action="/admin/export">
+            <label class="form-inline">日期 <input type="date" name="date" value="${escapeAttr(date)}" required></label>
+            <label class="form-inline">客戶 <select name="customer_id"><option value="">全部</option>${customerOptions}</select></label>
+            <button type="submit" class="btn">查詢</button>
+          </form>
+        </div>
+        <div class="notion-card">
+          <h2>指定日期訂單${customerId ? "（已篩選客戶）" : ""}</h2>
+          <table>
+            <thead><tr><th>日期</th><th>客戶</th><th></th></tr></thead>
+            <tbody>${rows.length ? rows : "<tr><td colspan='3'>無訂單</td></tr>"}</tbody>
+          </table>
+          ${orders.length ? `<p style="margin-top:12px;"><a href="/admin/export/download?date=${encodeURIComponent(date)}${customerId ? "&customer_id=" + encodeURIComponent(customerId) : ""}" class="btn">匯出 CSV</a></p>` : ""}
+        </div>
+      `;
+        res.type("text/html").send(notionPage("資料匯出", body, "", res.locals.topBarHtml));
+    });
+    router.get("/export/download", (req, res) => {
+        const date = req.query.date?.trim();
+        const customerId = req.query.customer_id?.trim() || "";
+        if (!date) {
+            res.redirect("/admin/export?err=date");
+            return;
+        }
+        let orders = db.prepare(`
+          SELECT o.id, o.order_date, o.customer_id, c.name AS customer_name
+          FROM orders o JOIN customers c ON c.id = o.customer_id
+          WHERE o.order_date = ?
+          ORDER BY c.name
+        `).all(date);
+        if (customerId)
+            orders = orders.filter((o) => o.customer_id === customerId);
+        const lines = ["日期,客戶,訂單ID"];
+        for (const o of orders)
+            lines.push([o.order_date, '"' + (o.customer_name || "").replace(/"/g, '""') + '"', o.id].join(","));
+        res.setHeader("Content-Disposition", "attachment; filename=\"orders-" + date + ".csv\"");
+        res.type("text/csv").send(lines.join("\n"));
+    });
+    router.get("/api/products-search", (req, res) => {
+        const q = (req.query.q || "").trim().toLowerCase();
+        let list = db.prepare("SELECT id, name, erp_code, teraoka_barcode FROM products WHERE active = 1 ORDER BY name").all();
+        if (q) {
+            const parts = q.split(/\s+/).filter(Boolean);
+            list = list.filter((p) => {
+                const name = (p.name || "").toLowerCase();
+                const erp = (p.erp_code || "").toLowerCase();
+                const teraoka = (p.teraoka_barcode || "").toLowerCase();
+                return parts.every((part) => name.includes(part) || erp.includes(part) || teraoka.includes(part));
+            });
+        }
+        res.json(list.slice(0, 80));
+    });
+    router.post("/orders/:orderId/items/:itemId/product", express_1.default.urlencoded({ extended: true }), (req, res) => {
+        const { orderId, itemId } = req.params;
+        const productId = req.body.product_id?.trim();
+        const order = db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
+        if (!order) {
+            res.status(404).send("訂單不存在");
+            return;
+        }
+        if (!productId) {
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=product");
+            return;
+        }
+        const product = db.prepare("SELECT id FROM products WHERE id = ?").get(productId);
+        if (!product) {
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=product");
+            return;
+        }
+        db.prepare("UPDATE order_items SET product_id = ?, need_review = 0 WHERE id = ? AND order_id = ?").run(productId, itemId, orderId);
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=product");
     });
     router.get("/orders/:orderId", (req, res) => {
         const { orderId } = req.params;
@@ -292,13 +460,13 @@ function createAdminRouter() {
             return;
         }
         const items = db.prepare(`
-      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.need_review,
+      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.need_review,
         p.id AS product_id, p.erp_code, p.name AS product_name, p.teraoka_barcode
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
     `).all(orderId);
         const needReviewCount = items.filter((i) => i.need_review === 1).length;
         const needReviewNote = needReviewCount > 0
-            ? `<p style="color:red">本單有 <strong>${needReviewCount} 項待確認</strong>，請至 <a href="/admin/review">待確認品名</a> 補對照。</p>`
+            ? `<p class="notion-msg err">本單有 <strong>${needReviewCount} 項待確認</strong>，可點「待確認」直接改品項，或至 <a href="/admin/review">待確認品名</a> 補對照。</p>`
             : "";
         const units = ["公斤", "斤", "把", "包", "件", "箱", "顆", "粒", "盒", "袋"];
         const unitOptions = units.map((u) => `<option value="${escapeAttr(u)}">${escapeHtml(u)}</option>`).join("");
@@ -311,18 +479,23 @@ function createAdminRouter() {
                 ? `<select name="unit_${i.item_id}" form="itemsForm"><option value="">—</option>${units.map((x) => `<option value="${escapeAttr(x)}" ${x === u ? "selected" : ""}>${escapeHtml(x)}</option>`).join("")}</select>`
                 : `<select name="unit_${i.item_id}" form="itemsForm"><option value="">—</option>${unitOptions}</select>`;
             const erp = i.erp_code ?? "—";
-            const pname = i.product_name ? escapeHtml(i.product_name) : "<span style='color:red'>待確認</span>";
-            const teraoka = (i.teraoka_barcode && i.teraoka_barcode.trim()) ? escapeHtml(i.teraoka_barcode) : "—";
-            const barcodeImg = i.teraoka_barcode && i.teraoka_barcode.trim()
-                ? `<img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="條碼" style="height:36px;vertical-align:middle;">`
-                : "—";
-            return `<tr>
+            const pname = i.product_name ? escapeHtml(i.product_name) : "";
+            const teraokaCode = (i.teraoka_barcode && i.teraoka_barcode.trim()) ? escapeHtml(i.teraoka_barcode) : "—";
+            const teraokaName = escapeHtml(i.product_name || i.raw_name || "");
+            const teraokaCell = i.teraoka_barcode && i.teraoka_barcode.trim()
+                ? `<div class="teraoka-cell"><span class="code">${teraokaCode}</span><span class="name">${teraokaName || "—"}</span><br><img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="" style="height:32px;"></div>`
+                : `<div class="teraoka-cell"><span class="code">—</span><span class="name">${teraokaName || "—"}</span></div>`;
+            const productCell = i.need_review === 1
+                ? `<a href="#" class="product-pick" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
+                : `${pname} <a href="#" class="product-pick" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
+            const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
+            return `<tr data-item-id="${escapeAttr(i.item_id)}">
             <td>${escapeHtml(erp)}</td>
-            <td>${pname}</td>
+            <td>${productCell}</td>
             <td><input type="number" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0" style="width:5rem;"></td>
             <td>${unitSelectWithVal}</td>
-            <td>${teraoka}</td>
-            <td>${barcodeImg}</td>
+            <td><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:120px;"></td>
+            <td>${teraokaCell}</td>
           </tr>`;
         })
             .join("");
@@ -331,19 +504,62 @@ function createAdminRouter() {
         <h1 class="notion-page-title">訂單明細</h1>
         <p>日期：${escapeHtml(order.order_date)}　客戶：<a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a>　狀態：${escapeHtml(order.status)}</p>
         ${needReviewNote}
-        <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet">匯出訂貨單格式（含條碼）</a></p>
+        ${req.query.ok === "product" ? "<p class=\"notion-msg ok\">已更新品項。</p>" : ""}
+        ${req.query.err === "product" ? "<p class=\"notion-msg err\">請選擇有效品項。</p>" : ""}
+        <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet">匯出訂貨單格式（含條碼）</a>　<a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1">預覽訂單圖</a></p>
         <div class="notion-card"><pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);margin:0;font-size:13px;">${escapeHtml(order.raw_message ?? "")}</pre></div>
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items">
           <div class="notion-card">
             <table>
-              <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>寺岡料號</th><th>寺岡條碼</th></tr></thead>
+              <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>備註</th><th>寺岡（料號／條碼）</th></tr></thead>
               <tbody>${itemsRows}</tbody>
             </table>
-            <p style="margin:12px 0 0;"><button type="submit" class="btn btn-primary">儲存數量與單位</button></p>
+            <p style="margin:12px 0 0;"><button type="submit" class="btn btn-primary">儲存數量、單位與備註</button></p>
           </div>
         </form>
+        <div id="productModal" class="notion-modal-overlay" style="display:none;">
+          <div class="notion-modal">
+            <h3>選擇品項（模糊搜尋）</h3>
+            <input type="search" class="notion-modal-search" id="productSearch" placeholder="輸入品名、料號、條碼...">
+            <div class="notion-modal-list" id="productList"></div>
+            <div class="notion-modal-actions"><button type="button" class="btn" onclick="document.getElementById('productModal').style.display='none'">取消</button></div>
+          </div>
+        </div>
+        <script>
+        (function(){
+          var orderId = ${JSON.stringify(orderId)};
+          var modal = document.getElementById('productModal');
+          var listEl = document.getElementById('productList');
+          var searchEl = document.getElementById('productSearch');
+          var currentItemId = null;
+          function searchProducts(q){
+            fetch('/admin/api/products-search?q=' + encodeURIComponent(q)).then(function(r){ return r.json(); }).then(function(arr){
+              listEl.innerHTML = arr.map(function(p){
+                return '<div data-product-id="' + (p.id || '') + '" class="product-option">' + (p.name || '') + ' ' + (p.erp_code || '') + ' ' + (p.teraoka_barcode || '') + '</div>';
+              }).join('') || '<div>無符合品項</div>';
+            });
+          }
+          searchProducts('');
+          searchEl.oninput = function(){ searchProducts(searchEl.value); };
+          document.querySelectorAll('.product-pick').forEach(function(a){
+            a.addEventListener('click', function(e){ e.preventDefault(); currentItemId = this.getAttribute('data-item-id'); modal.style.display = 'flex'; searchEl.value = this.getAttribute('data-raw') || ''; searchProducts(searchEl.value); });
+          });
+          listEl.addEventListener('click', function(e){
+            var div = e.target.closest('.product-option');
+            if (!div || !currentItemId) return;
+            var productId = div.getAttribute('data-product-id');
+            if (!productId) return;
+            var form = document.createElement('form');
+            form.method = 'post';
+            form.action = '/admin/orders/' + encodeURIComponent(orderId) + '/items/' + encodeURIComponent(currentItemId) + '/product';
+            form.innerHTML = '<input type="hidden" name="product_id" value="' + productId + '">';
+            document.body.appendChild(form);
+            form.submit();
+          });
+        })();
+        </script>
       `;
-        res.type("text/html").send(notionPage("訂單明細", body));
+        res.type("text/html").send(notionPage("訂單明細", body, "", res.locals.topBarHtml));
     });
     router.post("/orders/:orderId/items", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const { orderId } = req.params;
@@ -365,6 +581,11 @@ function createAdminRouter() {
                 const itemId = key.slice(5);
                 const unit = (body[key] ?? "").trim() || null;
                 db.prepare("UPDATE order_items SET unit = ? WHERE id = ? AND order_id = ?").run(unit, itemId, orderId);
+            }
+            else if (key.startsWith("remark_")) {
+                const itemId = key.slice(7);
+                const remark = (body[key] ?? "").trim() || null;
+                db.prepare("UPDATE order_items SET remark = ? WHERE id = ? AND order_id = ?").run(remark, itemId, orderId);
             }
         }
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=items");
@@ -392,6 +613,7 @@ function createAdminRouter() {
     });
     router.get("/orders/:orderId/order-sheet", (req, res) => {
         const { orderId } = req.params;
+        const preview = req.query.preview === "1";
         const order = db.prepare(`
       SELECT o.id, o.order_date, o.status, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code
       FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
@@ -401,7 +623,7 @@ function createAdminRouter() {
             return;
         }
         const items = db.prepare(`
-      SELECT oi.quantity, oi.unit, p.erp_code, p.name AS product_name, p.teraoka_barcode
+      SELECT oi.quantity, oi.unit, oi.remark, p.erp_code, p.name AS product_name, p.teraoka_barcode
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
     `).all(orderId);
         const rows = items.map((i) => {
@@ -409,22 +631,26 @@ function createAdminRouter() {
             const pname = i.product_name ?? "待確認";
             const qty = i.quantity;
             const u = i.unit && i.unit.trim() ? i.unit : "";
-            const teraoka = i.teraoka_barcode && i.teraoka_barcode.trim() ? i.teraoka_barcode : "—";
-            const barcodeImg = i.teraoka_barcode && i.teraoka_barcode.trim()
-                ? `<img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="條碼" style="height:48px;display:block;">`
-                : "—";
-            return `<tr><td>${escapeHtml(erp)}</td><td>${escapeHtml(pname)}</td><td>${qty}</td><td>${escapeHtml(u)}</td><td>${escapeHtml(teraoka)}</td><td>${barcodeImg}</td></tr>`;
+            const remark = (i.remark && i.remark.trim()) ? escapeHtml(i.remark.trim()) : "—";
+            const teraokaCode = i.teraoka_barcode && i.teraoka_barcode.trim() ? escapeHtml(i.teraoka_barcode) : "—";
+            const teraokaName = escapeHtml(i.product_name || "");
+            const teraokaCell = i.teraoka_barcode && i.teraoka_barcode.trim()
+                ? `<div class="teraoka-cell"><span class="code">${teraokaCode}</span><span class="name">${teraokaName || "—"}</span><br><img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="" style="height:40px;"></div>`
+                : `<div class="teraoka-cell"><span class="code">—</span><span class="name">${teraokaName || "—"}</span></div>`;
+            return `<tr><td>${escapeHtml(erp)}</td><td>${escapeHtml(pname)}</td><td>${qty}</td><td>${escapeHtml(u)}</td><td>${remark}</td><td>${teraokaCell}</td></tr>`;
         }).join("");
         const customerBarcode = order.customer_teraoka_code && order.customer_teraoka_code.trim()
             ? `<p><strong>客戶條碼</strong>（${escapeHtml(order.customer_name)}）<br><img src="/admin/barcode?code=${encodeURIComponent(order.customer_teraoka_code.trim())}" alt="客戶條碼" style="height:56px;"></p>`
             : "";
         const sheetBody = `
         <div class="no-print notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 訂貨單</div>
+        ${preview ? "<p class=\"no-print\"><button type=\"button\" class=\"btn btn-primary\" id=\"exportJpgBtn\">匯出 JPG</button> 預覽下方訂單圖後可點此匯出</p>" : ""}
+        <div id="order-sheet-content" style="margin-top:12px;">
+        <div class="notion-card">
         <h1 class="notion-page-title">訂貨單</h1>
         <p>日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name)}</p>
-        <div class="notion-card">
           <table>
-            <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>寺岡料號</th><th>寺岡條碼</th></tr></thead>
+            <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>備註</th><th>寺岡（料號／條碼）</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -433,9 +659,11 @@ function createAdminRouter() {
           ${items.filter((i) => i.teraoka_barcode && i.teraoka_barcode.trim()).map((i) => `<span style="display:inline-block;margin:0.5rem;"><img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="" style="height:56px;"><br><small>${escapeHtml(i.product_name ?? i.teraoka_barcode ?? "")}</small></span>`).join("")}
         </div>
         ${customerBarcode ? `<div class="notion-card" style="margin-top:1.5rem;">${customerBarcode}</div>` : ""}
+        </div>
         <p class="no-print" style="margin-top:1rem;"><a href="/admin/orders/${encodeURIComponent(orderId)}">← 回訂單明細</a></p>
+        ${preview ? '<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script><script>document.getElementById("exportJpgBtn").onclick=function(){ var el = document.getElementById("order-sheet-content"); if (typeof html2canvas !== "undefined") { html2canvas(el, { useCORS: true, allowTaint: true }).then(function(canvas){ var a = document.createElement("a"); a.download = "order-sheet-' + orderId + '.jpg"; a.href = canvas.toDataURL("image/jpeg", 0.92); a.click(); }); } };</script>' : ""}
       `;
-        res.type("text/html").send(notionPage("訂貨單", sheetBody));
+        res.type("text/html").send(notionPage("訂貨單", sheetBody, "", res.locals.topBarHtml));
     });
     router.get("/customers/new", (req, res) => {
         const body = `
@@ -453,7 +681,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("新增客戶", body));
+        res.type("text/html").send(notionPage("新增客戶", body, "", res.locals.topBarHtml));
     });
     router.post("/customers/new", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const name = req.body.name?.trim();
@@ -508,7 +736,7 @@ function createAdminRouter() {
         </div>
         <p>${editLink}　${backLink}</p>
       `;
-        res.type("text/html").send(notionPage("客戶資料", body));
+        res.type("text/html").send(notionPage("客戶資料", body, "", res.locals.topBarHtml));
     });
     router.get("/customers/:id/edit", (req, res) => {
         const customer = db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);
@@ -577,7 +805,7 @@ function createAdminRouter() {
         </div>
         <p>${req.query.from === "orders" ? `<a href="/admin/orders">← 回訂單查詢</a>` : `<a href="/admin/customers">← 回客戶列表</a>`}</p>
       `;
-        res.type("text/html").send(notionPage("編輯客戶", editBody));
+        res.type("text/html").send(notionPage("編輯客戶", editBody, "", res.locals.topBarHtml));
     });
     router.post("/customers/:id/edit", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const id = req.params.id;
@@ -686,7 +914,7 @@ function createAdminRouter() {
           </table>
         </div>
       `;
-        res.type("text/html").send(notionPage("客戶管理", body));
+        res.type("text/html").send(notionPage("客戶管理", body, "", res.locals.topBarHtml));
     });
     router.post("/customers/:id/toggle", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const id = req.params.id;
@@ -719,7 +947,7 @@ function createAdminRouter() {
           </p>
         </div>
       `;
-        res.type("text/html").send(notionPage("確認刪除", body));
+        res.type("text/html").send(notionPage("確認刪除", body, "", res.locals.topBarHtml));
     });
     router.post("/customers/:id/delete", (req, res) => {
         const id = req.params.id;
@@ -796,7 +1024,7 @@ function createAdminRouter() {
           </table>
         </div>
       `;
-        res.type("text/html").send(notionPage("品項與俗名", body));
+        res.type("text/html").send(notionPage("品項與俗名", body, "", res.locals.topBarHtml));
     });
     router.get("/products/:id/aliases", (req, res) => {
         const productId = req.params.id;
@@ -833,7 +1061,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
       `;
-        res.type("text/html").send(notionPage("俗名管理", body));
+        res.type("text/html").send(notionPage("俗名管理", body, "", res.locals.topBarHtml));
     });
     router.get("/aliases/:id/edit", (req, res) => {
         const id = req.params.id;
@@ -856,7 +1084,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin/products/${encodeURIComponent(row.product_id)}/aliases">← 回俗名管理</a></p>
       `;
-        res.type("text/html").send(notionPage("編輯俗名", body));
+        res.type("text/html").send(notionPage("編輯俗名", body, "", res.locals.topBarHtml));
     });
     router.post("/aliases/:id/edit", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const id = req.params.id;
@@ -921,7 +1149,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
       `;
-        res.type("text/html").send(notionPage("編輯品項", body));
+        res.type("text/html").send(notionPage("編輯品項", body, "", res.locals.topBarHtml));
     });
     router.post("/products/:id/edit", (req, res) => {
         const id = req.params.id;
@@ -980,7 +1208,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
       `;
-        res.type("text/html").send(notionPage("確認刪除品項", body));
+        res.type("text/html").send(notionPage("確認刪除品項", body, "", res.locals.topBarHtml));
     });
     router.post("/products/:id/delete", (req, res) => {
         const id = req.params.id;
@@ -1027,7 +1255,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
       `;
-        res.type("text/html").send(notionPage("匯入品項", body));
+        res.type("text/html").send(notionPage("匯入品項", body, "", res.locals.topBarHtml));
     });
     router.post("/import", upload, (req, res) => {
         const sheet = parseRequestToSheet(req);
@@ -1096,7 +1324,7 @@ YY小吃, C5678...,</pre>
         </div>
         <p style="margin-top:16px;"><a href="/admin/customers" class="btn">← 回客戶列表</a></p>
         `;
-        res.type("text/html").send(notionPage("匯入客戶", body));
+        res.type("text/html").send(notionPage("匯入客戶", body, "", res.locals.topBarHtml));
     });
     router.post("/import-customers", upload, (req, res) => {
         const sheet = parseRequestToSheet(req);
@@ -1179,7 +1407,7 @@ YY小吃, C5678...,</pre>
         </div>
         <p style="margin-top:16px;"><a href="/admin/products" class="btn">← 回品項列表</a></p>
         `;
-        res.type("text/html").send(notionPage("寺岡資料對照", body));
+        res.type("text/html").send(notionPage("寺岡資料對照", body, "", res.locals.topBarHtml));
     });
     router.post("/import-teraoka", upload, (req, res) => {
         const sheet = parseRequestToSheet(req);

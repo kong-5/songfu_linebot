@@ -64,6 +64,12 @@ function initDb(dbPath) {
     catch {
         /* column may already exist */
     }
+    try {
+        database.exec("ALTER TABLE order_items ADD COLUMN remark TEXT");
+    }
+    catch {
+        /* column may already exist */
+    }
 }
 function closeDb() {
     if (db) {

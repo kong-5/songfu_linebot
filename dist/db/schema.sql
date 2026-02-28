@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   raw_name TEXT,
   quantity REAL,
   unit TEXT,
+  remark TEXT,
   need_review INTEGER NOT NULL DEFAULT 0,
   include_export INTEGER,
   FOREIGN KEY (order_id) REFERENCES orders(id),
