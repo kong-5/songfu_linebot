@@ -1347,6 +1347,7 @@ function createAdminRouter() {
             <li>單位：<code>QtySymbol</code>、<code>單位</code>、<code>unit</code></li>
           </ul>
           <p>同一品名已存在時會略過不覆蓋。</p>
+          <p style="color:var(--notion-text-muted);font-size:13px;">若出現「Service Unavailable」或逾時，可能是筆數過多：請改為分批匯入（每批約 200～500 筆），或在 Cloud Run 將「請求逾時」設為 300 秒。</p>
           <form method="post" action="/admin/import" enctype="multipart/form-data">
             <label>匯入時若單位為空，使用：<select name="default_unit">
               <option value="公斤">公斤</option>
@@ -1369,45 +1370,52 @@ function createAdminRouter() {
         res.type("text/html").send(notionPage("匯入品項", body, "", res.locals.topBarHtml));
     });
     router.post("/import", upload, async (req, res) => {
-        const sheet = parseRequestToSheet(req);
-        if (!sheet || sheet.rows.length === 0) {
-            res.redirect("/admin/import?err=" + encodeURIComponent("請貼上 CSV 或上傳 Excel 檔案"));
-            return;
+        try {
+            const sheet = parseRequestToSheet(req);
+            if (!sheet || sheet.rows.length === 0) {
+                res.redirect("/admin/import?err=" + encodeURIComponent("請貼上 CSV 或上傳 Excel 檔案"));
+                return;
+            }
+            const defaultUnit = (req.body?.default_unit?.trim()) || "公斤";
+            const { header, rows } = sheet;
+            const h = (i) => (header[i] ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+            const nameIdx = header.findIndex((_, i) => {
+                const v = h(i);
+                return ["標準品名", "品名", "名稱", "name", "commname", "comm_name"].includes(v);
+            });
+            const erpIdx = header.findIndex((_, i) => ["erp料號", "erp_code", "hqplucode"].includes(h(i)));
+            const teraokaIdx = header.findIndex((_, i) => ["寺岡條碼", "teraoka_barcode", "plucode"].includes(h(i)));
+            const unitIdx = header.findIndex((_, i) => ["單位", "unit", "qtysymbol"].includes(h(i)));
+            if (nameIdx === -1) {
+                const headerPreview = header.length > 12 ? header.slice(0, 12).join("、") + "…" : header.join("、") || "（無）";
+                res.redirect("/admin/import?err=" + encodeURIComponent("找不到品名欄位（請有 CommName、標準品名、品名或 name）。偵測到的標題：" + headerPreview));
+                return;
+            }
+            let imported = 0;
+            const existingNames = new Set((await db.prepare("SELECT name FROM products").all()).map((r) => r.name));
+            for (let i = 0; i < rows.length; i++) {
+                const cols = rows[i];
+                const name = (cols[nameIdx] ?? "").trim();
+                if (!name)
+                    continue;
+                if (existingNames.has(name))
+                    continue;
+                const erpCode = erpIdx >= 0 ? (cols[erpIdx] ?? "").trim() || null : null;
+                const teraoka = teraokaIdx >= 0 ? (cols[teraokaIdx] ?? "").trim() || null : null;
+                const unitCell = unitIdx >= 0 ? (cols[unitIdx] ?? "").trim() : "";
+                const unit = unitCell || defaultUnit;
+                const id = (0, id_js_1.newId)("prod");
+                await db.prepare("INSERT INTO products (id, name, erp_code, teraoka_barcode, unit) VALUES (?, ?, ?, ?, ?)").run(id, name, erpCode, teraoka, unit);
+                existingNames.add(name);
+                imported++;
+            }
+            res.redirect("/admin/import?ok=" + imported);
         }
-        const defaultUnit = (req.body?.default_unit?.trim()) || "公斤";
-        const { header, rows } = sheet;
-        const h = (i) => (header[i] ?? "").trim().toLowerCase().replace(/\s+/g, "_");
-        const nameIdx = header.findIndex((_, i) => {
-            const v = h(i);
-            return ["標準品名", "品名", "名稱", "name", "commname", "comm_name"].includes(v);
-        });
-        const erpIdx = header.findIndex((_, i) => ["erp料號", "erp_code", "hqplucode"].includes(h(i)));
-        const teraokaIdx = header.findIndex((_, i) => ["寺岡條碼", "teraoka_barcode", "plucode"].includes(h(i)));
-        const unitIdx = header.findIndex((_, i) => ["單位", "unit", "qtysymbol"].includes(h(i)));
-        if (nameIdx === -1) {
-            const headerPreview = header.length > 12 ? header.slice(0, 12).join("、") + "…" : header.join("、") || "（無）";
-            res.redirect("/admin/import?err=" + encodeURIComponent("找不到品名欄位（請有 CommName、標準品名、品名或 name）。偵測到的標題：" + headerPreview));
-            return;
+        catch (e) {
+            console.error("[admin] 匯入品項錯誤:", e);
+            const msg = (e && e.message) ? String(e.message) : String(e);
+            res.redirect("/admin/import?err=" + encodeURIComponent("匯入失敗：" + (msg.length > 200 ? msg.slice(0, 200) + "…" : msg)));
         }
-        let imported = 0;
-        const existingNames = new Set(await db.prepare("SELECT name FROM products").all().map((r) => r.name));
-        for (let i = 0; i < rows.length; i++) {
-            const cols = rows[i];
-            const name = (cols[nameIdx] ?? "").trim();
-            if (!name)
-                continue;
-            if (existingNames.has(name))
-                continue;
-            const erpCode = erpIdx >= 0 ? (cols[erpIdx] ?? "").trim() || null : null;
-            const teraoka = teraokaIdx >= 0 ? (cols[teraokaIdx] ?? "").trim() || null : null;
-            const unitCell = unitIdx >= 0 ? (cols[unitIdx] ?? "").trim() : "";
-            const unit = unitCell || defaultUnit;
-            const id = (0, id_js_1.newId)("prod");
-            await db.prepare("INSERT INTO products (id, name, erp_code, teraoka_barcode, unit) VALUES (?, ?, ?, ?, ?)").run(id, name, erpCode, teraoka, unit);
-            existingNames.add(name);
-            imported++;
-        }
-        res.redirect("/admin/import?ok=" + imported);
     });
     router.get("/import-customers", async (req, res) => {
         const msg = req.query.ok ? `<p style='color:green'>匯入結果：${escapeHtml(String(req.query.ok))}。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
