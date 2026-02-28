@@ -807,25 +807,25 @@ function createAdminRouter() {
         res.type("text/html").send(notionPage("客戶資料", body, "", res.locals.topBarHtml));
     });
     router.get("/customers/:id/edit", async (req, res) => {
-        const customer = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);
-        if (!customer) {
-            res.status(404).send("客戶不存在");
-            return;
-        }
-        const v = (s) => escapeAttr(s ?? "");
-        const activeChecked = customer.active === undefined || customer.active === null || customer.active === 1;
-        const editMsg = req.query.ok === "alias" ? "<p style='color:green'>已新增專用別名。</p>" : req.query.ok === "alias_del" ? "<p style='color:green'>已刪除專用別名。</p>" : req.query.err === "alias" ? "<p style='color:red'>請填寫別名與品項。</p>" : req.query.err === "dup" ? "<p style='color:red'>此客戶已存在相同別名。</p>" : "";
-        const custAliases = await db.prepare(`
+        try {
+            const customer = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);
+            if (!customer) {
+                res.status(404).send("客戶不存在");
+                return;
+            }
+            const v = (s) => escapeAttr(s ?? "");
+            const activeChecked = customer.active === undefined || customer.active === null || customer.active === 1;
+            const editMsg = req.query.ok === "alias" ? "<p style='color:green'>已新增專用別名。</p>" : req.query.ok === "alias_del" ? "<p style='color:green'>已刪除專用別名。</p>" : req.query.err === "alias" ? "<p style='color:red'>請填寫別名與品項。</p>" : req.query.err === "dup" ? "<p style='color:red'>此客戶已存在相同別名。</p>" : "";
+            const custAliases = await db.prepare(`
       SELECT cpa.id, cpa.alias, p.name AS product_name
       FROM customer_product_aliases cpa
       JOIN products p ON p.id = cpa.product_id
       WHERE cpa.customer_id = ?
       ORDER BY cpa.alias
     `).all(customer.id);
-        const productOptions = await db.prepare("SELECT id, name FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all()
-            .map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`)
-            .join("");
-        const aliasRows = custAliases
+            const productList = await db.prepare("SELECT id, name FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all();
+            const productOptions = productList.map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`).join("");
+            const aliasRows = custAliases
             .map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td><td><form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/alias/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td></tr>`)
             .join("");
         const editBody = `
@@ -873,7 +873,12 @@ function createAdminRouter() {
         </div>
         <p>${req.query.from === "orders" ? `<a href="/admin/orders">← 回訂單查詢</a>` : `<a href="/admin/customers">← 回客戶列表</a>`}</p>
       `;
-        res.type("text/html").send(notionPage("編輯客戶", editBody, "", res.locals.topBarHtml));
+            res.type("text/html").send(notionPage("編輯客戶", editBody, "", res.locals.topBarHtml));
+        }
+        catch (e) {
+            console.error("[admin] 客戶編輯頁錯誤:", e);
+            res.redirect("/admin/customers?err=" + encodeURIComponent("載入失敗：" + (e.message || String(e)).slice(0, 80)));
+        }
     });
     router.post("/customers/:id/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const id = req.params.id;
@@ -1069,19 +1074,20 @@ function createAdminRouter() {
         const tbody = products
             .map((p) => {
                 const specSummary = (specsByProduct.get(p.id) ?? []).map((x) => escapeHtml(x)).join("、") || "—";
-                return `<tr>
+                const isActive = p.active === 1;
+                const statusHtml = isActive ? "啟用" : "<span style='color:#888'>停用</span>";
+                const toggleLabel = isActive ? "停用" : "啟用";
+                return `<tr data-product-id="${escapeAttr(p.id)}">
             <td>${escapeHtml(p.name)}</td>
             <td>${escapeHtml(p.erp_code ?? "")}</td>
             <td>${escapeHtml(p.teraoka_barcode ?? "")}</td>
             <td>${escapeHtml(p.unit)}</td>
             <td>${(aliasesByProduct.get(p.id) ?? []).map((a) => escapeHtml(a)).join("、") || "—"} <a href="/admin/products/${encodeURIComponent(p.id)}/aliases">管理</a></td>
             <td>${specSummary} <a href="/admin/products/${encodeURIComponent(p.id)}/aliases#specs">設定</a></td>
-            <td>${p.active === 1 ? "啟用" : "<span style='color:#888'>停用</span>"}</td>
+            <td class="product-status-cell">${statusHtml}</td>
             <td>
               <a href="/admin/products/${encodeURIComponent(p.id)}/edit">編輯</a>
-              ${p.active === 1
-            ? ` | <form method="post" action="/admin/products/${encodeURIComponent(p.id)}/toggle" style="display:inline;"><button type="submit">停用</button></form>`
-            : ` | <form method="post" action="/admin/products/${encodeURIComponent(p.id)}/toggle" style="display:inline;"><button type="submit">啟用</button></form>`}
+              | <button type="button" class="product-toggle-btn" data-id="${escapeAttr(p.id)}" data-active="${isActive ? "1" : "0"}">${escapeHtml(toggleLabel)}</button>
               | <a href="/admin/products/${encodeURIComponent(p.id)}/delete">刪除</a>
             </td>
           </tr>`;
@@ -1106,6 +1112,29 @@ function createAdminRouter() {
             <tbody>${tbody.length ? tbody : "<tr><td colspan='8'>無符合的品項</td></tr>"}</tbody>
           </table>
         </div>
+        <script>
+        document.querySelectorAll(".product-toggle-btn").forEach(function(btn){
+          btn.addEventListener("click", function(){
+            var el = this, id = el.dataset.id;
+            if (!id) return;
+            el.disabled = true;
+            fetch("/admin/api/products/" + encodeURIComponent(id) + "/toggle", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "", credentials: "same-origin" })
+              .then(function(r){ return r.json(); })
+              .then(function(data){
+                if (data && data.ok === true) {
+                  var nextActive = data.active === 1;
+                  el.dataset.active = nextActive ? "1" : "0";
+                  el.textContent = nextActive ? "停用" : "啟用";
+                  var row = el.closest("tr");
+                  var statusCell = row && row.querySelector(".product-status-cell");
+                  if (statusCell) statusCell.innerHTML = nextActive ? "啟用" : "<span style=\"color:#888\">停用</span>";
+                }
+                el.disabled = false;
+              })
+              .catch(function(){ el.disabled = false; });
+          });
+        });
+        </script>
       `;
         res.type("text/html").send(notionPage("品項與俗名", body, "", res.locals.topBarHtml));
     });
@@ -1322,6 +1351,17 @@ function createAdminRouter() {
         const active = req.body?.active === "1" ? 1 : 0;
         await db.prepare("UPDATE products SET name = ?, erp_code = ?, teraoka_barcode = ?, unit = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, erpCode, teraokaBarcode, unit, active, id);
         res.redirect("/admin/products?ok=edit");
+    });
+    router.post("/api/products/:id/toggle", async (req, res) => {
+        const id = req.params.id;
+        const row = await db.prepare("SELECT id, active FROM products WHERE id = ?").get(id);
+        if (!row) {
+            res.status(404).json({ ok: false, err: "找不到此品項" });
+            return;
+        }
+        const next = row.active === 1 ? 0 : 1;
+        await db.prepare("UPDATE products SET active = ?, updated_at = datetime('now') WHERE id = ?").run(next, id);
+        res.json({ ok: true, active: next });
     });
     router.post("/products/:id/toggle", async (req, res) => {
         const id = req.params.id;
