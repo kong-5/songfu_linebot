@@ -227,11 +227,48 @@ function createAdminRouter() {
             <li><a href="/admin/review">待確認品名</a> － 補正俗名／客戶別名</li>
             <li><a href="/admin/orders">訂單查詢</a></li>
             <li><a href="/admin/customers">客戶管理</a>、<a href="/admin/customers/new">新增客戶</a></li>
+            <li><a href="/admin/line-binding">LINE 綁定檢查</a> － 確認群組 ID 是否正確</li>
             <li><a href="/admin/products">品項與俗名</a></li>
           </ul>
         </div>
       `;
         res.type("text/html").send(notionPage("工作台", body, "dashboard", res.locals.topBarHtml));
+    });
+    router.get("/line-binding", async (_req, res) => {
+        const dbType = process.env.DATABASE_URL ? "PostgreSQL (Cloud SQL)" : "SQLite";
+        const customers = await db.prepare("SELECT id, name, line_group_id, active FROM customers ORDER BY name").all();
+        const rows = customers.map((c) => {
+            const bound = c.line_group_id && String(c.line_group_id).trim() ? "是" : "否";
+            const gid = (c.line_group_id && String(c.line_group_id).trim()) ? escapeHtml(String(c.line_group_id).trim()) : "—";
+            const status = c.active === 1 ? "啟用" : "停用";
+            return `<tr><td>${escapeHtml(c.name)}</td><td><code style="font-size:12px;word-break:break-all;">${gid}</code></td><td>${bound}</td><td>${status}</td><td><a href="/admin/customers/${encodeURIComponent(c.id)}/edit">編輯</a></td></tr>`;
+        });
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / LINE 綁定檢查</div>
+        <h1 class="notion-page-title">LINE 綁定檢查</h1>
+        <div class="notion-card">
+          <h2>如何綁定</h2>
+          <ol style="margin:0 0 12px;padding-left:20px;">
+            <li>在 LINE 群組裡傳送：<strong>取得群組ID</strong>（或「群組ID」）</li>
+            <li>機器人會回傳該群組的 ID（一串英數字），請<strong>完整複製</strong></li>
+            <li>到下方對應客戶那一列點「編輯」，把複製的 ID 貼到「LINE 群組 ID」欄位，儲存</li>
+          </ol>
+          <p style="color:var(--notion-text-muted);font-size:13px;">ID 必須與機器人回傳的<strong>完全一致</strong>（前後不可多空格、不可少字）。</p>
+        </div>
+        <div class="notion-card">
+          <h2>資料庫連線</h2>
+          <p>目前使用：<strong>${escapeHtml(dbType)}</strong></p>
+        </div>
+        <div class="notion-card">
+          <h2>客戶與 LINE 群組 ID</h2>
+          <table>
+            <thead><tr><th>客戶名稱</th><th>LINE 群組 ID</th><th>已綁定</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody>${rows.length ? rows.join("") : "<tr><td colspan='5'>尚無客戶</td></tr>"}</tbody>
+          </table>
+        </div>
+        <p><a href="/admin">← 回工作台</a></p>
+      `;
+        res.type("text/html").send(notionPage("LINE 綁定檢查", body, "", res.locals.topBarHtml));
     });
     // 待確認品名：列出 need_review=1 的明細，可選擇對應品項並加入俗名
     router.get("/review", async (req, res) => {

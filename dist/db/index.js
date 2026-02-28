@@ -96,14 +96,23 @@ function initSqlite(dbPath) {
 }
 async function initPg() {
     const pg = require("pg");
-    pgPool = new pg.Pool({ connectionString: DATABASE_URL });
-    const client = await pgPool.connect();
+    pgPool = new pg.Pool({
+        connectionString: DATABASE_URL,
+        connectionTimeoutMillis: 15000,
+    });
     try {
-        const schema = (0, fs_1.readFileSync)(schemaPgPath, "utf-8");
-        await client.query(schema);
+        const client = await pgPool.connect();
+        try {
+            const schema = (0, fs_1.readFileSync)(schemaPgPath, "utf-8");
+            await client.query(schema);
+        }
+        finally {
+            client.release();
+        }
     }
-    finally {
-        client.release();
+    catch (e) {
+        console.error("[startup] PostgreSQL 連線失敗，請檢查 DATABASE_URL 與 Cloud Run「連線」是否已加 Cloud SQL:", e.message || e);
+        throw e;
     }
 }
 function initDb(dbPath) {

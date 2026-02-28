@@ -1,5 +1,5 @@
 # 推送到 Git 後由 Cloud Build 建置映像並部署到 Cloud Run
-# 需在 GCP 建立觸發程式，並設定替換變數（見下方說明）
+# DATABASE_URL 請在 Cloud Run 服務「變數與密碼」設一次，部署時會保留（不會覆寫）
 
 steps:
   - name: "gcr.io/cloud-builders/docker"
@@ -12,7 +12,7 @@ steps:
     args:
       - "push"
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest"
-  # 使用 --update-env-vars 只更新這三個，保留主控台已設的 DATABASE_URL（部署後資料才不會消失）
+  # 只更新這三個變數，不傳 DATABASE_URL，讓 Cloud Run 保留主控台已設的 DATABASE_URL
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
