@@ -45,39 +45,88 @@ const index_js_1 = require("../db/index.js");
 const id_js_1 = require("../lib/id.js");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("file");
-const TOP_NAV = '<p style="margin-bottom:1rem;"><a href="/">回首頁</a> | <a href="/admin">回後台</a></p>';
+const NOTION_STYLE = `
+  :root { --notion-bg:#fff; --notion-sidebar:#f7f6f3; --notion-border:#e3e2e0; --notion-text:#37352f; --notion-text-muted:#787774; --notion-accent:#2383e2; --notion-hover:#f1f1ef; --notion-radius:6px; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif; background: var(--notion-bg); color: var(--notion-text); line-height: 1.5; min-height: 100vh; display: flex; }
+  .notion-layout { display: flex; width: 100%; min-height: 100vh; }
+  .notion-sidebar { width: 240px; min-width: 240px; background: var(--notion-sidebar); border-right: 1px solid var(--notion-border); padding: 12px 0; flex-shrink: 0; }
+  .notion-sidebar a { display: block; padding: 6px 14px; color: var(--notion-text); text-decoration: none; font-size: 14px; border-radius: var(--notion-radius); }
+  .notion-sidebar a:hover { background: var(--notion-hover); }
+  .notion-sidebar .active { background: var(--notion-hover); color: var(--notion-accent); }
+  .notion-sidebar .group { font-size: 11px; font-weight: 600; color: var(--notion-text-muted); padding: 8px 14px 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .notion-main { flex: 1; padding: 32px 40px 48px; max-width: 900px; }
+  .notion-page-title { font-size: 28px; font-weight: 700; margin: 0 0 8px; color: var(--notion-text); }
+  .notion-breadcrumb { font-size: 13px; color: var(--notion-text-muted); margin-bottom: 20px; }
+  .notion-breadcrumb a { color: var(--notion-accent); text-decoration: none; }
+  .notion-card { background: var(--notion-bg); border: 1px solid var(--notion-border); border-radius: var(--notion-radius); padding: 16px 20px; margin-bottom: 16px; }
+  .notion-card h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; color: var(--notion-text); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border: 1px solid var(--notion-border); padding: 10px 12px; text-align: left; }
+  th { background: var(--notion-sidebar); font-weight: 600; font-size: 13px; color: var(--notion-text-muted); }
+  tr:hover td { background: var(--notion-hover); }
+  a { color: var(--notion-accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .btn, button[type=submit] { display: inline-block; padding: 8px 14px; font-size: 14px; border-radius: var(--notion-radius); border: 1px solid var(--notion-border); background: var(--notion-bg); color: var(--notion-text); cursor: pointer; font-family: inherit; }
+  .btn:hover, button[type=submit]:hover { background: var(--notion-hover); }
+  .btn-primary { background: var(--notion-accent); color: #fff; border-color: var(--notion-accent); }
+  .btn-primary:hover { opacity: 0.9; }
+  input[type=text], input[type=search], select { padding: 8px 10px; border: 1px solid var(--notion-border); border-radius: var(--notion-radius); font-size: 14px; font-family: inherit; }
+  label { display: block; margin-top: 12px; font-size: 14px; }
+  label:first-of-type { margin-top: 0; }
+  .form-inline label { display: inline; margin-right: 12px; }
+  .notion-msg { padding: 10px 14px; border-radius: var(--notion-radius); margin-bottom: 16px; font-size: 14px; }
+  .notion-msg.ok { background: #e7f5e9; color: #2e7d32; }
+  .notion-msg.err { background: #ffebee; color: #c62828; }
+  @media print { .notion-sidebar, .no-print { display: none !important; } .notion-main { max-width: none; } }
+`;
+const NOTION_SIDEBAR = (active) => `
+  <nav class="notion-sidebar">
+    <a href="/" class="${active === "home" ? "active" : ""}">← 回首頁</a>
+    <a href="/admin" class="${active === "dashboard" ? "active" : ""}">工作台</a>
+    <div class="group">資料匯入</div>
+    <a href="/admin/import-customers">匯入客戶</a>
+    <a href="/admin/import">匯入品項</a>
+    <a href="/admin/import-teraoka">寺岡對照</a>
+    <div class="group">查詢與維護</div>
+    <a href="/admin/review">待確認品名</a>
+    <a href="/admin/orders">訂單查詢</a>
+    <a href="/admin/customers">客戶管理</a>
+    <a href="/admin/customers/new">新增客戶</a>
+    <a href="/admin/products">品項與俗名</a>
+    <div class="group">其他</div>
+    <a href="/admin/export">批次匯出</a>
+    <a href="/admin/specs">單品規格表</a>
+    <a href="/admin/settings">結轉時間設定</a>
+  </nav>
+`;
+function notionPage(title, body, active = "") {
+    return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富叫貨後台</title><style>${NOTION_STYLE}</style></head><body><div class="notion-layout">${NOTION_SIDEBAR(active)}<main class="notion-main">${body}</main></div></body></html>`;
+}
 function createAdminRouter() {
     const router = express_1.default.Router();
     const db = (0, index_js_1.getDb)(dbPath);
     router.get("/", (_req, res) => {
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>松富叫貨－後台</title>
-      <style>body{font-family:sans-serif;max-width:800px;margin:2rem auto;padding:0 1rem;} a{color:#0d6efd;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:0.5rem;} select,button{padding:0.35rem 0.75rem;} .block{margin:1.5rem 0;padding:1rem;background:#f8f9fa;border-radius:8px;} .block h2{margin-top:0;font-size:1.1rem;} .block a{margin-right:1rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>松富叫貨 － 後台</h1>
-        <div class="block">
-          <h2>📥 資料匯入</h2>
-          <p><a href="/admin/import-customers"><strong>匯入客戶</strong></a>（CSV / Excel，含 CustName 格式）</p>
-          <p><a href="/admin/import"><strong>匯入品項</strong></a>（標準品名、ERP、寺岡條碼）</p>
-          <p><a href="/admin/import-teraoka"><strong>寺岡資料對照</strong></a>（依品名寫入寺岡條碼）</p>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/">首頁</a> / 工作台</div>
+        <h1 class="notion-page-title">工作台</h1>
+        <div class="notion-card">
+          <h2>資料匯入</h2>
+          <p><a href="/admin/import-customers">匯入客戶</a>（CSV / Excel，含 CustName 格式）</p>
+          <p><a href="/admin/import">匯入品項</a>（標準品名、ERP、寺岡條碼）</p>
+          <p><a href="/admin/import-teraoka">寺岡資料對照</a>（依品名寫入寺岡條碼）</p>
         </div>
-        <div class="block">
+        <div class="notion-card">
           <h2>查詢與維護</h2>
-          <ul>
+          <ul style="margin:0;padding-left:20px;">
             <li><a href="/admin/review">待確認品名</a> － 補正俗名／客戶別名</li>
             <li><a href="/admin/orders">訂單查詢</a></li>
             <li><a href="/admin/customers">客戶管理</a>、<a href="/admin/customers/new">新增客戶</a></li>
             <li><a href="/admin/products">品項與俗名</a></li>
           </ul>
         </div>
-        <p><a href="/">← 回首頁</a></p>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("工作台", body, "dashboard"));
     });
     // 待確認品名：列出 need_review=1 的明細，可選擇對應品項並加入俗名
     router.get("/review", (req, res) => {
@@ -117,23 +166,18 @@ function createAdminRouter() {
         </tr>
       `)
                 .join("");
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>待確認品名</title>
-      <style>body{font-family:sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:0.5rem;} select,button{padding:0.35rem 0.75rem;} label{margin-right:0.75rem;} .product-search{margin-bottom:0.5rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>待確認品名</h1>
-        ${msg}
-        <p>以下為叫貨時無法對應到標準品項的名稱，請選擇要對應的品項並加入俗名或客戶專用別名。</p>
-        <p class="product-search"><label>搜尋品項：<input type="text" id="productSearch" placeholder="輸入品名或料號篩選下拉選單" style="width:280px;padding:0.35rem;"></label></p>
-        <table>
-          <thead><tr><th>客戶輸入的名稱</th><th>數量</th><th>單位</th><th>客戶</th><th>對應品項並加入對照</th></tr></thead>
-          <tbody>${rowsHtml}</tbody>
-        </table>
-        <p><a href="/admin">← 回後台</a></p>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 待確認品名</div>
+        <h1 class="notion-page-title">待確認品名</h1>
+        ${msg ? `<div class="notion-msg ${msg.indexOf("已加入") >= 0 ? "ok" : "err"}">${msg.replace(/<p style='[^']*'>|<\/p>/g, "").trim()}</div>` : ""}
+        <div class="notion-card">
+          <p style="margin:0 0 12px;">以下為叫貨時無法對應到標準品項的名稱，請選擇要對應的品項並加入俗名或客戶專用別名。</p>
+          <p class="product-search" style="margin-bottom:12px;"><label>搜尋品項：<input type="text" id="productSearch" placeholder="輸入品名或料號篩選下拉選單" style="width:280px;"></label></p>
+          <table>
+            <thead><tr><th>客戶輸入的名稱</th><th>數量</th><th>單位</th><th>客戶</th><th>對應品項並加入對照</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
         <script>
           (function(){
             var search = document.getElementById('productSearch');
@@ -157,9 +201,8 @@ function createAdminRouter() {
             search.addEventListener('keydown', function(e){ if (e.key === 'Enter') e.preventDefault(); });
           })();
         </script>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("待確認品名", body));
     });
     router.post("/alias", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const { alias, product_id, customer_id, scope, redirect } = req.body;
@@ -225,24 +268,18 @@ function createAdminRouter() {
         const filterLink = onlyNeedReview
             ? `<a href="/admin/orders">顯示全部訂單</a>`
             : `<a href="/admin/orders?need_review=1">只看有待確認的訂單</a>`;
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>訂單查詢</title>
-      <style>body{font-family:sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:0.5rem;} pre{font-size:0.9em;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>訂單查詢</h1>
-        <p><a href="/admin/review">待確認品名</a>（補對照）　${filterLink}</p>
-        <table>
-          <thead><tr><th>日期</th><th>客戶</th><th>狀態</th><th>待確認</th><th>原始訊息</th><th></th></tr></thead>
-          <tbody>${rows.length ? rows : "<tr><td colspan='6'>無訂單</td></tr>"}</tbody>
-        </table>
-        <p><a href="/admin">← 回後台</a></p>
-      </body>
-      </html>
-    `);
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 訂單查詢</div>
+        <h1 class="notion-page-title">訂單查詢</h1>
+        <p style="margin-bottom:16px;"><a href="/admin/review">待確認品名</a>（補對照）　${filterLink}</p>
+        <div class="notion-card">
+          <table>
+            <thead><tr><th>日期</th><th>客戶</th><th>狀態</th><th>待確認</th><th>原始訊息</th><th></th></tr></thead>
+            <tbody>${rows.length ? rows : "<tr><td colspan='6'>無訂單</td></tr>"}</tbody>
+          </table>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("訂單查詢", body));
     });
     router.get("/orders/:orderId", (req, res) => {
         const { orderId } = req.params;
@@ -289,30 +326,24 @@ function createAdminRouter() {
           </tr>`;
         })
             .join("");
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>訂單明細</title>
-      <style>body{font-family:sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.5rem;} input[type=number]{text-align:right;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>訂單明細</h1>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / 訂單明細</div>
+        <h1 class="notion-page-title">訂單明細</h1>
         <p>日期：${escapeHtml(order.order_date)}　客戶：<a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a>　狀態：${escapeHtml(order.status)}</p>
         ${needReviewNote}
         <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet">匯出訂貨單格式（含條碼）</a></p>
-        <pre style="background:#f5f5f5;padding:0.5rem;">${escapeHtml(order.raw_message ?? "")}</pre>
+        <div class="notion-card"><pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);margin:0;font-size:13px;">${escapeHtml(order.raw_message ?? "")}</pre></div>
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items">
-          <table>
-            <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>寺岡料號</th><th>寺岡條碼</th></tr></thead>
-            <tbody>${itemsRows}</tbody>
-          </table>
-          <p><button type="submit">儲存數量與單位</button></p>
+          <div class="notion-card">
+            <table>
+              <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>寺岡料號</th><th>寺岡條碼</th></tr></thead>
+              <tbody>${itemsRows}</tbody>
+            </table>
+            <p style="margin:12px 0 0;"><button type="submit" class="btn btn-primary">儲存數量與單位</button></p>
+          </div>
         </form>
-        <p><a href="/admin/orders">← 回訂單列表</a></p>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("訂單明細", body));
     });
     router.post("/orders/:orderId/items", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const { orderId } = req.params;
@@ -387,53 +418,42 @@ function createAdminRouter() {
         const customerBarcode = order.customer_teraoka_code && order.customer_teraoka_code.trim()
             ? `<p><strong>客戶條碼</strong>（${escapeHtml(order.customer_name)}）<br><img src="/admin/barcode?code=${encodeURIComponent(order.customer_teraoka_code.trim())}" alt="客戶條碼" style="height:56px;"></p>`
             : "";
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>訂貨單 ${escapeHtml(order.order_date)} ${escapeHtml(order.customer_name)}</title>
-      <style>body{font-family:sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #333;padding:0.5rem;} @media print{ body{margin:0;} .no-print{display:none;} }</style>
-      </head>
-      <body>
-        <div class="no-print">${TOP_NAV}</div>
-        <h1>訂貨單</h1>
+        const sheetBody = `
+        <div class="no-print notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 訂貨單</div>
+        <h1 class="notion-page-title">訂貨單</h1>
         <p>日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name)}</p>
-        <table>
-          <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>寺岡料號</th><th>寺岡條碼</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-        <div style="margin-top:2rem;">
+        <div class="notion-card">
+          <table>
+            <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>寺岡料號</th><th>寺岡條碼</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div class="notion-card" style="margin-top:2rem;">
           <p><strong>品項條碼（以下供掃描）</strong></p>
           ${items.filter((i) => i.teraoka_barcode && i.teraoka_barcode.trim()).map((i) => `<span style="display:inline-block;margin:0.5rem;"><img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="" style="height:56px;"><br><small>${escapeHtml(i.product_name ?? i.teraoka_barcode ?? "")}</small></span>`).join("")}
         </div>
-        ${customerBarcode ? `<div style="margin-top:1.5rem;">${customerBarcode}</div>` : ""}
+        ${customerBarcode ? `<div class="notion-card" style="margin-top:1.5rem;">${customerBarcode}</div>` : ""}
         <p class="no-print" style="margin-top:1rem;"><a href="/admin/orders/${encodeURIComponent(orderId)}">← 回訂單明細</a></p>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("訂貨單", sheetBody));
     });
     router.get("/customers/new", (req, res) => {
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>新增客戶</title>
-      <style>body{font-family:sans-serif;max-width:520px;margin:2rem auto;padding:0 1rem;} label{display:block;margin-top:0.75rem;} input{width:100%;padding:0.5rem;box-sizing:border-box;} button{margin-top:1rem;padding:0.5rem 1rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>新增客戶</h1>
-        <form method="post" action="/admin/customers/new">
-          <label>客戶名稱 <input type="text" name="name" required placeholder="例：XX餐廳"></label>
-          <label>寺岡編號（CustCode／QR） <input type="text" name="teraoka_code" placeholder="可留空"></label>
-          <label>凌越編號（HQCustCode） <input type="text" name="hq_cust_code" placeholder="可留空"></label>
-          <label>LINE 群組名稱 <input type="text" name="line_group_name" placeholder="可留空，之後可改"></label>
-          <label>LINE 群組 ID <input type="text" name="line_group_id" placeholder="C開頭群組 ID，可留空後補"></label>
-          <label>聯絡方式 <input type="text" name="contact" placeholder="電話或備註，可留空"></label>
-          <button type="submit">建立</button>
-        </form>
-        <p><a href="/admin/customers">← 回客戶列表</a></p>
-      </body>
-      </html>
-    `);
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/customers">客戶管理</a> / 新增客戶</div>
+        <h1 class="notion-page-title">新增客戶</h1>
+        <div class="notion-card">
+          <form method="post" action="/admin/customers/new">
+            <label>客戶名稱 <input type="text" name="name" required placeholder="例：XX餐廳" style="width:100%;"></label>
+            <label>寺岡編號（CustCode／QR） <input type="text" name="teraoka_code" placeholder="可留空" style="width:100%;"></label>
+            <label>凌越編號（HQCustCode） <input type="text" name="hq_cust_code" placeholder="可留空" style="width:100%;"></label>
+            <label>LINE 群組名稱 <input type="text" name="line_group_name" placeholder="可留空，之後可改" style="width:100%;"></label>
+            <label>LINE 群組 ID <input type="text" name="line_group_id" placeholder="C開頭群組 ID，可留空後補" style="width:100%;"></label>
+            <label>聯絡方式 <input type="text" name="contact" placeholder="電話或備註，可留空" style="width:100%;"></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">建立</button></p>
+          </form>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("新增客戶", body));
     });
     router.post("/customers/new", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const name = req.body.name?.trim();
@@ -469,31 +489,26 @@ function createAdminRouter() {
             ? `<a href="/admin/customers/${encodeURIComponent(customer.id)}/edit?from=orders">編輯</a>`
             : `<a href="/admin/customers/${encodeURIComponent(customer.id)}/edit">編輯</a>`;
         const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td></tr>`).join("");
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>客戶資料</title>
-      <style>body{font-family:sans-serif;max-width:560px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.4rem;} .block{margin-top:1rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>${escapeHtml(customer.name)}</h1>
-        <p><strong>聯絡</strong>：${escapeHtml(customer.contact ?? "—")}</p>
-        <p><strong>預設單位</strong>（未填時）：${escapeHtml(customer.default_unit || "公斤")}</p>
-        <p><strong>寺岡／凌越編號</strong>：${escapeHtml(customer.teraoka_code ?? "—")}／${escapeHtml(customer.hq_cust_code ?? "—")}</p>
-        <p><strong>LINE 群組</strong>：${escapeHtml(customer.line_group_name ?? "—")} ${customer.line_group_id ? "（已綁定）" : "（未綁定）"}</p>
-        <div class="block">
-          <p><strong>叫貨備註／特殊情況</strong></p>
-          <p style="white-space:pre-wrap;background:#f5f5f5;padding:0.5rem;">${escapeHtml(customer.order_notes || "（無）")}</p>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/customers">客戶管理</a> / ${escapeHtml(customer.name)}</div>
+        <h1 class="notion-page-title">${escapeHtml(customer.name)}</h1>
+        <div class="notion-card">
+          <p><strong>聯絡</strong>：${escapeHtml(customer.contact ?? "—")}</p>
+          <p><strong>預設單位</strong>（未填時）：${escapeHtml(customer.default_unit || "公斤")}</p>
+          <p><strong>寺岡／凌越編號</strong>：${escapeHtml(customer.teraoka_code ?? "—")}／${escapeHtml(customer.hq_cust_code ?? "—")}</p>
+          <p><strong>LINE 群組</strong>：${escapeHtml(customer.line_group_name ?? "—")} ${customer.line_group_id ? "（已綁定）" : "（未綁定）"}</p>
         </div>
-        <div class="block">
-          <p><strong>此客戶專用別名</strong></p>
+        <div class="notion-card">
+          <h2>叫貨備註／特殊情況</h2>
+          <p style="white-space:pre-wrap;margin:0;background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);">${escapeHtml(customer.order_notes || "（無）")}</p>
+        </div>
+        <div class="notion-card">
+          <h2>此客戶專用別名</h2>
           <table><thead><tr><th>客戶常叫的名稱</th><th>對應品項</th></tr></thead><tbody>${aliasRows || "<tr><td colspan='2'>尚無</td></tr>"}</tbody></table>
         </div>
         <p>${editLink}　${backLink}</p>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("客戶資料", body));
     });
     router.get("/customers/:id/edit", (req, res) => {
         const customer = db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);
@@ -517,57 +532,52 @@ function createAdminRouter() {
         const aliasRows = custAliases
             .map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td><td><form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/alias/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td></tr>`)
             .join("");
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>編輯客戶</title>
-      <style>body{font-family:sans-serif;max-width:620px;margin:2rem auto;padding:0 1rem;} label{display:block;margin-top:0.75rem;} input[type=text],textarea{width:100%;padding:0.5rem;box-sizing:border-box;} textarea{min-height:60px;} button{margin-top:1rem;padding:0.5rem 1rem;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.4rem;} .block{margin-top:1.5rem;padding:1rem;background:#f8f9fa;border-radius:8px;} .block h2{margin-top:0;font-size:1rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>編輯客戶</h1>
-        ${editMsg}
-        <form method="post" action="/admin/customers/${v(customer.id)}/edit">
-          ${req.query.from === "orders" ? '<input type="hidden" name="from" value="orders">' : ""}
-          <label>客戶名稱 <input type="text" name="name" value="${v(customer.name)}" required></label>
-          <label>寺岡編號（CustCode／QR） <input type="text" name="teraoka_code" value="${v(customer.teraoka_code)}"></label>
-          <label>凌越編號（HQCustCode） <input type="text" name="hq_cust_code" value="${v(customer.hq_cust_code)}"></label>
-          <label>LINE 群組名稱 <input type="text" name="line_group_name" value="${v(customer.line_group_name)}" placeholder="可之後填"></label>
-          <label>LINE 群組 ID <input type="text" name="line_group_id" value="${v(customer.line_group_id)}" placeholder="C開頭，綁定後機器人會認此群組"></label>
-          <label>聯絡方式 <input type="text" name="contact" value="${v(customer.contact)}"></label>
-          <label>預設單位（客戶只打數字未填單位時使用）<select name="default_unit">
-            <option value="" ${!customer.default_unit ? "selected" : ""}>公斤</option>
-            <option value="公斤" ${customer.default_unit === "公斤" ? "selected" : ""}>公斤</option>
-            <option value="斤" ${customer.default_unit === "斤" ? "selected" : ""}>斤</option>
-            <option value="把" ${customer.default_unit === "把" ? "selected" : ""}>把</option>
-            <option value="包" ${customer.default_unit === "包" ? "selected" : ""}>包</option>
-            <option value="件" ${customer.default_unit === "件" ? "selected" : ""}>件</option>
-            <option value="箱" ${customer.default_unit === "箱" ? "selected" : ""}>箱</option>
-            <option value="顆" ${customer.default_unit === "顆" ? "selected" : ""}>顆</option>
-            <option value="粒" ${customer.default_unit === "粒" ? "selected" : ""}>粒</option>
-            <option value="盒" ${customer.default_unit === "盒" ? "selected" : ""}>盒</option>
-            <option value="袋" ${customer.default_unit === "袋" ? "selected" : ""}>袋</option>
-          </select></label>
-          <label>叫貨備註／習慣說明 <textarea name="order_notes" placeholder="此客戶叫貨的習慣、特定說法或規則，僅供內部參考">${v(customer.order_notes)}</textarea></label>
-          <label><input type="checkbox" name="active" value="1" ${activeChecked ? "checked" : ""}> 啟用（未勾選＝停用，停用後該群組不再對應叫貨）</label>
-          <button type="submit">儲存</button>
-        </form>
-        <div class="block">
+        const editBody = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/customers">客戶管理</a> / 編輯客戶</div>
+        <h1 class="notion-page-title">編輯客戶</h1>
+        ${editMsg ? `<div class="notion-msg ${editMsg.indexOf("已") >= 0 ? "ok" : "err"}">${editMsg.replace(/<p[^>]*>|<\/p>/g, "").trim()}</div>` : ""}
+        <div class="notion-card">
+          <form method="post" action="/admin/customers/${v(customer.id)}/edit">
+            ${req.query.from === "orders" ? '<input type="hidden" name="from" value="orders">' : ""}
+            <label>客戶名稱 <input type="text" name="name" value="${v(customer.name)}" required style="width:100%;"></label>
+            <label>寺岡編號（CustCode／QR） <input type="text" name="teraoka_code" value="${v(customer.teraoka_code)}" style="width:100%;"></label>
+            <label>凌越編號（HQCustCode） <input type="text" name="hq_cust_code" value="${v(customer.hq_cust_code)}" style="width:100%;"></label>
+            <label>LINE 群組名稱 <input type="text" name="line_group_name" value="${v(customer.line_group_name)}" placeholder="可之後填" style="width:100%;"></label>
+            <label>LINE 群組 ID <input type="text" name="line_group_id" value="${v(customer.line_group_id)}" placeholder="C開頭，綁定後機器人會認此群組" style="width:100%;"></label>
+            <label>聯絡方式 <input type="text" name="contact" value="${v(customer.contact)}" style="width:100%;"></label>
+            <label>預設單位（客戶只打數字未填單位時使用）<select name="default_unit">
+              <option value="" ${!customer.default_unit ? "selected" : ""}>公斤</option>
+              <option value="公斤" ${customer.default_unit === "公斤" ? "selected" : ""}>公斤</option>
+              <option value="斤" ${customer.default_unit === "斤" ? "selected" : ""}>斤</option>
+              <option value="把" ${customer.default_unit === "把" ? "selected" : ""}>把</option>
+              <option value="包" ${customer.default_unit === "包" ? "selected" : ""}>包</option>
+              <option value="件" ${customer.default_unit === "件" ? "selected" : ""}>件</option>
+              <option value="箱" ${customer.default_unit === "箱" ? "selected" : ""}>箱</option>
+              <option value="顆" ${customer.default_unit === "顆" ? "selected" : ""}>顆</option>
+              <option value="粒" ${customer.default_unit === "粒" ? "selected" : ""}>粒</option>
+              <option value="盒" ${customer.default_unit === "盒" ? "selected" : ""}>盒</option>
+              <option value="袋" ${customer.default_unit === "袋" ? "selected" : ""}>袋</option>
+            </select></label>
+            <label>叫貨備註／習慣說明 <textarea name="order_notes" placeholder="此客戶叫貨的習慣、特定說法或規則，僅供內部參考" style="width:100%;min-height:60px;">${v(customer.order_notes)}</textarea></label>
+            <label><input type="checkbox" name="active" value="1" ${activeChecked ? "checked" : ""}> 啟用（未勾選＝停用）</label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+          </form>
+        </div>
+        <div class="notion-card">
           <h2>此客戶專用別名（叫貨習慣）</h2>
           <p>此客戶在 LINE 叫貨時若輸入下列名稱，會對應到指定品項（僅此客戶適用）。</p>
           <table>
             <thead><tr><th>客戶常叫的名稱</th><th>對應品項</th><th>操作</th></tr></thead>
             <tbody>${aliasRows || "<tr><td colspan='3'>尚無專用別名</td></tr>"}</tbody>
           </table>
-          <form method="post" action="/admin/customers/${v(customer.id)}/alias" style="margin-top:0.75rem;">
-            <label>新增：客戶叫「<input type="text" name="alias" required placeholder="例：大陸妹">」→ 對應 <select name="product_id" required>${productOptions}</select></label>
-            <button type="submit">新增</button>
+          <form method="post" action="/admin/customers/${v(customer.id)}/alias" style="margin-top:12px;">
+            <label style="margin:0;">新增：客戶叫「<input type="text" name="alias" required placeholder="例：大陸妹">」→ 對應 <select name="product_id" required>${productOptions}</select></label>
+            <button type="submit" class="btn">新增</button>
           </form>
         </div>
         <p>${req.query.from === "orders" ? `<a href="/admin/orders">← 回訂單查詢</a>` : `<a href="/admin/customers">← 回客戶列表</a>`}</p>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("編輯客戶", editBody));
     });
     router.post("/customers/:id/edit", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const id = req.params.id;
@@ -658,31 +668,25 @@ function createAdminRouter() {
         })
             .join("");
         const searchVal = escapeAttr(q);
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>客戶管理</title>
-      <style>body{font-family:sans-serif;max-width:1200px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.5rem;} input[type=search]{padding:0.4rem 0.6rem;width:220px;} .search-form{display:flex;gap:0.5rem;align-items:center;margin-bottom:1rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>客戶管理</h1>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 客戶管理</div>
+        <h1 class="notion-page-title">客戶管理</h1>
         ${msg}
-        <p><a href="/admin/customers/new">＋ 新增客戶</a>、<a href="/admin/import-customers">匯入客戶</a></p>
-        <form method="get" action="/admin/customers" class="search-form">
-          <label>搜尋（名稱模糊）：<input type="search" name="q" value="${searchVal}" placeholder="輸入關鍵字"></label>
-          <button type="submit">搜尋</button>
-          ${q ? `<a href="/admin/customers">清除</a>` : ""}
+        <p style="margin-bottom:16px;"><a href="/admin/customers/new">＋ 新增客戶</a>、<a href="/admin/import-customers">匯入客戶</a></p>
+        <form method="get" action="/admin/customers" style="display:flex;gap:8px;align-items:center;margin-bottom:16px;">
+          <label style="margin:0;">搜尋（名稱模糊）：<input type="search" name="q" value="${searchVal}" placeholder="輸入關鍵字" style="width:220px;"></label>
+          <button type="submit" class="btn">搜尋</button>
+          ${q ? `<a href="/admin/customers" class="btn">清除</a>` : ""}
         </form>
-        <p>匯入後可點「編輯」補上 LINE 群組名稱、LINE 群組 ID。停用後該群組將不再對應叫貨。</p>
-        <table>
-          <thead><tr><th>名稱</th><th>寺岡編號</th><th>凌越編號</th><th>LINE 群組名稱</th><th>LINE 綁定</th><th>聯絡</th><th>狀態</th><th>操作</th></tr></thead>
-          <tbody>${tbody}</tbody>
-        </table>
-        <p><a href="/admin">← 回後台</a></p>
-      </body>
-      </html>
-    `);
+        <p class="notion-msg ok" style="margin-bottom:16px;">匯入後可點「編輯」補上 LINE 群組名稱、LINE 群組 ID。停用後該群組將不再對應叫貨。</p>
+        <div class="notion-card">
+          <table>
+            <thead><tr><th>名稱</th><th>寺岡編號</th><th>凌越編號</th><th>LINE 群組名稱</th><th>LINE 綁定</th><th>聯絡</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody>${tbody}</tbody>
+          </table>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("客戶管理", body));
     });
     router.post("/customers/:id/toggle", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const id = req.params.id;
@@ -703,25 +707,19 @@ function createAdminRouter() {
         }
         const orderCount = db.prepare("SELECT COUNT(*) AS c FROM orders WHERE customer_id = ?").get(customer.id);
         const hasOrders = (orderCount?.c ?? 0) > 0;
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>確認刪除</title>
-      <style>body{font-family:sans-serif;max-width:480px;margin:2rem auto;padding:0 1rem;} .btn{margin-right:0.5rem;padding:0.4rem 0.8rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>確認刪除客戶</h1>
-        <p>確定要刪除「${escapeHtml(customer.name)}」？</p>
-        ${hasOrders ? "<p style='color:red'>此客戶已有訂單，無法刪除。請改為「停用」。</p>" : ""}
-        <p>
-          ${!hasOrders ? `<form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/delete" style="display:inline;"><button type="submit" class="btn">確定刪除</button></form>` : ""}
-          <a href="/admin/customers" class="btn">取消</a>
-        </p>
-        <p><a href="/admin/customers">← 回客戶列表</a></p>
-      </body>
-      </html>
-    `);
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/customers">客戶管理</a> / 確認刪除</div>
+        <h1 class="notion-page-title">確認刪除客戶</h1>
+        <div class="notion-card">
+          <p>確定要刪除「${escapeHtml(customer.name)}」？</p>
+          ${hasOrders ? "<p class=\"notion-msg err\">此客戶已有訂單，無法刪除。請改為「停用」。</p>" : ""}
+          <p style="margin-top:16px;">
+            ${!hasOrders ? `<form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/delete" style="display:inline;"><button type="submit" class="btn">確定刪除</button></form> ` : ""}
+            <a href="/admin/customers" class="btn">取消</a>
+          </p>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("確認刪除", body));
     });
     router.post("/customers/:id/delete", (req, res) => {
         const id = req.params.id;
@@ -781,30 +779,24 @@ function createAdminRouter() {
         const filterLink = showInactive
             ? `<a href="/admin/products${q ? "?q=" + encodeURIComponent(q) : ""}">只看啟用</a>`
             : `<a href="/admin/products?inactive=1${q ? "&q=" + encodeURIComponent(q) : ""}">只看停用</a>`;
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>品項與俗名</title>
-      <style>body{font-family:sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.5rem;} .ops a, .ops form{display:inline;margin-right:0.25rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>品項與俗名</h1>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 品項與俗名</div>
+        <h1 class="notion-page-title">品項與俗名</h1>
         ${msg}
-        <p><a href="/admin/import">匯入品項</a>、<a href="/admin/import-teraoka">寺岡資料對照</a>　${filterLink}</p>
-        <form method="get" action="/admin/products" style="margin-bottom:1rem;">
+        <p style="margin-bottom:16px;"><a href="/admin/import">匯入品項</a>、<a href="/admin/import-teraoka">寺岡資料對照</a>　${filterLink}</p>
+        <form method="get" action="/admin/products" style="margin-bottom:16px;">
           <input type="hidden" name="inactive" value="${showInactive ? "1" : ""}">
           <input type="search" name="q" value="${escapeAttr(q)}" placeholder="搜尋品名、料號、條碼">
-          <button type="submit">搜尋</button>
+          <button type="submit" class="btn">搜尋</button>
         </form>
-        <table>
-          <thead><tr><th>標準品名</th><th>凌越料號</th><th>寺岡條碼</th><th>單位</th><th>俗名</th><th>狀態</th><th>操作</th></tr></thead>
-          <tbody>${tbody.length ? tbody : "<tr><td colspan='7'>無符合的品項</td></tr>"}</tbody>
-        </table>
-        <p><a href="/admin">← 回後台</a></p>
-      </body>
-      </html>
-    `);
+        <div class="notion-card">
+          <table>
+            <thead><tr><th>標準品名</th><th>凌越料號</th><th>寺岡條碼</th><th>單位</th><th>俗名</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody>${tbody.length ? tbody : "<tr><td colspan='7'>無符合的品項</td></tr>"}</tbody>
+          </table>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("品項與俗名", body));
     });
     router.get("/products/:id/aliases", (req, res) => {
         const productId = req.params.id;
@@ -821,32 +813,27 @@ function createAdminRouter() {
             <td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit">編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td>
           </tr>`)
             .join("");
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>俗名管理</title>
-      <style>body{font-family:sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;} table{border-collapse:collapse;} th,td{border:1px solid #ddd;padding:0.5rem;} form{display:inline;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>俗名管理：${escapeHtml(product.name)}</h1>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/products">品項與俗名</a> / 俗名管理</div>
+        <h1 class="notion-page-title">俗名管理：${escapeHtml(product.name)}</h1>
         ${msg}
-        <table>
-          <thead><tr><th>俗名（別名）</th><th>操作</th></tr></thead>
-          <tbody>${rows || "<tr><td colspan='2'>尚無俗名</td></tr>"}</tbody>
-        </table>
-        <h2>新增俗名</h2>
-        <form method="post" action="/admin/alias" style="display:block;">
-          <input type="hidden" name="scope" value="global">
-          <input type="hidden" name="product_id" value="${escapeAttr(product.id)}">
-          <input type="hidden" name="redirect" value="/admin/products/${encodeURIComponent(product.id)}/aliases">
-          <label>別名（客戶可能這樣叫）<input type="text" name="alias" required placeholder="例：高麗菜心"></label>
-          <button type="submit">新增</button>
-        </form>
+        <div class="notion-card">
+          <table>
+            <thead><tr><th>俗名（別名）</th><th>操作</th></tr></thead>
+            <tbody>${rows || "<tr><td colspan='2'>尚無俗名</td></tr>"}</tbody>
+          </table>
+          <h2 style="margin-top:16px;">新增俗名</h2>
+          <form method="post" action="/admin/alias">
+            <input type="hidden" name="scope" value="global">
+            <input type="hidden" name="product_id" value="${escapeAttr(product.id)}">
+            <input type="hidden" name="redirect" value="/admin/products/${encodeURIComponent(product.id)}/aliases">
+            <label>別名（客戶可能這樣叫）<input type="text" name="alias" required placeholder="例：高麗菜心" style="width:100%;"></label>
+            <p style="margin-top:12px;"><button type="submit" class="btn btn-primary">新增</button></p>
+          </form>
+        </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("俗名管理", body));
     });
     router.get("/aliases/:id/edit", (req, res) => {
         const id = req.params.id;
@@ -856,25 +843,20 @@ function createAdminRouter() {
             return;
         }
         const errMsg = req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>編輯俗名</title>
-      <style>body{font-family:sans-serif;max-width:480px;margin:2rem auto;padding:0 1rem;} label{display:block;margin-top:0.5rem;} input{width:100%;padding:0.4rem;box-sizing:border-box;} button{margin-top:0.5rem;padding:0.4rem 0.8rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>編輯俗名</h1>
-        <p>品項：${escapeHtml(row.product_name)}</p>
-        ${errMsg}
-        <form method="post" action="/admin/aliases/${encodeURIComponent(id)}/edit">
-          <label>別名 <input type="text" name="alias" value="${escapeAttr(row.alias)}" required></label>
-          <button type="submit">儲存</button>
-        </form>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/products">品項與俗名</a> / <a href="/admin/products/${encodeURIComponent(row.product_id)}/aliases">俗名管理</a> / 編輯俗名</div>
+        <h1 class="notion-page-title">編輯俗名</h1>
+        <div class="notion-card">
+          <p>品項：${escapeHtml(row.product_name)}</p>
+          ${errMsg}
+          <form method="post" action="/admin/aliases/${encodeURIComponent(id)}/edit">
+            <label>別名 <input type="text" name="alias" value="${escapeAttr(row.alias)}" required style="width:100%;"></label>
+            <p style="margin-top:12px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+          </form>
+        </div>
         <p><a href="/admin/products/${encodeURIComponent(row.product_id)}/aliases">← 回俗名管理</a></p>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("編輯俗名", body));
     });
     router.post("/aliases/:id/edit", express_1.default.urlencoded({ extended: true }), (req, res) => {
         const id = req.params.id;
@@ -913,38 +895,33 @@ function createAdminRouter() {
             return;
         }
         const errMsg = req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>編輯品項</title>
-      <style>body{font-family:sans-serif;max-width:480px;margin:2rem auto;padding:0 1rem;} label{display:block;margin-top:0.75rem;} input[type=text],select{width:100%;padding:0.4rem;box-sizing:border-box;} button{margin-top:1rem;padding:0.5rem 1rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>編輯品項</h1>
-        ${errMsg}
-        <form method="post" action="/admin/products/${encodeURIComponent(row.id)}/edit">
-          <label>標準品名 <input type="text" name="name" value="${escapeAttr(row.name)}" required></label>
-          <label>凌越料號 <input type="text" name="erp_code" value="${escapeAttr(row.erp_code ?? "")}"></label>
-          <label>寺岡條碼 <input type="text" name="teraoka_barcode" value="${escapeAttr(row.teraoka_barcode ?? "")}"></label>
-          <label>單位 <select name="unit">
-            <option value="公斤" ${row.unit === "公斤" ? "selected" : ""}>公斤</option>
-            <option value="斤" ${row.unit === "斤" ? "selected" : ""}>斤</option>
-            <option value="把" ${row.unit === "把" ? "selected" : ""}>把</option>
-            <option value="包" ${row.unit === "包" ? "selected" : ""}>包</option>
-            <option value="箱" ${row.unit === "箱" ? "selected" : ""}>箱</option>
-            <option value="顆" ${row.unit === "顆" ? "selected" : ""}>顆</option>
-            <option value="粒" ${row.unit === "粒" ? "selected" : ""}>粒</option>
-            <option value="盒" ${row.unit === "盒" ? "selected" : ""}>盒</option>
-            <option value="袋" ${row.unit === "袋" ? "selected" : ""}>袋</option>
-          </select></label>
-          <label><input type="checkbox" name="active" value="1" ${row.active === 1 ? "checked" : ""}> 啟用（未勾選即停用）</label>
-          <br><button type="submit">儲存</button>
-        </form>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/products">品項與俗名</a> / 編輯品項</div>
+        <h1 class="notion-page-title">編輯品項</h1>
+        ${errMsg ? `<div class="notion-msg err">${errMsg.replace(/<p[^>]*>|<\/p>/g, "").trim()}</div>` : ""}
+        <div class="notion-card">
+          <form method="post" action="/admin/products/${encodeURIComponent(row.id)}/edit">
+            <label>標準品名 <input type="text" name="name" value="${escapeAttr(row.name)}" required style="width:100%;"></label>
+            <label>凌越料號 <input type="text" name="erp_code" value="${escapeAttr(row.erp_code ?? "")}" style="width:100%;"></label>
+            <label>寺岡條碼 <input type="text" name="teraoka_barcode" value="${escapeAttr(row.teraoka_barcode ?? "")}" style="width:100%;"></label>
+            <label>單位 <select name="unit" style="width:100%;">
+              <option value="公斤" ${row.unit === "公斤" ? "selected" : ""}>公斤</option>
+              <option value="斤" ${row.unit === "斤" ? "selected" : ""}>斤</option>
+              <option value="把" ${row.unit === "把" ? "selected" : ""}>把</option>
+              <option value="包" ${row.unit === "包" ? "selected" : ""}>包</option>
+              <option value="箱" ${row.unit === "箱" ? "selected" : ""}>箱</option>
+              <option value="顆" ${row.unit === "顆" ? "selected" : ""}>顆</option>
+              <option value="粒" ${row.unit === "粒" ? "selected" : ""}>粒</option>
+              <option value="盒" ${row.unit === "盒" ? "selected" : ""}>盒</option>
+              <option value="袋" ${row.unit === "袋" ? "selected" : ""}>袋</option>
+            </select></label>
+            <label><input type="checkbox" name="active" value="1" ${row.active === 1 ? "checked" : ""}> 啟用（未勾選即停用）</label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+          </form>
+        </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("編輯品項", body));
     });
     router.post("/products/:id/edit", (req, res) => {
         const id = req.params.id;
@@ -990,25 +967,20 @@ function createAdminRouter() {
         }
         const refCount = db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE product_id = ?").get(id);
         const hasOrders = (refCount?.c ?? 0) > 0;
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>確認刪除品項</title>
-      <style>body{font-family:sans-serif;max-width:480px;margin:2rem auto;padding:0 1rem;} .btn{margin-right:0.5rem;padding:0.4rem 0.8rem;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>確認刪除品項</h1>
-        <p>確定要刪除「${escapeHtml(product.name)}」？</p>
-        ${hasOrders ? "<p style='color:red'>此品項已被訂單使用，無法刪除。請改為「停用」。</p>" : ""}
-        <p>
-          ${!hasOrders ? `<form method="post" action="/admin/products/${encodeURIComponent(id)}/delete" style="display:inline;"><button type="submit" class="btn">確定刪除</button></form>` : ""}
-          <a href="/admin/products" class="btn">取消</a>
-        </p>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/products">品項與俗名</a> / 確認刪除</div>
+        <h1 class="notion-page-title">確認刪除品項</h1>
+        <div class="notion-card">
+          <p>確定要刪除「${escapeHtml(product.name)}」？</p>
+          ${hasOrders ? '<p class="notion-msg err">此品項已被訂單使用，無法刪除。請改為「停用」。</p>' : ""}
+          <p style="margin-top:16px;">
+            ${!hasOrders ? `<form method="post" action="/admin/products/${encodeURIComponent(id)}/delete" style="display:inline;"><button type="submit" class="btn">確定刪除</button></form> ` : ""}
+            <a href="/admin/products" class="btn">取消</a>
+          </p>
+        </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("確認刪除品項", body));
     });
     router.post("/products/:id/delete", (req, res) => {
         const id = req.params.id;
@@ -1022,45 +994,40 @@ function createAdminRouter() {
     });
     router.get("/import", (req, res) => {
         const msg = req.query.ok ? `<p style='color:green'>已匯入 ${req.query.ok} 筆品項。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>匯入品項</title>
-      <style>body{font-family:sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;} textarea{width:100%;height:200px;padding:0.5rem;box-sizing:border-box;} button{margin-top:0.5rem;padding:0.5rem 1rem;} label{display:block;margin-top:0.5rem;} pre{background:#f5f5f5;padding:0.75rem;overflow:auto;font-size:0.9em;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>匯入品項</h1>
-        ${msg}
-        <p>第一列為標題，支援欄位：</p>
-        <ul>
-          <li>品名：<code>CommName</code>、<code>標準品名</code>、<code>name</code></li>
-          <li>寺岡號碼（條碼）：<code>PluCode</code>、<code>寺岡條碼</code>、<code>teraoka_barcode</code></li>
-          <li>凌越料號：<code>HQPluCode</code>、<code>ERP料號</code>、<code>erp_code</code></li>
-          <li>單位：<code>QtySymbol</code>、<code>單位</code>、<code>unit</code></li>
-        </ul>
-        <p>同一品名已存在時會略過不覆蓋。</p>
-        <form method="post" action="/admin/import" enctype="multipart/form-data">
-          <label>匯入時若單位為空，使用（常用單位）：<select name="default_unit">
-            <option value="公斤">公斤</option>
-            <option value="斤">斤</option>
-            <option value="把">把</option>
-            <option value="包">包</option>
-            <option value="箱">箱</option>
-            <option value="顆">顆</option>
-            <option value="粒">粒</option>
-            <option value="盒">盒</option>
-            <option value="袋">袋</option>
-          </select></label>
-          <label>或上傳 Excel：<input type="file" name="file" accept=".xlsx,.xls"></label>
-          <br>或貼上 CSV：
-          <textarea name="csv" placeholder="貼上 CSV 內容..."></textarea>
-          <br><button type="submit">匯入</button>
-        </form>
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 匯入品項</div>
+        <h1 class="notion-page-title">匯入品項</h1>
+        ${msg ? `<div class="notion-msg ${msg.indexOf("已匯入") >= 0 ? "ok" : "err"}">${msg.replace(/<p[^>]*>|<\/p>/g, "").trim()}</div>` : ""}
+        <div class="notion-card">
+          <h2>支援欄位</h2>
+          <p>第一列為標題。</p>
+          <ul>
+            <li>品名：<code>CommName</code>、<code>標準品名</code>、<code>name</code></li>
+            <li>寺岡號碼（條碼）：<code>PluCode</code>、<code>寺岡條碼</code>、<code>teraoka_barcode</code></li>
+            <li>凌越料號：<code>HQPluCode</code>、<code>ERP料號</code>、<code>erp_code</code></li>
+            <li>單位：<code>QtySymbol</code>、<code>單位</code>、<code>unit</code></li>
+          </ul>
+          <p>同一品名已存在時會略過不覆蓋。</p>
+          <form method="post" action="/admin/import" enctype="multipart/form-data">
+            <label>匯入時若單位為空，使用：<select name="default_unit">
+              <option value="公斤">公斤</option>
+              <option value="斤">斤</option>
+              <option value="把">把</option>
+              <option value="包">包</option>
+              <option value="箱">箱</option>
+              <option value="顆">顆</option>
+              <option value="粒">粒</option>
+              <option value="盒">盒</option>
+              <option value="袋">袋</option>
+            </select></label>
+            <label>上傳 Excel：<input type="file" name="file" accept=".xlsx,.xls"></label>
+            <label>或貼上 CSV：<textarea name="csv" placeholder="貼上 CSV 內容..." style="width:100%;height:160px;"></textarea></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">匯入</button></p>
+          </form>
+        </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
-      </body>
-      </html>
-    `);
+      `;
+        res.type("text/html").send(notionPage("匯入品項", body));
     });
     router.post("/import", upload, (req, res) => {
         const sheet = parseRequestToSheet(req);
@@ -1105,38 +1072,31 @@ function createAdminRouter() {
     });
     router.get("/import-customers", (req, res) => {
         const msg = req.query.ok ? `<p style='color:green'>匯入結果：${escapeHtml(String(req.query.ok))}。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>匯入客戶</title>
-      <style>body{font-family:sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;} textarea{width:100%;height:180px;padding:0.5rem;box-sizing:border-box;} button{margin-top:0.5rem;padding:0.5rem 1rem;} pre{background:#f5f5f5;padding:0.75rem;font-size:0.9em;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>匯入客戶</h1>
-        ${msg}
-        <p>請貼上 CSV 或上傳 Excel，<strong>第一列為標題</strong>。支援欄位：</p>
-        <ul>
-          <li><strong>CustName</strong> / 客戶名稱（必填）</li>
-          <li><strong>LineGroupId</strong> / LINE群組ID － 綁定叫貨群組（可匯入時一併填，或之後編輯補上）</li>
-          <li><strong>CustCode</strong> → 寺岡編號、<strong>HQCustCode</strong> → 凌越編號</li>
-          <li>聯絡：<code>CustTel</code>、<code>Fax</code>、<code>Contact</code>、<code>Email</code> 會合併</li>
-        </ul>
-        <p><strong>大量群組</strong>：在各群組傳「取得群組ID」，機器人會回傳該群組 ID；收集成 Excel 後用「客戶名稱 + LINE群組ID」匯入即可批次綁定。</p>
-        <pre>客戶名稱, LINE群組ID, 聯絡
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 匯入客戶</div>
+        <h1 class="notion-page-title">匯入客戶</h1>
+        ${msg ? `<div class="notion-msg ${msg.indexOf("匯入結果") >= 0 ? "ok" : "err"}">${msg.replace(/<p[^>]*>|<\/p>/g, "").trim()}</div>` : ""}
+        <div class="notion-card">
+          <h2>支援欄位（第一列為標題）</h2>
+          <ul>
+            <li><strong>CustName</strong> / 客戶名稱（必填）</li>
+            <li><strong>LineGroupId</strong> / LINE 群組 ID（綁定叫貨群組）</li>
+            <li><strong>CustCode</strong> → 寺岡編號、<strong>HQCustCode</strong> → 凌越編號</li>
+            <li>聯絡：<code>CustTel</code>、<code>Fax</code>、<code>Contact</code>、<code>Email</code> 會合併</li>
+          </ul>
+          <p><strong>大量群組</strong>：在各群組傳「取得群組ID」，機器人會回傳該群組 ID；收集成 Excel 後用「客戶名稱 + LINE群組ID」匯入即可批次綁定。</p>
+          <pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);font-size:13px;overflow:auto;">客戶名稱, LINE群組ID, 聯絡
 XX餐廳, C1234..., 02-12345678
 YY小吃, C5678...,</pre>
-        <p>支援 <strong>CSV 貼上</strong> 或 <strong>Excel（.xlsx / .xls）上傳</strong>。</p>
-        <form method="post" action="/admin/import-customers" enctype="multipart/form-data">
-          <label>或上傳 Excel：<input type="file" name="file" accept=".xlsx,.xls"></label>
-          <br><br>或貼上 CSV：
-          <textarea name="csv" placeholder="貼上 CSV 內容..."></textarea>
-          <br><button type="submit">匯入</button>
-        </form>
-        <p><a href="/admin/customers">← 回客戶列表</a></p>
-      </body>
-      </html>
-    `);
+          <form method="post" action="/admin/import-customers" enctype="multipart/form-data">
+            <label>上傳 Excel：<input type="file" name="file" accept=".xlsx,.xls"></label>
+            <label>或貼上 CSV：<textarea name="csv" placeholder="貼上 CSV 內容..." style="width:100%;height:160px;"></textarea></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">匯入</button></p>
+          </form>
+        </div>
+        <p style="margin-top:16px;"><a href="/admin/customers" class="btn">← 回客戶列表</a></p>
+        `);
+        res.type("text/html").send(notionPage("匯入客戶", body));
     });
     router.post("/import-customers", upload, (req, res) => {
         const sheet = parseRequestToSheet(req);
@@ -1194,39 +1154,32 @@ YY小吃, C5678...,</pre>
         const unmatched = req.query.unmatched;
         let msg = "";
         if (ok === "1" && matched !== undefined)
-            msg = `<p style='color:green'>對照完成。已更新寺岡條碼：${matched} 筆。</p>`;
+            msg = `<p class="notion-msg ok">對照完成。已更新寺岡條碼：${matched} 筆。</p>`;
         if (unmatched !== undefined && unmatched !== "0")
-            msg += `<p style='color:orange'>未對應到品項（請先建品項或俗名）：${unmatched} 筆。</p>`;
+            msg += `<p class="notion-msg err">未對應到品項（請先建品項或俗名）：${unmatched} 筆。</p>`;
         if (req.query.err)
-            msg += `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>`;
-        res.type("text/html").send(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="utf-8"><title>寺岡資料對照</title>
-      <style>body{font-family:sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;} textarea{width:100%;height:200px;padding:0.5rem;box-sizing:border-box;} button{margin-top:0.5rem;padding:0.5rem 1rem;} pre{background:#f5f5f5;padding:0.75rem;font-size:0.9em;}</style>
-      </head>
-      <body>
-        ${TOP_NAV}
-        <h1>寺岡資料對照</h1>
+            msg += `<p class="notion-msg err">${escapeHtml(String(req.query.err))}</p>`;
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 寺岡資料對照</div>
+        <h1 class="notion-page-title">寺岡資料對照</h1>
         ${msg}
-        <p>貼上<strong>寺岡匯出的 CSV</strong>，系統會依<strong>品名</strong>對照到現有品項，並寫入<strong>寺岡條碼</strong>。</p>
-        <p>第一列為標題，需有「品名」或「名稱」欄（對應我們的標準品名或俗名）、以及「條碼」或「編號」欄（寺岡條碼）。</p>
-        <pre>品名, 條碼
+        <div class="notion-card">
+          <p>貼上<strong>寺岡匯出的 CSV</strong>，系統會依<strong>品名</strong>對照到現有品項，並寫入<strong>寺岡條碼</strong>。</p>
+          <p>第一列為標題，需有「品名」或「名稱」欄（對應我們的標準品名或俗名）、以及「條碼」或「編號」欄（寺岡條碼）。</p>
+          <pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);font-size:13px;overflow:auto;">品名, 條碼
 高麗菜, T001
 福山萵苣, T002
 大陸妹, T002</pre>
-        <p>若寺岡的品名與系統不完全一致，請先在「品項與俗名」或「待確認品名」建立俗名對照，再匯入。</p>
-        <p>支援 <strong>CSV 貼上</strong> 或 <strong>Excel（.xlsx / .xls）上傳</strong>。</p>
-        <form method="post" action="/admin/import-teraoka" enctype="multipart/form-data">
-          <label>或上傳 Excel：<input type="file" name="file" accept=".xlsx,.xls"></label>
-          <br><br>或貼上 CSV：
-          <textarea name="csv" placeholder="貼上寺岡匯出的 CSV..."></textarea>
-          <br><button type="submit">對照並更新</button>
-        </form>
-        <p><a href="/admin/products">← 回品項列表</a></p>
-      </body>
-      </html>
-    `);
+          <p>若寺岡的品名與系統不完全一致，請先在「品項與俗名」或「待確認品名」建立俗名對照，再匯入。</p>
+          <form method="post" action="/admin/import-teraoka" enctype="multipart/form-data">
+            <label>上傳 Excel：<input type="file" name="file" accept=".xlsx,.xls"></label>
+            <label>或貼上 CSV：<textarea name="csv" placeholder="貼上寺岡匯出的 CSV..." style="width:100%;height:180px;"></textarea></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">對照並更新</button></p>
+          </form>
+        </div>
+        <p style="margin-top:16px;"><a href="/admin/products" class="btn">← 回品項列表</a></p>
+        `;
+        res.type("text/html").send(notionPage("寺岡資料對照", body));
     });
     router.post("/import-teraoka", upload, (req, res) => {
         const sheet = parseRequestToSheet(req);
