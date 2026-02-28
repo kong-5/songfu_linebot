@@ -5,13 +5,12 @@ exports.resolveProductName = resolveProductName;
  * 依俗名或客戶別名解析出標準品項。
  * 先查該客戶專用別名，再查全公司俗名。
  */
-function resolveProductName(db, rawName, customerId) {
+async function resolveProductName(db, rawName, customerId) {
     const normalized = rawName.trim();
     if (!normalized)
         return null;
-    // 1. 若有客戶，先查客戶專用別名
     if (customerId) {
-        const row = db
+        const row = await db
             .prepare(`SELECT p.id, p.name, p.erp_code, p.teraoka_barcode, p.unit
          FROM customer_product_aliases cpa
          JOIN products p ON p.id = cpa.product_id AND (p.active IS NULL OR p.active = 1)
@@ -27,8 +26,7 @@ function resolveProductName(db, rawName, customerId) {
             };
         }
     }
-    // 2. 全公司俗名對照
-    const aliasRow = db
+    const aliasRow = await db
         .prepare(`SELECT p.id, p.name, p.erp_code, p.teraoka_barcode, p.unit
        FROM product_aliases pa
        JOIN products p ON p.id = pa.product_id AND (p.active IS NULL OR p.active = 1)
@@ -43,8 +41,7 @@ function resolveProductName(db, rawName, customerId) {
             unit: aliasRow.unit,
         };
     }
-    // 3. 直接比對標準品名
-    const productRow = db
+    const productRow = await db
         .prepare(`SELECT id, name, erp_code, teraoka_barcode, unit FROM products WHERE (active IS NULL OR active = 1) AND (name = ? OR name = ?)`)
         .get(normalized, normalized.toLowerCase());
     if (productRow) {

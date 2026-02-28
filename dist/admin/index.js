@@ -55,7 +55,14 @@ const NOTION_STYLE = `
   .notion-sidebar a:hover { background: var(--notion-hover); }
   .notion-sidebar .active { background: var(--notion-hover); color: var(--notion-accent); }
   .notion-sidebar .group { font-size: 11px; font-weight: 600; color: var(--notion-text-muted); padding: 8px 14px 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .notion-main { flex: 1; padding: 32px 40px 48px; max-width: 900px; }
+  .notion-sidebar .sidebar-group { margin: 0; border: none; }
+  .notion-sidebar .sidebar-group-title { font-size: 15px; font-weight: 700; color: #1a1a1a; padding: 10px 14px; cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; }
+  .notion-sidebar .sidebar-group-title::-webkit-details-marker { display: none; }
+  .notion-sidebar .sidebar-group-title::after { content: "▼"; font-size: 10px; color: var(--notion-text-muted); }
+  .notion-sidebar .sidebar-group[open] .sidebar-group-title::after { content: "▲"; }
+  .notion-sidebar .sidebar-group .sidebar-links { padding: 0 0 8px 0; }
+  .notion-sidebar .sidebar-group .sidebar-links a { padding: 6px 14px 6px 20px; }
+  .notion-main { flex: 1; padding: 32px 40px 48px; max-width: none; width: 100%; }
   .notion-page-title { font-size: 28px; font-weight: 700; margin: 0 0 8px; color: var(--notion-text); }
   .notion-breadcrumb { font-size: 13px; color: var(--notion-text-muted); margin-bottom: 20px; }
   .notion-breadcrumb a { color: var(--notion-accent); text-decoration: none; }
@@ -100,24 +107,40 @@ const NOTION_SIDEBAR = (active) => `
   <nav class="notion-sidebar">
     <a href="/admin" class="${active === "dashboard" ? "active" : ""}">回後台</a>
     <a href="javascript:history.back()">上一頁</a>
-    <div class="group">日期結轉</div>
-    <a href="/admin">結轉日期</a>
-    <div class="group">客戶管理</div>
-    <a href="/admin/customers/new">新增客戶</a>
-    <a href="/admin/customers">客戶管理</a>
-    <a href="/admin/import-customers">批次匯入客戶</a>
-    <div class="group">貨品管理</div>
-    <a href="/admin/products">品項與俗名</a>
-    <a href="/admin/import">批次匯入品項</a>
-    <a href="/admin/specs">單品規格表</a>
-    <div class="group">訂單管理</div>
-    <a href="/admin/orders">訂單查詢</a>
-    <a href="/admin/review">待確認品項</a>
-    <a href="/admin/export">資料匯出</a>
+    <details class="sidebar-group" open>
+      <summary class="sidebar-group-title">日期結轉</summary>
+      <div class="sidebar-links">
+        <a href="/admin">結轉日期</a>
+      </div>
+    </details>
+    <details class="sidebar-group" open>
+      <summary class="sidebar-group-title">客戶管理</summary>
+      <div class="sidebar-links">
+        <a href="/admin/customers/new">新增客戶</a>
+        <a href="/admin/customers">客戶管理</a>
+        <a href="/admin/import-customers">批次匯入客戶</a>
+      </div>
+    </details>
+    <details class="sidebar-group" open>
+      <summary class="sidebar-group-title">貨品管理</summary>
+      <div class="sidebar-links">
+        <a href="/admin/products">品項與俗名</a>
+        <a href="/admin/import">批次匯入品項</a>
+        <a href="/admin/specs">單品規格表</a>
+      </div>
+    </details>
+    <details class="sidebar-group" open>
+      <summary class="sidebar-group-title">訂單管理</summary>
+      <div class="sidebar-links">
+        <a href="/admin/orders">訂單查詢</a>
+        <a href="/admin/review">待確認品項</a>
+        <a href="/admin/export">資料匯出</a>
+      </div>
+    </details>
   </nav>
 `;
-function getWorkingDate(database) {
-    const row = database.prepare("SELECT value FROM app_settings WHERE key = ?").get("working_date");
+async function getWorkingDate(database) {
+    const row = await database.prepare("SELECT value FROM app_settings WHERE key = ?").get("working_date");
     if (row && row.value)
         return row.value;
     const tomorrow = new Date();
@@ -148,39 +171,44 @@ function notionPage(title, body, active = "", topBar = "") {
 function createAdminRouter() {
     const router = express_1.default.Router();
     const db = (0, index_js_1.getDb)(dbPath);
-    router.use((_req, res, next) => {
-        const workingDate = getWorkingDate(db);
-        const prev = db.prepare("SELECT value FROM app_settings WHERE key = ?").get("previous_working_date");
-        res.locals.topBarHtml = renderTopBar(workingDate, !!(prev && prev.value));
-        next();
+    router.use(async (_req, res, next) => {
+        try {
+            const workingDate = await getWorkingDate(db);
+            const prev = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("previous_working_date");
+            res.locals.topBarHtml = renderTopBar(workingDate, !!(prev && prev.value));
+            next();
+        }
+        catch (e) {
+            next(e);
+        }
     });
-    router.post("/api/working-date", express_1.default.urlencoded({ extended: true }), (req, res) => {
+    router.post("/api/working-date", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const date = req.body.date?.trim();
         if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
             res.redirect("/admin?err=date");
             return;
         }
-        db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("working_date", date);
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("working_date", date);
         res.redirect(req.get("Referrer") || "/admin");
     });
-    router.post("/api/rollover", (req, res) => {
-        const current = getWorkingDate(db);
+    router.post("/api/rollover", async (req, res) => {
+        const current = await getWorkingDate(db);
         const next = new Date(current + "T12:00:00");
         next.setDate(next.getDate() + 1);
         const nextStr = next.toISOString().slice(0, 10);
-        db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("previous_working_date", current);
-        db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("working_date", nextStr);
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("previous_working_date", current);
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("working_date", nextStr);
         res.redirect(req.get("Referrer") || "/admin");
     });
-    router.post("/api/rollover-undo", (req, res) => {
-        const prev = db.prepare("SELECT value FROM app_settings WHERE key = ?").get("previous_working_date");
+    router.post("/api/rollover-undo", async (req, res) => {
+        const prev = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("previous_working_date");
         if (prev && prev.value) {
-            db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("working_date", prev.value);
-            db.prepare("DELETE FROM app_settings WHERE key = ?").run("previous_working_date");
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("working_date", prev.value);
+            await db.prepare("DELETE FROM app_settings WHERE key = ?").run("previous_working_date");
         }
         res.redirect(req.get("Referrer") || "/admin");
     });
-    router.get("/", (_req, res) => {
+    router.get("/", async (_req, res) => {
         const body = `
         <div class="notion-breadcrumb">工作台</div>
         <h1 class="notion-page-title">工作台</h1>
@@ -203,9 +231,9 @@ function createAdminRouter() {
         res.type("text/html").send(notionPage("工作台", body, "dashboard", res.locals.topBarHtml));
     });
     // 待確認品名：列出 need_review=1 的明細，可選擇對應品項並加入俗名
-    router.get("/review", (req, res) => {
+    router.get("/review", async (req, res) => {
         const msg = req.query.ok === "1" ? "<p style='color:green'>已加入對照。</p>" : req.query.err === "dup" ? "<p style='color:red'>此俗名已存在，請勿重複新增。</p>" : "";
-        const rows = db.prepare(`
+        const rows = await db.prepare(`
       SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.order_id, o.customer_id, c.name AS customer_name
       FROM order_items oi
       JOIN orders o ON o.id = oi.order_id
@@ -213,7 +241,7 @@ function createAdminRouter() {
       WHERE oi.need_review = 1
       ORDER BY oi.id
     `).all();
-        const products = db.prepare("SELECT id, name, erp_code FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all();
+        const products = await db.prepare("SELECT id, name, erp_code FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all();
         const productOptions = products.map((p) => {
             const label = p.erp_code ? `${p.name}（${p.erp_code}）` : p.name;
             return `<option value="${escapeAttr(p.id)}" data-search="${escapeAttr((p.name + " " + (p.erp_code ?? "")).toLowerCase())}">${escapeHtml(label)}</option>`;
@@ -278,7 +306,7 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("待確認品名", body, "", res.locals.topBarHtml));
     });
-    router.post("/alias", express_1.default.urlencoded({ extended: true }), (req, res) => {
+    router.post("/alias", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { alias, product_id, customer_id, scope, redirect } = req.body;
         if (!alias?.trim() || !product_id) {
             res.redirect(redirect && redirect.startsWith("/admin") ? redirect + "?err=missing" : "/admin/review?err=missing");
@@ -289,18 +317,18 @@ function createAdminRouter() {
         try {
             if (isGlobal) {
                 const id = (0, id_js_1.newId)("pa");
-                db.prepare("INSERT INTO product_aliases (id, product_id, alias) VALUES (?, ?, ?)").run(id, product_id, aliasTrim);
+                await db.prepare("INSERT INTO product_aliases (id, product_id, alias) VALUES (?, ?, ?)").run(id, product_id, aliasTrim);
             }
             else if (customer_id) {
                 const id = (0, id_js_1.newId)("cpa");
-                db.prepare("INSERT INTO customer_product_aliases (id, customer_id, product_id, alias) VALUES (?, ?, ?, ?)").run(id, customer_id, product_id, aliasTrim);
+                await db.prepare("INSERT INTO customer_product_aliases (id, customer_id, product_id, alias) VALUES (?, ?, ?, ?)").run(id, customer_id, product_id, aliasTrim);
             }
             // 將同名稱的待確認明細改為已對應（若為客戶專用則只更新該客戶的訂單明細）
             if (isGlobal) {
-                db.prepare("UPDATE order_items SET need_review = 0, product_id = ? WHERE raw_name = ? AND need_review = 1").run(product_id, aliasTrim);
+                await db.prepare("UPDATE order_items SET need_review = 0, product_id = ? WHERE raw_name = ? AND need_review = 1").run(product_id, aliasTrim);
             }
             else if (customer_id) {
-                db.prepare(`UPDATE order_items SET need_review = 0, product_id = ?
+                await db.prepare(`UPDATE order_items SET need_review = 0, product_id = ?
            WHERE raw_name = ? AND need_review = 1 AND order_id IN (SELECT id FROM orders WHERE customer_id = ?)`).run(product_id, aliasTrim, customer_id);
             }
         }
@@ -312,9 +340,9 @@ function createAdminRouter() {
         const doneUrl = redirect && redirect.startsWith("/admin") ? redirect + "?ok=1" : "/admin/review?ok=1";
         res.redirect(doneUrl);
     });
-    router.get("/orders", (req, res) => {
+    router.get("/orders", async (req, res) => {
         const onlyNeedReview = req.query.need_review === "1";
-        let orders = db.prepare(`
+        let orders = await db.prepare(`
       SELECT o.id, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
       FROM orders o
@@ -355,14 +383,14 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("訂單查詢", body, "", res.locals.topBarHtml));
     });
-    router.get("/export", (req, res) => {
-        const workingDate = getWorkingDate(db);
+    router.get("/export", async (req, res) => {
+        const workingDate = await getWorkingDate(db);
         const date = (req.query.date || workingDate).toString().trim();
         const customerId = req.query.customer_id?.trim() || "";
-        const customers = db.prepare("SELECT id, name FROM customers WHERE active = 1 ORDER BY name").all();
+        const customers = await db.prepare("SELECT id, name FROM customers WHERE active = 1 ORDER BY name").all();
         let orders = [];
         if (date) {
-            orders = db.prepare(`
+            orders = await db.prepare(`
               SELECT o.id, o.order_date, o.customer_id, c.name AS customer_name
               FROM orders o JOIN customers c ON c.id = o.customer_id
               WHERE o.order_date = ?
@@ -394,14 +422,14 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("資料匯出", body, "", res.locals.topBarHtml));
     });
-    router.get("/export/download", (req, res) => {
+    router.get("/export/download", async (req, res) => {
         const date = req.query.date?.trim();
         const customerId = req.query.customer_id?.trim() || "";
         if (!date) {
             res.redirect("/admin/export?err=date");
             return;
         }
-        let orders = db.prepare(`
+        let orders = await db.prepare(`
           SELECT o.id, o.order_date, o.customer_id, c.name AS customer_name
           FROM orders o JOIN customers c ON c.id = o.customer_id
           WHERE o.order_date = ?
@@ -415,9 +443,9 @@ function createAdminRouter() {
         res.setHeader("Content-Disposition", "attachment; filename=\"orders-" + date + ".csv\"");
         res.type("text/csv").send(lines.join("\n"));
     });
-    router.get("/api/products-search", (req, res) => {
+    router.get("/api/products-search", async (req, res) => {
         const q = (req.query.q || "").trim().toLowerCase();
-        let list = db.prepare("SELECT id, name, erp_code, teraoka_barcode FROM products WHERE active = 1 ORDER BY name").all();
+        let list = await db.prepare("SELECT id, name, erp_code, teraoka_barcode FROM products WHERE active = 1 ORDER BY name").all();
         if (q) {
             const parts = q.split(/\s+/).filter(Boolean);
             list = list.filter((p) => {
@@ -429,10 +457,10 @@ function createAdminRouter() {
         }
         res.json(list.slice(0, 80));
     });
-    router.post("/orders/:orderId/items/:itemId/product", express_1.default.urlencoded({ extended: true }), (req, res) => {
+    router.post("/orders/:orderId/items/:itemId/product", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { orderId, itemId } = req.params;
         const productId = req.body.product_id?.trim();
-        const order = db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
+        const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
             return;
@@ -441,17 +469,17 @@ function createAdminRouter() {
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=product");
             return;
         }
-        const product = db.prepare("SELECT id FROM products WHERE id = ?").get(productId);
+        const product = await db.prepare("SELECT id FROM products WHERE id = ?").get(productId);
         if (!product) {
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=product");
             return;
         }
-        db.prepare("UPDATE order_items SET product_id = ?, need_review = 0 WHERE id = ? AND order_id = ?").run(productId, itemId, orderId);
+        await db.prepare("UPDATE order_items SET product_id = ?, need_review = 0 WHERE id = ? AND order_id = ?").run(productId, itemId, orderId);
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=product");
     });
-    router.get("/orders/:orderId", (req, res) => {
+    router.get("/orders/:orderId", async (req, res) => {
         const { orderId } = req.params;
-        const order = db.prepare(`
+        const order = await db.prepare(`
       SELECT o.id, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code
       FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
@@ -459,7 +487,7 @@ function createAdminRouter() {
             res.status(404).send("訂單不存在");
             return;
         }
-        const items = db.prepare(`
+        const items = await db.prepare(`
       SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.need_review,
         p.id AS product_id, p.erp_code, p.name AS product_name, p.teraoka_barcode
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
@@ -561,9 +589,9 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("訂單明細", body, "", res.locals.topBarHtml));
     });
-    router.post("/orders/:orderId/items", express_1.default.urlencoded({ extended: true }), (req, res) => {
+    router.post("/orders/:orderId/items", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { orderId } = req.params;
-        const order = db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
+        const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
             return;
@@ -575,17 +603,17 @@ function createAdminRouter() {
                 const qty = parseFloat(body[key]);
                 if (!Number.isFinite(qty) || qty < 0)
                     continue;
-                db.prepare("UPDATE order_items SET quantity = ? WHERE id = ? AND order_id = ?").run(qty, itemId, orderId);
+                await db.prepare("UPDATE order_items SET quantity = ? WHERE id = ? AND order_id = ?").run(qty, itemId, orderId);
             }
             else if (key.startsWith("unit_")) {
                 const itemId = key.slice(5);
                 const unit = (body[key] ?? "").trim() || null;
-                db.prepare("UPDATE order_items SET unit = ? WHERE id = ? AND order_id = ?").run(unit, itemId, orderId);
+                await db.prepare("UPDATE order_items SET unit = ? WHERE id = ? AND order_id = ?").run(unit, itemId, orderId);
             }
             else if (key.startsWith("remark_")) {
                 const itemId = key.slice(7);
                 const remark = (body[key] ?? "").trim() || null;
-                db.prepare("UPDATE order_items SET remark = ? WHERE id = ? AND order_id = ?").run(remark, itemId, orderId);
+                await db.prepare("UPDATE order_items SET remark = ? WHERE id = ? AND order_id = ?").run(remark, itemId, orderId);
             }
         }
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=items");
@@ -611,10 +639,10 @@ function createAdminRouter() {
             res.status(500).send("條碼產生失敗");
         }
     });
-    router.get("/orders/:orderId/order-sheet", (req, res) => {
+    router.get("/orders/:orderId/order-sheet", async (req, res) => {
         const { orderId } = req.params;
         const preview = req.query.preview === "1";
-        const order = db.prepare(`
+        const order = await db.prepare(`
       SELECT o.id, o.order_date, o.status, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code
       FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
@@ -622,7 +650,7 @@ function createAdminRouter() {
             res.status(404).send("訂單不存在");
             return;
         }
-        const items = db.prepare(`
+        const items = await db.prepare(`
       SELECT oi.quantity, oi.unit, oi.remark, p.erp_code, p.name AS product_name, p.teraoka_barcode
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
     `).all(orderId);
@@ -665,7 +693,7 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("訂貨單", sheetBody, "", res.locals.topBarHtml));
     });
-    router.get("/customers/new", (req, res) => {
+    router.get("/customers/new", async (req, res) => {
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/customers">客戶管理</a> / 新增客戶</div>
         <h1 class="notion-page-title">新增客戶</h1>
@@ -683,7 +711,7 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("新增客戶", body, "", res.locals.topBarHtml));
     });
-    router.post("/customers/new", express_1.default.urlencoded({ extended: true }), (req, res) => {
+    router.post("/customers/new", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const name = req.body.name?.trim();
         const teraokaCode = req.body.teraoka_code?.trim() || null;
         const hqCustCode = req.body.hq_cust_code?.trim() || null;
@@ -695,16 +723,16 @@ function createAdminRouter() {
             return;
         }
         const id = (0, id_js_1.newId)("cust");
-        db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact);
+        await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact);
         res.redirect("/admin/customers?ok=1");
     });
-    router.get("/customers/:id/quick-view", (req, res) => {
-        const customer = db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);
+    router.get("/customers/:id/quick-view", async (req, res) => {
+        const customer = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);
         if (!customer) {
             res.status(404).send("客戶不存在");
             return;
         }
-        const aliases = db.prepare(`
+        const aliases = await db.prepare(`
       SELECT cpa.alias, p.name AS product_name
       FROM customer_product_aliases cpa
       JOIN products p ON p.id = cpa.product_id
@@ -738,8 +766,8 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("客戶資料", body, "", res.locals.topBarHtml));
     });
-    router.get("/customers/:id/edit", (req, res) => {
-        const customer = db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);
+    router.get("/customers/:id/edit", async (req, res) => {
+        const customer = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);
         if (!customer) {
             res.status(404).send("客戶不存在");
             return;
@@ -747,14 +775,14 @@ function createAdminRouter() {
         const v = (s) => escapeAttr(s ?? "");
         const activeChecked = customer.active === undefined || customer.active === null || customer.active === 1;
         const editMsg = req.query.ok === "alias" ? "<p style='color:green'>已新增專用別名。</p>" : req.query.ok === "alias_del" ? "<p style='color:green'>已刪除專用別名。</p>" : req.query.err === "alias" ? "<p style='color:red'>請填寫別名與品項。</p>" : req.query.err === "dup" ? "<p style='color:red'>此客戶已存在相同別名。</p>" : "";
-        const custAliases = db.prepare(`
+        const custAliases = await db.prepare(`
       SELECT cpa.id, cpa.alias, p.name AS product_name
       FROM customer_product_aliases cpa
       JOIN products p ON p.id = cpa.product_id
       WHERE cpa.customer_id = ?
       ORDER BY cpa.alias
     `).all(customer.id);
-        const productOptions = db.prepare("SELECT id, name FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all()
+        const productOptions = await db.prepare("SELECT id, name FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all()
             .map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`)
             .join("");
         const aliasRows = custAliases
@@ -807,7 +835,7 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("編輯客戶", editBody, "", res.locals.topBarHtml));
     });
-    router.post("/customers/:id/edit", express_1.default.urlencoded({ extended: true }), (req, res) => {
+    router.post("/customers/:id/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const id = req.params.id;
         const name = req.body.name?.trim();
         const teraokaCode = req.body.teraoka_code?.trim() || null;
@@ -822,11 +850,11 @@ function createAdminRouter() {
             res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=name");
             return;
         }
-        db.prepare("UPDATE customers SET name = ?, teraoka_code = ?, hq_cust_code = ?, line_group_name = ?, line_group_id = ?, contact = ?, default_unit = ?, order_notes = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, defaultUnit, orderNotes, active, id);
+        await db.prepare("UPDATE customers SET name = ?, teraoka_code = ?, hq_cust_code = ?, line_group_name = ?, line_group_id = ?, contact = ?, default_unit = ?, order_notes = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, defaultUnit, orderNotes, active, id);
         const fromOrders = req.body?.from === "orders";
         res.redirect(fromOrders ? "/admin/orders?ok=edit" : "/admin/customers?ok=edit");
     });
-    router.post("/customers/:id/alias", express_1.default.urlencoded({ extended: true }), (req, res) => {
+    router.post("/customers/:id/alias", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const customerId = req.params.id;
         const alias = req.body?.alias?.trim();
         const productId = req.body?.product_id?.trim();
@@ -834,14 +862,14 @@ function createAdminRouter() {
             res.redirect("/admin/customers/" + encodeURIComponent(customerId) + "/edit?err=alias");
             return;
         }
-        const cust = db.prepare("SELECT id FROM customers WHERE id = ?").get(customerId);
+        const cust = await db.prepare("SELECT id FROM customers WHERE id = ?").get(customerId);
         if (!cust) {
             res.redirect("/admin/customers?err=" + encodeURIComponent("客戶不存在"));
             return;
         }
         try {
             const id = (0, id_js_1.newId)("cpa");
-            db.prepare("INSERT INTO customer_product_aliases (id, customer_id, product_id, alias) VALUES (?, ?, ?, ?)").run(id, customerId, productId, alias);
+            await db.prepare("INSERT INTO customer_product_aliases (id, customer_id, product_id, alias) VALUES (?, ?, ?, ?)").run(id, customerId, productId, alias);
         }
         catch (e) {
             res.redirect("/admin/customers/" + encodeURIComponent(customerId) + "/edit?err=dup");
@@ -849,18 +877,18 @@ function createAdminRouter() {
         }
         res.redirect("/admin/customers/" + encodeURIComponent(customerId) + "/edit?ok=alias");
     });
-    router.post("/customers/:id/alias/:aliasId/delete", (req, res) => {
+    router.post("/customers/:id/alias/:aliasId/delete", async (req, res) => {
         const customerId = req.params.id;
         const aliasId = req.params.aliasId;
-        const row = db.prepare("SELECT id FROM customer_product_aliases WHERE id = ? AND customer_id = ?").get(aliasId, customerId);
+        const row = await db.prepare("SELECT id FROM customer_product_aliases WHERE id = ? AND customer_id = ?").get(aliasId, customerId);
         if (!row) {
             res.redirect("/admin/customers?err=" + encodeURIComponent("找不到此別名"));
             return;
         }
-        db.prepare("DELETE FROM customer_product_aliases WHERE id = ?").run(aliasId);
+        await db.prepare("DELETE FROM customer_product_aliases WHERE id = ?").run(aliasId);
         res.redirect("/admin/customers/" + encodeURIComponent(customerId) + "/edit?ok=alias_del");
     });
-    router.get("/customers", (req, res) => {
+    router.get("/customers", async (req, res) => {
         const msg = req.query.ok === "1"
             ? "<p style='color:green'>客戶已建立。</p>"
             : req.query.ok === "edit"
@@ -874,8 +902,8 @@ function createAdminRouter() {
                             : "";
         const q = req.query.q?.trim() ?? "";
         const rows = (q
-            ? db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, active FROM customers WHERE name LIKE ? ORDER BY name").all("%" + q + "%")
-            : db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, active FROM customers ORDER BY name").all());
+            ? await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, active FROM customers WHERE name LIKE ? ORDER BY name").all("%" + q + "%")
+            : await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, active FROM customers ORDER BY name").all());
         const tbody = rows
             .map((r) => {
             const active = r.active === undefined || r.active === null || r.active === 1;
@@ -916,24 +944,24 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("客戶管理", body, "", res.locals.topBarHtml));
     });
-    router.post("/customers/:id/toggle", express_1.default.urlencoded({ extended: true }), (req, res) => {
+    router.post("/customers/:id/toggle", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const id = req.params.id;
-        const row = db.prepare("SELECT active FROM customers WHERE id = ?").get(id);
+        const row = await db.prepare("SELECT active FROM customers WHERE id = ?").get(id);
         if (!row) {
             res.redirect("/admin/customers?err=" + encodeURIComponent("客戶不存在"));
             return;
         }
         const next = (row.active === 1 ? 0 : 1);
-        db.prepare("UPDATE customers SET active = ?, updated_at = datetime('now') WHERE id = ?").run(next, id);
+        await db.prepare("UPDATE customers SET active = ?, updated_at = datetime('now') WHERE id = ?").run(next, id);
         res.redirect("/admin/customers?ok=toggle");
     });
-    router.get("/customers/:id/delete", (req, res) => {
-        const customer = db.prepare("SELECT id, name FROM customers WHERE id = ?").get(req.params.id);
+    router.get("/customers/:id/delete", async (req, res) => {
+        const customer = await db.prepare("SELECT id, name FROM customers WHERE id = ?").get(req.params.id);
         if (!customer) {
             res.redirect("/admin/customers?err=" + encodeURIComponent("客戶不存在"));
             return;
         }
-        const orderCount = db.prepare("SELECT COUNT(*) AS c FROM orders WHERE customer_id = ?").get(customer.id);
+        const orderCount = await db.prepare("SELECT COUNT(*) AS c FROM orders WHERE customer_id = ?").get(customer.id);
         const hasOrders = (orderCount?.c ?? 0) > 0;
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/customers">客戶管理</a> / 確認刪除</div>
@@ -949,20 +977,20 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("確認刪除", body, "", res.locals.topBarHtml));
     });
-    router.post("/customers/:id/delete", (req, res) => {
+    router.post("/customers/:id/delete", async (req, res) => {
         const id = req.params.id;
-        const orderCount = db.prepare("SELECT COUNT(*) AS c FROM orders WHERE customer_id = ?").get(id);
+        const orderCount = await db.prepare("SELECT COUNT(*) AS c FROM orders WHERE customer_id = ?").get(id);
         if ((orderCount?.c ?? 0) > 0) {
             res.redirect("/admin/customers?err=" + encodeURIComponent("此客戶已有訂單，無法刪除。請改為停用。"));
             return;
         }
-        db.prepare("DELETE FROM customers WHERE id = ?").run(id);
+        await db.prepare("DELETE FROM customers WHERE id = ?").run(id);
         res.redirect("/admin/customers?ok=del");
     });
-    router.get("/products", (req, res) => {
+    router.get("/products", async (req, res) => {
         const q = req.query.q?.trim() ?? "";
         const showInactive = req.query.inactive === "1";
-        let products = db.prepare(`
+        let products = await db.prepare(`
       SELECT id, name, erp_code, teraoka_barcode, unit, active
       FROM products
       ORDER BY active DESC, name
@@ -979,7 +1007,7 @@ function createAdminRouter() {
             products = products.filter((p) => p.active === 1);
         }
         const aliasesByProduct = new Map();
-        const aliasRows = db.prepare("SELECT product_id, alias FROM product_aliases").all();
+        const aliasRows = await db.prepare("SELECT product_id, alias FROM product_aliases").all();
         for (const a of aliasRows) {
             if (!aliasesByProduct.has(a.product_id))
                 aliasesByProduct.set(a.product_id, []);
@@ -1026,14 +1054,14 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("品項與俗名", body, "", res.locals.topBarHtml));
     });
-    router.get("/products/:id/aliases", (req, res) => {
+    router.get("/products/:id/aliases", async (req, res) => {
         const productId = req.params.id;
-        const product = db.prepare("SELECT id, name FROM products WHERE id = ?").get(productId);
+        const product = await db.prepare("SELECT id, name FROM products WHERE id = ?").get(productId);
         if (!product) {
             res.redirect("/admin/products?err=" + encodeURIComponent("找不到此品項"));
             return;
         }
-        const aliases = db.prepare("SELECT id, alias FROM product_aliases WHERE product_id = ? ORDER BY alias").all(productId);
+        const aliases = await db.prepare("SELECT id, alias FROM product_aliases WHERE product_id = ? ORDER BY alias").all(productId);
         const msg = req.query.ok === "1" ? "<p style='color:green'>已儲存。</p>" : req.query.ok === "del" ? "<p style='color:green'>已刪除。</p>" : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const rows = aliases
             .map((a) => `<tr>
@@ -1063,9 +1091,9 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("俗名管理", body, "", res.locals.topBarHtml));
     });
-    router.get("/aliases/:id/edit", (req, res) => {
+    router.get("/aliases/:id/edit", async (req, res) => {
         const id = req.params.id;
-        const row = db.prepare("SELECT pa.id, pa.alias, pa.product_id, p.name AS product_name FROM product_aliases pa JOIN products p ON p.id = pa.product_id WHERE pa.id = ?").get(id);
+        const row = await db.prepare("SELECT pa.id, pa.alias, pa.product_id, p.name AS product_name FROM product_aliases pa JOIN products p ON p.id = pa.product_id WHERE pa.id = ?").get(id);
         if (!row) {
             res.redirect("/admin/products?err=" + encodeURIComponent("找不到此俗名"));
             return;
@@ -1086,38 +1114,38 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("編輯俗名", body, "", res.locals.topBarHtml));
     });
-    router.post("/aliases/:id/edit", express_1.default.urlencoded({ extended: true }), (req, res) => {
+    router.post("/aliases/:id/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const id = req.params.id;
         const aliasTrim = req.body?.alias?.trim();
         if (!aliasTrim) {
             res.redirect("/admin/aliases/" + encodeURIComponent(id) + "/edit?err=" + encodeURIComponent("別名不可為空"));
             return;
         }
-        const row = db.prepare("SELECT id, product_id FROM product_aliases WHERE id = ?").get(id);
+        const row = await db.prepare("SELECT id, product_id FROM product_aliases WHERE id = ?").get(id);
         if (!row) {
             res.redirect("/admin/products?err=" + encodeURIComponent("找不到此俗名"));
             return;
         }
-        const existing = db.prepare("SELECT id FROM product_aliases WHERE alias = ? AND id != ?").get(aliasTrim, id);
+        const existing = await db.prepare("SELECT id FROM product_aliases WHERE alias = ? AND id != ?").get(aliasTrim, id);
         if (existing) {
             res.redirect("/admin/aliases/" + encodeURIComponent(id) + "/edit?err=" + encodeURIComponent("此別名已被其他品項使用"));
             return;
         }
-        db.prepare("UPDATE product_aliases SET alias = ? WHERE id = ?").run(aliasTrim, id);
+        await db.prepare("UPDATE product_aliases SET alias = ? WHERE id = ?").run(aliasTrim, id);
         res.redirect("/admin/products/" + encodeURIComponent(row.product_id) + "/aliases?ok=1");
     });
-    router.post("/aliases/:id/delete", (req, res) => {
+    router.post("/aliases/:id/delete", async (req, res) => {
         const id = req.params.id;
-        const row = db.prepare("SELECT product_id FROM product_aliases WHERE id = ?").get(id);
+        const row = await db.prepare("SELECT product_id FROM product_aliases WHERE id = ?").get(id);
         if (!row) {
             res.redirect("/admin/products?err=" + encodeURIComponent("找不到此俗名"));
             return;
         }
-        db.prepare("DELETE FROM product_aliases WHERE id = ?").run(id);
+        await db.prepare("DELETE FROM product_aliases WHERE id = ?").run(id);
         res.redirect("/admin/products/" + encodeURIComponent(row.product_id) + "/aliases?ok=del");
     });
-    router.get("/products/:id/edit", (req, res) => {
-        const row = db.prepare("SELECT id, name, erp_code, teraoka_barcode, unit, active FROM products WHERE id = ?").get(req.params.id);
+    router.get("/products/:id/edit", async (req, res) => {
+        const row = await db.prepare("SELECT id, name, erp_code, teraoka_barcode, unit, active FROM products WHERE id = ?").get(req.params.id);
         if (!row) {
             res.redirect("/admin/products?err=" + encodeURIComponent("找不到此品項"));
             return;
@@ -1151,9 +1179,9 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("編輯品項", body, "", res.locals.topBarHtml));
     });
-    router.post("/products/:id/edit", (req, res) => {
+    router.post("/products/:id/edit", async (req, res) => {
         const id = req.params.id;
-        const row = db.prepare("SELECT id FROM products WHERE id = ?").get(id);
+        const row = await db.prepare("SELECT id FROM products WHERE id = ?").get(id);
         if (!row) {
             res.redirect("/admin/products?err=" + encodeURIComponent("找不到此品項"));
             return;
@@ -1163,7 +1191,7 @@ function createAdminRouter() {
             res.redirect("/admin/products/" + encodeURIComponent(id) + "/edit?err=" + encodeURIComponent("品名不可為空"));
             return;
         }
-        const existing = db.prepare("SELECT id FROM products WHERE name = ? AND id != ?").get(name, id);
+        const existing = await db.prepare("SELECT id FROM products WHERE name = ? AND id != ?").get(name, id);
         if (existing) {
             res.redirect("/admin/products/" + encodeURIComponent(id) + "/edit?err=" + encodeURIComponent("品名已存在"));
             return;
@@ -1172,28 +1200,28 @@ function createAdminRouter() {
         const teraokaBarcode = (req.body?.teraoka_barcode ?? "").trim() || null;
         const unit = (req.body?.unit ?? "公斤").trim() || "公斤";
         const active = req.body?.active === "1" ? 1 : 0;
-        db.prepare("UPDATE products SET name = ?, erp_code = ?, teraoka_barcode = ?, unit = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, erpCode, teraokaBarcode, unit, active, id);
+        await db.prepare("UPDATE products SET name = ?, erp_code = ?, teraoka_barcode = ?, unit = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, erpCode, teraokaBarcode, unit, active, id);
         res.redirect("/admin/products?ok=edit");
     });
-    router.post("/products/:id/toggle", (req, res) => {
+    router.post("/products/:id/toggle", async (req, res) => {
         const id = req.params.id;
-        const row = db.prepare("SELECT id, active FROM products WHERE id = ?").get(id);
+        const row = await db.prepare("SELECT id, active FROM products WHERE id = ?").get(id);
         if (!row) {
             res.redirect("/admin/products?err=" + encodeURIComponent("找不到此品項"));
             return;
         }
         const next = row.active === 1 ? 0 : 1;
-        db.prepare("UPDATE products SET active = ?, updated_at = datetime('now') WHERE id = ?").run(next, id);
+        await db.prepare("UPDATE products SET active = ?, updated_at = datetime('now') WHERE id = ?").run(next, id);
         res.redirect("/admin/products?ok=toggle");
     });
-    router.get("/products/:id/delete", (req, res) => {
+    router.get("/products/:id/delete", async (req, res) => {
         const id = req.params.id;
-        const product = db.prepare("SELECT id, name FROM products WHERE id = ?").get(id);
+        const product = await db.prepare("SELECT id, name FROM products WHERE id = ?").get(id);
         if (!product) {
             res.redirect("/admin/products?err=" + encodeURIComponent("找不到此品項"));
             return;
         }
-        const refCount = db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE product_id = ?").get(id);
+        const refCount = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE product_id = ?").get(id);
         const hasOrders = (refCount?.c ?? 0) > 0;
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/products">品項與俗名</a> / 確認刪除</div>
@@ -1210,17 +1238,17 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("確認刪除品項", body, "", res.locals.topBarHtml));
     });
-    router.post("/products/:id/delete", (req, res) => {
+    router.post("/products/:id/delete", async (req, res) => {
         const id = req.params.id;
-        const refCount = db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE product_id = ?").get(id);
+        const refCount = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE product_id = ?").get(id);
         if ((refCount?.c ?? 0) > 0) {
             res.redirect("/admin/products?err=" + encodeURIComponent("此品項已被訂單使用，無法刪除。請改為停用。"));
             return;
         }
-        db.prepare("DELETE FROM products WHERE id = ?").run(id);
+        await db.prepare("DELETE FROM products WHERE id = ?").run(id);
         res.redirect("/admin/products?ok=del");
     });
-    router.get("/import", (req, res) => {
+    router.get("/import", async (req, res) => {
         const msg = req.query.ok ? `<p style='color:green'>已匯入 ${req.query.ok} 筆品項。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 匯入品項</div>
@@ -1257,7 +1285,7 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("匯入品項", body, "", res.locals.topBarHtml));
     });
-    router.post("/import", upload, (req, res) => {
+    router.post("/import", upload, async (req, res) => {
         const sheet = parseRequestToSheet(req);
         if (!sheet || sheet.rows.length === 0) {
             res.redirect("/admin/import?err=" + encodeURIComponent("請貼上 CSV 或上傳 Excel 檔案"));
@@ -1279,7 +1307,7 @@ function createAdminRouter() {
             return;
         }
         let imported = 0;
-        const existingNames = new Set(db.prepare("SELECT name FROM products").all().map((r) => r.name));
+        const existingNames = new Set(await db.prepare("SELECT name FROM products").all().map((r) => r.name));
         for (let i = 0; i < rows.length; i++) {
             const cols = rows[i];
             const name = (cols[nameIdx] ?? "").trim();
@@ -1292,13 +1320,13 @@ function createAdminRouter() {
             const unitCell = unitIdx >= 0 ? (cols[unitIdx] ?? "").trim() : "";
             const unit = unitCell || defaultUnit;
             const id = (0, id_js_1.newId)("prod");
-            db.prepare("INSERT INTO products (id, name, erp_code, teraoka_barcode, unit) VALUES (?, ?, ?, ?, ?)").run(id, name, erpCode, teraoka, unit);
+            await db.prepare("INSERT INTO products (id, name, erp_code, teraoka_barcode, unit) VALUES (?, ?, ?, ?, ?)").run(id, name, erpCode, teraoka, unit);
             existingNames.add(name);
             imported++;
         }
         res.redirect("/admin/import?ok=" + imported);
     });
-    router.get("/import-customers", (req, res) => {
+    router.get("/import-customers", async (req, res) => {
         const msg = req.query.ok ? `<p style='color:green'>匯入結果：${escapeHtml(String(req.query.ok))}。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 匯入客戶</div>
@@ -1326,7 +1354,7 @@ YY小吃, C5678...,</pre>
         `;
         res.type("text/html").send(notionPage("匯入客戶", body, "", res.locals.topBarHtml));
     });
-    router.post("/import-customers", upload, (req, res) => {
+    router.post("/import-customers", upload, async (req, res) => {
         const sheet = parseRequestToSheet(req);
         if (!sheet || sheet.rows.length === 0) {
             res.redirect("/admin/import-customers?err=" + encodeURIComponent("請貼上 CSV 或上傳 Excel 檔案"));
@@ -1361,14 +1389,14 @@ YY小吃, C5678...,</pre>
                 .map((idx) => (cols[idx] ?? "").trim())
                 .filter(Boolean);
             const contact = contactParts.length > 0 ? contactParts.join(" / ") : null;
-            const existing = db.prepare("SELECT id FROM customers WHERE name = ?").get(name);
+            const existing = await db.prepare("SELECT id FROM customers WHERE name = ?").get(name);
             if (existing) {
-                db.prepare("UPDATE customers SET teraoka_code = COALESCE(?, teraoka_code), hq_cust_code = COALESCE(?, hq_cust_code), contact = COALESCE(?, contact), line_group_id = COALESCE(?, line_group_id), updated_at = datetime('now') WHERE id = ?").run(teraokaCode ?? null, hqCustCode ?? null, contact ?? null, lineGroupId || null, existing.id);
+                await db.prepare("UPDATE customers SET teraoka_code = COALESCE(?, teraoka_code), hq_cust_code = COALESCE(?, hq_cust_code), contact = COALESCE(?, contact), line_group_id = COALESCE(?, line_group_id), updated_at = datetime('now') WHERE id = ?").run(teraokaCode ?? null, hqCustCode ?? null, contact ?? null, lineGroupId || null, existing.id);
                 if (lineGroupId)
                     updated++;
             }
             else {
-                db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_id, contact) VALUES (?, ?, ?, ?, ?, ?)").run((0, id_js_1.newId)("cust"), name, teraokaCode, hqCustCode, lineGroupId, contact);
+                await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_id, contact) VALUES (?, ?, ?, ?, ?, ?)").run((0, id_js_1.newId)("cust"), name, teraokaCode, hqCustCode, lineGroupId, contact);
                 imported++;
             }
         }
@@ -1376,7 +1404,7 @@ YY小吃, C5678...,</pre>
         const resultMsg2 = updated > 0 ? (resultMsg ? "；" : "") + `更新 ${updated} 筆 LINE 群組綁定` : "";
         res.redirect("/admin/import-customers?ok=" + encodeURIComponent(resultMsg + resultMsg2 || "0"));
     });
-    router.get("/import-teraoka", (req, res) => {
+    router.get("/import-teraoka", async (req, res) => {
         const ok = req.query.ok;
         const matched = req.query.matched;
         const unmatched = req.query.unmatched;
@@ -1409,7 +1437,7 @@ YY小吃, C5678...,</pre>
         `;
         res.type("text/html").send(notionPage("寺岡資料對照", body, "", res.locals.topBarHtml));
     });
-    router.post("/import-teraoka", upload, (req, res) => {
+    router.post("/import-teraoka", upload, async (req, res) => {
         const sheet = parseRequestToSheet(req);
         if (!sheet || sheet.rows.length === 0) {
             res.redirect("/admin/import-teraoka?err=" + encodeURIComponent("請貼上 CSV 或上傳 Excel 檔案"));
@@ -1427,10 +1455,10 @@ YY小吃, C5678...,</pre>
             return;
         }
         const productByName = new Map();
-        for (const row of db.prepare("SELECT id, name FROM products").all()) {
+        for (const row of await db.prepare("SELECT id, name FROM products").all()) {
             productByName.set(row.name, row.id);
         }
-        for (const row of db.prepare("SELECT product_id, alias FROM product_aliases").all()) {
+        for (const row of await db.prepare("SELECT product_id, alias FROM product_aliases").all()) {
             if (!productByName.has(row.alias))
                 productByName.set(row.alias, row.product_id);
         }
@@ -1444,7 +1472,7 @@ YY小吃, C5678...,</pre>
                 continue;
             const productId = productByName.get(name);
             if (productId) {
-                db.prepare("UPDATE products SET teraoka_barcode = ?, updated_at = datetime('now') WHERE id = ?").run(barcode, productId);
+                await db.prepare("UPDATE products SET teraoka_barcode = ?, updated_at = datetime('now') WHERE id = ?").run(barcode, productId);
                 matched++;
             }
             else {

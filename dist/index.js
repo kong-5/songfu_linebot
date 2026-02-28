@@ -23,34 +23,35 @@ const PORT = Number(process.env.PORT) || 4000;
 const webhookPath = process.env.LINE_WEBHOOK_PATH ?? "/webhook";
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 console.log("[startup] PORT=%s dbPath=%s", PORT, dbPath);
-// 確保資料庫目錄存在並初始化
-const dir = (0, path_1.dirname)(dbPath);
-if (!(0, fs_1.existsSync)(dir)) {
-    (0, fs_1.mkdirSync)(dir, { recursive: true });
-    console.log("[startup] 已建立目錄:", dir);
-}
-console.log("[startup] 初始化資料庫...");
-(0, index_js_1.initDb)(dbPath);
-console.log("[startup] 資料庫就緒，建立 app...");
-const app = (0, express_1.default)();
-// Webhook 必須用「原始 body」給 LINE 驗證簽章，所以先掛、且用 text 不轉成 JSON
-app.use(webhookPath, express_1.default.text({ type: "application/json" }), (req, _res, next) => {
-    if (req.method === "POST" && typeof req.body === "string") {
-        try {
-            const b = JSON.parse(req.body);
-            console.log("[LINE] POST /webhook 收到請求，events 數量:", b?.events?.length ?? 0);
-        }
-        catch {
-            console.log("[LINE] POST /webhook 收到請求");
+(async () => {
+    if (!process.env.DATABASE_URL) {
+        const dir = (0, path_1.dirname)(dbPath);
+        if (!(0, fs_1.existsSync)(dir)) {
+            (0, fs_1.mkdirSync)(dir, { recursive: true });
+            console.log("[startup] 已建立目錄:", dir);
         }
     }
-    next();
-}, (0, line_js_1.createLineWebhook)());
-app.use(express_1.default.json());
-app.use(express_1.default.urlencoded({ extended: true }));
-app.use("/admin", (0, index_js_2.createAdminRouter)());
-app.get("/", (_req, res) => {
-    res.type("text/html").send(`
+    console.log("[startup] 初始化資料庫...");
+    await (0, index_js_1.initDb)(dbPath);
+    console.log("[startup] 資料庫就緒，建立 app...");
+    const app = (0, express_1.default)();
+    app.use(webhookPath, express_1.default.text({ type: "application/json" }), (req, _res, next) => {
+        if (req.method === "POST" && typeof req.body === "string") {
+            try {
+                const b = JSON.parse(req.body);
+                console.log("[LINE] POST /webhook 收到請求，events 數量:", b?.events?.length ?? 0);
+            }
+            catch {
+                console.log("[LINE] POST /webhook 收到請求");
+            }
+        }
+        next();
+    }, (0, line_js_1.createLineWebhook)());
+    app.use(express_1.default.json());
+    app.use(express_1.default.urlencoded({ extended: true }));
+    app.use("/admin", (0, index_js_2.createAdminRouter)());
+    app.get("/", (_req, res) => {
+        res.type("text/html").send(`
     <h1>松富叫貨 LINE 機器人</h1>
     <p>服務運行中。</p>
     <ul>
@@ -59,15 +60,15 @@ app.get("/", (_req, res) => {
       <li>LINE Webhook：POST <code>${webhookPath}</code></li>
     </ul>
   `);
-});
-app.get("/health", (_req, res) => {
-    res.json({ ok: true, service: "songfu_linebot" });
-});
-// Cloud Run 需監聽 0.0.0.0，且 PORT 由環境變數提供
-app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[startup] songfu_linebot listening on http://0.0.0.0:${PORT}`);
-    console.log(`[startup] LINE webhook: POST ${webhookPath}`);
-}).on("error", (err) => {
-    console.error("[startup] listen 錯誤:", err);
-    process.exit(1);
-});
+    });
+    app.get("/health", (_req, res) => {
+        res.json({ ok: true, service: "songfu_linebot" });
+    });
+    app.listen(PORT, "0.0.0.0", () => {
+        console.log(`[startup] songfu_linebot listening on http://0.0.0.0:${PORT}`);
+        console.log(`[startup] LINE webhook: POST ${webhookPath}`);
+    }).on("error", (err) => {
+        console.error("[startup] listen 錯誤:", err);
+        process.exit(1);
+    });
+})();

@@ -47,8 +47,10 @@ function createLineWebhook() {
                     if (groupId)
                         console.log("[LINE] 群組 ID：", groupId);
                     const customer = groupId
-                        ? db.prepare("SELECT id, name FROM customers WHERE LOWER(TRIM(COALESCE(line_group_id, ''))) = LOWER(?) AND (active IS NULL OR active = 1)").get(groupId)
+                        ? await db.prepare("SELECT id, name FROM customers WHERE LOWER(TRIM(COALESCE(line_group_id, ''))) = LOWER(TRIM(?)) AND (active IS NULL OR active = 1)").get(groupId)
                         : null;
+                    if (groupId)
+                        console.log("[LINE] 綁定查詢 groupId=%s customer=%s", JSON.stringify(groupId), customer ? customer.id : "無");
                     // 照片：收單中請補文字；未收單請先傳「收單」
                     if (msgType === "image") {
                         if (groupId && !customer) {
@@ -90,14 +92,14 @@ function createLineWebhook() {
                     const orderDate = new Date().toISOString().slice(0, 10);
                     // 「收單」或「開始收單」→ 進入收單模式，可多則累加，傳完說「完成」
                     if (text === "收單" || text === "開始收單") {
-                        let orderRow = db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
+                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
                         let orderId;
                         if (orderRow) {
                             orderId = orderRow.id;
                         }
                         else {
                             orderId = (0, id_js_1.newId)("ord");
-                            db.prepare(`INSERT INTO orders (id, customer_id, order_date, line_group_id, raw_message, status)
+                            await db.prepare(`INSERT INTO orders (id, customer_id, order_date, line_group_id, raw_message, status)
                VALUES (?, ?, ?, ?, ?, 'pending')`).run(orderId, customerId, orderDate, groupId, "");
                         }
                         if (groupId)
@@ -112,7 +114,7 @@ function createLineWebhook() {
                         if (groupId && collectingByGroup.has(groupId)) {
                             const session = collectingByGroup.get(groupId);
                             collectingByGroup.delete(groupId);
-                            const count = db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
+                            const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
                             const n = count?.c ?? 0;
                             await reply(lineClient, event.replyToken, `完成，已收 ${n} 項。`);
                         }
@@ -128,25 +130,25 @@ function createLineWebhook() {
                     // 收單模式：將本則當成叫貨累加
                     const session = collectingByGroup.get(groupId);
                     const { orderId, customerId: cid } = session;
-                    let orderRow = db.prepare("SELECT id, raw_message FROM orders WHERE id = ?").get(orderId);
+                    let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE id = ?").get(orderId);
                     if (orderRow) {
                         const newRaw = (orderRow.raw_message ? orderRow.raw_message + "\n" : "") + text;
-                        db.prepare("UPDATE orders SET raw_message = ?, updated_at = datetime('now') WHERE id = ?").run(newRaw, orderId);
+                        await db.prepare("UPDATE orders SET raw_message = ?, updated_at = datetime('now') WHERE id = ?").run(newRaw, orderId);
                     }
                     const parsed = (0, parse_order_message_js_1.parseOrderMessage)(text);
                     console.log("[LINE] 解析結果 筆數:", parsed.length, parsed.length ? "品項:" + parsed.map((p) => p.rawName + " " + p.quantity).join(", ") : "");
-                    const custRow = db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(cid);
+                    const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(cid);
                     const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
                     const needReview = [];
                     for (const item of parsed) {
-                        const resolved = (0, resolve_product_js_1.resolveProductName)(db, item.rawName, cid);
+                        const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, cid);
                         const itemId = (0, id_js_1.newId)("item");
                         const productId = resolved?.productId ?? null;
                         const needReviewFlag = resolved ? 0 : 1;
                         if (!resolved)
                             needReview.push(item.rawName);
                         const unit = item.unit && item.unit.trim() ? item.unit.trim() : fallbackUnit;
-                        db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
+                        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
              VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, needReviewFlag);
                     }
                     let replyText = parsed.length > 0
