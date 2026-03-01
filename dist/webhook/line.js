@@ -49,11 +49,21 @@ function createLineWebhook() {
                     const groupId = rawGroupId.replace(/\s/g, "").trim() || null;
                     if (groupId)
                         console.log("[LINE] 群組 ID：", groupId, "（長度", groupId.length, "）");
-                    const customer = groupId
-                        ? await db.prepare("SELECT id, name FROM customers WHERE LOWER(TRIM(COALESCE(line_group_id, ''))) = LOWER(TRIM(?)) AND (active IS NULL OR active = 1)").get(groupId)
-                        : null;
-                    if (groupId)
-                        console.log("[LINE] 綁定查詢 groupId=%s customer=%s", JSON.stringify(groupId), customer ? customer.id : "無");
+                    let customer = null;
+                    if (groupId) {
+                        const allActive = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE (active IS NULL OR active = 1)").all();
+                        const norm = (s) => (s || "").replace(/\s/g, "").toLowerCase();
+                        const needle = norm(groupId);
+                        customer = allActive.find((r) => norm(r.line_group_id) === needle) ?? null;
+                        if (!customer) {
+                            const withGid = allActive.filter((r) => (r.line_group_id || "").trim() !== "");
+                            console.log("[LINE] 綁定查詢失敗 groupId 長度=%s 前6=%s 後6=%s；DB 內有 line_group_id 的客戶數=%s", groupId.length, groupId.slice(0, 6), groupId.slice(-6), withGid.length);
+                            if (withGid.length > 0)
+                                console.log("[LINE] DB 第一筆 line_group_id 長度=%s 前6=%s 後6=%s", (withGid[0].line_group_id || "").length, (withGid[0].line_group_id || "").slice(0, 6), (withGid[0].line_group_id || "").slice(-6));
+                        }
+                        else
+                            console.log("[LINE] 綁定查詢 OK customer=%s", customer.id);
+                    }
                     // 照片：收單中請補文字；未收單請先傳「收單」
                     if (msgType === "image") {
                         if (groupId && !customer) {
