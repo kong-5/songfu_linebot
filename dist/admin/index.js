@@ -756,7 +756,7 @@ function createAdminRouter() {
         const teraokaCode = req.body.teraoka_code?.trim() || null;
         const hqCustCode = req.body.hq_cust_code?.trim() || null;
         const lineGroupName = req.body.line_group_name?.trim() || null;
-        const lineGroupId = req.body.line_group_id?.trim() || null;
+        const lineGroupId = (req.body.line_group_id || "").replace(/\s/g, "").trim() || null;
         const contact = req.body.contact?.trim() || null;
         if (!name) {
             res.redirect("/admin/customers/new?err=name");
@@ -886,7 +886,7 @@ function createAdminRouter() {
         const teraokaCode = req.body.teraoka_code?.trim() || null;
         const hqCustCode = req.body.hq_cust_code?.trim() || null;
         const lineGroupName = req.body.line_group_name?.trim() || null;
-        const lineGroupId = req.body.line_group_id?.trim() || null;
+        const lineGroupId = (req.body.line_group_id || "").replace(/\s/g, "").trim() || null;
         const contact = req.body.contact?.trim() || null;
         const defaultUnit = req.body.default_unit?.trim() || null;
         const orderNotes = req.body.order_notes?.trim() || null;

@@ -43,9 +43,12 @@ function createLineWebhook() {
                         continue;
                     }
                     const msgType = event.message.type;
-                    const groupId = event.source.type === "group" ? (event.source.groupId || "").trim() : null;
+                    if (event.source.type !== "group")
+                        console.log("[LINE] 非群組訊息 source.type=", event.source.type, "（收單僅支援群組，請將機器人加入群組）");
+                    const rawGroupId = event.source.type === "group" ? (event.source.groupId || "") : "";
+                    const groupId = rawGroupId.replace(/\s/g, "").trim() || null;
                     if (groupId)
-                        console.log("[LINE] 群組 ID：", groupId);
+                        console.log("[LINE] 群組 ID：", groupId, "（長度", groupId.length, "）");
                     const customer = groupId
                         ? await db.prepare("SELECT id, name FROM customers WHERE LOWER(TRIM(COALESCE(line_group_id, ''))) = LOWER(TRIM(?)) AND (active IS NULL OR active = 1)").get(groupId)
                         : null;
@@ -81,7 +84,7 @@ function createLineWebhook() {
                     }
                     if (groupId && !customer) {
                         console.log("[LINE] 未綁定群組，群組 ID:", groupId);
-                        await reply(lineClient, event.replyToken, "此群組尚未綁定客戶，無法收單。請聯絡管理員在後台「客戶管理」設定此群組的 LINE 群組 ID。若需取得本群組 ID 請傳：取得群組ID");
+                        await reply(lineClient, event.replyToken, "此群組尚未綁定客戶，無法收單。請確認：① 機器人已加入此群組 ② 在後台「客戶管理」編輯該客戶，將「LINE 群組 ID」設為與本群組一致（在群組傳「取得群組ID」可取得，請複製貼上）。");
                         continue;
                     }
                     if (!customer) {
