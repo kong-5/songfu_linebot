@@ -14,7 +14,8 @@ const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
 const hasLineConfig = Boolean(channelAccessToken && channelSecret);
-/** 收單模式：群組 ID -> 正在累加的那筆訂單 */
+/** 收單模式：群組 ID -> { orderId, customerId, lastActivity }；逾時 30 分鐘自動結單 */
+const COLLECT_TIMEOUT_MS = 30 * 60 * 1000;
 const collectingByGroup = new Map();
 function createLineWebhook() {
     const router = express_1.default.Router();
@@ -123,9 +124,11 @@ function createLineWebhook() {
                     }
                     const customerId = customer.id;
                     const orderDate = new Date().toISOString().slice(0, 10);
-                    // 「收單」或「開始收單」→ 進入收單模式，可多則累加，傳完說「完成」
-                    if (text === "收單" || text === "開始收單") {
-                        console.log("[LINE] 進入收單流程 customerId=%s orderDate=%s", customerId, orderDate);
+                    const startTriggers = ["收單", "開始收單", "訂單", "我要下訂", "明日訂單"];
+                    const triggerMatch = startTriggers.find((t) => text === t || text.startsWith(t + " ") || text.startsWith(t + "\n"));
+                    if (triggerMatch) {
+                        const rest = (text.slice(triggerMatch.length).trim() || "");
+                        console.log("[LINE] 進入收單流程 customerId=%s orderDate=%s rest=%s", customerId, orderDate, rest.slice(0, 50));
                         let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
                         let orderId;
                         if (orderRow) {
@@ -137,8 +140,48 @@ function createLineWebhook() {
                VALUES (?, ?, ?, ?, ?, 'pending')`).run(orderId, customerId, orderDate, groupId, "");
                         }
                         if (groupId)
-                            collectingByGroup.set(groupId, { orderId, customerId });
-                        await reply(lineClient, event.replyToken, "開始收單。請客戶傳叫貨內容（可多則）；我方傳「以上X收單」即結束並告知已收幾項。");
+                            collectingByGroup.set(groupId, { orderId, customerId, lastActivity: Date.now() });
+                        let replyDone = "開始收單。請客戶傳叫貨內容（可多則）；我方傳「以上X收單」即結束並告知已收幾項。";
+                        if (rest) {
+                            const parsed = (0, parse_order_message_js_1.parseOrderMessage)(rest);
+                            const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
+                            const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
+                            const needReview = [];
+                            for (const item of parsed) {
+                                const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, customerId);
+                                const itemId = (0, id_js_1.newId)("item");
+                                const productId = resolved?.productId ?? null;
+                                if (!resolved)
+                                    needReview.push(item.rawName);
+                                const unit = item.unit && item.unit.trim() ? item.unit.trim() : fallbackUnit;
+                                await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, resolved ? 0 : 1);
+                            }
+                            const orderRow2 = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
+                            const newRaw = (orderRow2?.raw_message ? orderRow2.raw_message + "\n" : "") + rest;
+                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = datetime('now') WHERE id = ?").run(newRaw, orderId);
+                            replyDone = parsed.length > 0
+                                ? `已收單並記入本則 ${parsed.length} 項${needReview.length > 0 ? "（以下待對照：" + needReview.join("、") + "）" : ""}。可繼續傳品項，傳完說「以上X收單」結束。`
+                                : "已開始收單。本則未辨識到品名與數量，請另傳「品名 數量 單位」。傳完說「以上X收單」結束。";
+                        }
+                        await reply(lineClient, event.replyToken, replyDone);
+                        continue;
+                    }
+                    if (text === "今天叫了什麼" || text === "今日訂單" || text === "今日叫貨") {
+                        const orderRow = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
+                        if (!orderRow) {
+                            await reply(lineClient, event.replyToken, "今日尚無訂單。");
+                            continue;
+                        }
+                        const items = await db.prepare(`
+          SELECT oi.raw_name, oi.quantity, oi.unit, p.name AS product_name
+          FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
+        `).all(orderRow.id);
+                        const lines = items.map((i) => {
+                            const name = i.product_name || i.raw_name || "待確認";
+                            return `${name} ${i.quantity} ${i.unit || ""}`.trim();
+                        });
+                        await reply(lineClient, event.replyToken, "今日叫貨：\n" + (lines.length ? lines.join("\n") : "（尚無品項）"));
                         continue;
                     }
                     // 「完成」「結束收單」或「以上X收單」（由我方觸發結束，X 可半形或全形數字）
@@ -148,6 +191,21 @@ function createLineWebhook() {
                         if (groupId && collectingByGroup.has(groupId)) {
                             const session = collectingByGroup.get(groupId);
                             collectingByGroup.delete(groupId);
+                            const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(session.customerId);
+                            const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
+                            const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
+                            if (emptyBasketErp) {
+                                const emptyBasket = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(emptyBasketErp);
+                                if (emptyBasket) {
+                                    const itemId1 = (0, id_js_1.newId)("item");
+                                    await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId1, session.orderId, emptyBasket.id, emptyBasket.name, emptyBasket.unit || "個");
+                                }
+                            }
+                            const squareBasket = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get("C0100065");
+                            if (squareBasket) {
+                                const itemId2 = (0, id_js_1.newId)("item");
+                                await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId2, session.orderId, squareBasket.id, squareBasket.name, squareBasket.unit || "個");
+                            }
                             const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
                             const n = count?.c ?? 0;
                             await reply(lineClient, event.replyToken, `完成，已收 ${n} 項。`);
@@ -156,6 +214,31 @@ function createLineWebhook() {
                             await reply(lineClient, event.replyToken, "目前沒有在收單。請先由我方傳「收單」開始，客戶傳完叫貨後再傳「以上X收單」結束。");
                         }
                         continue;
+                    }
+                    if (groupId && collectingByGroup.has(groupId)) {
+                        const session = collectingByGroup.get(groupId);
+                        if (Date.now() - (session.lastActivity || 0) > COLLECT_TIMEOUT_MS) {
+                            collectingByGroup.delete(groupId);
+                            const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(session.customerId);
+                            const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
+                            const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
+                            if (emptyBasketErp) {
+                                const emptyBasket = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(emptyBasketErp);
+                                if (emptyBasket) {
+                                    const itemId1 = (0, id_js_1.newId)("item");
+                                    await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId1, session.orderId, emptyBasket.id, emptyBasket.name, emptyBasket.unit || "個");
+                                }
+                            }
+                            const squareBasket = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get("C0100065");
+                            if (squareBasket) {
+                                const itemId2 = (0, id_js_1.newId)("item");
+                                await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId2, session.orderId, squareBasket.id, squareBasket.name, squareBasket.unit || "個");
+                            }
+                            const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
+                            await reply(lineClient, event.replyToken, `已自動結單（逾時 ${COLLECT_TIMEOUT_MS / 60000} 分鐘），共收 ${count?.c ?? 0} 項。`);
+                            continue;
+                        }
+                        session.lastActivity = Date.now();
                     }
                     // 未在收單模式：不當成叫貨，也不回覆（省則數）
                     if (!groupId || !collectingByGroup.has(groupId)) {

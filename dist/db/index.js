@@ -75,6 +75,7 @@ function initSqlite(dbPath) {
         "ALTER TABLE customers ADD COLUMN order_notes TEXT",
         "ALTER TABLE customers ADD COLUMN default_unit TEXT",
         "ALTER TABLE order_items ADD COLUMN remark TEXT",
+        "ALTER TABLE customers ADD COLUMN route_line INTEGER",
     ];
     for (const alt of alters) {
         try {
@@ -105,6 +106,10 @@ async function initPg() {
         try {
             const schema = (0, fs_1.readFileSync)(schemaPgPath, "utf-8");
             await client.query(schema);
+            try {
+                await client.query("ALTER TABLE customers ADD COLUMN route_line INTEGER");
+            }
+            catch (_) { /* column may already exist */ }
         }
         finally {
             client.release();

@@ -10,7 +10,8 @@
     order_notes TEXT,
     default_unit TEXT,
     active INTEGER NOT NULL DEFAULT 1,
-    updated_at TIMESTAMPTZ
+    updated_at TIMESTAMPTZ,
+    route_line INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS products (

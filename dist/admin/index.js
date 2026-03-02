@@ -103,6 +103,7 @@ const NOTION_STYLE = `
   .teraoka-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
   .teraoka-cell .code { font-weight: 600; }
   .teraoka-cell .name { font-size: 12px; color: var(--notion-text-muted); }
+  .order-table-col-system { border-left: 2px solid var(--notion-accent); }
   @media print { .notion-sidebar, .no-print, .notion-topbar { display: none !important; } .notion-main { max-width: none; } }
 `;
 const NOTION_SIDEBAR = (active) => `
@@ -581,7 +582,7 @@ function createAdminRouter() {
             return;
         }
         const items = await db.prepare(`
-      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.need_review,
+      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.need_review, oi.include_export,
         p.id AS product_id, p.erp_code, p.name AS product_name, p.teraoka_barcode
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
     `).all(orderId);
@@ -610,16 +611,19 @@ function createAdminRouter() {
                 ? `<a href="#" class="product-pick" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
                 : `${pname} <a href="#" class="product-pick" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
+            const includeChecked = i.include_export === undefined || i.include_export === null || i.include_export === 1;
             return `<tr data-item-id="${escapeAttr(i.item_id)}">
+            <td><input type="checkbox" name="include_${i.item_id}" value="1" form="itemsForm" ${includeChecked ? "checked" : ""} title="勾選則納入訂貨單"></td>
             <td>${escapeHtml(i.raw_name ?? "")}</td>
             <td>${escapeHtml(String(q))}</td>
             <td>${escapeHtml((i.unit && i.unit.trim()) || "—")}</td>
-            <td>${escapeHtml(erp)}</td>
-            <td>${productCell}</td>
-            <td><input type="number" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0" style="width:5rem;"></td>
-            <td>${unitSelectWithVal}</td>
-            <td><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:120px;"></td>
-            <td>${teraokaCell}</td>
+            <td class="order-table-col-system">${escapeHtml(erp)}</td>
+            <td class="order-table-col-system">${productCell}</td>
+            <td class="order-table-col-system"><input type="number" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0" style="width:5rem;"></td>
+            <td class="order-table-col-system">${unitSelectWithVal}</td>
+            <td class="order-table-col-system"><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:120px;"></td>
+            <td class="order-table-col-system">${teraokaCell}</td>
+            <td class="order-table-col-system"><form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(i.item_id)}/delete" style="display:inline;"><button type="submit" class="btn">刪除</button></form></td>
           </tr>`;
         })
             .join("");
@@ -630,15 +634,16 @@ function createAdminRouter() {
         ${needReviewNote}
         ${req.query.ok === "product" ? "<p class=\"notion-msg ok\">已更新品項。</p>" : ""}
         ${req.query.err === "product" ? "<p class=\"notion-msg err\">請選擇有效品項。</p>" : ""}
-        <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet">匯出訂貨單格式（含條碼）</a>　<a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1">預覽訂單圖</a></p>
+        <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet" class="btn btn-primary">匯出訂貨單格式（含條碼）</a>　<a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1" class="btn">預覽訂單圖</a></p>
         <div class="notion-card"><pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);margin:0;font-size:13px;">${escapeHtml(order.raw_message ?? "")}</pre></div>
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items">
           <div class="notion-card">
             <table>
-              <thead><tr><th>原始品名</th><th>原始數量</th><th>原始單位</th><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>備註</th><th>寺岡（料號／條碼）</th></tr></thead>
+              <thead><tr><th>選取</th><th>原始品名</th><th>原始數量</th><th>原始單位</th><th class="order-table-col-system">凌越料號</th><th class="order-table-col-system">凌越品名</th><th class="order-table-col-system">叫貨數量</th><th class="order-table-col-system">叫貨單位</th><th class="order-table-col-system">備註</th><th class="order-table-col-system">寺岡（料號／條碼）</th><th class="order-table-col-system">刪除</th></tr></thead>
               <tbody>${itemsRows}</tbody>
+              <tr><td colspan="11" style="background:var(--notion-sidebar);padding:10px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="btn">＋ 增加品相</a></td></tr>
             </table>
-            <p style="margin:12px 0 0;"><button type="submit" class="btn btn-primary">儲存數量、單位與備註</button></p>
+            <p style="margin:12px 0 0;"><button type="submit" class="btn btn-primary">儲存數量、單位、備註與選取</button></p>
           </div>
         </form>
         <div id="productModal" class="notion-modal-overlay" style="display:none;">
@@ -694,6 +699,7 @@ function createAdminRouter() {
             return;
         }
         const body = req.body;
+        const existingItems = await db.prepare("SELECT id FROM order_items WHERE order_id = ?").all(orderId);
         for (const key of Object.keys(body)) {
             if (key.startsWith("qty_")) {
                 const itemId = key.slice(4);
@@ -713,7 +719,69 @@ function createAdminRouter() {
                 await db.prepare("UPDATE order_items SET remark = ? WHERE id = ? AND order_id = ?").run(remark, itemId, orderId);
             }
         }
+        for (const row of existingItems) {
+            const includeExport = body["include_" + row.id] === "1" ? 1 : 0;
+            await db.prepare("UPDATE order_items SET include_export = ? WHERE id = ? AND order_id = ?").run(includeExport, row.id, orderId);
+        }
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=items");
+    });
+    router.post("/orders/:orderId/items/:itemId/delete", async (req, res) => {
+        const { orderId, itemId } = req.params;
+        const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
+        if (!order) {
+            res.status(404).send("訂單不存在");
+            return;
+        }
+        await db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(itemId, orderId);
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=del_item");
+    });
+    router.get("/orders/:orderId/items/add", async (req, res) => {
+        const { orderId } = req.params;
+        const order = await db.prepare("SELECT id, order_date, customer_id FROM orders WHERE id = ?").get(orderId);
+        if (!order) {
+            res.status(404).send("訂單不存在");
+            return;
+        }
+        const products = await db.prepare("SELECT id, name, erp_code, unit FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all();
+        const productOptions = products.map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)} ${escapeHtml(p.erp_code ?? "")}</option>`).join("");
+        const units = ["公斤", "斤", "把", "包", "件", "箱", "顆", "粒", "盒", "袋", "個"];
+        const unitOpts = units.map((u) => `<option value="${escapeAttr(u)}">${escapeHtml(u)}</option>`).join("");
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品相</div>
+        <h1 class="notion-page-title">增加品相</h1>
+        <div class="notion-card">
+          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add">
+            <label>品項 <select name="product_id" required style="width:100%;">${productOptions}</select></label>
+            <label>數量 <input type="number" name="quantity" step="any" min="0" value="0" required style="width:8rem;"></label>
+            <label>單位 <select name="unit" style="width:8rem;">${unitOpts}</select></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">新增</button> <a href="/admin/orders/${encodeURIComponent(orderId)}" class="btn">取消</a></p>
+          </form>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("增加品相", body, "", res.locals.topBarHtml));
+    });
+    router.post("/orders/:orderId/items/add", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const { orderId } = req.params;
+        const productId = req.body.product_id?.trim();
+        const qty = parseFloat(req.body.quantity);
+        const unit = (req.body.unit || "").trim() || null;
+        const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
+        if (!order) {
+            res.status(404).send("訂單不存在");
+            return;
+        }
+        if (!productId || !Number.isFinite(qty) || qty < 0) {
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "/items/add?err=1");
+            return;
+        }
+        const product = await db.prepare("SELECT id, name FROM products WHERE id = ?").get(productId);
+        if (!product) {
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "/items/add?err=product");
+            return;
+        }
+        const itemId = (0, id_js_1.newId)("item");
+        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, ?, ?, 0, 1)").run(itemId, orderId, productId, product.name, qty, unit);
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=add_item");
     });
     router.get("/barcode", async (req, res) => {
         const code = req.query.code?.trim();
@@ -749,7 +817,8 @@ function createAdminRouter() {
         }
         const items = await db.prepare(`
       SELECT oi.quantity, oi.unit, oi.remark, p.erp_code, p.name AS product_name, p.teraoka_barcode
-      FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
+      FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
+      WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1)
     `).all(orderId);
         const rows = items.map((i) => {
             const erp = i.erp_code ?? "—";
@@ -802,6 +871,7 @@ function createAdminRouter() {
             <label>LINE 群組名稱 <input type="text" name="line_group_name" placeholder="可留空，之後可改" style="width:100%;"></label>
             <label>LINE 群組 ID <input type="text" name="line_group_id" placeholder="C開頭群組 ID，可留空後補" style="width:100%;"></label>
             <label>聯絡方式 <input type="text" name="contact" placeholder="電話或備註，可留空" style="width:100%;"></label>
+            <label>第幾號線（檢貨路線）<select name="route_line"><option value="">— 不指定</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n} 號線</option>`).join("")}</select></label>
             <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">建立</button></p>
           </form>
         </div>
@@ -815,12 +885,14 @@ function createAdminRouter() {
         const lineGroupName = req.body.line_group_name?.trim() || null;
         const lineGroupId = (req.body.line_group_id || "").replace(/\s/g, "").trim() || null;
         const contact = req.body.contact?.trim() || null;
+        const routeLineRaw = req.body.route_line?.trim();
+        const routeLine = routeLineRaw && /^[1-9]$/.test(routeLineRaw) ? parseInt(routeLineRaw, 10) : null;
         if (!name) {
             res.redirect("/admin/customers/new?err=name");
             return;
         }
         const id = (0, id_js_1.newId)("cust");
-        await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact);
+        await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine);
         res.redirect("/admin/customers?ok=1");
     });
     router.get("/customers/:id/quick-view", async (req, res) => {
@@ -865,7 +937,7 @@ function createAdminRouter() {
     });
     router.get("/customers/:id/edit", async (req, res) => {
         try {
-            const customer = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);
+            const customer = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active, route_line FROM customers WHERE id = ?").get(req.params.id);
             if (!customer) {
                 res.status(404).send("客戶不存在");
                 return;
@@ -898,6 +970,7 @@ function createAdminRouter() {
             <label>LINE 群組名稱 <input type="text" name="line_group_name" value="${v(customer.line_group_name)}" placeholder="可之後填" style="width:100%;"></label>
             <label>LINE 群組 ID <input type="text" name="line_group_id" value="${v(customer.line_group_id)}" placeholder="C開頭，綁定後機器人會認此群組" style="width:100%;"></label>
             <label>聯絡方式 <input type="text" name="contact" value="${v(customer.contact)}" style="width:100%;"></label>
+            <label>第幾號線（檢貨路線）<select name="route_line"><option value="">— 不指定</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}" ${customer.route_line === n ? "selected" : ""}>${n} 號線</option>`).join("")}</select></label>
             <label>預設單位（客戶只打數字未填單位時使用）<select name="default_unit">
               <option value="" ${!customer.default_unit ? "selected" : ""}>公斤</option>
               <option value="公斤" ${customer.default_unit === "公斤" ? "selected" : ""}>公斤</option>
@@ -945,6 +1018,8 @@ function createAdminRouter() {
         const lineGroupName = req.body.line_group_name?.trim() || null;
         const lineGroupId = (req.body.line_group_id || "").replace(/\s/g, "").trim() || null;
         const contact = req.body.contact?.trim() || null;
+        const routeLineRaw = req.body.route_line?.trim();
+        const routeLine = routeLineRaw && /^[1-9]$/.test(routeLineRaw) ? parseInt(routeLineRaw, 10) : null;
         const defaultUnit = req.body.default_unit?.trim() || null;
         const orderNotes = req.body.order_notes?.trim() || null;
         const active = req.body.active === "1" ? 1 : 0;
@@ -952,7 +1027,7 @@ function createAdminRouter() {
             res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=name");
             return;
         }
-        await db.prepare("UPDATE customers SET name = ?, teraoka_code = ?, hq_cust_code = ?, line_group_name = ?, line_group_id = ?, contact = ?, default_unit = ?, order_notes = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, defaultUnit, orderNotes, active, id);
+        await db.prepare("UPDATE customers SET name = ?, teraoka_code = ?, hq_cust_code = ?, line_group_name = ?, line_group_id = ?, contact = ?, route_line = ?, default_unit = ?, order_notes = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, defaultUnit, orderNotes, active, id);
         const fromOrders = req.body?.from === "orders";
         res.redirect(fromOrders ? "/admin/orders?ok=edit" : "/admin/customers?ok=edit");
     });

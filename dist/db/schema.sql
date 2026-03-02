@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS customers (
   order_notes TEXT,
   default_unit TEXT,
   active INTEGER NOT NULL DEFAULT 1,
-  updated_at TEXT
+  updated_at TEXT,
+  route_line INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS products (
