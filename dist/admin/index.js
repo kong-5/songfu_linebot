@@ -249,11 +249,21 @@ function createAdminRouter() {
         <div class="notion-card">
           <h2>如何綁定</h2>
           <ol style="margin:0 0 12px;padding-left:20px;">
-            <li>在 LINE 群組裡傳送：<strong>取得群組ID</strong>（或「群組ID」）</li>
-            <li>機器人會回傳該群組的 ID（一串英數字），請<strong>完整複製</strong></li>
+            <li>在 LINE <strong>群組</strong>或<strong>多人聊天</strong>裡傳送：<strong>取得群組ID</strong>（或「群組ID」）</li>
+            <li>機器人會回傳該群組/聊天室的 ID（一串英數字），請<strong>完整複製</strong></li>
             <li>到下方對應客戶那一列點「編輯」，把複製的 ID 貼到「LINE 群組 ID」欄位，儲存</li>
           </ol>
-          <p style="color:var(--notion-text-muted);font-size:13px;">ID 必須與機器人回傳的<strong>完全一致</strong>（前後不可多空格、不可少字）。</p>
+          <p style="color:var(--notion-text-muted);font-size:13px;">ID 必須與機器人回傳的<strong>完全一致</strong>。下方表格即為目前資料庫內的綁定狀態（與收單機器人讀取的是同一份）。</p>
+        </div>
+        <div class="notion-card">
+          <h2>收不到／仍顯示未綁定時請查日誌</h2>
+          <p>到 <strong>Google Cloud Console → Cloud Run → 你的服務 → 日誌</strong>，在群組/聊天室傳一則訊息後搜尋 <code>[LINE]</code>。</p>
+          <ul style="margin:8px 0 0;padding-left:20px;">
+            <li>有 <code>[LINE] 綁定查詢 OK customer=xxx</code> → 綁定成功，可傳「收單」開始收單。</li>
+            <li>有 <code>[LINE] 非群組/聊天室 source.type= user</code> → 您是在「與機器人 1 對 1」聊天，請改在<strong>群組或多人聊天</strong>裡傳。</li>
+            <li>有 <code>[LINE] 綁定查詢失敗</code> → 日誌會印出 LINE 傳來的 ID 前 6、後 6 字元，請與下方表格該客戶的 LINE 群組 ID 比對是否一致。</li>
+            <li>完全沒有 <code>[LINE]</code> 日誌 → Webhook 未收到（請確認機器人已加入該群組/聊天室、且 LINE Developers 的 Webhook URL 正確）。</li>
+          </ul>
         </div>
         <div class="notion-card">
           <h2>資料庫連線</h2>

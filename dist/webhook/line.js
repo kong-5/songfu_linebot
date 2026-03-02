@@ -43,12 +43,17 @@ function createLineWebhook() {
                         continue;
                     }
                     const msgType = event.message.type;
-                    if (event.source.type !== "group")
-                        console.log("[LINE] 非群組訊息 source.type=", event.source.type, "（收單僅支援群組，請將機器人加入群組）");
-                    const rawGroupId = event.source.type === "group" ? (event.source.groupId || "") : "";
+                    if (event.source)
+                        console.log("[LINE] event.source", JSON.stringify(event.source));
+                    const sourceType = event.source?.type || "";
+                    const rawGroupId = sourceType === "group" ? (event.source.groupId || "") : sourceType === "room" ? (event.source.roomId || "") : "";
                     const groupId = rawGroupId.replace(/\s/g, "").trim() || null;
+                    if (sourceType !== "group" && sourceType !== "room")
+                        console.log("[LINE] 非群組/聊天室 source.type=", sourceType, "（收單需在群組或多人聊天）");
                     if (groupId)
-                        console.log("[LINE] 群組 ID：", groupId, "（長度", groupId.length, "）");
+                        console.log("[LINE] source.type=%s 識別碼長度=%s", sourceType, groupId.length);
+                    if (groupId)
+                        console.log("[LINE] 群組/聊天室 ID：", groupId, "（長度", groupId.length, "）");
                     let customer = null;
                     if (groupId) {
                         const allActive = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE (active IS NULL OR active = 1)").all();
@@ -89,7 +94,7 @@ function createLineWebhook() {
                     console.log("[LINE] 收到文字:", JSON.stringify(text));
                     // 取得群組 ID（未綁定也可用）
                     if (groupId && (text === "取得群組ID" || text === "群組ID")) {
-                        await reply(lineClient, event.replyToken, `此群組 ID：\n${groupId}\n請將此 ID 提供給管理員，在後台「匯入客戶」或「客戶管理」綁定對應客戶。`);
+                        await reply(lineClient, event.replyToken, `此群組/聊天室 ID：\n${groupId}\n請將此 ID 提供給管理員，在後台「客戶管理」編輯該客戶的「LINE 群組 ID」並儲存。`);
                         continue;
                     }
                     if (groupId && !customer) {
