@@ -55,7 +55,7 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     <h1>松富叫貨 LINE 機器人</h1>
     <p>服務運行中。</p>
     <ul>
-      <li><a href="/admin">後台</a> － <a href="/admin/review">待確認品名</a>、<a href="/admin/orders">訂單</a>、<a href="/admin/customers">客戶</a>、<a href="/admin/import-customers">匯入客戶</a>、<a href="/admin/products">品項</a>、<a href="/admin/import">匯入品項</a>、<a href="/admin/import-teraoka">寺岡對照</a></li>
+      <li><a href="/admin">後台</a> － <a href="/admin/line-binding">LINE 綁定檢查</a>、<a href="/admin/review">待確認品名</a>、<a href="/admin/orders">訂單</a>、<a href="/admin/customers">客戶</a>、<a href="/admin/import-customers">匯入客戶</a>、<a href="/admin/products">品項</a>、<a href="/admin/import">匯入品項</a>、<a href="/admin/import-teraoka">寺岡對照</a></li>
       <li><a href="/health">/health</a> － 健康檢查</li>
       <li>LINE Webhook：POST <code>${webhookPath}</code></li>
     </ul>
@@ -63,6 +63,23 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     });
     app.get("/health", (_req, res) => {
         res.json({ ok: true, service: "songfu_linebot" });
+    });
+    app.use((_req, res) => {
+        res.status(404).type("text/html").send(`
+    <!DOCTYPE html>
+    <html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>找不到頁面</title></head>
+    <body style="font-family:sans-serif;padding:2rem;max-width:600px;margin:0 auto;">
+      <h1>找不到頁面</h1>
+      <p>您輸入的網址在此服務中不存在。</p>
+      <p>請使用以下連結：</p>
+      <ul>
+        <li><a href="/">首頁</a></li>
+        <li><a href="/admin">後台</a></li>
+        <li><a href="/admin/line-binding">LINE 綁定檢查</a></li>
+        <li><a href="/admin/customers">客戶管理</a></li>
+        <li><a href="/health">健康檢查</a></li>
+      </ul>
+    </body></html>`);
     });
     app.listen(PORT, "0.0.0.0", () => {
         console.log(`[startup] songfu_linebot listening on http://0.0.0.0:${PORT}`);

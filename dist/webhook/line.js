@@ -27,6 +27,17 @@ function createLineWebhook() {
     else {
         router.use((_req, _res, next) => next());
     }
+    router.get("/", (_req, res) => {
+        res.type("text/html").send(`
+    <!DOCTYPE html>
+    <html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LINE Webhook</title></head>
+    <body style="font-family:sans-serif;padding:2rem;max-width:560px;margin:0 auto;">
+      <h1>LINE Webhook</h1>
+      <p>此網址僅接受 <strong>POST</strong> 請求，供 LINE 平台推送訊息使用。</p>
+      <p>請勿在瀏覽器直接開啟此頁面來「測試」；請到 <strong>LINE Developers Console</strong> → 您的 Channel → <strong>Messaging API</strong> → 將 <strong>Webhook URL</strong> 設為本頁網址，並將 <strong>Use webhook</strong> 設為 Enabled。</p>
+      <p><a href="/">← 回首頁</a>　<a href="/admin">後台</a></p>
+    </body></html>`);
+    });
     router.post("/", (req, res) => {
         if (typeof req.body === "string") {
             req.body = JSON.parse(req.body);
@@ -64,8 +75,11 @@ function createLineWebhook() {
                         if (!customer) {
                             const withGid = allActive.filter((r) => (r.line_group_id || "").trim() !== "");
                             console.log("[LINE] 綁定查詢失敗 收單服務使用資料庫=%s groupId 長度=%s 前6=%s 後6=%s DB內有line_group_id的客戶數=%s", process.env.DATABASE_URL ? "Cloud SQL" : "SQLite", groupId.length, groupId.slice(0, 6), groupId.slice(-6), withGid.length);
-                            if (withGid.length > 0)
-                                console.log("[LINE] DB 第一筆 line_group_id 長度=%s 前6=%s 後6=%s", (withGid[0].line_group_id || "").length, (withGid[0].line_group_id || "").slice(0, 6), (withGid[0].line_group_id || "").slice(-6));
+                            if (withGid.length > 0) {
+                                const dbFirst = (withGid[0].line_group_id || "").trim();
+                                const normDb = (s) => (s || "").replace(/\s/g, "").toLowerCase();
+                                console.log("[LINE] DB 第一筆 line_group_id 長度=%s 前6=%s 後6=%s 比對needle前8=%s DB前8=%s", dbFirst.length, dbFirst.slice(0, 6), dbFirst.slice(-6), needle.slice(0, 8), normDb(dbFirst).slice(0, 8));
+                            }
                         }
                         else
                             console.log("[LINE] 綁定查詢 OK customer=%s", customer.id);
@@ -111,6 +125,7 @@ function createLineWebhook() {
                     const orderDate = new Date().toISOString().slice(0, 10);
                     // 「收單」或「開始收單」→ 進入收單模式，可多則累加，傳完說「完成」
                     if (text === "收單" || text === "開始收單") {
+                        console.log("[LINE] 進入收單流程 customerId=%s orderDate=%s", customerId, orderDate);
                         let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
                         let orderId;
                         if (orderRow) {
@@ -179,7 +194,12 @@ function createLineWebhook() {
                 }
                 catch (err) {
                     console.error("[LINE] 處理訊息時錯誤:", err);
-                    await reply(lineClient, event.replyToken, "抱歉，處理時發生錯誤，請稍後再試。");
+                    try {
+                        await reply(lineClient, event.replyToken, "抱歉，處理時發生錯誤，請稍後再試。");
+                    }
+                    catch (replyErr) {
+                        console.error("[LINE] 回覆失敗（可能 replyToken 逾時）:", replyErr?.message || replyErr);
+                    }
                 }
             }
         })().catch((e) => console.error("[LINE] 背景處理失敗", e));

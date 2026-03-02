@@ -1,5 +1,14 @@
 # LINE 群組收不到訊息／顯示未綁定 排查
 
+## 0. 「連接通道」先確認（多數無法綁定與此有關）
+
+1. **LINE Developers Console**（[developers.line.biz/console](https://developers.line.biz/console/)）→ 您的 Channel → **Messaging API** 分頁：
+   - **Webhook URL**：必須填 `https://您的 Cloud Run 網址/webhook`（例：`https://songfu-line-bot-xxx.asia-east1.run.app/webhook`），且可從外網連線。
+   - **Use webhook**：必須為 **Enabled**（開啟）。
+2. **機器人已加入該群組**：在 LINE 群組成員名單中要有您的官方帳號；若沒有，請在群組內加入該帳號。
+3. **在群組內傳訊息**：請在「群組」或「多人聊天」裡傳「取得群組ID」或「收單」，不是在「與機器人 1 對 1」聊天視窗。
+4. **後台與收單同網址**：綁定須在「已部署的 Cloud Run 後台」編輯並儲存。可開啟 `https://您的服務.run.app/admin/api/binding-status` 確認此服務看到的「有填 LINE 群組 ID 的客戶數」是否 ≥ 1。
+
 ## 1. 確認機器人已加入該群組
 
 - 收單**只支援群組**，不支援一對一聊天。

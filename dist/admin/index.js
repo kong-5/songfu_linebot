@@ -51,7 +51,7 @@ const NOTION_STYLE = `
   html, body { margin: 0; width: 100%; max-width: 100vw; min-height: 100vh; }
   body { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif; background: var(--notion-bg); color: var(--notion-text); line-height: 1.5; display: flex; }
   .notion-layout { display: flex; width: 100%; max-width: 100%; min-height: 100vh; flex: 1; min-width: 0; }
-  .notion-sidebar { width: 240px; min-width: 240px; background: var(--notion-sidebar); border-right: 1px solid var(--notion-border); padding: 12px 0; flex-shrink: 0; }
+  .notion-sidebar { width: 180px; min-width: 180px; background: var(--notion-sidebar); border-right: 1px solid var(--notion-border); padding: 12px 0; flex-shrink: 0; }
   .notion-sidebar a { display: block; padding: 6px 14px; color: var(--notion-text); text-decoration: none; font-size: 14px; border-radius: var(--notion-radius); }
   .notion-sidebar a:hover { background: var(--notion-hover); }
   .notion-sidebar .active { background: var(--notion-hover); color: var(--notion-accent); }
@@ -234,6 +234,23 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("工作台", body, "dashboard", res.locals.topBarHtml));
     });
+    router.get("/api/binding-status", async (_req, res) => {
+        try {
+            const all = await db.prepare("SELECT id, line_group_id, active FROM customers").all();
+            const withLineId = all.filter((c) => (c.line_group_id || "").trim() !== "");
+            const active = all.filter((c) => c.active === 1 || c.active === null || c.active === undefined);
+            res.json({
+                ok: true,
+                database: process.env.DATABASE_URL ? "PostgreSQL" : "SQLite",
+                totalCustomers: all.length,
+                customersWithLineGroupId: withLineId.length,
+                activeCustomers: active.length,
+            });
+        }
+        catch (e) {
+            res.status(500).json({ ok: false, err: (e.message || String(e)).slice(0, 100) });
+        }
+    });
     router.get("/line-binding", async (req, res) => {
         const dbType = process.env.DATABASE_URL ? "PostgreSQL (Cloud SQL)" : "SQLite";
         const currentHost = req.get("host") || "";
@@ -261,14 +278,23 @@ function createAdminRouter() {
           </ol>
           <p style="color:var(--notion-text-muted);font-size:13px;">ID 必須與機器人回傳的<strong>完全一致</strong>。下方表格即為目前資料庫內的綁定狀態（與收單機器人讀取的是同一份）。</p>
         </div>
+        <div class="notion-card" style="border-left:4px solid #08c;">
+          <h2>「連接通道」檢查清單（仍無法綁定時請逐項確認）</h2>
+          <ol style="margin:0 0 12px;padding-left:20px;">
+            <li><strong>LINE Developers Console</strong>（<a href="https://developers.line.biz/console/" target="_blank" rel="noopener">developers.line.biz/console</a>）→ 您的 Channel → <strong>Messaging API</strong> 分頁：<br>「Webhook URL」必須為 <code>https://您的服務.run.app/webhook</code>（與本後台同網址、結尾 /webhook），且「Use webhook」為 <strong>Enabled</strong>。</li>
+            <li><strong>機器人已加入該群組</strong>：收單只認「群組」或「多人聊天」。請在 LINE 群組成員名單確認有您的官方帳號（機器人）；若沒有，請在群組內加入該帳號為成員。</li>
+            <li><strong>在「群組內」傳訊息</strong>：若您是在「與機器人 1 對 1」聊天視窗傳，不會觸發群組綁定。請改在<strong>群組或多人聊天</strong>裡傳「取得群組ID」或「收單」。</li>
+            <li><strong>後台與收單同一網址</strong>：綁定必須在「本頁相同網址」的後台編輯並儲存。開啟 <a href="/admin/api/binding-status" target="_blank">/admin/api/binding-status</a> 可確認此服務目前看到的客戶數與有填 LINE 群組 ID 的數量（應 ≥ 1）。</li>
+          </ol>
+        </div>
         <div class="notion-card">
           <h2>收不到／仍顯示未綁定時請查日誌</h2>
           <p>到 <strong>Google Cloud Console → Cloud Run → 你的服務 → 日誌</strong>，在群組/聊天室傳一則訊息後搜尋 <code>[LINE]</code>。</p>
           <ul style="margin:8px 0 0;padding-left:20px;">
             <li>有 <code>[LINE] 綁定查詢 OK customer=xxx</code> → 綁定成功，可傳「收單」開始收單。</li>
             <li>有 <code>[LINE] 非群組/聊天室 source.type= user</code> → 您是在「與機器人 1 對 1」聊天，請改在<strong>群組或多人聊天</strong>裡傳。</li>
-            <li>有 <code>[LINE] 綁定查詢失敗</code> → 日誌會印出 LINE 傳來的 ID 前 6、後 6 字元，請與下方表格該客戶的 LINE 群組 ID 比對是否一致。</li>
-            <li>完全沒有 <code>[LINE]</code> 日誌 → Webhook 未收到（請確認機器人已加入該群組/聊天室、且 LINE Developers 的 Webhook URL 正確）。</li>
+            <li>有 <code>[LINE] 綁定查詢失敗</code> → 日誌會印出 LINE 傳來的 ID 與 DB 第一筆的前 8 字元比對；若「DB內有line_group_id的客戶數=0」代表此實例讀到的資料庫沒有綁定資料。</li>
+            <li>完全沒有 <code>[LINE]</code> 日誌 → Webhook 未收到（請確認上述「連接通道」：Webhook URL、Use webhook、機器人已在群組內）。</li>
           </ul>
         </div>
         <div class="notion-card">
@@ -503,15 +529,24 @@ function createAdminRouter() {
     });
     router.get("/api/products-search", async (req, res) => {
         const q = (req.query.q || "").trim().toLowerCase();
-        let list = await db.prepare("SELECT id, name, erp_code, teraoka_barcode FROM products WHERE active = 1 ORDER BY name").all();
+        let list = await db.prepare("SELECT id, name, erp_code, teraoka_barcode FROM products ORDER BY name").all();
         if (q) {
             const parts = q.split(/\s+/).filter(Boolean);
-            list = list.filter((p) => {
+            let filtered = list.filter((p) => {
                 const name = (p.name || "").toLowerCase();
                 const erp = (p.erp_code || "").toLowerCase();
                 const teraoka = (p.teraoka_barcode || "").toLowerCase();
                 return parts.every((part) => name.includes(part) || erp.includes(part) || teraoka.includes(part));
             });
+            if (filtered.length === 0 && parts.length > 0)
+                filtered = list.filter((p) => {
+                    const name = (p.name || "").toLowerCase();
+                    const erp = (p.erp_code || "").toLowerCase();
+                    const teraoka = (p.teraoka_barcode || "").toLowerCase();
+                    const all = name + " " + erp + " " + teraoka;
+                    return parts.some((part) => all.includes(part));
+                });
+            list = filtered;
         }
         res.json(list.slice(0, 80));
     });
@@ -576,6 +611,9 @@ function createAdminRouter() {
                 : `${pname} <a href="#" class="product-pick" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
             return `<tr data-item-id="${escapeAttr(i.item_id)}">
+            <td>${escapeHtml(i.raw_name ?? "")}</td>
+            <td>${escapeHtml(String(q))}</td>
+            <td>${escapeHtml((i.unit && i.unit.trim()) || "—")}</td>
             <td>${escapeHtml(erp)}</td>
             <td>${productCell}</td>
             <td><input type="number" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0" style="width:5rem;"></td>
@@ -597,7 +635,7 @@ function createAdminRouter() {
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items">
           <div class="notion-card">
             <table>
-              <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>備註</th><th>寺岡（料號／條碼）</th></tr></thead>
+              <thead><tr><th>原始品名</th><th>原始數量</th><th>原始單位</th><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>備註</th><th>寺岡（料號／條碼）</th></tr></thead>
               <tbody>${itemsRows}</tbody>
             </table>
             <p style="margin:12px 0 0;"><button type="submit" class="btn btn-primary">儲存數量、單位與備註</button></p>
@@ -635,10 +673,11 @@ function createAdminRouter() {
             if (!div || !currentItemId) return;
             var productId = div.getAttribute('data-product-id');
             if (!productId) return;
+            modal.style.display = 'none';
             var form = document.createElement('form');
             form.method = 'post';
             form.action = '/admin/orders/' + encodeURIComponent(orderId) + '/items/' + encodeURIComponent(currentItemId) + '/product';
-            form.innerHTML = '<input type="hidden" name="product_id" value="' + productId + '">';
+            form.innerHTML = '<input type="hidden" name="product_id" value="' + (productId.replace(/&/g, "&amp;").replace(/"/g, "&quot;")) + '">';
             document.body.appendChild(form);
             form.submit();
           });
@@ -956,9 +995,7 @@ function createAdminRouter() {
             ? "<p style='color:green'>客戶已建立。</p>"
             : req.query.ok === "edit"
                 ? "<p style='color:green'>已儲存。</p>"
-                : req.query.ok === "toggle"
-                    ? "<p style='color:green'>已更新狀態。</p>"
-                    : req.query.ok === "del"
+                : req.query.ok === "del"
                         ? "<p style='color:green'>已刪除。</p>"
                         : req.query.err
                             ? "<p style='color:red'>" + escapeHtml(String(req.query.err)) + "</p>"
@@ -967,25 +1004,27 @@ function createAdminRouter() {
         const rows = (q
             ? await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, active FROM customers WHERE name LIKE ? ORDER BY name").all("%" + q + "%")
             : await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, active FROM customers ORDER BY name").all());
-        const tbody = rows
-            .map((r) => {
+        const makeRow = (r) => {
             const active = r.active === undefined || r.active === null || r.active === 1;
-            return `<tr>
+            return `<tr data-customer-id="${escapeAttr(r.id)}">
             <td>${escapeHtml(r.name)}</td>
             <td>${escapeHtml(r.teraoka_code ?? "")}</td>
             <td>${escapeHtml(r.hq_cust_code ?? "")}</td>
             <td>${escapeHtml(r.line_group_name ?? "")}</td>
             <td>${r.line_group_id ? "已綁定" : "—"}</td>
             <td>${escapeHtml(r.contact ?? "")}</td>
-            <td>${active ? "<span style='color:green'>啟用</span>" : "<span style='color:gray'>停用</span>"}</td>
+            <td class="customer-status-cell">${active ? "<span style='color:green'>啟用</span>" : "<span style='color:gray'>停用</span>"}</td>
             <td>
               <a href="/admin/customers/${encodeURIComponent(r.id)}/edit">編輯</a>
-              | <form method="post" action="/admin/customers/${encodeURIComponent(r.id)}/toggle" style="display:inline;"><button type="submit">${active ? "停用" : "啟用"}</button></form>
+              | <button type="button" class="customer-toggle-btn" data-id="${escapeAttr(r.id)}" data-active="${active ? "1" : "0"}">${active ? "停用" : "啟用"}</button>
               | <a href="/admin/customers/${encodeURIComponent(r.id)}/delete">刪除</a>
             </td>
           </tr>`;
-        })
-            .join("");
+        };
+        const activeList = rows.filter((r) => r.active === undefined || r.active === null || r.active === 1);
+        const inactiveList = rows.filter((r) => r.active === 0);
+        const tbodyActive = activeList.map(makeRow).join("") || "<tr><td colspan='8'>無啟用客戶</td></tr>";
+        const tbodyInactive = inactiveList.map(makeRow).join("") || "<tr><td colspan='8'>無停用客戶</td></tr>";
         const searchVal = escapeAttr(q);
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 客戶管理</div>
@@ -999,13 +1038,67 @@ function createAdminRouter() {
         </form>
         <p class="notion-msg ok" style="margin-bottom:16px;">匯入後可點「編輯」補上 LINE 群組名稱、LINE 群組 ID。停用後該群組將不再對應叫貨。</p>
         <div class="notion-card">
+          <h2>啟用</h2>
           <table>
             <thead><tr><th>名稱</th><th>寺岡編號</th><th>凌越編號</th><th>LINE 群組名稱</th><th>LINE 綁定</th><th>聯絡</th><th>狀態</th><th>操作</th></tr></thead>
-            <tbody>${tbody}</tbody>
+            <tbody id="customers-active-tbody">${tbodyActive}</tbody>
           </table>
         </div>
+        <div class="notion-card">
+          <h2>停用區</h2>
+          <table>
+            <thead><tr><th>名稱</th><th>寺岡編號</th><th>凌越編號</th><th>LINE 群組名稱</th><th>LINE 綁定</th><th>聯絡</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody id="customers-inactive-tbody">${tbodyInactive}</tbody>
+          </table>
+        </div>
+        <script>
+        (function(){
+          var activeTbody = document.getElementById("customers-active-tbody");
+          var inactiveTbody = document.getElementById("customers-inactive-tbody");
+          function moveRow(row, toActive){
+            var statusCell = row.querySelector(".customer-status-cell");
+            var btn = row.querySelector(".customer-toggle-btn");
+            if (statusCell) statusCell.innerHTML = toActive ? "<span style=\\"color:green\\">啟用</span>" : "<span style=\\"color:gray\\">停用</span>";
+            if (btn){ btn.dataset.active = toActive ? "1" : "0"; btn.textContent = toActive ? "停用" : "啟用"; }
+            var fromTbody = row.parentNode;
+            var toTbody = toActive ? activeTbody : inactiveTbody;
+            fromTbody.removeChild(row);
+            toTbody.appendChild(row);
+            if (fromTbody.children.length === 0)
+              fromTbody.innerHTML = "<tr><td colspan=\"8\">" + (fromTbody.id === "customers-active-tbody" ? "無啟用客戶" : "無停用客戶") + "</td></tr>";
+          }
+          document.querySelectorAll(".customer-toggle-btn").forEach(function(btn){
+            btn.addEventListener("click", function(){
+              var el = this, id = el.dataset.id;
+              if (!id) return;
+              el.disabled = true;
+              fetch("/admin/api/customers/" + encodeURIComponent(id) + "/toggle", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "", credentials: "same-origin" })
+                .then(function(r){ return r.json(); })
+                .then(function(data){
+                  if (data && data.ok === true) {
+                    var row = el.closest("tr");
+                    if (row) moveRow(row, data.active === 1);
+                  }
+                  el.disabled = false;
+                })
+                .catch(function(){ el.disabled = false; });
+            });
+          });
+        })();
+        </script>
       `;
         res.type("text/html").send(notionPage("客戶管理", body, "", res.locals.topBarHtml));
+    });
+    router.post("/api/customers/:id/toggle", async (req, res) => {
+        const id = req.params.id;
+        const row = await db.prepare("SELECT id, active FROM customers WHERE id = ?").get(id);
+        if (!row) {
+            res.status(404).json({ ok: false, err: "找不到此客戶" });
+            return;
+        }
+        const next = row.active === 1 ? 0 : 1;
+        await db.prepare("UPDATE customers SET active = ?, updated_at = datetime('now') WHERE id = ?").run(next, id);
+        res.json({ ok: true, active: next });
     });
     router.post("/customers/:id/toggle", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const id = req.params.id;
@@ -1052,22 +1145,15 @@ function createAdminRouter() {
     });
     router.get("/products", async (req, res) => {
         const q = req.query.q?.trim() ?? "";
-        const showInactive = req.query.inactive === "1";
         let products = await db.prepare(`
       SELECT id, name, erp_code, teraoka_barcode, unit, active
       FROM products
-      ORDER BY active DESC, name
+      ORDER BY name
     `).all();
         if (q) {
             products = products.filter((p) => p.name.includes(q) ||
                 (p.erp_code && p.erp_code.includes(q)) ||
                 (p.teraoka_barcode && p.teraoka_barcode.includes(q)));
-        }
-        if (showInactive) {
-            products = products.filter((p) => p.active !== 1);
-        }
-        else {
-            products = products.filter((p) => p.active === 1);
         }
         const aliasesByProduct = new Map();
         const aliasRows = await db.prepare("SELECT product_id, alias FROM product_aliases").all();
@@ -1087,15 +1173,14 @@ function createAdminRouter() {
             }
         }
         catch (_) { /* product_unit_specs 可能尚未建立 */ }
-        const okMsg = req.query.ok === "del" ? "已刪除品項。" : req.query.ok === "edit" ? "已儲存。" : req.query.ok === "toggle" ? "已更新狀態。" : "";
+        const okMsg = req.query.ok === "del" ? "已刪除品項。" : req.query.ok === "edit" ? "已儲存。" : req.query.err ? "" : "";
         const msg = okMsg ? "<p style='color:green'>" + okMsg + "</p>" : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
-        const tbody = products
-            .map((p) => {
-                const specSummary = (specsByProduct.get(p.id) ?? []).map((x) => escapeHtml(x)).join("、") || "—";
-                const isActive = p.active === 1;
-                const statusHtml = isActive ? "啟用" : "<span style='color:#888'>停用</span>";
-                const toggleLabel = isActive ? "停用" : "啟用";
-                return `<tr data-product-id="${escapeAttr(p.id)}">
+        const makeRow = (p) => {
+            const specSummary = (specsByProduct.get(p.id) ?? []).map((x) => escapeHtml(x)).join("、") || "—";
+            const isActive = p.active === 1;
+            const statusHtml = isActive ? "啟用" : "<span style='color:#888'>停用</span>";
+            const toggleLabel = isActive ? "停用" : "啟用";
+            return `<tr data-product-id="${escapeAttr(p.id)}">
             <td>${escapeHtml(p.name)}</td>
             <td>${escapeHtml(p.erp_code ?? "")}</td>
             <td>${escapeHtml(p.teraoka_barcode ?? "")}</td>
@@ -1109,49 +1194,68 @@ function createAdminRouter() {
               | <a href="/admin/products/${encodeURIComponent(p.id)}/delete">刪除</a>
             </td>
           </tr>`;
-            })
-            .join("");
-        const filterLink = showInactive
-            ? `<a href="/admin/products${q ? "?q=" + encodeURIComponent(q) : ""}">只看啟用</a>`
-            : `<a href="/admin/products?inactive=1${q ? "&q=" + encodeURIComponent(q) : ""}">只看停用</a>`;
+        };
+        const activeList = products.filter((p) => p.active === 1);
+        const inactiveList = products.filter((p) => p.active !== 1);
+        const tbodyActive = activeList.map(makeRow).join("") || "<tr><td colspan='8'>無啟用品項</td></tr>";
+        const tbodyInactive = inactiveList.map(makeRow).join("") || "<tr><td colspan='8'>無停用品項</td></tr>";
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 品項與俗名</div>
         <h1 class="notion-page-title">品項與俗名</h1>
         ${msg}
-        <p style="margin-bottom:16px;"><a href="/admin/import">匯入品項</a>、<a href="/admin/import-teraoka">寺岡資料對照</a>　${filterLink}</p>
+        <p style="margin-bottom:16px;"><a href="/admin/import">匯入品項</a>、<a href="/admin/import-teraoka">寺岡資料對照</a></p>
         <form method="get" action="/admin/products" style="margin-bottom:16px;">
-          <input type="hidden" name="inactive" value="${showInactive ? "1" : ""}">
           <input type="search" name="q" value="${escapeAttr(q)}" placeholder="搜尋品名、料號、條碼">
           <button type="submit" class="btn">搜尋</button>
         </form>
         <div class="notion-card">
+          <h2>啟用</h2>
           <table>
             <thead><tr><th>標準品名</th><th>凌越料號</th><th>寺岡條碼</th><th>單位</th><th>俗名</th><th>規格</th><th>狀態</th><th>操作</th></tr></thead>
-            <tbody>${tbody.length ? tbody : "<tr><td colspan='8'>無符合的品項</td></tr>"}</tbody>
+            <tbody id="products-active-tbody">${tbodyActive}</tbody>
+          </table>
+        </div>
+        <div class="notion-card">
+          <h2>停用區</h2>
+          <table>
+            <thead><tr><th>標準品名</th><th>凌越料號</th><th>寺岡條碼</th><th>單位</th><th>俗名</th><th>規格</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody id="products-inactive-tbody">${tbodyInactive}</tbody>
           </table>
         </div>
         <script>
-        document.querySelectorAll(".product-toggle-btn").forEach(function(btn){
-          btn.addEventListener("click", function(){
-            var el = this, id = el.dataset.id;
-            if (!id) return;
-            el.disabled = true;
-            fetch("/admin/api/products/" + encodeURIComponent(id) + "/toggle", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "", credentials: "same-origin" })
-              .then(function(r){ return r.json(); })
-              .then(function(data){
-                if (data && data.ok === true) {
-                  var nextActive = data.active === 1;
-                  el.dataset.active = nextActive ? "1" : "0";
-                  el.textContent = nextActive ? "停用" : "啟用";
-                  var row = el.closest("tr");
-                  var statusCell = row && row.querySelector(".product-status-cell");
-                  if (statusCell) statusCell.innerHTML = nextActive ? "啟用" : "<span style=\"color:#888\">停用</span>";
-                }
-                el.disabled = false;
-              })
-              .catch(function(){ el.disabled = false; });
+        (function(){
+          var activeTbody = document.getElementById("products-active-tbody");
+          var inactiveTbody = document.getElementById("products-inactive-tbody");
+          function moveRow(row, toActive){
+            var statusCell = row.querySelector(".product-status-cell");
+            var btn = row.querySelector(".product-toggle-btn");
+            if (statusCell) statusCell.innerHTML = toActive ? "啟用" : "<span style=\\"color:#888\\">停用</span>";
+            if (btn){ btn.dataset.active = toActive ? "1" : "0"; btn.textContent = toActive ? "停用" : "啟用"; }
+            var fromTbody = row.parentNode;
+            var toTbody = toActive ? activeTbody : inactiveTbody;
+            fromTbody.removeChild(row);
+            toTbody.appendChild(row);
+            if (fromTbody.children.length === 0)
+              fromTbody.innerHTML = "<tr><td colspan=\"8\">" + (fromTbody.id === "products-active-tbody" ? "無啟用品項" : "無停用品項") + "</td></tr>";
+          }
+          document.querySelectorAll(".product-toggle-btn").forEach(function(btn){
+            btn.addEventListener("click", function(){
+              var el = this, id = el.dataset.id;
+              if (!id) return;
+              el.disabled = true;
+              fetch("/admin/api/products/" + encodeURIComponent(id) + "/toggle", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "", credentials: "same-origin" })
+                .then(function(r){ return r.json(); })
+                .then(function(data){
+                  if (data && data.ok === true) {
+                    var row = el.closest("tr");
+                    if (row) moveRow(row, data.active === 1);
+                  }
+                  el.disabled = false;
+                })
+                .catch(function(){ el.disabled = false; });
+            });
           });
-        });
+        })();
         </script>
       `;
         res.type("text/html").send(notionPage("品項與俗名", body, "", res.locals.topBarHtml));
