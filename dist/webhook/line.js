@@ -88,16 +88,16 @@ function createLineWebhook() {
                     // 照片：收單中請補文字；未收單請先傳「收單」
                     if (msgType === "image") {
                         if (groupId && !customer) {
-                            await reply(lineClient, event.replyToken, "此群組尚未綁定客戶，無法收單。若需取得本群組 ID 請傳：取得群組ID");
+                            await reply(lineClient, event.replyToken, "此群組尚未綁定客戶，無法收單。若需取得本群組 ID 請傳：取得群組ID", db);
                             continue;
                         }
                         if (!customer) {
-                            await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。");
+                            await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。", db);
                             continue;
                         }
                         const inCollecting = groupId ? collectingByGroup.has(groupId) : false;
                         if (inCollecting) {
-                            await reply(lineClient, event.replyToken, "請用文字說明品項與數量（例如：高麗菜 5 斤），照片無法自動辨識。");
+                            await reply(lineClient, event.replyToken, "請用文字說明品項與數量（例如：高麗菜 5 斤），照片無法自動辨識。", db);
                         }
                         // 未在收單中傳照片：不回覆，省則數
                         continue;
@@ -110,16 +110,16 @@ function createLineWebhook() {
                     console.log("[LINE] 收到文字:", JSON.stringify(text));
                     // 取得群組 ID（未綁定也可用）
                     if (groupId && (text === "取得群組ID" || text === "群組ID")) {
-                        await reply(lineClient, event.replyToken, `此群組/聊天室 ID：\n${groupId}\n請將此 ID 提供給管理員，在後台「客戶管理」編輯該客戶的「LINE 群組 ID」並儲存。`);
+                        await reply(lineClient, event.replyToken, `此群組/聊天室 ID：\n${groupId}\n請將此 ID 提供給管理員，在後台「客戶管理」編輯該客戶的「LINE 群組 ID」並儲存。`, db);
                         continue;
                     }
                     if (groupId && !customer) {
                         console.log("[LINE] 未綁定群組，群組 ID:", groupId);
-                        await reply(lineClient, event.replyToken, "此群組尚未綁定客戶，無法收單。請確認：① 機器人已加入此群組 ② 在後台「客戶管理」編輯該客戶，將「LINE 群組 ID」設為與本群組一致（在群組傳「取得群組ID」可取得，請複製貼上）。");
+                        await reply(lineClient, event.replyToken, "此群組尚未綁定客戶，無法收單。請確認：① 機器人已加入此群組 ② 在後台「客戶管理」編輯該客戶，將「LINE 群組 ID」設為與本群組一致（在群組傳「取得群組ID」可取得，請複製貼上）。", db);
                         continue;
                     }
                     if (!customer) {
-                        await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。");
+                        await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。", db);
                         continue;
                     }
                     const customerId = customer.id;
@@ -164,13 +164,13 @@ function createLineWebhook() {
                                 ? `已收單並記入本則 ${parsed.length} 項${needReview.length > 0 ? "（以下待對照：" + needReview.join("、") + "）" : ""}。可繼續傳品項，傳完說「以上X收單」結束。`
                                 : "已開始收單。本則未辨識到品名與數量，請另傳「品名 數量 單位」。傳完說「以上X收單」結束。";
                         }
-                        await reply(lineClient, event.replyToken, replyDone);
+                        await reply(lineClient, event.replyToken, replyDone, db);
                         continue;
                     }
                     if (text === "今天叫了什麼" || text === "今日訂單" || text === "今日叫貨") {
                         const orderRow = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
                         if (!orderRow) {
-                            await reply(lineClient, event.replyToken, "今日尚無訂單。");
+                            await reply(lineClient, event.replyToken, "今日尚無訂單。", db);
                             continue;
                         }
                         const items = await db.prepare(`
@@ -181,7 +181,7 @@ function createLineWebhook() {
                             const name = i.product_name || i.raw_name || "待確認";
                             return `${name} ${i.quantity} ${i.unit || ""}`.trim();
                         });
-                        await reply(lineClient, event.replyToken, "今日叫貨：\n" + (lines.length ? lines.join("\n") : "（尚無品項）"));
+                        await reply(lineClient, event.replyToken, "今日叫貨：\n" + (lines.length ? lines.join("\n") : "（尚無品項）"), db);
                         continue;
                     }
                     // 「完成」「結束收單」或「以上X收單」（由我方觸發結束，X 可半形或全形數字）
@@ -208,10 +208,10 @@ function createLineWebhook() {
                             }
                             const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
                             const n = count?.c ?? 0;
-                            await reply(lineClient, event.replyToken, `完成，已收 ${n} 項。`);
+                            await reply(lineClient, event.replyToken, `完成，已收 ${n} 項。`, db);
                         }
                         else {
-                            await reply(lineClient, event.replyToken, "目前沒有在收單。請先由我方傳「收單」開始，客戶傳完叫貨後再傳「以上X收單」結束。");
+                            await reply(lineClient, event.replyToken, "目前沒有在收單。請先由我方傳「收單」開始，客戶傳完叫貨後再傳「以上X收單」結束。", db);
                         }
                         continue;
                     }
@@ -235,13 +235,17 @@ function createLineWebhook() {
                                 await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId2, session.orderId, squareBasket.id, squareBasket.name, squareBasket.unit || "個");
                             }
                             const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
-                            await reply(lineClient, event.replyToken, `已自動結單（逾時 ${COLLECT_TIMEOUT_MS / 60000} 分鐘），共收 ${count?.c ?? 0} 項。`);
+                            await reply(lineClient, event.replyToken, `已自動結單（逾時 ${COLLECT_TIMEOUT_MS / 60000} 分鐘），共收 ${count?.c ?? 0} 項。`, db);
                             continue;
                         }
                         session.lastActivity = Date.now();
                     }
-                    // 未在收單模式：不當成叫貨，也不回覆（省則數）
+                    // 未在收單模式：若內容像叫貨（含數字），回覆一句提示，否則不回覆
                     if (!groupId || !collectingByGroup.has(groupId)) {
+                        const looksLikeOrder = /[\d\uFF10-\uFF19]/.test(text) && text.length >= 2;
+                        if (looksLikeOrder) {
+                            await reply(lineClient, event.replyToken, "請先傳「收單」或「訂單」開始收單，再傳品項。", db);
+                        }
                         continue;
                     }
                     // 收單模式：將本則當成叫貨累加
@@ -272,13 +276,13 @@ function createLineWebhook() {
                         ? `已記入（本則 ${parsed.length} 項）${needReview.length > 0 ? "。以下尚未對應：" + needReview.join("、") : ""}`
                         : "本則沒有辨識到品名與數量，請用「品名 數量 單位」格式。傳完由我方輸入「以上X收單」結束。";
                     console.log("[LINE] 準備回覆:", replyText);
-                    await reply(lineClient, event.replyToken, replyText);
+                    await reply(lineClient, event.replyToken, replyText, db);
                     console.log("[LINE] 訂單已寫入", orderId);
                 }
                 catch (err) {
                     console.error("[LINE] 處理訊息時錯誤:", err);
                     try {
-                        await reply(lineClient, event.replyToken, "抱歉，處理時發生錯誤，請稍後再試。");
+                        await reply(lineClient, event.replyToken, "抱歉，處理時發生錯誤，請稍後再試。", db);
                     }
                     catch (replyErr) {
                         console.error("[LINE] 回覆失敗（可能 replyToken 逾時）:", replyErr?.message || replyErr);
@@ -289,13 +293,26 @@ function createLineWebhook() {
     });
     return router;
 }
-async function reply(client, token, text) {
+async function recordLineReply(db) {
+    try {
+        const key = "line_replies_" + new Date().toISOString().slice(0, 7);
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
+        const next = ((row && parseInt(row.value, 10)) || 0) + 1;
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(key, String(next));
+    }
+    catch (e) {
+        console.error("[LINE] 紀錄回覆則數失敗:", e?.message || e);
+    }
+}
+async function reply(client, token, text, dbOptional) {
     if (!client) {
         console.warn("[LINE] 未設定 LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET，無法發送回覆。本應回覆:", text.slice(0, 80));
         return;
     }
     try {
         await client.replyMessage(token, { type: "text", text });
+        if (dbOptional)
+            recordLineReply(dbOptional).catch((e) => console.error("[LINE] record reply count", e?.message || e));
     }
     catch (e) {
         console.error("[LINE] 回覆失敗（可能 replyToken 逾時或網路問題）:", e);

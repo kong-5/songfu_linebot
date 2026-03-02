@@ -3,11 +3,18 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.parseOrderMessage = parseOrderMessage;
 /**
  * 從叫貨訊息解析出品項與數量。
- * 規則範例：「大陸妹 5 斤」「高麗菜 2」「青江 3斤」「大白菜1」
- * 支援：品名 + 數字（半形或全形）+ 可選單位（斤、包、把、箱等）
+ * 規則範例：「大陸妹 5 斤」「大陸妹2k」「A菜2k，」「芹菜2小把」
+ * 支援：品名 + 數字（半形或全形）+ 可選單位（斤、k、包、把、小把、箱等），單位後可帶標點
  */
-const UNIT_PATTERN = /(斤|公斤|包|把|箱|顆|粒|盒|袋|台)\s*$/i;
+const UNIT_PATTERN = /(斤|公斤|k|小把|大把|包|把|箱|顆|粒|盒|袋|台)\s*[,，.。、]*\s*$/i;
 const NUMBER_PATTERN = /[\d.\uFF10-\uFF19]+/; // 半形 0-9. 與全形 ０-９
+/** 「k」視為斤，寫入時可統一為斤 */
+function normalizeUnit(u) {
+    if (!u || typeof u !== "string")
+        return u;
+    const t = u.trim().toLowerCase();
+    return t === "k" ? "斤" : u.trim();
+}
 /** 全形數字轉半形，供 parseFloat 正確解析 */
 function normalizeNumStr(s) {
     return s.replace(/[\uFF10-\uFF19]/g, (ch) => String(ch.charCodeAt(0) - 0xff10));
@@ -30,17 +37,17 @@ function parseOrderMessage(text) {
         let before = line.slice(0, numIdx).trim();
         let after = line.slice(numIdx + numStr.length).trim();
         const unitMatch = after.match(UNIT_PATTERN);
-        const unit = unitMatch ? unitMatch[1] ?? null : (after || null);
+        const unitRaw = unitMatch ? unitMatch[1] ?? null : (after || null);
         if (unitMatch) {
             after = after.slice(0, -((unitMatch[0]?.length) ?? 0)).trim();
         }
-        const rawName = (before + " " + after).trim() || before;
+        const rawName = (before + " " + after).replace(/\s*[,，.。、]\s*$/, "").trim() || before.trim();
         if (!rawName)
             continue;
         items.push({
             rawName,
             quantity,
-            unit: unit || null,
+            unit: normalizeUnit(unitRaw) || null,
         });
     }
     return items;

@@ -104,6 +104,8 @@ const NOTION_STYLE = `
   .teraoka-cell .code { font-weight: 600; }
   .teraoka-cell .name { font-size: 12px; color: var(--notion-text-muted); }
   .order-table-col-system { border-left: 2px solid var(--notion-accent); }
+  tr.order-row-excluded { background: var(--notion-sidebar); color: var(--notion-text-muted); }
+  tr.order-row-excluded input, tr.order-row-excluded select { opacity: 0.85; }
   @media print { .notion-sidebar, .no-print, .notion-topbar { display: none !important; } .notion-main { max-width: none; } }
 `;
 const NOTION_SIDEBAR = (active) => `
@@ -213,9 +215,31 @@ function createAdminRouter() {
         res.redirect(req.get("Referrer") || "/admin");
     });
     router.get("/", async (_req, res) => {
+        const monthKey = "line_replies_" + new Date().toISOString().slice(0, 7);
+        let replyCount = 0;
+        try {
+            const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(monthKey);
+            replyCount = (row && parseInt(row.value, 10)) || 0;
+        }
+        catch (_) { /* app_settings 可能尚無該 key */ }
         const body = `
         <div class="notion-breadcrumb">工作台</div>
         <h1 class="notion-page-title">工作台</h1>
+        <div class="notion-card" style="border-left:4px solid var(--notion-accent);">
+          <h2>LINE 用量（本系統紀錄）</h2>
+          <p><strong>本月已回覆 ${replyCount} 則</strong>（僅統計本機器人成功發送的回覆則數，僅供參考。）</p>
+          <p style="color:var(--notion-text-muted);font-size:13px;">實際則數與剩餘額度請至 <a href="https://manager.line.biz/" target="_blank" rel="noopener">LINE 官方帳號管理後台</a> 查看。LINE 不提供「剩餘則數」API，故本頁無法顯示剩餘則數。</p>
+        </div>
+        <div class="notion-card">
+          <h2>可花到錢的項目（LINE 官方帳號計費）</h2>
+          <p>以下為 LINE 官方帳號常見計費方式，<strong>實際以 LINE 官方公告與您的方案為準</strong>。</p>
+          <ul style="margin:12px 0 0;padding-left:20px;">
+            <li><strong>回覆訊息（Reply）</strong>：用戶傳訊息後機器人回覆，會計入「則數」。輕用量免費約 200 則/月，超過後需升級方案或加購。</li>
+            <li><strong>主動推播（Push）</strong>：機器人主動發訊息給用戶（非回覆），也會計費。</li>
+            <li><strong>方案與月費</strong>：輕用量 0 元/月（約 200 則）；中用量約 800 元/月（約 3,000 則）；高用量約 1,200 元/月起（約 6,000 則起，可加購則數，每則約 0.2 元起）。</li>
+          </ul>
+          <p style="margin-top:12px;font-size:13px;"><a href="https://tw.linebiz.com/faq/oa-price/message-price-list/" target="_blank" rel="noopener">LINE 訊息費用說明</a></p>
+        </div>
         <div class="notion-card">
           <h2>資料匯入</h2>
           <p><a href="/admin/import-customers">匯入客戶</a>（CSV / Excel，含 CustName 格式）</p>
@@ -612,18 +636,19 @@ function createAdminRouter() {
                 : `${pname} <a href="#" class="product-pick" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
             const includeChecked = i.include_export === undefined || i.include_export === null || i.include_export === 1;
-            return `<tr data-item-id="${escapeAttr(i.item_id)}">
+            const rowClass = includeChecked ? "" : " order-row-excluded";
+            return `<tr data-item-id="${escapeAttr(i.item_id)}" class="${rowClass.trim()}">
             <td><input type="checkbox" name="include_${i.item_id}" value="1" form="itemsForm" ${includeChecked ? "checked" : ""} title="勾選則納入訂貨單"></td>
             <td>${escapeHtml(i.raw_name ?? "")}</td>
             <td>${escapeHtml(String(q))}</td>
             <td>${escapeHtml((i.unit && i.unit.trim()) || "—")}</td>
             <td class="order-table-col-system">${escapeHtml(erp)}</td>
-            <td class="order-table-col-system">${productCell}</td>
-            <td class="order-table-col-system"><input type="number" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0" style="width:5rem;"></td>
-            <td class="order-table-col-system">${unitSelectWithVal}</td>
-            <td class="order-table-col-system"><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:120px;"></td>
-            <td class="order-table-col-system">${teraokaCell}</td>
-            <td class="order-table-col-system"><form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(i.item_id)}/delete" style="display:inline;"><button type="submit" class="btn">刪除</button></form></td>
+            <td>${productCell}</td>
+            <td><input type="number" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0" style="width:5rem;"></td>
+            <td>${unitSelectWithVal}</td>
+            <td><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:120px;"></td>
+            <td>${teraokaCell}</td>
+            <td><form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(i.item_id)}/delete" style="display:inline;"><button type="submit" class="btn">刪除</button></form></td>
           </tr>`;
         })
             .join("");
@@ -639,7 +664,7 @@ function createAdminRouter() {
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items">
           <div class="notion-card">
             <table>
-              <thead><tr><th>選取</th><th>原始品名</th><th>原始數量</th><th>原始單位</th><th class="order-table-col-system">凌越料號</th><th class="order-table-col-system">凌越品名</th><th class="order-table-col-system">叫貨數量</th><th class="order-table-col-system">叫貨單位</th><th class="order-table-col-system">備註</th><th class="order-table-col-system">寺岡（料號／條碼）</th><th class="order-table-col-system">刪除</th></tr></thead>
+              <thead><tr><th>選取</th><th>原始品名</th><th>原始數量</th><th>原始單位</th><th class="order-table-col-system">凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>備註</th><th>寺岡（料號／條碼）</th><th>刪除</th></tr></thead>
               <tbody>${itemsRows}</tbody>
               <tr><td colspan="11" style="background:var(--notion-sidebar);padding:10px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="btn">＋ 增加品相</a></td></tr>
             </table>
@@ -685,6 +710,13 @@ function createAdminRouter() {
             form.innerHTML = '<input type="hidden" name="product_id" value="' + (productId.replace(/&/g, "&amp;").replace(/"/g, "&quot;")) + '">';
             document.body.appendChild(form);
             form.submit();
+          });
+          var itemsForm = document.getElementById('itemsForm');
+          if (itemsForm) itemsForm.addEventListener('change', function(e){
+            if (e.target.name && e.target.name.indexOf('include_') === 0 && e.target.type === 'checkbox') {
+              var tr = e.target.closest('tr');
+              if (tr) tr.classList.toggle('order-row-excluded', !e.target.checked);
+            }
           });
         })();
         </script>
