@@ -294,6 +294,24 @@ function createAdminRouter() {
           <p><strong>收單機器人只會讀取「與本頁相同網址」的後台資料。</strong>若您是在<strong>本機 (localhost)</strong>或其它網址開後台、編輯客戶並填了 LINE 群組 ID，那份資料<strong>不會</strong>被 Cloud Run 上的收單用到。</p>
           <p>請務必：用瀏覽器打開<strong>與本頁相同的網址</strong>（例如 <code>https://您的服務.run.app/admin</code>），到「客戶管理」→ 點該客戶「編輯」→ 在「LINE 群組 ID」貼上群組內傳「取得群組ID」後機器人回傳的那串 → 儲存。下方表格即為<strong>本服務目前</strong>的綁定狀態。</p>
         </div>
+        <div class="notion-card" style="border-left:4px solid #0a0;">
+          <h2>可觸發收單的關鍵字</h2>
+          <p><strong>開始收單</strong>（任一句即可，可同則帶品項，例：收單 高麗菜 5 斤）：</p>
+          <ul style="margin:4px 0 12px;padding-left:20px;">
+            <li>收單</li>
+            <li>開始收單</li>
+            <li>訂單</li>
+            <li>我要下訂</li>
+            <li>明日訂單</li>
+          </ul>
+          <p><strong>結束收單</strong>：</p>
+          <ul style="margin:4px 0 0;padding-left:20px;">
+            <li>完成</li>
+            <li>結束收單</li>
+            <li>以上X收單（X 為數字，例：以上5收單）</li>
+          </ul>
+          <p style="margin-top:12px;font-size:13px;color:var(--notion-text-muted);">收單結束時機器人會回覆：訂單日期、星期、共收幾項（不列出品項明細）。</p>
+        </div>
         <div class="notion-card">
           <h2>如何綁定</h2>
           <ol style="margin:0 0 12px;padding-left:20px;">
@@ -353,7 +371,8 @@ function createAdminRouter() {
         const products = await db.prepare("SELECT id, name, erp_code FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all();
         const productOptions = products.map((p) => {
             const label = p.erp_code ? `${p.name}（${p.erp_code}）` : p.name;
-            return `<option value="${escapeAttr(p.id)}" data-search="${escapeAttr((p.name + " " + (p.erp_code ?? "")).toLowerCase())}">${escapeHtml(label)}</option>`;
+            const searchText = (p.name + " " + (p.erp_code ?? "")).toLowerCase();
+            return `<option value="${escapeAttr(p.id)}" data-search="${escapeAttr(searchText)}">${escapeHtml(label)}</option>`;
         }).join("");
         const rowsHtml = rows.length === 0
             ? "<tr><td colspan='6'>目前沒有待確認品名</td></tr>"
@@ -383,7 +402,7 @@ function createAdminRouter() {
         ${msg ? `<div class="notion-msg ${msg.indexOf("已加入") >= 0 ? "ok" : "err"}">${msg.replace(/<p style='[^']*'>|<\/p>/g, "").trim()}</div>` : ""}
         <div class="notion-card">
           <p style="margin:0 0 12px;">以下為叫貨時無法對應到標準品項的名稱，請選擇要對應的品項並加入俗名或客戶專用別名。</p>
-          <p class="product-search" style="margin-bottom:12px;"><label>搜尋品項：<input type="text" id="productSearch" placeholder="輸入品名或料號篩選下拉選單" style="width:280px;"></label></p>
+          <p class="product-search" style="margin-bottom:12px;"><label>搜尋品項（模糊篩選）：<input type="text" id="productSearch" placeholder="輸入品名或料號，字元依序出現即符合" style="width:320px;" autocomplete="off"></label></p>
           <table>
             <thead><tr><th>客戶輸入的名稱</th><th>數量</th><th>單位</th><th>客戶</th><th>對應品項並加入對照</th></tr></thead>
             <tbody>${rowsHtml}</tbody>
@@ -394,22 +413,38 @@ function createAdminRouter() {
             var search = document.getElementById('productSearch');
             var selects = document.querySelectorAll('select.product-select');
             if (!search || !selects.length) return;
-            function filterOptions(){
-              var q = (search.value || '').trim().toLowerCase();
-              selects.forEach(function(sel){
+            function fuzzyMatch(text, q) {
+              if (!q) return true;
+              text = (text || '').toLowerCase();
+              q = q.toLowerCase();
+              var idx = 0;
+              for (var i = 0; i < q.length; i++) {
+                var p = text.indexOf(q[i], idx);
+                if (p === -1) return false;
+                idx = p + 1;
+              }
+              return true;
+            }
+            function filterOptions(searchValue, targetSelect) {
+              var q = (searchValue || '').trim();
+              var selectsToFilter = targetSelect ? [targetSelect] : selects;
+              selectsToFilter.forEach(function(sel){
                 for (var i = 0; i < sel.options.length; i++){
                   var opt = sel.options[i];
                   if (opt.value === '') { opt.hidden = false; continue; }
-                  var show = !q || (opt.getAttribute('data-search') || '').indexOf(q) !== -1;
+                  var show = !q || fuzzyMatch(opt.getAttribute('data-search') || '', q);
                   opt.hidden = !show;
                 }
-                if (sel.options[sel.selectedIndex].hidden) {
+                if (sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].hidden) {
                   for (var j = 0; j < sel.options.length; j++) { if (!sel.options[j].hidden) { sel.selectedIndex = j; break; } }
                 }
               });
             }
-            search.addEventListener('input', filterOptions);
+            search.addEventListener('input', function(){ filterOptions(search.value, null); });
             search.addEventListener('keydown', function(e){ if (e.key === 'Enter') e.preventDefault(); });
+            document.querySelectorAll('.row-product-search').forEach(function(inp){
+              inp.addEventListener('input', function(){ filterOptions(this.value, document.getElementById(this.getAttribute('data-for-select'))); });
+            });
           })();
         </script>
       `;

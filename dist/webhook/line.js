@@ -161,7 +161,7 @@ function createLineWebhook() {
                             const newRaw = (orderRow2?.raw_message ? orderRow2.raw_message + "\n" : "") + rest;
                             await db.prepare("UPDATE orders SET raw_message = ?, updated_at = datetime('now') WHERE id = ?").run(newRaw, orderId);
                             replyDone = parsed.length > 0
-                                ? `已收單並記入本則 ${parsed.length} 項${needReview.length > 0 ? "（以下待對照：" + needReview.join("、") + "）" : ""}。可繼續傳品項，傳完說「以上X收單」結束。`
+                                ? `已記入本則 ${parsed.length} 項。可繼續傳品項，傳完說「以上X收單」結束。`
                                 : "已開始收單。本則未辨識到品名與數量，請另傳「品名 數量 單位」。傳完說「以上X收單」結束。";
                         }
                         await reply(lineClient, event.replyToken, replyDone, db);
@@ -206,12 +206,17 @@ function createLineWebhook() {
                                 const itemId2 = (0, id_js_1.newId)("item");
                                 await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId2, session.orderId, squareBasket.id, squareBasket.name, squareBasket.unit || "個");
                             }
+                            const orderInfo = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId);
                             const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
                             const n = count?.c ?? 0;
-                            await reply(lineClient, event.replyToken, `完成，已收 ${n} 項。`, db);
+                            const dateStr = orderInfo?.order_date || new Date().toISOString().slice(0, 10);
+                            const weekdays = "日一二三四五六";
+                            const dayIdx = new Date(dateStr + "T12:00:00").getDay();
+                            const weekday = "星期" + weekdays[dayIdx];
+                            await reply(lineClient, event.replyToken, `收單結束。訂單日期：${dateStr} ${weekday}，共收 ${n} 項。`, db);
                         }
                         else {
-                            await reply(lineClient, event.replyToken, "目前沒有在收單。請先由我方傳「收單」開始，客戶傳完叫貨後再傳「以上X收單」結束。", db);
+                            await reply(lineClient, event.replyToken, "目前沒有在收單。請先傳「收單」或「訂單」開始，傳完說「以上X收單」結束。", db);
                         }
                         continue;
                     }
@@ -234,8 +239,14 @@ function createLineWebhook() {
                                 const itemId2 = (0, id_js_1.newId)("item");
                                 await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId2, session.orderId, squareBasket.id, squareBasket.name, squareBasket.unit || "個");
                             }
+                            const orderInfo = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId);
                             const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
-                            await reply(lineClient, event.replyToken, `已自動結單（逾時 ${COLLECT_TIMEOUT_MS / 60000} 分鐘），共收 ${count?.c ?? 0} 項。`, db);
+                            const n = count?.c ?? 0;
+                            const dateStr = orderInfo?.order_date || new Date().toISOString().slice(0, 10);
+                            const weekdays = "日一二三四五六";
+                            const dayIdx = new Date(dateStr + "T12:00:00").getDay();
+                            const weekday = "星期" + weekdays[dayIdx];
+                            await reply(lineClient, event.replyToken, `已自動結單（逾時 ${COLLECT_TIMEOUT_MS / 60000} 分鐘）。訂單日期：${dateStr} ${weekday}，共收 ${n} 項。`, db);
                             continue;
                         }
                         session.lastActivity = Date.now();
@@ -273,7 +284,7 @@ function createLineWebhook() {
              VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, needReviewFlag);
                     }
                     let replyText = parsed.length > 0
-                        ? `已記入（本則 ${parsed.length} 項）${needReview.length > 0 ? "。以下尚未對應：" + needReview.join("、") : ""}`
+                        ? `已記入本則 ${parsed.length} 項。傳完說「以上X收單」結束。`
                         : "本則沒有辨識到品名與數量，請用「品名 數量 單位」格式。傳完由我方輸入「以上X收單」結束。";
                     console.log("[LINE] 準備回覆:", replyText);
                     await reply(lineClient, event.replyToken, replyText, db);
