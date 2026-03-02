@@ -57,12 +57,13 @@ function createLineWebhook() {
                     let customer = null;
                     if (groupId) {
                         const allActive = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE (active IS NULL OR active = 1)").all();
-                        const norm = (s) => (s || "").replace(/\s/g, "").toLowerCase();
+                        const fullwidthToHalf = (s) => s.replace(/[\uFF01-\uFF5E]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+                        const norm = (s) => fullwidthToHalf((s || "").replace(/\s/g, "")).toLowerCase();
                         const needle = norm(groupId);
                         customer = allActive.find((r) => norm(r.line_group_id) === needle) ?? null;
                         if (!customer) {
                             const withGid = allActive.filter((r) => (r.line_group_id || "").trim() !== "");
-                            console.log("[LINE] 綁定查詢失敗 groupId 長度=%s 前6=%s 後6=%s；DB 內有 line_group_id 的客戶數=%s", groupId.length, groupId.slice(0, 6), groupId.slice(-6), withGid.length);
+                            console.log("[LINE] 綁定查詢失敗 收單服務使用資料庫=%s groupId 長度=%s 前6=%s 後6=%s DB內有line_group_id的客戶數=%s", process.env.DATABASE_URL ? "Cloud SQL" : "SQLite", groupId.length, groupId.slice(0, 6), groupId.slice(-6), withGid.length);
                             if (withGid.length > 0)
                                 console.log("[LINE] DB 第一筆 line_group_id 長度=%s 前6=%s 後6=%s", (withGid[0].line_group_id || "").length, (withGid[0].line_group_id || "").slice(0, 6), (withGid[0].line_group_id || "").slice(-6));
                         }

@@ -234,8 +234,9 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("工作台", body, "dashboard", res.locals.topBarHtml));
     });
-    router.get("/line-binding", async (_req, res) => {
+    router.get("/line-binding", async (req, res) => {
         const dbType = process.env.DATABASE_URL ? "PostgreSQL (Cloud SQL)" : "SQLite";
+        const currentHost = req.get("host") || "";
         const customers = await db.prepare("SELECT id, name, line_group_id, active FROM customers ORDER BY name").all();
         const rows = customers.map((c) => {
             const bound = c.line_group_id && String(c.line_group_id).trim() ? "是" : "否";
@@ -246,6 +247,11 @@ function createAdminRouter() {
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / LINE 綁定檢查</div>
         <h1 class="notion-page-title">LINE 綁定檢查</h1>
+        <div class="notion-card" style="border-left:4px solid #e03;background:var(--notion-sidebar);">
+          <h2 style="margin-top:0;">⚠️ 仍顯示「尚未綁定」請先確認</h2>
+          <p><strong>收單機器人只會讀取「與本頁相同網址」的後台資料。</strong>若您是在<strong>本機 (localhost)</strong>或其它網址開後台、編輯客戶並填了 LINE 群組 ID，那份資料<strong>不會</strong>被 Cloud Run 上的收單用到。</p>
+          <p>請務必：用瀏覽器打開<strong>與本頁相同的網址</strong>（例如 <code>https://您的服務.run.app/admin</code>），到「客戶管理」→ 點該客戶「編輯」→ 在「LINE 群組 ID」貼上群組內傳「取得群組ID」後機器人回傳的那串 → 儲存。下方表格即為<strong>本服務目前</strong>的綁定狀態。</p>
+        </div>
         <div class="notion-card">
           <h2>如何綁定</h2>
           <ol style="margin:0 0 12px;padding-left:20px;">
@@ -266,8 +272,10 @@ function createAdminRouter() {
           </ul>
         </div>
         <div class="notion-card">
-          <h2>資料庫連線</h2>
+          <h2>資料庫連線與目前後台網址</h2>
           <p>目前使用：<strong>${escapeHtml(dbType)}</strong></p>
+          <p>您目前連線的後台：<code>${escapeHtml(currentHost ? "https://" + currentHost + "/admin" : "(無法取得)")}</code></p>
+          <p style="color:var(--notion-text-muted);font-size:13px;">若此網址是 <code>localhost</code>，代表您開的是本機後台，收單機器人（Cloud Run）讀不到這裡的資料。請改開「已部署的 Cloud Run 後台網址」再編輯客戶綁定。</p>
         </div>
         <div class="notion-card">
           <h2>客戶與 LINE 群組 ID</h2>
