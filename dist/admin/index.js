@@ -2170,12 +2170,16 @@ function parseRequestToSheet(req) {
     return { header, rows };
 }
 function escapeHtml(s) {
-    return s
+    if (s == null)
+        return "";
+    return String(s)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
 }
 function escapeAttr(s) {
+    if (s == null)
+        return "";
     return escapeHtml(s).replace(/'/g, "&#39;");
 }
