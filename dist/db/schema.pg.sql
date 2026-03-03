@@ -26,6 +26,7 @@
 
   CREATE TABLE IF NOT EXISTS orders (
     id TEXT PRIMARY KEY,
+    order_no TEXT,
     customer_id TEXT NOT NULL REFERENCES customers(id),
     order_date TEXT NOT NULL,
     line_group_id TEXT,

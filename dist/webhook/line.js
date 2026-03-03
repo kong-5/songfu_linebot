@@ -14,9 +14,22 @@ const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
 const hasLineConfig = Boolean(channelAccessToken && channelSecret);
-/** 收單模式：群組 ID -> { orderId, customerId, lastActivity }；逾時 30 分鐘自動結單 */
-const COLLECT_TIMEOUT_MS = 30 * 60 * 1000;
+/** 收單模式：群組 ID -> { orderId, customerId, lastActivity }；逾時 3 分鐘自動結單 */
+const COLLECT_TIMEOUT_MS = 3 * 60 * 1000;
 const collectingByGroup = new Map();
+async function getNextOrderNo(db, orderDate) {
+    const nextKey = "order_seq_next_" + orderDate;
+    const startKey = "order_seq_start_" + orderDate;
+    let row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(nextKey);
+    if (!row || !row.value) {
+        row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
+    }
+    const seq = row && row.value ? parseInt(row.value, 10) : 1;
+    const nextSeq = Number.isNaN(seq) ? 1 : Math.max(1, seq);
+    const orderNo = orderDate.replace(/-/g, "") + String(nextSeq).padStart(3, "0");
+    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(nextKey, String(nextSeq + 1));
+    return orderNo;
+}
 function createLineWebhook() {
     const router = express_1.default.Router();
     const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
@@ -124,7 +137,8 @@ function createLineWebhook() {
                     }
                     const customerId = customer.id;
                     const orderDate = new Date().toISOString().slice(0, 10);
-                    const startTriggers = ["收單", "開始收單", "訂單", "我要下訂", "明日訂單"];
+                    const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_start");
+                    const startTriggers = (startRow?.value ?? "收單\n開始收單\n訂單\n我要下訂\n明日訂單").split(/\n/).map((s) => s.trim()).filter(Boolean);
                     const triggerMatch = startTriggers.find((t) => text === t || text.startsWith(t + " ") || text.startsWith(t + "\n"));
                     if (triggerMatch) {
                         const rest = (text.slice(triggerMatch.length).trim() || "");
@@ -136,8 +150,9 @@ function createLineWebhook() {
                         }
                         else {
                             orderId = (0, id_js_1.newId)("ord");
-                            await db.prepare(`INSERT INTO orders (id, customer_id, order_date, line_group_id, raw_message, status)
-               VALUES (?, ?, ?, ?, ?, 'pending')`).run(orderId, customerId, orderDate, groupId, "");
+                            const orderNo = await getNextOrderNo(db, orderDate);
+                            await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending')`).run(orderId, orderNo, customerId, orderDate, groupId, "");
                         }
                         if (groupId)
                             collectingByGroup.set(groupId, { orderId, customerId, lastActivity: Date.now() });
@@ -184,9 +199,10 @@ function createLineWebhook() {
                         await reply(lineClient, event.replyToken, "今日叫貨：\n" + (lines.length ? lines.join("\n") : "（尚無品項）"), db);
                         continue;
                     }
-                    // 「完成」「結束收單」或「以上X收單」（由我方觸發結束，X 可半形或全形數字）
+                    const endRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_end");
+                    const endTriggers = (endRow?.value ?? "完成\n結束收單").split(/\n/).map((s) => s.trim()).filter(Boolean);
                     const aboveMatch = text.match(/^以上\s*([\d\uFF10-\uFF19]+)\s*收單$/);
-                    const isDone = text === "完成" || text === "結束收單" || aboveMatch;
+                    const isDone = aboveMatch || endTriggers.some((t) => text === t);
                     if (isDone) {
                         if (groupId && collectingByGroup.has(groupId)) {
                             const session = collectingByGroup.get(groupId);

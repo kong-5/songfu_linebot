@@ -106,6 +106,8 @@ const NOTION_STYLE = `
   .order-table-col-system { border-left: 2px solid var(--notion-accent); }
   tr.order-row-excluded { background: var(--notion-sidebar); color: var(--notion-text-muted); }
   tr.order-row-excluded input, tr.order-row-excluded select { opacity: 0.85; }
+  a.product-pick.need-review { color: #c00; font-weight: 600; }
+  a.product-pick.product-change { color: var(--notion-accent); }
   @media print { .notion-sidebar, .no-print, .notion-topbar { display: none !important; } .notion-main { max-width: none; } }
 `;
 const NOTION_SIDEBAR = (active) => `
@@ -139,6 +141,7 @@ const NOTION_SIDEBAR = (active) => `
         <a href="/admin/orders">訂單查詢</a>
         <a href="/admin/review">待確認品項</a>
         <a href="/admin/export">資料匯出</a>
+        <a href="/admin/triggers">提示詞管理</a>
       </div>
     </details>
   </nav>
@@ -357,6 +360,43 @@ function createAdminRouter() {
       `;
         res.type("text/html").send(notionPage("LINE 綁定檢查", body, "", res.locals.topBarHtml));
     });
+    router.get("/triggers", async (req, res) => {
+        const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_start");
+        const endRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_end");
+        const startVal = (startRow?.value ?? "收單\n開始收單\n訂單\n我要下訂\n明日訂單").trim();
+        const endVal = (endRow?.value ?? "完成\n結束收單").trim();
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 提示詞管理</div>
+        <h1 class="notion-page-title">提示詞管理</h1>
+        <p style="color:var(--notion-text-muted);">設定 LINE 收單時，哪些關鍵字可觸發「開始收單」與「結束收單」。一列一個；可同則帶品項（例：收單 高麗菜 5 斤）。</p>
+        ${req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存。</p>" : ""}
+        <div class="notion-card">
+          <form method="post" action="/admin/triggers">
+            <h2>開始收單</h2>
+            <p>以下任一句即開始收單（可同則帶品項）：</p>
+            <textarea name="start" rows="5" style="width:100%;box-sizing:border-box;" placeholder="收單&#10;開始收單&#10;訂單&#10;我要下訂&#10;明日訂單">${escapeHtml(startVal)}</textarea>
+            <h2 style="margin-top:1.5rem;">結束收單</h2>
+            <p>以下任一句即結束收單：</p>
+            <textarea name="end" rows="3" style="width:100%;box-sizing:border-box;" placeholder="完成&#10;結束收單">${escapeHtml(endVal)}</textarea>
+            <p style="margin-top:8px;font-size:13px;color:var(--notion-text-muted);">「以上X收單」（X 為數字）永遠有效，無需填入。</p>
+            <p style="margin-top:12px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+          </form>
+        </div>
+        <div class="notion-card">
+          <h2>目前觸發對照</h2>
+          <p><strong>開始收單</strong>：${escapeHtml(startVal.split(/\n/).filter(Boolean).join("、") || "（未設定，使用預設）")}</p>
+          <p><strong>結束收單</strong>：以上X收單（X=數字）、${escapeHtml(endVal.split(/\n/).filter(Boolean).join("、") || "（未設定，使用預設）")}</p>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("提示詞管理", body, "", res.locals.topBarHtml));
+    });
+    router.post("/triggers", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const start = (req.body?.start ?? "").trim().split(/\n/).map((s) => s.trim()).filter(Boolean).join("\n");
+        const end = (req.body?.end ?? "").trim().split(/\n/).map((s) => s.trim()).filter(Boolean).join("\n");
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_trigger_start", start || "收單\n開始收單\n訂單\n我要下訂\n明日訂單");
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_trigger_end", end || "完成\n結束收單");
+        res.redirect("/admin/triggers?ok=1");
+    });
     // 待確認品名：列出 need_review=1 的明細，可選擇對應品項並加入俗名
     router.get("/review", async (req, res) => {
         const msg = req.query.ok === "1" ? "<p style='color:green'>已加入對照。</p>" : req.query.err === "dup" ? "<p style='color:red'>此俗名已存在，請勿重複新增。</p>" : "";
@@ -485,23 +525,28 @@ function createAdminRouter() {
         res.redirect(doneUrl);
     });
     router.get("/orders", async (req, res) => {
+        const workingDate = await getWorkingDate(db);
         const onlyNeedReview = req.query.need_review === "1";
         let orders = await db.prepare(`
-      SELECT o.id, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name,
+      SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
       FROM orders o
       JOIN customers c ON c.id = o.customer_id
+      WHERE o.order_date >= ?
       ORDER BY o.order_date DESC, o.id DESC
       LIMIT 200
-    `).all();
+    `).all(workingDate);
         if (onlyNeedReview) {
             orders = orders.filter((o) => (o.need_review_count ?? 0) > 0);
         }
+        const orderSeqStartRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("order_seq_start_" + workingDate);
+        const orderSeqStartVal = orderSeqStartRow?.value ?? "";
         const rows = orders
             .map((o) => {
             const n = o.need_review_count ?? 0;
             const needReviewCell = n > 0 ? `<span style="color:red">${n} 項待確認</span>` : "—";
             return `<tr>
+            <td>${escapeHtml(o.order_no ?? "—")}</td>
             <td>${escapeHtml(o.order_date)}</td>
             <td><a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders">${escapeHtml(o.customer_name)}</a></td>
             <td>${escapeHtml(o.status)}</td>
@@ -517,15 +562,39 @@ function createAdminRouter() {
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 訂單查詢</div>
         <h1 class="notion-page-title">訂單查詢</h1>
+        ${req.query.ok === "seq" ? "<p class=\"notion-msg ok\">已儲存本日起始編號。</p>" : ""}
+        <p style="margin-bottom:8px;">僅顯示日期 ≥ 結轉日期（${escapeHtml(workingDate)}）的訂單。</p>
         <p style="margin-bottom:16px;"><a href="/admin/review">待確認品名</a>（補對照）　${filterLink}</p>
+        <div class="notion-card" style="margin-bottom:16px;">
+          <h2 style="margin-top:0;">本日起始編號（與 ERP 對齊）</h2>
+          <p style="color:var(--notion-text-muted);font-size:13px;">訂單編號規則：西元年月日＋流水號（例 20250226001）。設定本日（${escapeHtml(workingDate)}）的起始流水號，之後新訂單依序遞增。</p>
+          <form method="post" action="/admin/api/order-seq-start" style="display:flex;align-items:center;gap:8px;">
+            <input type="hidden" name="date" value="${escapeAttr(workingDate)}">
+            <label>起始流水號 <input type="number" name="start" value="${escapeAttr(orderSeqStartVal)}" min="1" placeholder="1" style="width:80px;"></label>
+            <button type="submit" class="btn">儲存</button>
+          </form>
+        </div>
         <div class="notion-card">
           <table>
-            <thead><tr><th>日期</th><th>客戶</th><th>狀態</th><th>待確認</th><th>原始訊息</th><th></th></tr></thead>
-            <tbody>${rows.length ? rows : "<tr><td colspan='6'>無訂單</td></tr>"}</tbody>
+            <thead><tr><th>訂單編號</th><th>日期</th><th>客戶</th><th>狀態</th><th>待確認</th><th>原始訊息</th><th></th></tr></thead>
+            <tbody>${rows.length ? rows : "<tr><td colspan='7'>無訂單</td></tr>"}</tbody>
           </table>
         </div>
       `;
         res.type("text/html").send(notionPage("訂單查詢", body, "", res.locals.topBarHtml));
+    });
+    router.post("/api/order-seq-start", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const date = req.body?.date?.trim();
+        const start = req.body?.start?.trim();
+        if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            res.redirect("/admin/orders?err=date");
+            return;
+        }
+        const num = start ? parseInt(start, 10) : 1;
+        const val = (Number.isNaN(num) || num < 1) ? "1" : String(num);
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("order_seq_start_" + date, val);
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("order_seq_next_" + date, val);
+        res.redirect("/admin/orders?ok=seq");
     });
     router.get("/export", async (req, res) => {
         const workingDate = await getWorkingDate(db);
@@ -613,7 +682,7 @@ function createAdminRouter() {
     router.post("/orders/:orderId/items/:itemId/product", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { orderId, itemId } = req.params;
         const productId = req.body.product_id?.trim();
-        const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
+        const order = await db.prepare("SELECT id, customer_id FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
             return;
@@ -627,13 +696,33 @@ function createAdminRouter() {
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=product");
             return;
         }
+        const item = await db.prepare("SELECT raw_name FROM order_items WHERE id = ? AND order_id = ?").get(itemId, orderId);
         await db.prepare("UPDATE order_items SET product_id = ?, need_review = 0 WHERE id = ? AND order_id = ?").run(productId, itemId, orderId);
+        const rawNameTrim = item?.raw_name?.trim();
+        if (rawNameTrim) {
+            const existing = await db.prepare("SELECT id FROM product_aliases WHERE alias = ?").get(rawNameTrim);
+            if (!existing) {
+                try {
+                    const paId = (0, id_js_1.newId)("pa");
+                    await db.prepare("INSERT INTO product_aliases (id, product_id, alias) VALUES (?, ?, ?)").run(paId, productId, rawNameTrim);
+                }
+                catch (_) { /* 可能重複 */ }
+            }
+            const existingCpa = await db.prepare("SELECT id FROM customer_product_aliases WHERE customer_id = ? AND alias = ?").get(order.customer_id, rawNameTrim);
+            if (!existingCpa) {
+                try {
+                    const cpaId = (0, id_js_1.newId)("cpa");
+                    await db.prepare("INSERT INTO customer_product_aliases (id, customer_id, product_id, alias) VALUES (?, ?, ?, ?)").run(cpaId, order.customer_id, productId, rawNameTrim);
+                }
+                catch (_) { /* 可能重複 */ }
+            }
+        }
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=product");
     });
     router.get("/orders/:orderId", async (req, res) => {
         const { orderId } = req.params;
         const order = await db.prepare(`
-      SELECT o.id, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code
+      SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code
       FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
         if (!order) {
@@ -667,8 +756,8 @@ function createAdminRouter() {
                 ? `<div class="teraoka-cell"><span class="code">${teraokaCode}</span><span class="name">${teraokaName || "—"}</span><br><img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="" style="height:32px;"></div>`
                 : `<div class="teraoka-cell"><span class="code">—</span><span class="name">${teraokaName || "—"}</span></div>`;
             const productCell = i.need_review === 1
-                ? `<a href="#" class="product-pick" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
-                : `${pname} <a href="#" class="product-pick" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
+                ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
+                : `${pname} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
             const includeChecked = i.include_export === undefined || i.include_export === null || i.include_export === 1;
             const rowClass = includeChecked ? "" : " order-row-excluded";
@@ -683,14 +772,14 @@ function createAdminRouter() {
             <td>${unitSelectWithVal}</td>
             <td><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:120px;"></td>
             <td>${teraokaCell}</td>
-            <td><form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(i.item_id)}/delete" style="display:inline;"><button type="submit" class="btn">刪除</button></form></td>
+            <td><form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(i.item_id)}/delete" style="display:inline;" onsubmit="return confirm('確定要刪除此筆明細？');"><button type="submit" class="btn">刪除</button></form></td>
           </tr>`;
         })
             .join("");
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / 訂單明細</div>
         <h1 class="notion-page-title">訂單明細</h1>
-        <p>日期：${escapeHtml(order.order_date)}　客戶：<a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a>　狀態：${escapeHtml(order.status)}</p>
+        <p>訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：<a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a>　狀態：${escapeHtml(order.status)}</p>
         ${needReviewNote}
         ${req.query.ok === "product" ? "<p class=\"notion-msg ok\">已更新品項。</p>" : ""}
         ${req.query.err === "product" ? "<p class=\"notion-msg err\">請選擇有效品項。</p>" : ""}
@@ -701,7 +790,7 @@ function createAdminRouter() {
             <table>
               <thead><tr><th>選取</th><th>原始品名</th><th>原始數量</th><th>原始單位</th><th class="order-table-col-system">凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>備註</th><th>寺岡（料號／條碼）</th><th>刪除</th></tr></thead>
               <tbody>${itemsRows}</tbody>
-              <tr><td colspan="11" style="background:var(--notion-sidebar);padding:10px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="btn">＋ 增加品相</a></td></tr>
+              <tr><td colspan="11" style="background:var(--notion-sidebar);padding:10px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="btn">＋ 增加品項</a></td></tr>
             </table>
             <p style="margin:12px 0 0;"><button type="submit" class="btn btn-primary">儲存數量、單位、備註與選取</button></p>
           </div>
@@ -814,8 +903,8 @@ function createAdminRouter() {
         const units = ["公斤", "斤", "把", "包", "件", "箱", "顆", "粒", "盒", "袋", "個"];
         const unitOpts = units.map((u) => `<option value="${escapeAttr(u)}">${escapeHtml(u)}</option>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品相</div>
-        <h1 class="notion-page-title">增加品相</h1>
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品項</div>
+        <h1 class="notion-page-title">增加品項</h1>
         <div class="notion-card">
           <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add">
             <label>品項 <select name="product_id" required style="width:100%;">${productOptions}</select></label>
@@ -825,7 +914,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("增加品相", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("增加品項", body, "", res.locals.topBarHtml));
     });
     router.post("/orders/:orderId/items/add", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { orderId } = req.params;
@@ -875,7 +964,7 @@ function createAdminRouter() {
         const { orderId } = req.params;
         const preview = req.query.preview === "1";
         const order = await db.prepare(`
-      SELECT o.id, o.order_date, o.status, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code
+      SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code
       FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
         if (!order) {
@@ -906,23 +995,19 @@ function createAdminRouter() {
         const sheetBody = `
         <div class="no-print notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 訂貨單</div>
         ${preview ? "<p class=\"no-print\"><button type=\"button\" class=\"btn btn-primary\" id=\"exportJpgBtn\">匯出 JPG</button> 預覽下方訂單圖後可點此匯出</p>" : ""}
-        <div id="order-sheet-content" style="margin-top:12px;">
+        <div id="order-sheet-content" style="margin-top:12px; width:210mm; min-height:297mm; box-sizing:border-box; background:white; padding:1rem;" class="order-sheet-a4">
         <div class="notion-card">
         <h1 class="notion-page-title">訂貨單</h1>
-        <p>日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name)}</p>
+        <p>訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name)}</p>
           <table>
             <thead><tr><th>凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>備註</th><th>寺岡（料號／條碼）</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
-        <div class="notion-card" style="margin-top:2rem;">
-          <p><strong>品項條碼（以下供掃描）</strong></p>
-          ${items.filter((i) => i.teraoka_barcode && i.teraoka_barcode.trim()).map((i) => `<span style="display:inline-block;margin:0.5rem;"><img src="/admin/barcode?code=${encodeURIComponent(i.teraoka_barcode.trim())}" alt="" style="height:56px;"><br><small>${escapeHtml(i.product_name ?? i.teraoka_barcode ?? "")}</small></span>`).join("")}
-        </div>
         ${customerBarcode ? `<div class="notion-card" style="margin-top:1.5rem;">${customerBarcode}</div>` : ""}
         </div>
         <p class="no-print" style="margin-top:1rem;"><a href="/admin/orders/${encodeURIComponent(orderId)}">← 回訂單明細</a></p>
-        ${preview ? '<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script><script>document.getElementById("exportJpgBtn").onclick=function(){ var el = document.getElementById("order-sheet-content"); if (typeof html2canvas !== "undefined") { html2canvas(el, { useCORS: true, allowTaint: true }).then(function(canvas){ var a = document.createElement("a"); a.download = "order-sheet-' + orderId + '.jpg"; a.href = canvas.toDataURL("image/jpeg", 0.92); a.click(); }); } };</script>' : ""}
+        ${preview ? '<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script><script>document.getElementById("exportJpgBtn").onclick=function(){ var el = document.getElementById("order-sheet-content"); if (typeof html2canvas !== "undefined") { html2canvas(el, { useCORS: true, allowTaint: true, scale: 2 }).then(function(canvas){ var a = document.createElement("a"); a.download = "order-sheet-' + orderId + '.jpg"; a.href = canvas.toDataURL("image/jpeg", 0.92); a.click(); }); } };</script>' : ""}
       `;
         res.type("text/html").send(notionPage("訂貨單", sheetBody, "", res.locals.topBarHtml));
     });
@@ -1319,7 +1404,7 @@ function createAdminRouter() {
         const msg = okMsg ? "<p style='color:green'>" + okMsg + "</p>" : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const makeRow = (p) => {
             const specSummary = (specsByProduct.get(p.id) ?? []).map((x) => escapeHtml(x)).join("、") || "—";
-            const isActive = p.active === 1;
+            const isActive = p.active === 1 || p.active === "1" || p.active === undefined || p.active === null;
             const statusHtml = isActive ? "啟用" : "<span style='color:#888'>停用</span>";
             const toggleLabel = isActive ? "停用" : "啟用";
             return `<tr data-product-id="${escapeAttr(p.id)}">
@@ -1337,8 +1422,9 @@ function createAdminRouter() {
             </td>
           </tr>`;
         };
-        const activeList = products.filter((p) => p.active === 1);
-        const inactiveList = products.filter((p) => p.active !== 1);
+        const isProductActive = (p) => p.active === 1 || p.active === "1" || p.active === undefined || p.active === null;
+        const activeList = products.filter(isProductActive);
+        const inactiveList = products.filter((p) => !isProductActive(p));
         const tbodyActive = activeList.map(makeRow).join("") || "<tr><td colspan='8'>無啟用品項</td></tr>";
         const tbodyInactive = inactiveList.map(makeRow).join("") || "<tr><td colspan='8'>無停用品項</td></tr>";
         const body = `
@@ -1623,7 +1709,8 @@ function createAdminRouter() {
             res.status(404).json({ ok: false, err: "找不到此品項" });
             return;
         }
-        const next = row.active === 1 ? 0 : 1;
+        const isActive = row.active === 1 || row.active === "1" || row.active === undefined || row.active === null;
+        const next = isActive ? 0 : 1;
         await db.prepare("UPDATE products SET active = ?, updated_at = datetime('now') WHERE id = ?").run(next, id);
         res.json({ ok: true, active: next });
     });
@@ -1634,7 +1721,8 @@ function createAdminRouter() {
             res.redirect("/admin/products?err=" + encodeURIComponent("找不到此品項"));
             return;
         }
-        const next = row.active === 1 ? 0 : 1;
+        const isActive = row.active === 1 || row.active === "1" || row.active === undefined || row.active === null;
+        const next = isActive ? 0 : 1;
         await db.prepare("UPDATE products SET active = ?, updated_at = datetime('now') WHERE id = ?").run(next, id);
         res.redirect("/admin/products?ok=toggle");
     });
