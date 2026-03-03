@@ -225,9 +225,14 @@ function createAdminRouter() {
             replyCount = (row && parseInt(row.value, 10)) || 0;
         }
         catch (_) { /* app_settings 可能尚無該 key */ }
+        const usingCloudSql = Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.trim());
+        const dbNotice = usingCloudSql
+            ? `<div class="notion-card" style="border-left:4px solid #0a0;"><h2 style="margin-top:0;">資料庫狀態</h2><p><strong>PostgreSQL (Cloud SQL)</strong> － 訂單、客戶、品項會長期保留。</p></div>`
+            : `<div class="notion-card" style="border-left:4px solid #c00;"><h2 style="margin-top:0;">⚠️ 資料不會長期保留</h2><p>目前使用 <strong>SQLite</strong>，資料存在容器內，<strong>重新部署、關機或縮容後會消失</strong>，收單後後台可能看不到、前幾天的資料也會不見。</p><p>請在 Cloud Run 設定 <strong>DATABASE_URL</strong> 連線 Cloud SQL（PostgreSQL），才能長期記憶。詳見 <a href="https://github.com/kong-5/songfu_linebot#readme" target="_blank" rel="noopener">說明</a> 或後台文件「觸發程式設定 DATABASE_URL」。</p></div>`;
         const body = `
         <div class="notion-breadcrumb">工作台</div>
         <h1 class="notion-page-title">工作台</h1>
+        ${dbNotice}
         <div class="notion-card" style="border-left:4px solid var(--notion-accent);">
           <h2>LINE 用量（本系統紀錄）</h2>
           <p><strong>本月已回覆 ${replyCount} 則</strong>（僅統計本機器人成功發送的回覆則數，僅供參考。）</p>
@@ -580,9 +585,12 @@ function createAdminRouter() {
         const filterLink = onlyNeedReview
             ? `<a href="/admin/orders">顯示全部訂單</a>`
             : `<a href="/admin/orders?need_review=1">只看有待確認的訂單</a>`;
+        const usingCloudSqlOrders = Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.trim());
+        const orderListDbWarning = usingCloudSqlOrders ? "" : `<p class="notion-msg err" style="margin-bottom:12px;">目前未連線 Cloud SQL，資料不會長期保留，收單後可能看不到或重開就消失。請在 Cloud Run 設定 <strong>DATABASE_URL</strong>。</p>`;
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 訂單查詢</div>
         <h1 class="notion-page-title">訂單查詢</h1>
+        ${orderListDbWarning}
         ${req.query.ok === "seq" ? "<p class=\"notion-msg ok\">已儲存本日起始編號。</p>" : ""}
         <p style="margin-bottom:8px;">僅顯示日期 ≥ 結轉日期（${escapeHtml(workingDate)}）的訂單。</p>
         <p style="margin-bottom:12px;"><a href="/admin/review">待確認品名</a>（補對照）　${filterLink}</p>
@@ -835,6 +843,13 @@ function createAdminRouter() {
         ${req.query.err === "product" ? "<p class=\"notion-msg err\">請選擇有效品項。</p>" : ""}
         <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet" class="btn btn-primary">匯出訂貨單格式（含條碼）</a>　<a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1" class="btn">預覽訂單圖</a></p>
         ${attachments.length > 0 ? `<p style="color:var(--notion-text-muted);">客戶傳了 <strong>${attachments.length}</strong> 張圖片：${attachments.map((a, idx) => `<a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener">圖${idx + 1}</a>`).join("、")}</p>` : ""}
+        <div class="notion-card">
+          <h2 style="margin-top:0;">AI 分析</h2>
+          <p style="color:var(--notion-text-muted);font-size:13px;">整理客戶原始訊息、補正錯漏並標註建議確認；若客戶問成本或金額會一併說明（本系統需維護品項單價後才能自動估算）。<br>僅在您點擊時呼叫，<strong>每次約 0.01～0.05 元</strong>（依 OpenAI 計價），不會自動跑、不會大筆花費。</p>
+          <button type="button" id="aiAnalyzeBtn" class="btn btn-primary">分析此筆訂單</button>
+          <div id="aiAnalyzeResult" style="display:none;margin-top:12px;padding:12px;background:var(--notion-sidebar);border-radius:var(--notion-radius);font-size:14px;white-space:pre-wrap;line-height:1.5;"></div>
+          <div id="aiAnalyzeErr" style="display:none;margin-top:8px;color:#c00;font-size:13px;"></div>
+        </div>
         <div class="notion-card"><pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);margin:0;font-size:13px;">${escapeHtml(order.raw_message ?? "")}</pre></div>
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items">
           <div class="notion-card">
@@ -893,10 +908,106 @@ function createAdminRouter() {
               if (tr) tr.classList.toggle('order-row-excluded', !e.target.checked);
             }
           });
+          var aiBtn = document.getElementById('aiAnalyzeBtn');
+          if (aiBtn) aiBtn.addEventListener('click', function(){
+            var btn = this;
+            var resultEl = document.getElementById('aiAnalyzeResult');
+            var errEl = document.getElementById('aiAnalyzeErr');
+            resultEl.style.display = 'none';
+            errEl.style.display = 'none';
+            errEl.textContent = '';
+            btn.disabled = true;
+            btn.textContent = '分析中…';
+            fetch('/admin/api/orders/' + encodeURIComponent(orderId) + '/ai-analyze')
+              .then(function(r){ return r.json(); })
+              .then(function(data){
+                btn.disabled = false;
+                btn.textContent = '分析此筆訂單';
+                if (data.error) { errEl.textContent = data.error; errEl.style.display = 'block'; return; }
+                resultEl.textContent = data.analysis || '';
+                resultEl.style.display = 'block';
+              })
+              .catch(function(){
+                btn.disabled = false;
+                btn.textContent = '分析此筆訂單';
+                errEl.textContent = '請求失敗，請稍後再試。';
+                errEl.style.display = 'block';
+              });
+          });
         })();
         </script>
       `;
         res.type("text/html").send(notionPage("訂單明細", body, "", res.locals.topBarHtml));
+    });
+    router.get("/api/orders/:orderId/ai-analyze", async (req, res) => {
+        const { orderId } = req.params;
+        const order = await db.prepare(`
+      SELECT o.id, o.order_no, o.order_date, o.raw_message, o.customer_id, c.name AS customer_name
+      FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
+    `).get(orderId);
+        if (!order) {
+            res.status(404).json({ error: "訂單不存在" });
+            return;
+        }
+        const items = await db.prepare(`
+      SELECT oi.raw_name, oi.quantity, oi.unit, oi.need_review, p.name AS product_name
+      FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
+    `).all(orderId);
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey || !apiKey.trim()) {
+            res.status(503).json({ error: "請在 Cloud Run「變數與密碼」設定 OPENAI_API_KEY 以使用 AI 分析。" });
+            return;
+        }
+        const rawText = (order.raw_message ?? "").trim() || "（無原始訊息）";
+        const itemsText = items.length === 0
+            ? "（尚無已解析品項）"
+            : items.map((i) => {
+                const name = i.product_name || i.raw_name || "待確認";
+                const q = i.quantity ?? "";
+                const u = (i.unit && i.unit.trim()) || "";
+                const review = i.need_review === 1 ? " [待確認]" : "";
+                return `- ${name} ${q} ${u}${review}`.trim();
+            }).join("\n");
+        const prompt = `訂單編號：${order.order_no ?? "—"}\n日期：${order.order_date}\n客戶：${order.customer_name}\n\n【客戶原始訊息】\n${rawText}\n\n【已解析品項】\n${itemsText}`;
+        const systemPrompt = `你是一位生鮮／蔬果訂單助理。以下是一筆客戶叫貨的原始訊息與已解析的品項明細。請：
+1. 整理成簡潔易讀的摘要，錯字或語意不清處請補正或標註。
+2. 數量或單位不明確的請標註「建議確認」。
+3. 若可推論客戶意圖（例如「幫我算一下」可能是在問金額或成本），請簡短說明。
+4. 本系統目前無品項單價資料，無法自動計算成本；若客戶有問到價格或成本，請說明需在後台維護各品項單價後才能自動估算。`;
+        try {
+            const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${apiKey.trim()}`,
+                },
+                body: JSON.stringify({
+                    model: "gpt-4o-mini",
+                    messages: [
+                        { role: "system", content: systemPrompt },
+                        { role: "user", content: prompt },
+                    ],
+                    max_tokens: 1024,
+                }),
+            });
+            if (!resp.ok) {
+                const errBody = await resp.text();
+                console.warn("[admin] OpenAI API 非 200:", resp.status, errBody.slice(0, 200));
+                res.status(resp.status).json({ error: "AI 服務暫時無法使用，請稍後再試。" });
+                return;
+            }
+            const data = await resp.json();
+            const content = data?.choices?.[0]?.message?.content?.trim();
+            if (!content) {
+                res.status(502).json({ error: "AI 未回傳內容。" });
+                return;
+            }
+            res.json({ analysis: content });
+        }
+        catch (e) {
+            console.error("[admin] AI 分析失敗:", e?.message || e);
+            res.status(500).json({ error: "分析時發生錯誤，請稍後再試。" });
+        }
     });
     router.get("/orders/:orderId/attachment/:messageId", async (req, res) => {
         const { orderId, messageId } = req.params;
