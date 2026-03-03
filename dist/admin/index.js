@@ -616,13 +616,16 @@ function createAdminRouter() {
             res.type("text/html").send(notionPage("訂單查詢", body, "", res.locals.topBarHtml));
         }
         catch (e) {
-            console.error("[admin] GET /orders 錯誤:", e?.message || e, e?.stack);
+            const errMsg = (e?.message || String(e)).slice(0, 500);
+            console.error("[admin] GET /orders 錯誤:", errMsg, e?.stack);
             res.status(500).type("text/html").send(`
         <!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>訂單查詢錯誤</title></head>
-        <body style="font-family:sans-serif;padding:2rem;">
+        <body style="font-family:sans-serif;padding:2rem;max-width:640px;">
           <h1>訂單查詢暫時無法使用</h1>
           <p>請稍後再試，或聯絡管理員檢查後台與資料庫連線。</p>
-          <p><a href="/admin">回工作台</a></p>
+          <p style="margin-top:1rem;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;word-break:break-all;"><strong>錯誤訊息：</strong><br>${escapeHtml(errMsg)}</p>
+          <p style="margin-top:1rem;font-size:13px;color:#666;">若為「column … does not exist」，請確認 Cloud SQL 已執行過最新 schema（含 order_no、order_attachments 等）。</p>
+          <p style="margin-top:1rem;"><a href="/admin">回工作台</a></p>
         </body></html>`);
         }
     });

@@ -31,6 +31,10 @@ gcloud services enable cloudbuild.googleapis.com run.googleapis.com --project=ha
    - **設定 (Configuration)**：**一定要選「Cloud Build 設定檔 (yaml 或 json)」**，不要選 Dockerfile。
    - **位置**：選「儲存庫」，設定檔路徑填 `cloudbuild.yaml`
 4. **替換變數 (Substitution variables)**（必填，否則建置會失敗或部署後資料消失）：
+   - **為什麼三個變數常常「看不到」或「跳掉」**：GCP 主控台會改版，替換變數區塊**不在表單上半部**，容易漏看：
+     - 要**整頁往下捲到最下面**才會出現「替換變數」或「Substitution variables」；
+     - 有時藏在 **「進階」／「Show more」** 裡，要點開才看得到；
+     - 若觸發程式曾改選「Dockerfile」，再改回「Cloud Build 設定檔」時，區塊有時要重新展開。
    - 只有當上面選了「Cloud Build 設定檔」時，表單**往下捲**才會出現「Substitution variables」／「替換變數」區塊（有時在進階裡）。
    - 在該區塊按 **新增變數**，依序加入（**`_DATABASE_URL` 一定要設**，否則部署後客戶/品項會消失）：
 
@@ -45,9 +49,11 @@ gcloud services enable cloudbuild.googleapis.com run.googleapis.com --project=ha
 
 5. 儲存觸發程式。
 
+**若你覺得替換變數很難找、儲存後又看不到**：建議直接用下面 **做法 B**，把 LINE Token、Secret、Vision 金鑰、DATABASE_URL 全部改在 **Cloud Run 的「變數與密碼」** 設一次就好，之後 push 不會動到這些變數，也不會再被觸發程式介面影響。
+
 ---
 
-### 做法 B：找不到「替換變數」時（推薦）
+### 做法 B：找不到「替換變數」或變數容易跳掉時（推薦）
 
 1. **觸發程式**：設定檔路徑改填 **`cloudbuild-no-secrets.yaml`**（不用 `cloudbuild.yaml`）。  
    這樣觸發程式**不會**帶任何金鑰，只做：建置映像 → 推送 → 部署到 Cloud Run，並掛上 Cloud SQL 連線。
