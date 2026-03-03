@@ -10,12 +10,13 @@ const index_js_1 = require("../db/index.js");
 const parse_order_message_js_1 = require("../lib/parse-order-message.js");
 const resolve_product_js_1 = require("../lib/resolve-product.js");
 const id_js_1 = require("../lib/id.js");
+const vision_ocr_js_1 = require("../lib/vision-ocr.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
 const hasLineConfig = Boolean(channelAccessToken && channelSecret);
-/** 收單模式：群組 ID -> { orderId, customerId, lastActivity }；逾時 3 分鐘自動結單 */
-const COLLECT_TIMEOUT_MS = 3 * 60 * 1000;
+/** 收單模式：群組 ID -> { orderId, customerId, lastActivity }；逾時 1 分鐘自動結單 */
+const COLLECT_TIMEOUT_MS = 1 * 60 * 1000;
 const collectingByGroup = new Map();
 async function getNextOrderNo(db, orderDate) {
     const nextKey = "order_seq_next_" + orderDate;
@@ -98,7 +99,7 @@ function createLineWebhook() {
                         else
                             console.log("[LINE] 綁定查詢 OK customer=%s", customer.id);
                     }
-                    // 照片：收單中請補文字；未收單請先傳「收單」
+                    // 照片：收單中儲存附件；可選 OCR 辨識文字並寫入品項；未收單則傳圖即開始收單
                     if (msgType === "image") {
                         if (groupId && !customer) {
                             await reply(lineClient, event.replyToken, "此群組尚未綁定客戶，無法收單。若需取得本群組 ID 請傳：取得群組ID", db);
@@ -109,10 +110,90 @@ function createLineWebhook() {
                             continue;
                         }
                         const inCollecting = groupId ? collectingByGroup.has(groupId) : false;
-                        if (inCollecting) {
-                            await reply(lineClient, event.replyToken, "請用文字說明品項與數量（例如：高麗菜 5 斤），照片無法自動辨識。", db);
+                        const messageId = event.message.id;
+                        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+                        let ocrText = null;
+                        if (process.env.GOOGLE_CLOUD_VISION_API_KEY && channelAccessToken) {
+                            try {
+                                const imgResp = await fetch(`https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`, {
+                                    headers: { Authorization: `Bearer ${channelAccessToken}` },
+                                });
+                                if (imgResp.ok) {
+                                    const buf = Buffer.from(await imgResp.arrayBuffer());
+                                    ocrText = await (0, vision_ocr_js_1.getTextFromImageBuffer)(buf);
+                                }
+                            }
+                            catch (e) {
+                                console.warn("[LINE] 取得圖片或 OCR 失敗:", e?.message || e);
+                            }
                         }
-                        // 未在收單中傳照片：不回覆，省則數
+                        if (inCollecting) {
+                            const session = collectingByGroup.get(groupId);
+                            const attId = (0, id_js_1.newId)("att");
+                            await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, session.orderId, messageId);
+                            let orderRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
+                            let newRaw = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + (ocrText || "[圖片]");
+                            let parsedCount = 0;
+                            if (ocrText) {
+                                const parsed = (0, parse_order_message_js_1.parseOrderMessage)(ocrText);
+                                if (parsed.length > 0) {
+                                    const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(session.customerId);
+                                    const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
+                                    for (const item of parsed) {
+                                        const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, session.customerId);
+                                        const itemId = (0, id_js_1.newId)("item");
+                                        const productId = resolved?.productId ?? null;
+                                        const unit = item.unit && item.unit.trim() ? item.unit.trim() : fallbackUnit;
+                                        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, session.orderId, productId, item.rawName, item.quantity, unit, resolved ? 0 : 1);
+                                    }
+                                    parsedCount = parsed.length;
+                                }
+                            }
+                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, session.orderId);
+                            const replyMsg = parsedCount > 0
+                                ? `已收到圖片並辨識出 ${parsedCount} 項。可繼續傳品項或說「以上X收單」結束。`
+                                : "已收到圖片，會一併處理。請繼續傳品項或說「以上X收單」結束。";
+                            await reply(lineClient, event.replyToken, replyMsg, db);
+                        }
+                        else {
+                            const orderDate = new Date().toISOString().slice(0, 10);
+                            let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customer.id, orderDate);
+                            let orderId;
+                            if (orderRow) {
+                                orderId = orderRow.id;
+                            }
+                            else {
+                                orderId = (0, id_js_1.newId)("ord");
+                                const orderNo = await getNextOrderNo(db, orderDate);
+                                await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending')`).run(orderId, orderNo, customer.id, orderDate, groupId, "");
+                            }
+                            if (groupId)
+                                collectingByGroup.set(groupId, { orderId, customerId: customer.id, lastActivity: Date.now() });
+                            const attId = (0, id_js_1.newId)("att");
+                            await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, orderId, messageId);
+                            let replyMsg = "已開始收單並收到您傳的圖片，可繼續傳品項或再傳圖。傳完說「以上X收單」結束。";
+                            if (ocrText) {
+                                const parsed = (0, parse_order_message_js_1.parseOrderMessage)(ocrText);
+                                if (parsed.length > 0) {
+                                    const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customer.id);
+                                    const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
+                                    for (const item of parsed) {
+                                        const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, customer.id);
+                                        const itemId = (0, id_js_1.newId)("item");
+                                        const productId = resolved?.productId ?? null;
+                                        const unit = item.unit && item.unit.trim() ? item.unit.trim() : fallbackUnit;
+                                        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, resolved ? 0 : 1);
+                                    }
+                                    const newRaw = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + ocrText;
+                                    await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, orderId);
+                                    replyMsg = `已開始收單並辨識出 ${parsed.length} 項。可繼續傳品項或再傳圖，傳完說「以上X收單」結束。`;
+                                }
+                            }
+                            await reply(lineClient, event.replyToken, replyMsg, db);
+                        }
                         continue;
                     }
                     if (msgType !== "text") {
@@ -139,10 +220,18 @@ function createLineWebhook() {
                     const orderDate = new Date().toISOString().slice(0, 10);
                     const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_start");
                     const startTriggers = (startRow?.value ?? "收單\n開始收單\n訂單\n我要下訂\n明日訂單").split(/\n/).map((s) => s.trim()).filter(Boolean);
+                    const intentRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_intent");
+                    const intentKeywords = (intentRow?.value ?? "幫我送\n明天\n今天早上要\n要送\n訂\n叫貨\n送過來\n請送").split(/\n/).map((s) => s.trim()).filter(Boolean);
                     const triggerMatch = startTriggers.find((t) => text === t || text.startsWith(t + " ") || text.startsWith(t + "\n"));
-                    if (triggerMatch) {
-                        const rest = (text.slice(triggerMatch.length).trim() || "");
-                        console.log("[LINE] 進入收單流程 customerId=%s orderDate=%s rest=%s", customerId, orderDate, rest.slice(0, 50));
+                    const intentMatch = !triggerMatch && text.length >= 2 && intentKeywords.some((k) => text.includes(k));
+                    const effectiveRest = triggerMatch ? (text.slice(triggerMatch.length).trim() || "") : (intentMatch ? text : "");
+                    const isStartOrder = triggerMatch || intentMatch;
+                    if (isStartOrder) {
+                        const rest = effectiveRest;
+                        if (intentMatch)
+                            console.log("[LINE] 意圖關鍵字進入收單 customerId=%s orderDate=%s text=%s", customerId, orderDate, rest.slice(0, 80));
+                        else
+                            console.log("[LINE] 進入收單流程 customerId=%s orderDate=%s rest=%s", customerId, orderDate, rest.slice(0, 50));
                         let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
                         let orderId;
                         if (orderRow) {
@@ -156,7 +245,7 @@ function createLineWebhook() {
                         }
                         if (groupId)
                             collectingByGroup.set(groupId, { orderId, customerId, lastActivity: Date.now() });
-                        let replyDone = "開始收單。請客戶傳叫貨內容（可多則）；我方傳「以上X收單」即結束並告知已收幾項。";
+                        let replyDone = "開始收單。請傳品項，傳完說「以上X收單」結束；一分鐘內無訊息將自動結單。";
                         if (rest) {
                             const parsed = (0, parse_order_message_js_1.parseOrderMessage)(rest);
                             const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
@@ -262,7 +351,7 @@ function createLineWebhook() {
                             const weekdays = "日一二三四五六";
                             const dayIdx = new Date(dateStr + "T12:00:00").getDay();
                             const weekday = "星期" + weekdays[dayIdx];
-                            await reply(lineClient, event.replyToken, `已自動結單（逾時 ${COLLECT_TIMEOUT_MS / 60000} 分鐘）。訂單日期：${dateStr} ${weekday}，共收 ${n} 項。`, db);
+                            await reply(lineClient, event.replyToken, `已自動結單（1 分鐘內無新訊息）。訂單日期：${dateStr} ${weekday}，共收 ${n} 項。`, db);
                             continue;
                         }
                         session.lastActivity = Date.now();

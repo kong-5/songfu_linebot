@@ -47,6 +47,14 @@
     include_export INTEGER
   );
 
+  CREATE TABLE IF NOT EXISTS order_attachments (
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL REFERENCES orders(id),
+    line_message_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ,
+    FOREIGN KEY (order_id) REFERENCES orders(id)
+  );
+
   CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT

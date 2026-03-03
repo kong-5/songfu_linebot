@@ -78,6 +78,10 @@ function initSqlite(dbPath) {
         "ALTER TABLE customers ADD COLUMN route_line INTEGER",
         "ALTER TABLE orders ADD COLUMN order_no TEXT",
     ];
+    try {
+        sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
+    }
+    catch (_) { /* table may already exist */ }
     for (const alt of alters) {
         try {
             sqlite.exec(alt);
@@ -115,6 +119,10 @@ async function initPg() {
                 await client.query("ALTER TABLE orders ADD COLUMN order_no TEXT");
             }
             catch (_) { /* column may already exist */ }
+            try {
+                await client.query("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), line_message_id TEXT NOT NULL, created_at TIMESTAMPTZ)");
+            }
+            catch (_) { /* table may already exist */ }
         }
         finally {
             client.release();

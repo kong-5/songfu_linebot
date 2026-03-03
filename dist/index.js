@@ -64,6 +64,11 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     app.get("/health", (_req, res) => {
         res.json({ ok: true, service: "songfu_linebot" });
     });
+    app.use((err, _req, res, _next) => {
+        console.error("[app] 未處理錯誤:", err?.message || err, err?.stack);
+        if (!res.headersSent)
+            res.status(500).type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>錯誤</title></head><body style="font-family:sans-serif;padding:2rem;"><h1>伺服器錯誤</h1><p>請稍後再試。</p><p><a href="/admin">回後台</a></p></body></html>`);
+    });
     app.use((_req, res) => {
         res.status(404).type("text/html").send(`
     <!DOCTYPE html>

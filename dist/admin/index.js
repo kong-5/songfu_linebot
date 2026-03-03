@@ -363,8 +363,10 @@ function createAdminRouter() {
     router.get("/triggers", async (req, res) => {
         const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_start");
         const endRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_end");
+        const intentRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_intent");
         const startVal = (startRow?.value ?? "收單\n開始收單\n訂單\n我要下訂\n明日訂單").trim();
         const endVal = (endRow?.value ?? "完成\n結束收單").trim();
+        const intentVal = (intentRow?.value ?? "幫我送\n明天\n今天早上要\n要送\n訂\n叫貨\n送過來\n請送").trim();
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 提示詞管理</div>
         <h1 class="notion-page-title">提示詞管理</h1>
@@ -372,9 +374,12 @@ function createAdminRouter() {
         ${req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存。</p>" : ""}
         <div class="notion-card">
           <form method="post" action="/admin/triggers">
-            <h2>開始收單</h2>
+            <h2>開始收單（精確／前綴）</h2>
             <p>以下任一句即開始收單（可同則帶品項）：</p>
             <textarea name="start" rows="5" style="width:100%;box-sizing:border-box;" placeholder="收單&#10;開始收單&#10;訂單&#10;我要下訂&#10;明日訂單">${escapeHtml(startVal)}</textarea>
+            <h2 style="margin-top:1.5rem;">意圖關鍵字（彈性收單）</h2>
+            <p>訊息<strong>內含</strong>任一個即視為開始收單（例：明天幫我送 高麗菜 5 斤）。一列一個。</p>
+            <textarea name="intent" rows="4" style="width:100%;box-sizing:border-box;" placeholder="幫我送&#10;明天&#10;今天早上要&#10;要送&#10;訂&#10;叫貨&#10;送過來&#10;請送">${escapeHtml(intentVal)}</textarea>
             <h2 style="margin-top:1.5rem;">結束收單</h2>
             <p>以下任一句即結束收單：</p>
             <textarea name="end" rows="3" style="width:100%;box-sizing:border-box;" placeholder="完成&#10;結束收單">${escapeHtml(endVal)}</textarea>
@@ -384,7 +389,8 @@ function createAdminRouter() {
         </div>
         <div class="notion-card">
           <h2>目前觸發對照</h2>
-          <p><strong>開始收單</strong>：${escapeHtml(startVal.split(/\n/).filter(Boolean).join("、") || "（未設定，使用預設）")}</p>
+          <p><strong>開始收單（精確）</strong>：${escapeHtml(startVal.split(/\n/).filter(Boolean).join("、") || "（未設定，使用預設）")}</p>
+          <p><strong>意圖關鍵字</strong>：${escapeHtml(intentVal.split(/\n/).filter(Boolean).join("、") || "（未設定，使用預設）")}</p>
           <p><strong>結束收單</strong>：以上X收單（X=數字）、${escapeHtml(endVal.split(/\n/).filter(Boolean).join("、") || "（未設定，使用預設）")}</p>
         </div>
       `;
@@ -392,8 +398,10 @@ function createAdminRouter() {
     });
     router.post("/triggers", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const start = (req.body?.start ?? "").trim().split(/\n/).map((s) => s.trim()).filter(Boolean).join("\n");
+        const intent = (req.body?.intent ?? "").trim().split(/\n/).map((s) => s.trim()).filter(Boolean).join("\n");
         const end = (req.body?.end ?? "").trim().split(/\n/).map((s) => s.trim()).filter(Boolean).join("\n");
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_trigger_start", start || "收單\n開始收單\n訂單\n我要下訂\n明日訂單");
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_trigger_intent", intent || "幫我送\n明天\n今天早上要\n要送\n訂\n叫貨\n送過來\n請送");
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_trigger_end", end || "完成\n結束收單");
         res.redirect("/admin/triggers?ok=1");
     });
@@ -523,12 +531,13 @@ function createAdminRouter() {
         res.redirect(doneUrl);
     });
     router.get("/orders", async (req, res) => {
-        const workingDate = await getWorkingDate(db);
-        const onlyNeedReview = req.query.need_review === "1";
-        const filterDate = req.query.date?.trim();
-        const filterCustomerId = req.query.customer_id?.trim();
-        const filterOrderNo = req.query.order_no?.trim();
-        let orders = await db.prepare(`
+        try {
+            const workingDate = await getWorkingDate(db);
+            const onlyNeedReview = req.query.need_review === "1";
+            const filterDate = req.query.date?.trim();
+            const filterCustomerId = req.query.customer_id?.trim();
+            const filterOrderNo = req.query.order_no?.trim();
+            let orders = await db.prepare(`
       SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
       FROM orders o
@@ -604,7 +613,18 @@ function createAdminRouter() {
           </table>
         </div>
       `;
-        res.type("text/html").send(notionPage("訂單查詢", body, "", res.locals.topBarHtml));
+            res.type("text/html").send(notionPage("訂單查詢", body, "", res.locals.topBarHtml));
+        }
+        catch (e) {
+            console.error("[admin] GET /orders 錯誤:", e?.message || e, e?.stack);
+            res.status(500).type("text/html").send(`
+        <!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>訂單查詢錯誤</title></head>
+        <body style="font-family:sans-serif;padding:2rem;">
+          <h1>訂單查詢暫時無法使用</h1>
+          <p>請稍後再試，或聯絡管理員檢查後台與資料庫連線。</p>
+          <p><a href="/admin">回工作台</a></p>
+        </body></html>`);
+        }
     });
     router.post("/api/order-seq-start", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const date = req.body?.date?.trim();
@@ -760,6 +780,7 @@ function createAdminRouter() {
         p.id AS product_id, p.erp_code, p.name AS product_name, p.teraoka_barcode
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
     `).all(orderId);
+        const attachments = await db.prepare("SELECT id, line_message_id FROM order_attachments WHERE order_id = ?").all(orderId);
         const needReviewCount = items.filter((i) => i.need_review === 1).length;
         const needReviewNote = needReviewCount > 0
             ? `<p class="notion-msg err">本單有 <strong>${needReviewCount} 項待確認</strong>，可點「待確認」直接改品項，或至 <a href="/admin/review">待確認品名</a> 補對照。</p>`
@@ -810,6 +831,7 @@ function createAdminRouter() {
         ${req.query.ok === "product" ? "<p class=\"notion-msg ok\">已更新品項。</p>" : ""}
         ${req.query.err === "product" ? "<p class=\"notion-msg err\">請選擇有效品項。</p>" : ""}
         <p><a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet" class="btn btn-primary">匯出訂貨單格式（含條碼）</a>　<a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1" class="btn">預覽訂單圖</a></p>
+        ${attachments.length > 0 ? `<p style="color:var(--notion-text-muted);">客戶傳了 <strong>${attachments.length}</strong> 張圖片：${attachments.map((a, idx) => `<a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener">圖${idx + 1}</a>`).join("、")}</p>` : ""}
         <div class="notion-card"><pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);margin:0;font-size:13px;">${escapeHtml(order.raw_message ?? "")}</pre></div>
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items">
           <div class="notion-card">
@@ -872,6 +894,36 @@ function createAdminRouter() {
         </script>
       `;
         res.type("text/html").send(notionPage("訂單明細", body, "", res.locals.topBarHtml));
+    });
+    router.get("/orders/:orderId/attachment/:messageId", async (req, res) => {
+        const { orderId, messageId } = req.params;
+        const att = await db.prepare("SELECT id FROM order_attachments WHERE order_id = ? AND line_message_id = ?").get(orderId, messageId);
+        if (!att) {
+            res.status(404).send("找不到該附件");
+            return;
+        }
+        const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+        if (!token) {
+            res.status(503).send("未設定 LINE Channel Access Token，無法取得圖片");
+            return;
+        }
+        try {
+            const resp = await fetch(`https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!resp.ok) {
+                res.status(resp.status).send("無法取得 LINE 圖片");
+                return;
+            }
+            const contentType = resp.headers.get("content-type") || "image/jpeg";
+            res.setHeader("Content-Type", contentType);
+            const buf = await resp.arrayBuffer();
+            res.send(Buffer.from(buf));
+        }
+        catch (e) {
+            console.error("[admin] 取得 LINE 圖片失敗:", e?.message || e);
+            res.status(500).send("取得圖片時發生錯誤");
+        }
     });
     router.post("/orders/:orderId/items", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { orderId } = req.params;

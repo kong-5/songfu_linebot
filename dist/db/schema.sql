@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS order_items (
   FOREIGN KEY (product_id) REFERENCES products(id)
 );
 
+CREATE TABLE IF NOT EXISTS order_attachments (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL,
+  line_message_id TEXT NOT NULL,
+  created_at TEXT,
+  FOREIGN KEY (order_id) REFERENCES orders(id)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT
