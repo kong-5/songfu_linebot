@@ -150,9 +150,7 @@ async function getWorkingDate(database) {
     const row = await database.prepare("SELECT value FROM app_settings WHERE key = ?").get("working_date");
     if (row && row.value)
         return row.value;
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    return tomorrow.toISOString().slice(0, 10);
+    return new Date().toISOString().slice(0, 10);
 }
 function renderTopBar(workingDate, canUndo) {
     const d = new Date(workingDate + "T12:00:00");
@@ -538,19 +536,22 @@ function createAdminRouter() {
     router.get("/orders", async (req, res) => {
         try {
             const workingDate = await getWorkingDate(db);
+            const showAllDates = req.query.all === "1";
             const onlyNeedReview = req.query.need_review === "1";
             const filterDate = req.query.date?.trim();
             const filterCustomerId = req.query.customer_id?.trim();
             const filterOrderNo = req.query.order_no?.trim();
+            const dateCondition = showAllDates ? "1=1" : "o.order_date >= ?";
+            const dateParam = showAllDates ? [] : [workingDate];
             let orders = await db.prepare(`
       SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
       FROM orders o
       JOIN customers c ON c.id = o.customer_id
-      WHERE o.order_date >= ?
+      WHERE ${dateCondition}
       ORDER BY o.order_date DESC, o.id DESC
       LIMIT 300
-    `).all(workingDate);
+    `).all(...dateParam);
         if (filterDate && /^\d{4}-\d{2}-\d{2}$/.test(filterDate))
             orders = orders.filter((o) => o.order_date === filterDate);
         if (filterCustomerId)
@@ -592,11 +593,12 @@ function createAdminRouter() {
         <h1 class="notion-page-title">訂單查詢</h1>
         ${orderListDbWarning}
         ${req.query.ok === "seq" ? "<p class=\"notion-msg ok\">已儲存本日起始編號。</p>" : ""}
-        <p style="margin-bottom:8px;">僅顯示日期 ≥ 結轉日期（${escapeHtml(workingDate)}）的訂單。</p>
+        <p style="margin-bottom:8px;">${showAllDates ? "顯示全部訂單（已忽略結轉日期）。" : "僅顯示日期 ≥ 結轉日期（" + escapeHtml(workingDate) + "）的訂單。"} <a href="/admin/orders${showAllDates ? "" : "?all=1"}">${showAllDates ? "改回依結轉日期篩選" : "顯示全部訂單（不限結轉日期）"}</a></p>
         <p style="margin-bottom:12px;"><a href="/admin/review">待確認品名</a>（補對照）　${filterLink}</p>
         <div class="notion-card" style="margin-bottom:16px;">
           <h2 style="margin-top:0;">篩選</h2>
           <form method="get" action="/admin/orders" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;">
+            ${showAllDates ? '<input type="hidden" name="all" value="1">' : ""}
             ${onlyNeedReview ? '<input type="hidden" name="need_review" value="1">' : ""}
             <label style="margin:0;">日期 <input type="date" name="date" value="${escapeAttr(filterDate)}" style="width:140px;"></label>
             <label style="margin:0;">客戶 <select name="customer_id" style="width:180px;"><option value="">全部</option>${customerOptions}</select></label>
