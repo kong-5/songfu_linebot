@@ -65,7 +65,7 @@ gcloud services enable cloudbuild.googleapis.com run.googleapis.com --project=ha
    - `LINE_CHANNEL_ACCESS_TOKEN` = 你的 LINE Token
    - `LINE_CHANNEL_SECRET` = 你的 LINE Secret
    - `GOOGLE_CLOUD_VISION_API_KEY` = 你的 Vision 金鑰
-   - `OPENAI_API_KEY` = 你的 [OpenAI API 金鑰](https://platform.openai.com/api-keys)（選填，用於訂單明細頁「AI 分析」）
+   - `GOOGLE_GEMINI_API_KEY` = 你的 [Google AI Studio API 金鑰](https://aistudio.google.com/app/apikey)（選填，用於訂單明細頁「AI 分析」）
    - `DATABASE_URL` = `postgresql://postgres:hh168888@/songfu?host=/cloudsql/handy-implement-457807-u0:asia-east1:songfu-line-bot`（密碼或執行個體 ID 不同請改掉）
 
    儲存後部署。之後每次 **git push** 只會更新映像，這些變數會保留，不用再設。

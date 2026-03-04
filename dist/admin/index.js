@@ -847,7 +847,7 @@ function createAdminRouter() {
         ${attachments.length > 0 ? `<p style="color:var(--notion-text-muted);">客戶傳了 <strong>${attachments.length}</strong> 張圖片：${attachments.map((a, idx) => `<a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener">圖${idx + 1}</a>`).join("、")}</p>` : ""}
         <div class="notion-card">
           <h2 style="margin-top:0;">AI 分析</h2>
-          <p style="color:var(--notion-text-muted);font-size:13px;">整理客戶原始訊息、補正錯漏並標註建議確認；若客戶問成本或金額會一併說明（本系統需維護品項單價後才能自動估算）。<br>僅在您點擊時呼叫，<strong>每次約 0.01～0.05 元</strong>（依 OpenAI 計價），不會自動跑、不會大筆花費。</p>
+          <p style="color:var(--notion-text-muted);font-size:13px;">整理客戶原始訊息、補正錯漏並標註建議確認；若客戶問成本或金額會一併說明（本系統需維護品項單價後才能自動估算）。<br>使用 Google Gemini，僅在您點擊時呼叫，免費額度內成本極低。</p>
           <button type="button" id="aiAnalyzeBtn" class="btn btn-primary">分析此筆訂單</button>
           <div id="aiAnalyzeResult" style="display:none;margin-top:12px;padding:12px;background:var(--notion-sidebar);border-radius:var(--notion-radius);font-size:14px;white-space:pre-wrap;line-height:1.5;"></div>
           <div id="aiAnalyzeErr" style="display:none;margin-top:8px;color:#c00;font-size:13px;"></div>
@@ -955,9 +955,9 @@ function createAdminRouter() {
       SELECT oi.raw_name, oi.quantity, oi.unit, oi.need_review, p.name AS product_name
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
     `).all(orderId);
-        const apiKey = process.env.OPENAI_API_KEY;
+        const apiKey = process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
         if (!apiKey || !apiKey.trim()) {
-            res.status(503).json({ error: "請在 Cloud Run「變數與密碼」設定 OPENAI_API_KEY 以使用 AI 分析。" });
+            res.status(503).json({ error: "請在 Cloud Run「變數與密碼」設定 GOOGLE_GEMINI_API_KEY（或 GEMINI_API_KEY）以使用 AI 分析。可至 Google AI Studio 取得金鑰。" });
             return;
         }
         const rawText = (order.raw_message ?? "").trim() || "（無原始訊息）";
@@ -970,36 +970,32 @@ function createAdminRouter() {
                 const review = i.need_review === 1 ? " [待確認]" : "";
                 return `- ${name} ${q} ${u}${review}`.trim();
             }).join("\n");
-        const prompt = `訂單編號：${order.order_no ?? "—"}\n日期：${order.order_date}\n客戶：${order.customer_name}\n\n【客戶原始訊息】\n${rawText}\n\n【已解析品項】\n${itemsText}`;
-        const systemPrompt = `你是一位生鮮／蔬果訂單助理。以下是一筆客戶叫貨的原始訊息與已解析的品項明細。請：
+        const orderBlock = `訂單編號：${order.order_no ?? "—"}\n日期：${order.order_date}\n客戶：${order.customer_name}\n\n【客戶原始訊息】\n${rawText}\n\n【已解析品項】\n${itemsText}`;
+        const fullPrompt = `你是一位生鮮／蔬果訂單助理。以下是一筆客戶叫貨的原始訊息與已解析的品項明細。請：
 1. 整理成簡潔易讀的摘要，錯字或語意不清處請補正或標註。
 2. 數量或單位不明確的請標註「建議確認」。
 3. 若可推論客戶意圖（例如「幫我算一下」可能是在問金額或成本），請簡短說明。
-4. 本系統目前無品項單價資料，無法自動計算成本；若客戶有問到價格或成本，請說明需在後台維護各品項單價後才能自動估算。`;
+4. 本系統目前無品項單價資料，無法自動計算成本；若客戶有問到價格或成本，請說明需在後台維護各品項單價後才能自動估算。
+
+---\n\n${orderBlock}`;
         try {
-            const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+            const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey.trim())}`, {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${apiKey.trim()}`,
-                },
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    model: "gpt-4o-mini",
-                    messages: [
-                        { role: "system", content: systemPrompt },
-                        { role: "user", content: prompt },
-                    ],
-                    max_tokens: 1024,
+                    contents: [{ parts: [{ text: fullPrompt }] }],
+                    generationConfig: { maxOutputTokens: 1024 },
                 }),
             });
             if (!resp.ok) {
                 const errBody = await resp.text();
-                console.warn("[admin] OpenAI API 非 200:", resp.status, errBody.slice(0, 200));
+                console.warn("[admin] Gemini API 非 200:", resp.status, errBody.slice(0, 200));
                 res.status(resp.status).json({ error: "AI 服務暫時無法使用，請稍後再試。" });
                 return;
             }
             const data = await resp.json();
-            const content = data?.choices?.[0]?.message?.content?.trim();
+            const textPart = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            const content = textPart != null ? String(textPart).trim() : null;
             if (!content) {
                 res.status(502).json({ error: "AI 未回傳內容。" });
                 return;
