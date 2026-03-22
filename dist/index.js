@@ -51,15 +51,7 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     app.use(express_1.default.urlencoded({ extended: true }));
     app.use("/admin", (0, index_js_2.createAdminRouter)());
     app.get("/", (_req, res) => {
-        res.type("text/html").send(`
-    <h1>松富叫貨 LINE 機器人</h1>
-    <p>服務運行中。</p>
-    <ul>
-      <li><a href="/admin">後台</a> － <a href="/admin/line-binding">LINE 綁定檢查</a>、<a href="/admin/review">待確認品名</a>、<a href="/admin/orders">訂單</a>、<a href="/admin/customers">客戶</a>、<a href="/admin/import-customers">匯入客戶</a>、<a href="/admin/products">品項</a>、<a href="/admin/import">匯入品項</a>、<a href="/admin/import-teraoka">寺岡對照</a></li>
-      <li><a href="/health">/health</a> － 健康檢查</li>
-      <li>LINE Webhook：POST <code>${webhookPath}</code></li>
-    </ul>
-  `);
+        res.redirect(302, "/admin");
     });
     app.get("/health", (_req, res) => {
         res.json({ ok: true, service: "songfu_linebot" });
@@ -78,7 +70,6 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
       <p>您輸入的網址在此服務中不存在。</p>
       <p>請使用以下連結：</p>
       <ul>
-        <li><a href="/">首頁</a></li>
         <li><a href="/admin">後台</a></li>
         <li><a href="/admin/line-binding">LINE 綁定檢查</a></li>
         <li><a href="/admin/customers">客戶管理</a></li>

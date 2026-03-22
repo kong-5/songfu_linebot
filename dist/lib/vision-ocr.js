@@ -28,7 +28,10 @@ async function getTextFromImageBuffer(buffer) {
             body: JSON.stringify(body),
         });
         if (!res.ok) {
-            console.warn("[vision-ocr] API 回應非 200:", res.status, await res.text().catch(() => ""));
+            const errBody = await res.text().catch(() => "");
+            console.warn("[vision-ocr] API 回應非 200:", res.status, errBody.slice(0, 300));
+            if (res.status === 403 && /API_KEY_INVALID|not enabled/i.test(errBody))
+                console.warn("[vision-ocr] 請確認：1. 金鑰為「Cloud Vision API」用 2. 已在 GCP 專案啟用 Cloud Vision API");
             return null;
         }
         const data = await res.json();

@@ -60,6 +60,13 @@
     value TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS line_bot_state_log (
+    id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    detail TEXT,
+    created_at TIMESTAMPTZ
+  );
+
   CREATE TABLE IF NOT EXISTS product_aliases (
     id TEXT PRIMARY KEY,
     product_id TEXT NOT NULL REFERENCES products(id),
@@ -80,4 +87,78 @@
     note_label TEXT,
     conversion_kg DOUBLE PRECISION,
     updated_at TIMESTAMPTZ
+  );
+
+  -- 盤點作業：庫房、品項歸倉、每日盤點
+  CREATE TABLE IF NOT EXISTS inventory_warehouses (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ
+  );
+  CREATE TABLE IF NOT EXISTS inventory_warehouse_products (
+    warehouse_id TEXT NOT NULL REFERENCES inventory_warehouses(id),
+    product_id TEXT NOT NULL REFERENCES products(id),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    safety_stock DOUBLE PRECISION NOT NULL DEFAULT 0,
+    PRIMARY KEY (warehouse_id, product_id)
+  );
+  CREATE TABLE IF NOT EXISTS erp_sales (
+    id TEXT PRIMARY KEY,
+    record_date TEXT NOT NULL,
+    warehouse_id TEXT NOT NULL REFERENCES inventory_warehouses(id),
+    product_id TEXT NOT NULL REFERENCES products(id),
+    qty_sold DOUBLE PRECISION NOT NULL DEFAULT 0,
+    imported_at TIMESTAMPTZ
+  );
+  CREATE TABLE IF NOT EXISTS daily_inventory (
+    id TEXT PRIMARY KEY,
+    record_date TEXT NOT NULL,
+    warehouse_id TEXT NOT NULL REFERENCES inventory_warehouses(id),
+    filler_name TEXT NOT NULL DEFAULT '',
+    recorded_at TIMESTAMPTZ,
+    items JSONB NOT NULL DEFAULT '{}',
+    confirmed_at TIMESTAMPTZ,
+    confirmer_name TEXT
+  );
+
+  -- 物流工具：紙本訂單整理
+  CREATE TABLE IF NOT EXISTS logistics_orders (
+    id TEXT PRIMARY KEY,
+    order_date TEXT NOT NULL,
+    raw_message TEXT,
+    memo TEXT,
+    created_at TIMESTAMPTZ
+  );
+  CREATE TABLE IF NOT EXISTS logistics_order_items (
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL REFERENCES logistics_orders(id),
+    product_id TEXT REFERENCES products(id),
+    raw_name TEXT,
+    quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
+    unit TEXT,
+    amount TEXT,
+    need_review INTEGER NOT NULL DEFAULT 0
+  );
+
+  -- 環境衛生管理：冷凍庫冷藏庫檢查表
+  CREATE TABLE IF NOT EXISTS freezer_fridge_warehouses (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    compliant_temp TEXT NOT NULL DEFAULT '',
+    power_compliant TEXT NOT NULL DEFAULT 'on',
+    light_compliant TEXT NOT NULL DEFAULT 'off',
+    heat_compliant TEXT NOT NULL DEFAULT 'off'
+  );
+  CREATE TABLE IF NOT EXISTS freezer_fridge_daily (
+    date TEXT PRIMARY KEY,
+    entries_json TEXT NOT NULL DEFAULT '[]',
+    filler_name TEXT NOT NULL DEFAULT '',
+    filler_signature TEXT,
+    confirmed_at TIMESTAMPTZ,
+    confirmer_signature TEXT,
+    anomaly INTEGER NOT NULL DEFAULT 0,
+    resolved_at TEXT,
+    resolve_note TEXT
   );

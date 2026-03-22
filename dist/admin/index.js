@@ -43,8 +43,25 @@ const XLSX = __importStar(require("xlsx"));
 const bwip_js_1 = __importDefault(require("bwip-js"));
 const index_js_1 = require("../db/index.js");
 const id_js_1 = require("../lib/id.js");
+const parse_order_message_js_1 = require("../lib/parse-order-message.js");
+const resolve_product_js_1 = require("../lib/resolve-product.js");
+const vision_ocr_js_1 = require("../lib/vision-ocr.js");
+const wholesale_price_js_1 = require("../lib/wholesale-price.js");
+const line_bot_control_js_1 = require("../lib/line-bot-control.js");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
+let ADMIN_UI_VERSION = process.env.ADMIN_UI_VERSION || "";
+if (!ADMIN_UI_VERSION) {
+    try {
+        const pkg = require("../../package.json");
+        if (pkg && pkg.version)
+            ADMIN_UI_VERSION = pkg.version;
+    }
+    catch (_) { }
+    if (!ADMIN_UI_VERSION)
+        ADMIN_UI_VERSION = "1.0.0";
+}
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("file");
+const uploadImage = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("image");
 const NOTION_STYLE = `
   :root { --notion-bg:#fff; --notion-sidebar:#f7f6f3; --notion-border:#e3e2e0; --notion-text:#37352f; --notion-text-muted:#787774; --notion-accent:#2383e2; --notion-hover:#f1f1ef; --notion-radius:6px; }
   * { box-sizing: border-box; }
@@ -112,15 +129,21 @@ const NOTION_STYLE = `
 `;
 const NOTION_SIDEBAR = (active) => `
   <nav class="notion-sidebar">
+    <details class="sidebar-group" ${active === "line-bot" ? "open" : ""}>
+      <summary class="sidebar-group-title">LINE 機器人</summary>
+      <div class="sidebar-links">
+        <a href="/admin/line-bot" class="${active === "line-bot" ? "active" : ""}">啟動與排程</a>
+      </div>
+    </details>
     <a href="/admin" class="${active === "dashboard" ? "active" : ""}">回後台</a>
     <a href="javascript:history.back()">上一頁</a>
-    <details class="sidebar-group" open>
+    <details class="sidebar-group">
       <summary class="sidebar-group-title">日期結轉</summary>
       <div class="sidebar-links">
         <a href="/admin">結轉日期</a>
       </div>
     </details>
-    <details class="sidebar-group" open>
+    <details class="sidebar-group">
       <summary class="sidebar-group-title">客戶管理</summary>
       <div class="sidebar-links">
         <a href="/admin/customers/new">新增客戶</a>
@@ -128,14 +151,14 @@ const NOTION_SIDEBAR = (active) => `
         <a href="/admin/import-customers">批次匯入客戶</a>
       </div>
     </details>
-    <details class="sidebar-group" open>
+    <details class="sidebar-group">
       <summary class="sidebar-group-title">貨品管理</summary>
       <div class="sidebar-links">
         <a href="/admin/products">品項與俗名</a>
         <a href="/admin/import">批次匯入品項</a>
       </div>
     </details>
-    <details class="sidebar-group" open>
+    <details class="sidebar-group">
       <summary class="sidebar-group-title">訂單管理</summary>
       <div class="sidebar-links">
         <a href="/admin/orders">訂單查詢</a>
@@ -144,6 +167,32 @@ const NOTION_SIDEBAR = (active) => `
         <a href="/admin/triggers">提示詞管理</a>
       </div>
     </details>
+    <details class="sidebar-group" ${active === "inventory" ? "open" : ""}>
+      <summary class="sidebar-group-title">盤點作業</summary>
+      <div class="sidebar-links">
+        <a href="/admin/inventory" class="${active === "inventory" ? "active" : ""}">盤點作業</a>
+        <a href="/admin/inventory/warehouses" class="${active === "inv-wh" ? "active" : ""}">庫房管理</a>
+        <a href="/admin/inventory/assign" class="${active === "inv-assign" ? "active" : ""}">品項歸倉</a>
+        <a href="/admin/inventory/daily" class="${active === "inv-daily" ? "active" : ""}">每日盤點</a>
+        <a href="/admin/inventory/import-erp" class="${active === "inv-erp" ? "active" : ""}">匯入 ERP 資料</a>
+        <a href="/admin/inventory/variance-report" class="${active === "inv-report" ? "active" : ""}">盤差報表</a>
+        <a href="/admin/inventory/manager" class="${active === "inv-manager" ? "active" : ""}">管理人設定</a>
+      </div>
+    </details>
+    <details class="sidebar-group" ${active === "logistics" || active === "logistics-procurement" ? "open" : ""}>
+      <summary class="sidebar-group-title">物流工具</summary>
+      <div class="sidebar-links">
+        <a href="/admin/logistics/orders" class="${active === "logistics" ? "active" : ""}">訂單整理</a>
+        <a href="/admin/logistics/procurement" class="${active === "logistics-procurement" ? "active" : ""}">採購分析</a>
+      </div>
+    </details>
+    <details class="sidebar-group" ${active === "env" ? "open" : ""}>
+      <summary class="sidebar-group-title">環境衛生管理</summary>
+      <div class="sidebar-links">
+        <a href="/admin/freezer-fridge" class="${active === "env" ? "active" : ""}">冷凍庫冷藏庫檢查表</a>
+      </div>
+    </details>
+    <div class="sidebar-version" style="padding:10px 14px;font-size:11px;color:var(--notion-text-muted);border-top:1px solid var(--notion-border);margin-top:8px;">後台 v${ADMIN_UI_VERSION}</div>
   </nav>
 `;
 async function getWorkingDate(database) {
@@ -215,6 +264,67 @@ function createAdminRouter() {
         }
         res.redirect(req.get("Referrer") || "/admin");
     });
+    router.get("/line-bot", async (_req, res) => {
+        const s = await (0, line_bot_control_js_1.getLineBotSettings)(db);
+        const accepting = await (0, line_bot_control_js_1.isBotAcceptingOrders)(db);
+        let logs = [];
+        try {
+            logs = await db.prepare("SELECT event_type, detail, created_at FROM line_bot_state_log ORDER BY created_at DESC LIMIT 80").all();
+        }
+        catch (_) { }
+        const statusBadge = accepting
+            ? `<span style="display:inline-block;padding:4px 10px;border-radius:6px;background:#e6f7e6;color:#0a5;font-weight:600;">目前狀態：可收單</span>`
+            : `<span style="display:inline-block;padding:4px 10px;border-radius:6px;background:#ffeaea;color:#a00;font-weight:600;">目前狀態：不收單（關閉或不在排程時段）</span>`;
+        const modeOpts = [
+            { v: "always_on", l: "一律開啟（測試／全天候）" },
+            { v: "always_off", l: "一律關閉（不回覆叫貨）" },
+            { v: "scheduled", l: "依下方時段（台北時間）" },
+        ].map((o) => `<label style="display:block;margin:6px 0;"><input type="radio" name="line_bot_mode" value="${escapeAttr(o.v)}" ${s.mode === o.v ? "checked" : ""}> ${escapeHtml(o.l)}</label>`).join("");
+        const logRows = logs.length
+            ? logs.map((r) => `<tr><td style="white-space:nowrap;font-size:12px;">${escapeHtml(r.created_at || "")}</td><td>${escapeHtml(r.event_type || "")}</td><td style="font-size:12px;word-break:break-all;">${escapeHtml((r.detail || "").slice(0, 200))}</td></tr>`).join("")
+            : "<tr><td colspan='3'>尚無紀錄</td></tr>";
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / LINE 機器人</div>
+        <h1 class="notion-page-title">LINE 機器人：啟動與排程</h1>
+        ${_req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存設定。</p>" : ""}
+        <p>${statusBadge}</p>
+        <div class="notion-card">
+          <h2 style="margin-top:0;">運作模式</h2>
+          <form method="post" action="/admin/line-bot">
+            ${modeOpts}
+            <p style="margin-top:12px;"><strong>排程時段（台北時間）</strong>　僅在選「依下方時段」時生效。預設範例：18:00～隔日 03:00。</p>
+            <label>開始 <input type="time" name="line_bot_window_start" value="${escapeAttr(s.windowStart)}"></label>
+            　<label>結束 <input type="time" name="line_bot_window_end" value="${escapeAttr(s.windowEnd)}"></label>
+            <p style="margin-top:16px;"><label><input type="checkbox" name="line_bot_ai_gate" value="1" ${s.aiGate ? "checked" : ""}> 啟用 AI 過濾（僅對「非收單關鍵字」的閒聊不回覆；需設定 GOOGLE_GEMINI_API_KEY）</label></p>
+            <p style="color:var(--notion-text-muted);font-size:13px;">測試階段建議選「一律開啟」，確認無誤後再改「依時段」。AI 過濾建議先關閉，避免誤擋。</p>
+            <p><button type="submit" class="btn btn-primary">儲存設定</button></p>
+          </form>
+        </div>
+        <div class="notion-card">
+          <h2 style="margin-top:0;">Google Gemini 與 Claude</h2>
+          <p style="font-size:14px;">本系統已整合 <strong>Google Gemini</strong>（與既有 Vision／後台 AI 一致，設定簡單、中文佳、成本易控）。Claude 需另接 Anthropic API 與程式改寫；若您希望改用 Claude，可再提出需求。</p>
+        </div>
+        <div class="notion-card">
+          <h2 style="margin-top:0;">設定與狀態紀錄</h2>
+          <table><thead><tr><th>時間</th><th>類型</th><th>內容</th></tr></thead><tbody>${logRows}</tbody></table>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("LINE 機器人", body, "line-bot", res.locals.topBarHtml));
+    });
+    router.post("/line-bot", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const mode = (req.body.line_bot_mode || "always_on").toString().trim();
+        const wStart = (req.body.line_bot_window_start || "18:00").toString().trim();
+        const wEnd = (req.body.line_bot_window_end || "03:00").toString().trim();
+        const aiGate = req.body.line_bot_ai_gate === "1" ? "1" : "0";
+        const allowed = new Set(["always_on", "always_off", "scheduled"]);
+        const m = allowed.has(mode) ? mode : "always_on";
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_bot_mode", m);
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_bot_window_start", wStart);
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_bot_window_end", wEnd);
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_bot_ai_gate", aiGate);
+        await (0, line_bot_control_js_1.appendLineBotLog)(db, "settings_saved", { mode: m, windowStart: wStart, windowEnd: wEnd, aiGate: aiGate === "1" });
+        res.redirect("/admin/line-bot?ok=1");
+    });
     router.get("/", async (_req, res) => {
         const monthKey = "line_replies_" + new Date().toISOString().slice(0, 7);
         let replyCount = 0;
@@ -264,6 +374,1101 @@ function createAdminRouter() {
         </div>
       `;
         res.type("text/html").send(notionPage("工作台", body, "dashboard", res.locals.topBarHtml));
+    });
+    router.get("/inventory", async (req, res) => {
+        const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
+        const managerRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("inventory_manager");
+        const managerName = managerRow?.value ?? "";
+        const whFilter = (req.query.warehouse_id || "").trim();
+        const qFilter = (req.query.q || "").trim().toLowerCase();
+        const assignRows = await db.prepare(`
+          SELECT iw.name AS warehouse_name, iwp.warehouse_id, iwp.product_id, p.name AS product_name, p.unit,
+                 COALESCE(iwp.safety_stock, 0) AS safety_stock
+          FROM inventory_warehouse_products iwp
+          JOIN inventory_warehouses iw ON iw.id = iwp.warehouse_id
+          JOIN products p ON p.id = iwp.product_id
+          ORDER BY iw.sort_order, iw.name, iwp.sort_order, p.name
+        `).all();
+        const latestByWh = {};
+        for (const w of warehouses) {
+            const rec = await db.prepare("SELECT record_date, items FROM daily_inventory WHERE warehouse_id = ? ORDER BY record_date DESC LIMIT 1").get(w.id);
+            if (rec) {
+                const items = typeof rec.items === "string" ? JSON.parse(rec.items || "{}") : rec.items || {};
+                latestByWh[w.id] = items;
+            }
+            else {
+                latestByWh[w.id] = {};
+            }
+        }
+        let rows = assignRows.map((r) => {
+            const items = latestByWh[r.warehouse_id] || {};
+            const current = items[r.product_id];
+            const currentNum = current != null ? (typeof current === "number" ? current : parseFloat(current)) : null;
+            return {
+                warehouse_id: r.warehouse_id,
+                warehouse_name: r.warehouse_name,
+                product_id: r.product_id,
+                product_name: r.product_name,
+                unit: r.unit,
+                safety_stock: Number(r.safety_stock) || 0,
+                current_stock: currentNum,
+            };
+        });
+        if (whFilter)
+            rows = rows.filter((r) => r.warehouse_id === whFilter);
+        if (qFilter)
+            rows = rows.filter((r) => (r.product_name || "").toLowerCase().indexOf(qFilter) >= 0);
+        const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}" ${w.id === whFilter ? "selected" : ""}>${escapeHtml(w.name)}</option>`).join("");
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 盤點作業</div>
+        <h1 class="notion-page-title">盤點作業</h1>
+        <div class="notion-card">
+          <h2>各品項目前存量與安全庫存</h2>
+          <form method="get" action="/admin/inventory" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+            <label>倉庫 <select name="warehouse_id" onchange="this.form.submit()"><option value="">全部</option>${optWh}</select></label>
+            <label>搜尋品項 <input type="text" name="q" value="${escapeAttr(req.query.q || "")}" placeholder="品名"></label>
+            <button type="submit" class="btn">查詢</button>
+          </form>
+          <table>
+            <thead><tr><th>倉庫</th><th>品項</th><th>單位</th><th>目前存量</th><th>安全庫存</th><th>狀態</th></tr></thead>
+            <tbody>
+              ${rows.length ? rows.map((r) => {
+          const low = r.safety_stock > 0 && (r.current_stock == null || Number(r.current_stock) < r.safety_stock);
+          return `<tr><td>${escapeHtml(r.warehouse_name)}</td><td>${escapeHtml(r.product_name)}</td><td>${escapeHtml(r.unit || "")}</td><td>${r.current_stock != null ? r.current_stock : "—"}</td><td>${r.safety_stock}</td><td>${low ? "<span style=\"color:#c00;\">低於安全庫存</span>" : "正常"}</td></tr>`;
+        }).join("") : "<tr><td colspan=\"6\">尚無品項歸倉資料，請先至「品項歸倉」設定。</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        <div class="notion-card">
+          <h2>快速連結</h2>
+          <ul style="margin:0;padding-left:20px;">
+            <li><a href="/admin/inventory/warehouses">庫房管理</a> － 新增／編輯／刪除庫房（共 ${warehouses.length} 個）</li>
+            <li><a href="/admin/inventory/assign">品項歸倉</a> － 將貨品管理中的品項填入指定庫房，並設定排序與安全庫存</li>
+            <li><a href="/admin/inventory/daily">每日盤點</a> － 依日期與庫房填寫盤點數量</li>
+            <li><a href="/admin/inventory/import-erp">匯入 ERP 資料</a> － 匯入銷貨數量以便計算盤差</li>
+            <li><a href="/admin/inventory/variance-report">盤差報表</a> － 依倉庫與日期區間產出盤差、匯出與易盤差品項統計</li>
+            <li><a href="/admin/inventory/manager">管理人設定</a> － ${managerName ? "目前管理人：" + escapeHtml(managerName) : "尚未設定管理人"}</li>
+          </ul>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("盤點作業", body, "inventory", res.locals.topBarHtml));
+    });
+    router.get("/inventory/warehouses", async (req, res) => {
+        const rows = await db.prepare("SELECT id, name, sort_order FROM inventory_warehouses ORDER BY sort_order, name").all();
+        const msg = req.query.ok === "1" ? "<p class=\"notion-msg ok\">已新增庫房。</p>" : req.query.ok === "edit" ? "<p class=\"notion-msg ok\">已儲存。</p>" : req.query.ok === "del" ? "<p class=\"notion-msg ok\">已刪除。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 庫房管理</div>
+        <h1 class="notion-page-title">庫房管理</h1>
+        ${msg}
+        <p style="margin-bottom:16px;"><a href="/admin/inventory/warehouses/new" class="btn btn-primary">＋ 新增庫房</a></p>
+        <div class="notion-card">
+          <table>
+            <thead><tr><th>順序</th><th>庫房名稱</th><th>操作</th></tr></thead>
+            <tbody>
+              ${rows.length ? rows.map((r) => `<tr><td>${r.sort_order}</td><td>${escapeHtml(r.name)}</td><td><a href="/admin/inventory/warehouses/${encodeURIComponent(r.id)}/edit">編輯</a> | <a href="/admin/inventory/warehouses/${encodeURIComponent(r.id)}/delete">刪除</a></td></tr>`).join("") : "<tr><td colspan=\"3\">尚無庫房，請先新增。</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("庫房管理", body, "inv-wh", res.locals.topBarHtml));
+    });
+    router.get("/inventory/warehouses/new", async (_req, res) => {
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 新增庫房</div>
+        <h1 class="notion-page-title">新增庫房</h1>
+        <div class="notion-card">
+          <form method="post" action="/admin/inventory/warehouses/new">
+            <label>庫房名稱 <input type="text" name="name" required placeholder="例：1號庫蔬菜"></label>
+            <label>順序（數字，愈小愈前面） <input type="number" name="sort_order" value="0"></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">新增</button> <a href="/admin/inventory/warehouses" class="btn">取消</a></p>
+          </form>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("新增庫房", body, "inv-wh", res.locals.topBarHtml));
+    });
+    router.post("/inventory/warehouses/new", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const name = (req.body.name || "").trim();
+        const sortOrder = parseInt(req.body.sort_order, 10) || 0;
+        if (!name) {
+            res.redirect("/admin/inventory/warehouses/new?err=name");
+            return;
+        }
+        const id = (0, id_js_1.newId)("invwh");
+        const now = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        await db.prepare(`INSERT INTO inventory_warehouses (id, name, sort_order, created_at) VALUES (?, ?, ?, ${now})`).run(id, name, sortOrder);
+        res.redirect("/admin/inventory/warehouses?ok=1");
+    });
+    router.get("/inventory/warehouses/:id/edit", async (req, res) => {
+        const row = await db.prepare("SELECT id, name, sort_order FROM inventory_warehouses WHERE id = ?").get(req.params.id);
+        if (!row) {
+            res.redirect("/admin/inventory/warehouses?err=notfound");
+            return;
+        }
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 編輯庫房</div>
+        <h1 class="notion-page-title">編輯庫房</h1>
+        <div class="notion-card">
+          <form method="post" action="/admin/inventory/warehouses/${encodeURIComponent(row.id)}/edit">
+            <label>庫房名稱 <input type="text" name="name" value="${escapeAttr(row.name)}" required></label>
+            <label>順序 <input type="number" name="sort_order" value="${row.sort_order}"></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button> <a href="/admin/inventory/warehouses" class="btn">取消</a></p>
+          </form>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("編輯庫房", body, "inv-wh", res.locals.topBarHtml));
+    });
+    router.post("/inventory/warehouses/:id/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const id = req.params.id;
+        const name = (req.body.name || "").trim();
+        const sortOrder = parseInt(req.body.sort_order, 10) || 0;
+        const row = await db.prepare("SELECT id FROM inventory_warehouses WHERE id = ?").get(id);
+        if (!row) {
+            res.redirect("/admin/inventory/warehouses?err=notfound");
+            return;
+        }
+        if (!name) {
+            res.redirect("/admin/inventory/warehouses/" + encodeURIComponent(id) + "/edit?err=name");
+            return;
+        }
+        await db.prepare("UPDATE inventory_warehouses SET name = ?, sort_order = ? WHERE id = ?").run(name, sortOrder, id);
+        res.redirect("/admin/inventory/warehouses?ok=edit");
+    });
+    router.get("/inventory/warehouses/:id/delete", async (req, res) => {
+        const row = await db.prepare("SELECT id, name FROM inventory_warehouses WHERE id = ?").get(req.params.id);
+        if (!row) {
+            res.redirect("/admin/inventory/warehouses?err=notfound");
+            return;
+        }
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 確認刪除</div>
+        <h1 class="notion-page-title">確認刪除庫房</h1>
+        <div class="notion-card">
+          <p>確定要刪除「${escapeHtml(row.name)}」？此庫房內已歸倉的品項與每日盤點紀錄將一併移除關聯。</p>
+          <p style="margin-top:16px;">
+            <form method="post" action="/admin/inventory/warehouses/${encodeURIComponent(row.id)}/delete" style="display:inline;"><button type="submit" class="btn">確定刪除</button></form>
+            <a href="/admin/inventory/warehouses" class="btn">取消</a>
+          </p>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("確認刪除庫房", body, "inv-wh", res.locals.topBarHtml));
+    });
+    router.post("/inventory/warehouses/:id/delete", async (req, res) => {
+        const id = req.params.id;
+        await db.prepare("DELETE FROM inventory_warehouse_products WHERE warehouse_id = ?").run(id);
+        await db.prepare("DELETE FROM daily_inventory WHERE warehouse_id = ?").run(id);
+        await db.prepare("DELETE FROM inventory_warehouses WHERE id = ?").run(id);
+        res.redirect("/admin/inventory/warehouses?ok=del");
+    });
+    router.get("/inventory/assign", async (req, res) => {
+        const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
+        const whId = req.query.warehouse_id?.trim() || (warehouses[0] && warehouses[0].id) || "";
+        const searchQ = (req.query.q || "").trim().replace(/%/g, "");
+        let inWarehouse = [];
+        let allProducts = [];
+        if (whId) {
+            inWarehouse = await db.prepare("SELECT pwp.product_id, pwp.sort_order, COALESCE(pwp.safety_stock, 0) as safety_stock, p.name, p.unit FROM inventory_warehouse_products pwp JOIN products p ON p.id = pwp.product_id WHERE pwp.warehouse_id = ? ORDER BY pwp.sort_order, p.name").all(whId);
+            if (searchQ) {
+                const like = "%" + searchQ + "%";
+                allProducts = await db.prepare("SELECT id, name, unit, erp_code FROM products WHERE (active = 1 OR active IS NULL) AND (name LIKE ? OR (erp_code IS NOT NULL AND erp_code LIKE ?)) ORDER BY name").all(like, like);
+            }
+            else {
+                allProducts = await db.prepare("SELECT id, name, unit, erp_code FROM products WHERE active = 1 OR active IS NULL ORDER BY name").all();
+            }
+        }
+        const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}" ${w.id === whId ? "selected" : ""}>${escapeHtml(w.name)}</option>`).join("");
+        const availableProducts = whId ? allProducts.filter((p) => !inWarehouse.some((x) => x.product_id === p.id)) : [];
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 品項歸倉</div>
+        <h1 class="notion-page-title">品項歸倉</h1>
+        ${req.query.ok === "1" ? "<p class=\"notion-msg ok\">已加入品項。</p>" : req.query.ok === "settings" ? "<p class=\"notion-msg ok\">已儲存排序與安全庫存。</p>" : req.query.ok === "remove" ? "<p class=\"notion-msg ok\">已移出。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : ""}
+        <p>選擇庫房後，將「貨品管理」中的品項加入此庫房；加入後才會在「每日盤點」中出現。</p>
+        <form method="get" action="/admin/inventory/assign" style="margin:16px 0;display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+          <label>選擇庫房 <select name="warehouse_id" onchange="this.form.submit()">${optWh || "<option value=\"\">— 請先至庫房管理新增庫房 —</option>"}</select></label>
+          ${whId ? `<label>搜尋品項（模糊） <input type="text" name="q" value="${escapeAttr(searchQ)}" placeholder="品名或 ERP 代碼"></label><button type="submit" class="btn">搜尋</button>` : ""}
+        </form>
+        ${whId ? `
+        <div class="notion-card">
+          <h2>已歸入此庫房的品項（${inWarehouse.length} 項）— 可編輯排序與安全庫存</h2>
+          <form method="post" action="/admin/inventory/assign/update-settings">
+            <input type="hidden" name="warehouse_id" value="${escapeAttr(whId)}">
+            <table>
+              <thead><tr><th>排序</th><th>品項</th><th>單位</th><th>安全庫存量</th><th>操作</th></tr></thead>
+              <tbody>
+                ${inWarehouse.length ? inWarehouse.map((p) => `<tr><td><input type="number" name="sort_${escapeAttr(p.product_id)}" value="${p.sort_order}" style="width:60px;"></td><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.unit || "")}</td><td><input type="number" step="any" name="safety_${escapeAttr(p.product_id)}" value="${p.safety_stock}" style="width:80px;" placeholder="0"></td><td><a href="#" onclick="document.getElementById('remove_${escapeAttr(p.product_id)}').submit();return false;">移出</a></td></tr>`).join("") : "<tr><td colspan=\"5\">尚無品項，請從下方加入。</td></tr>"}
+              </tbody>
+            </table>
+            ${inWarehouse.length ? "<p style=\"margin-top:12px;\"><button type=\"submit\" class=\"btn btn-primary\">儲存排序與安全庫存</button></p>" : ""}
+          </form>
+          ${inWarehouse.map((p) => `<form id="remove_${escapeAttr(p.product_id)}" method="post" action="/admin/inventory/assign/remove" style="display:none;"><input type="hidden" name="warehouse_id" value="${escapeAttr(whId)}"><input type="hidden" name="product_id" value="${escapeAttr(p.product_id)}"></form>`).join("")}
+        </div>
+        <div class="notion-card">
+          <h2>加入品項（可打字搜尋，支援品名／ERP 模糊搜尋）</h2>
+          <input type="text" id="addProductSearch" placeholder="輸入品名或 ERP 代碼篩選…" style="margin-bottom:12px;width:100%;max-width:320px;">
+          <div id="addProductList" style="max-height:280px;overflow:auto;border:1px solid #e0e0e0;border-radius:6px;padding:8px;">
+            ${availableProducts.length ? availableProducts.map((p) => `<div class="add-product-row" data-name="${escapeAttr((p.name || "") + " " + (p.erp_code || ""))}"><form method="post" action="/admin/inventory/assign/add" style="display:inline;"><input type="hidden" name="warehouse_id" value="${escapeAttr(whId)}"><input type="hidden" name="product_id" value="${escapeAttr(p.id)}"><button type="submit" class="btn btn-primary" style="margin:2px;">加入</button></form> ${escapeHtml(p.name)}${p.erp_code ? " <span style=\"color:#666;\">(" + escapeHtml(p.erp_code) + ")</span>" : ""} ${p.unit ? "<span style=\"color:#888;\">" + escapeHtml(p.unit) + "</span>" : ""}</div>`).join("") : "<p>— 已全加入或貨品管理尚無品項 —</p>"}
+          </div>
+          <script>
+            (function(){
+              var search=document.getElementById('addProductSearch'), list=document.getElementById('addProductList');
+              if(!search || !list) return;
+              search.oninput=search.onkeyup=function(){
+                var q=(this.value||'').toLowerCase();
+                [].forEach.call(list.querySelectorAll('.add-product-row'), function(row){
+                  var text=(row.getAttribute('data-name')||'').toLowerCase();
+                  row.style.display=!q || text.indexOf(q)>=0 ? '' : 'none';
+                });
+              };
+            })();
+          </script>
+        </div>
+        ` : ""}
+      `;
+        res.type("text/html").send(notionPage("品項歸倉", body, "inv-assign", res.locals.topBarHtml));
+    });
+    router.post("/inventory/assign/add", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const whId = (req.body.warehouse_id || "").trim();
+        const productId = (req.body.product_id || "").trim();
+        if (!whId || !productId) {
+            res.redirect("/admin/inventory/assign?err=missing");
+            return;
+        }
+        const maxSort = await db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 as next_sort FROM inventory_warehouse_products WHERE warehouse_id = ?").get(whId);
+        const nextSort = (maxSort && maxSort.next_sort != null) ? maxSort.next_sort : 0;
+        try {
+            await db.prepare("INSERT INTO inventory_warehouse_products (warehouse_id, product_id, sort_order, safety_stock) VALUES (?, ?, ?, 0)").run(whId, productId, nextSort);
+        }
+        catch (_) { /* already in warehouse */ }
+        res.redirect("/admin/inventory/assign?warehouse_id=" + encodeURIComponent(whId) + "&ok=1");
+    });
+    router.post("/inventory/assign/update-settings", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const whId = (req.body.warehouse_id || "").trim();
+        if (!whId) {
+            res.redirect("/admin/inventory/assign?err=missing");
+            return;
+        }
+        const inWarehouse = await db.prepare("SELECT product_id FROM inventory_warehouse_products WHERE warehouse_id = ?").all(whId);
+        for (const row of inWarehouse) {
+            const pid = row.product_id;
+            const sortVal = req.body["sort_" + pid];
+            const safetyVal = req.body["safety_" + pid];
+            const sortOrder = sortVal !== undefined && sortVal !== "" ? parseInt(String(sortVal), 10) : null;
+            const safetyStock = safetyVal !== undefined && safetyVal !== "" ? parseFloat(String(safetyVal)) : null;
+            if (sortOrder !== null && !Number.isNaN(sortOrder))
+                await db.prepare("UPDATE inventory_warehouse_products SET sort_order = ? WHERE warehouse_id = ? AND product_id = ?").run(sortOrder, whId, pid);
+            if (safetyStock !== null && !Number.isNaN(safetyStock))
+                await db.prepare("UPDATE inventory_warehouse_products SET safety_stock = ? WHERE warehouse_id = ? AND product_id = ?").run(safetyStock, whId, pid);
+        }
+        res.redirect("/admin/inventory/assign?warehouse_id=" + encodeURIComponent(whId) + "&ok=settings");
+    });
+    router.post("/inventory/assign/remove", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const whId = (req.body.warehouse_id || "").trim();
+        const productId = (req.body.product_id || "").trim();
+        if (whId && productId)
+            await db.prepare("DELETE FROM inventory_warehouse_products WHERE warehouse_id = ? AND product_id = ?").run(whId, productId);
+        res.redirect("/admin/inventory/assign?warehouse_id=" + encodeURIComponent(whId || "") + "&ok=remove");
+    });
+    router.get("/inventory/daily", async (req, res) => {
+        const date = req.query.date?.trim() || new Date().toISOString().slice(0, 10);
+        const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
+        const whId = req.query.warehouse_id?.trim() || (warehouses[0] && warehouses[0].id) || "";
+        let products = [];
+        let existing = null;
+        if (whId) {
+            products = await db.prepare("SELECT pwp.product_id, pwp.sort_order, p.name, p.unit FROM inventory_warehouse_products pwp JOIN products p ON p.id = pwp.product_id WHERE pwp.warehouse_id = ? ORDER BY pwp.sort_order, p.name").all(whId);
+            const rec = await db.prepare("SELECT id, filler_name, items, confirmed_at FROM daily_inventory WHERE record_date = ? AND warehouse_id = ?").get(date, whId);
+            existing = rec;
+        }
+        const itemsJson = existing && existing.items ? (typeof existing.items === "string" ? JSON.parse(existing.items || "{}") : existing.items) : {};
+        const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}" ${w.id === whId ? "selected" : ""}>${escapeHtml(w.name)}</option>`).join("");
+        const msg = req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存盤點。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 每日盤點</div>
+        <h1 class="notion-page-title">每日盤點</h1>
+        ${msg}
+        <form method="get" action="/admin/inventory/daily" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+          <label>日期 <input type="date" name="date" value="${escapeAttr(date)}"></label>
+          <label>庫房 <select name="warehouse_id" onchange="this.form.submit()">${optWh || "<option value=\"\">— 請先新增庫房並品項歸倉 —</option>"}</select></label>
+          <button type="submit" class="btn">查詢</button>
+        </form>
+        ${whId && products.length ? `
+        <div class="notion-card">
+          <form method="post" action="/admin/inventory/daily/save">
+            <input type="hidden" name="record_date" value="${escapeAttr(date)}">
+            <input type="hidden" name="warehouse_id" value="${escapeAttr(whId)}">
+            <label>填表人 <input type="text" name="filler_name" value="${escapeAttr(existing?.filler_name || "")}" placeholder="填表人姓名"></label>
+            <table>
+              <thead><tr><th>品項</th><th>單位</th><th>數量</th></tr></thead>
+              <tbody>
+                ${products.map((p) => {
+            const qty = itemsJson[p.product_id] != null ? itemsJson[p.product_id] : "";
+            return `<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.unit || "")}</td><td><input type="text" inputmode="decimal" name="qty_${escapeAttr(p.product_id)}" value="${escapeAttr(String(qty))}" placeholder="0"></td></tr>`;
+        }).join("")}
+              </tbody>
+            </table>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存盤點</button></p>
+          </form>
+          ${existing?.confirmed_at ? "<p class=\"notion-msg ok\">此筆已確認。</p>" : ""}
+        </div>
+        ` : whId ? "<p class=\"notion-msg err\">此庫房尚無品項，請先至「品項歸倉」將品項加入此庫房。</p>" : ""}
+      `;
+        res.type("text/html").send(notionPage("每日盤點", body, "inv-daily", res.locals.topBarHtml));
+    });
+    router.post("/inventory/daily/save", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const recordDate = (req.body.record_date || "").trim();
+        const warehouseId = (req.body.warehouse_id || "").trim();
+        const fillerName = (req.body.filler_name || "").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(recordDate) || !warehouseId) {
+            res.redirect("/admin/inventory/daily?err=date");
+            return;
+        }
+        const items = {};
+        for (const [k, v] of Object.entries(req.body)) {
+            if (k.startsWith("qty_") && v !== "" && v !== undefined) {
+                const productId = k.slice(4);
+                const num = parseFloat(String(v).trim());
+                if (!Number.isNaN(num))
+                    items[productId] = num;
+                else
+                    items[productId] = String(v).trim();
+            }
+        }
+        const id = recordDate + "_" + warehouseId;
+        const now = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        const itemsStr = JSON.stringify(items);
+        const existing = await db.prepare("SELECT id FROM daily_inventory WHERE record_date = ? AND warehouse_id = ?").get(recordDate, warehouseId);
+        if (existing) {
+            await db.prepare("UPDATE daily_inventory SET filler_name = ?, recorded_at = " + now + ", items = ? WHERE id = ?").run(fillerName || "—", itemsStr, existing.id);
+        }
+        else {
+            await db.prepare("INSERT INTO daily_inventory (id, record_date, warehouse_id, filler_name, recorded_at, items) VALUES (?, ?, ?, ?, " + now + ", ?)").run(id, recordDate, warehouseId, fillerName || "—", itemsStr);
+        }
+        res.redirect("/admin/inventory/daily?date=" + encodeURIComponent(recordDate) + "&warehouse_id=" + encodeURIComponent(warehouseId) + "&ok=1");
+    });
+    router.get("/inventory/import-erp", async (req, res) => {
+        const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
+        const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}">${escapeHtml(w.name)}</option>`).join("");
+        const count = req.query.count ? Number(req.query.count) : 0;
+        const msg = req.query.ok ? "<p class=\"notion-msg ok\">已匯入 ERP 資料" + (count ? "，共 " + count + " 筆。" : "。") + "</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 匯入 ERP 資料</div>
+        <h1 class="notion-page-title">匯入 ERP 銷貨資料</h1>
+        ${msg}
+        <p>上傳 CSV 或貼上內容，格式：<strong>日期,品項,銷貨數量,倉庫</strong>。日期為 YYYY-MM-DD；品項為品項 ID 或品名；倉庫為倉庫 ID 或名稱（可省略則需於下方選擇預設倉庫）。</p>
+        <div class="notion-card">
+          <form method="post" action="/admin/inventory/import-erp" enctype="multipart/form-data">
+            <label>預設倉庫（當 CSV 未含倉庫欄時使用） <select name="default_warehouse_id">${optWh || "<option value=\"\">— 請先新增庫房 —</option>"}</select></label>
+            <label>CSV 檔案 <input type="file" name="csv_file" accept=".csv,.txt"></label>
+            <p>或貼上 CSV 內容：</p>
+            <textarea name="csv_text" rows="10" style="width:100%;" placeholder="日期,品項,銷貨數量,倉庫"></textarea>
+            <p style="margin-top:12px;"><button type="submit" class="btn btn-primary">匯入</button></p>
+          </form>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("匯入 ERP 資料", body, "inv-erp", res.locals.topBarHtml));
+    });
+    const multer = require("multer");
+    const uploadMemory = multer({ storage: multer.memoryStorage() });
+    router.post("/inventory/import-erp", uploadMemory.single("csv_file"), async (req, res) => {
+        const body = req.body || {};
+        const defaultWhId = body.default_warehouse_id ? String(body.default_warehouse_id).trim() : "";
+        let raw = "";
+        if (body.csv_text)
+            raw = String(body.csv_text).trim();
+        else if (req.file && req.file.buffer)
+            raw = req.file.buffer.toString("utf-8");
+        if (!raw) {
+            res.redirect("/admin/inventory/import-erp?err=no_data");
+            return;
+        }
+        const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses").all();
+        const whById = Object.fromEntries(warehouses.map((w) => [w.id, w]));
+        const whByName = Object.fromEntries(warehouses.map((w) => [w.name, w]));
+        const products = await db.prepare("SELECT id, name FROM products").all();
+        const productById = Object.fromEntries(products.map((p) => [p.id, p]));
+        const productByName = Object.fromEntries(products.map((p) => [p.name, p]));
+        const now = process.env.DATABASE_URL ? new Date().toISOString() : new Date().toISOString();
+        const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        let imported = 0;
+        for (let i = 0; i < lines.length; i++) {
+            const cells = lines[i].split(",").map((c) => c.trim());
+            if (cells.length < 3)
+                continue;
+            const dateStr = cells[0];
+            const productKey = cells[1];
+            const qty = parseFloat(cells[2]);
+            const whKey = cells[3];
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || Number.isNaN(qty))
+                continue;
+            const product = productById[productKey] || productByName[productKey];
+            const wh = (whKey && (whById[whKey] || whByName[whKey])) || (defaultWhId && whById[defaultWhId]);
+            if (!product || !wh)
+                continue;
+            const wid = wh.id;
+            const pid = product.id;
+            const id = (0, id_js_1.newId)("erp");
+            try {
+                await db.prepare("INSERT INTO erp_sales (id, record_date, warehouse_id, product_id, qty_sold, imported_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, dateStr, wid, pid, qty, now);
+                imported++;
+            }
+            catch (_) { /* duplicate or constraint */ }
+        }
+        res.redirect("/admin/inventory/import-erp?ok=1&count=" + imported);
+    });
+    router.get("/inventory/variance-report", async (req, res) => {
+        const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
+        const dateFrom = (req.query.date_from || "").trim();
+        const dateTo = (req.query.date_to || "").trim();
+        const whId = (req.query.warehouse_id || "").trim();
+        const exportCsv = req.query.export === "csv";
+        let rows = [];
+        let freqList = [];
+        if (dateFrom && dateTo && /^\d{4}-\d{2}-\d{2}$/.test(dateFrom) && /^\d{4}-\d{2}-\d{2}$/.test(dateTo)) {
+            const from = new Date(dateFrom);
+            const to = new Date(dateTo);
+            if (from <= to) {
+                const warehouseIds = whId ? [whId] : warehouses.map((w) => w.id);
+                const productNames = {};
+                const whNames = {};
+                warehouses.forEach((w) => { whNames[w.id] = w.name; });
+                const prods = await db.prepare("SELECT id, name FROM products").all();
+                prods.forEach((p) => { productNames[p.id] = p.name; });
+                const varianceCount = {};
+                for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+                    const dateStr = d.toISOString().slice(0, 10);
+                    for (const wid of warehouseIds) {
+                        const prevRec = await db.prepare("SELECT items FROM daily_inventory WHERE warehouse_id = ? AND record_date < ? ORDER BY record_date DESC LIMIT 1").get(wid, dateStr);
+                        const currRec = await db.prepare("SELECT items FROM daily_inventory WHERE warehouse_id = ? AND record_date = ?").get(wid, dateStr);
+                        const erpRows = await db.prepare("SELECT product_id, SUM(qty_sold) as total FROM erp_sales WHERE warehouse_id = ? AND record_date = ? GROUP BY product_id").all(wid, dateStr);
+                        const erpByProduct = Object.fromEntries((erpRows || []).map((r) => [r.product_id, Number(r.total) || 0]));
+                        const prevItems = prevRec && prevRec.items ? (typeof prevRec.items === "string" ? JSON.parse(prevRec.items || "{}") : prevRec.items) : {};
+                        const currItems = currRec && currRec.items ? (typeof currRec.items === "string" ? JSON.parse(currRec.items || "{}") : currRec.items) : {};
+                        const allProductIds = new Set([...Object.keys(prevItems), ...Object.keys(currItems), ...Object.keys(erpByProduct)]);
+                        for (const pid of allProductIds) {
+                            const prevQty = Number(prevItems[pid]) || 0;
+                            const currQty = currItems[pid] != null ? Number(currItems[pid]) : null;
+                            const erpQty = erpByProduct[pid] || 0;
+                            const book = prevQty - erpQty;
+                            if (currQty === null)
+                                continue;
+                            const variance = currQty - book;
+                            if (Math.abs(variance) > 1e-6) {
+                                rows.push({ date: dateStr, warehouse_id: wid, warehouse_name: whNames[wid] || wid, product_id: pid, product_name: productNames[pid] || pid, book, curr: currQty, variance });
+                                varianceCount[pid] = (varianceCount[pid] || 0) + 1;
+                            }
+                        }
+                    }
+                }
+                freqList = Object.entries(varianceCount).sort((a, b) => b[1] - a[1]).map(([pid, count]) => ({ product_id: pid, product_name: productNames[pid] || pid, count }));
+            }
+        }
+        if (exportCsv && rows.length) {
+            const BOM = "\uFEFF";
+            const csv = BOM + "日期,倉庫,品項,帳面數量,盤點數量,盤差\n" + rows.map((r) => [r.date, r.warehouse_name, r.product_name, r.book, r.curr, r.variance].join(",")).join("\n");
+            res.type("text/csv").set("Content-Disposition", "attachment; filename=variance-report.csv").send(csv);
+            return;
+        }
+        const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}" ${w.id === whId ? "selected" : ""}>${escapeHtml(w.name)}</option>`).join("");
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 盤差報表</div>
+        <h1 class="notion-page-title">盤差報表</h1>
+        <p>依日期區間與倉庫計算盤差（盤點數量 − 帳面數量，帳面 = 前日盤點 − 當日 ERP 銷貨）。可匯出 CSV，並檢視易盤差品項統計。</p>
+        <div class="notion-card">
+          <form method="get" action="/admin/inventory/variance-report" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+            <label>日期起 <input type="date" name="date_from" value="${escapeAttr(dateFrom)}"></label>
+            <label>日期訖 <input type="date" name="date_to" value="${escapeAttr(dateTo)}"></label>
+            <label>倉庫 <select name="warehouse_id"><option value="">全部</option>${optWh}</select></label>
+            <button type="submit" class="btn">查詢</button>
+          </form>
+          ${rows.length ? `<p><a href="/admin/inventory/variance-report?date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}&warehouse_id=${encodeURIComponent(whId)}&export=csv" class="btn btn-primary">匯出 CSV（${rows.length} 筆）</a></p>` : ""}
+          <h3>易盤差品項（區間內出現盤差次數）</h3>
+          ${freqList.length ? `<table><thead><tr><th>品項</th><th>盤差次數</th></tr></thead><tbody>${freqList.map((f) => `<tr><td>${escapeHtml(f.product_name)}</td><td>${f.count}</td></tr>`).join("")}</tbody></table>` : "<p>請選擇日期區間並查詢。</p>"}
+          <h3>盤差明細</h3>
+          ${rows.length ? `<table><thead><tr><th>日期</th><th>倉庫</th><th>品項</th><th>帳面</th><th>盤點</th><th>盤差</th></tr></thead><tbody>${rows.slice(0, 500).map((r) => `<tr><td>${r.date}</td><td>${escapeHtml(r.warehouse_name)}</td><td>${escapeHtml(r.product_name)}</td><td>${r.book}</td><td>${r.curr}</td><td style="color:${r.variance !== 0 ? "#c00" : ""}">${r.variance}</td></tr>`).join("")}</tbody></table>${rows.length > 500 ? "<p>僅顯示前 500 筆，請用匯出 CSV 取得完整資料。</p>" : ""}` : "<p>請選擇日期區間並查詢。</p>"}
+        </div>
+      `;
+        res.type("text/html").send(notionPage("盤差報表", body, "inv-report", res.locals.topBarHtml));
+    });
+    router.get("/inventory/manager", async (req, res) => {
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("inventory_manager");
+        const current = (row && row.value) || "";
+        const msg = req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存管理人。</p>" : "";
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 管理人設定</div>
+        <h1 class="notion-page-title">盤點作業管理人</h1>
+        ${msg}
+        <div class="notion-card">
+          <form method="post" action="/admin/inventory/manager">
+            <label>管理人姓名 <input type="text" name="manager_name" value="${escapeAttr(current)}" placeholder="例：王小明"></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+          </form>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("管理人設定", body, "inv-manager", res.locals.topBarHtml));
+    });
+    router.post("/inventory/manager", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const name = (req.body.manager_name || "").trim();
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("inventory_manager", name);
+        res.redirect("/admin/inventory/manager?ok=1");
+    });
+    function parseFridgeEntriesJson(entriesJson) {
+        if (!entriesJson)
+            return [];
+        try {
+            return typeof entriesJson === "string" ? JSON.parse(entriesJson) : entriesJson;
+        }
+        catch (_) {
+            return [];
+        }
+    }
+    // ---------- 物流工具：訂單整理 ----------
+    router.get("/logistics/orders", async (req, res) => {
+        const dateFrom = req.query.from?.trim() || new Date().toISOString().slice(0, 10);
+        const dateTo = req.query.to?.trim() || dateFrom;
+        const orders = await db.prepare(`
+      SELECT id, order_date, raw_message, memo, created_at FROM logistics_orders
+      WHERE order_date >= ? AND order_date <= ?
+      ORDER BY order_date DESC, id DESC LIMIT 500
+    `).all(dateFrom, dateTo);
+        const rows = orders.length === 0
+            ? "<tr><td colspan='4'>此區間無紙本訂單</td></tr>"
+            : orders.map((o) => `<tr><td>${escapeHtml(o.order_date)}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml((o.raw_message || "").slice(0, 60))}${(o.raw_message || "").length > 60 ? "…" : ""}</td><td>${escapeHtml(o.memo || "—")}</td><td><a href="/admin/logistics/orders/${encodeURIComponent(o.id)}">檢視／編輯</a></td></tr>`).join("");
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 物流工具 / 訂單整理</div>
+        <h1 class="notion-page-title">訂單整理（紙本訂單）</h1>
+        ${req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存訂單。</p>" : ""}
+        <p>整理紙本訂單：上傳圖片或貼上文字後由 Google AI 辨識，預覽調整後儲存。可依日期查詢。</p>
+        <p><a href="/admin/logistics/orders/new" class="btn btn-primary">＋ 新增一筆訂單</a>　<a href="/admin/logistics/procurement" class="btn">採購分析</a></p>
+        <div class="notion-card">
+          <form method="get" action="/admin/logistics/orders" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-bottom:12px;">
+            <label>日期區間 <input type="date" name="from" value="${escapeAttr(dateFrom)}"> ～ <input type="date" name="to" value="${escapeAttr(dateTo)}"></label>
+            <button type="submit" class="btn">查詢</button>
+          </form>
+          <table>
+            <thead><tr><th>訂單日期</th><th>原始內容摘要</th><th>備註</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("訂單整理", body, "logistics", res.locals.topBarHtml));
+    });
+    router.get("/logistics/orders/new", async (_req, res) => {
+        const today = new Date().toISOString().slice(0, 10);
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/logistics/orders">訂單整理</a> / 新增</div>
+        <h1 class="notion-page-title">新增紙本訂單</h1>
+        <p>貼上訂單文字，或上傳訂單照片，由 Google AI 辨識後預覽品項、可調整再儲存。</p>
+        <div class="notion-card">
+          <form id="newOrderForm" method="post" action="/admin/logistics/orders">
+            <label>訂單日期 <input type="date" name="order_date" value="${escapeAttr(today)}" required></label>
+            <p style="margin-top:12px;"><label>原始文字（貼上紙本內容或辨識結果）</label><br>
+            <textarea name="raw_message" id="rawMessage" rows="6" style="width:100%;box-sizing:border-box;" placeholder="例如：高麗菜 5 斤&#10;大陸妹 2 把&#10;芹菜 3 包"></textarea></p>
+            <p>或上傳圖片：<input type="file" name="image" id="imageFile" accept="image/*"></p>
+            <button type="button" id="recognizeBtn" class="btn btn-primary">以 Google AI 辨識（圖片或上方文字）</button>
+            <div id="recognizeErr" style="color:#c00;margin-top:8px;display:none;"></div>
+          </form>
+        </div>
+        <div class="notion-card" id="previewBlock" style="display:none;">
+          <h2>預覽品項（可調整後再儲存）</h2>
+          <p>確認下方列表無誤後，按「儲存訂單」寫入；若有待確認品名可至「待確認品名」補對照。<br>金額可手動填寫，或依「訂單日期」帶入<strong>台北果菜市場（台北一、台北二）</strong>批發行情（農業部農產品交易行情，平均價 元/公斤）作為參考。</p>
+          <p style="margin-bottom:8px;"><button type="button" id="fillWholesaleBtn" class="btn">帶入台北批發價</button> <span id="wholesaleMsg" style="font-size:13px;color:var(--notion-text-muted);"></span></p>
+          <table id="previewTable"><thead><tr><th>品名</th><th>數量</th><th>單位</th><th>金額（元/公斤）</th><th>對應品項</th></tr></thead><tbody></tbody></table>
+          <input type="hidden" name="items_json" id="itemsJson" form="newOrderForm">
+          <p style="margin-top:12px;"><button type="button" id="saveOrderBtn" class="btn btn-primary">儲存訂單</button> <a href="/admin/logistics/orders" class="btn">取消</a></p>
+        </div>
+        <script>
+        (function(){
+          var form = document.getElementById('newOrderForm');
+          var rawMessage = document.getElementById('rawMessage');
+          var imageFile = document.getElementById('imageFile');
+          var recognizeBtn = document.getElementById('recognizeBtn');
+          var recognizeErr = document.getElementById('recognizeErr');
+          var previewBlock = document.getElementById('previewBlock');
+          var previewTable = document.getElementById('previewTable').querySelector('tbody');
+          var itemsJson = document.getElementById('itemsJson');
+          var saveOrderBtn = document.getElementById('saveOrderBtn');
+          var currentItems = [];
+          function showErr(msg){ recognizeErr.textContent = msg || ''; recognizeErr.style.display = msg ? 'block' : 'none'; }
+          function renderPreview(){
+            previewTable.innerHTML = currentItems.map(function(it, i){
+              return '<tr><td><input type="text" value="' + (it.rawName || '').replace(/"/g, '&quot;') + '" data-i="' + i + '" data-f="rawName" style="width:100%;max-width:180px;"></td><td><input type="number" value="' + (it.quantity ?? '') + '" data-i="' + i + '" data-f="quantity" step="any" min="0" style="width:80px;"></td><td><input type="text" value="' + (it.unit || '').replace(/"/g, '&quot;') + '" data-i="' + i + '" data-f="unit" style="width:60px;"></td><td><input type="text" value="' + (it.amount || '').replace(/"/g, '&quot;') + '" data-i="' + i + '" data-f="amount" placeholder="可空白" style="width:80px;"></td><td>' + (it.productName || '待確認') + '</td></tr>';
+            }).join('');
+            previewTable.querySelectorAll('input').forEach(function(inp){
+              inp.addEventListener('change', function(){ var i = parseInt(this.getAttribute('data-i'),10); var f = this.getAttribute('data-f'); if(currentItems[i]) currentItems[i][f] = this.value; if(f==='quantity') currentItems[i].quantity = parseFloat(this.value)||0; });
+            });
+            itemsJson.value = JSON.stringify(currentItems);
+          }
+          recognizeBtn.addEventListener('click', function(){
+            showErr('');
+            var text = rawMessage.value.trim();
+            var file = imageFile.files[0];
+            if (!text && !file) { showErr('請貼上文字或選擇一張圖片'); return; }
+            recognizeBtn.disabled = true;
+            recognizeBtn.textContent = '辨識中…';
+            var formData = new FormData();
+            formData.append('raw_message', text);
+            if (file) formData.append('image', file);
+            fetch('/admin/api/logistics/recognize', { method: 'POST', body: formData })
+              .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, data: d }; }).catch(function(){ return { ok: false, data: { error: '伺服器回傳格式錯誤' } }; }); })
+              .then(function(result){
+                recognizeBtn.disabled = false;
+                recognizeBtn.textContent = '以 Google AI 辨識（圖片或上方文字）';
+                if (!result.ok || result.data.error) { showErr(result.data.error || '辨識失敗'); return; }
+                if (result.data.raw_message) rawMessage.value = result.data.raw_message;
+                currentItems = result.data.items || [];
+                renderPreview();
+                previewBlock.style.display = 'block';
+              })
+              .catch(function(){ recognizeBtn.disabled = false; recognizeBtn.textContent = '以 Google AI 辨識（圖片或上方文字）'; showErr('辨識請求失敗（請檢查網路或稍後再試）'); });
+          });
+          saveOrderBtn.addEventListener('click', function(){
+            itemsJson.value = JSON.stringify(currentItems);
+            form.submit();
+          });
+          var fillWholesaleBtn = document.getElementById('fillWholesaleBtn');
+          var wholesaleMsg = document.getElementById('wholesaleMsg');
+          if (fillWholesaleBtn) fillWholesaleBtn.addEventListener('click', function(){
+            var orderDate = document.querySelector('#newOrderForm input[name="order_date"]');
+            var date = orderDate ? orderDate.value : new Date().toISOString().slice(0, 10);
+            if (!date) { wholesaleMsg.textContent = '請先選擇訂單日期'; return; }
+            wholesaleMsg.textContent = '取得批發行情中…';
+            fillWholesaleBtn.disabled = true;
+            fetch('/admin/api/logistics/wholesale-prices?date=' + encodeURIComponent(date))
+              .then(function(r){ return r.json(); })
+              .then(function(data){
+                fillWholesaleBtn.disabled = false;
+                if (data.error) { wholesaleMsg.textContent = data.error; return; }
+                var prices = data.prices || [];
+                if (prices.length === 0) { wholesaleMsg.textContent = data.message || '該日尚無台北批發行情'; return; }
+                var normalized = function(s){ return (s || '').toString().trim().replace(/\s+/g, ''); };
+                var matched = 0;
+                currentItems.forEach(function(it){
+                  var name = normalized(it.rawName || it.productName || '');
+                  if (!name) return;
+                  var found = null;
+                  for (var i = 0; i < prices.length; i++) {
+                    var crop = normalized(prices[i].cropName || '');
+                    if (crop === name || crop.indexOf(name) !== -1 || name.indexOf(crop) !== -1) { found = prices[i]; break; }
+                  }
+                  if (!found && name.length >= 2) {
+                    for (var j = 0; j < prices.length; j++) {
+                      if (normalized(prices[j].cropName || '').slice(0, 2) === name.slice(0, 2)) { found = prices[j]; break; }
+                    }
+                  }
+                  if (found && found.avgPrice != null) {
+                    it.amount = String(found.avgPrice);
+                    matched++;
+                  }
+                });
+                renderPreview();
+                wholesaleMsg.textContent = '已帶入 ' + matched + ' 筆台北批發均價（元/公斤），共 ' + prices.length + ' 筆行情。';
+              })
+              .catch(function(){
+                fillWholesaleBtn.disabled = false;
+                wholesaleMsg.textContent = '取得批發行情失敗，請稍後再試。';
+              });
+          });
+        })();
+        </script>
+      `;
+        res.type("text/html").send(notionPage("新增紙本訂單", body, "logistics", res.locals.topBarHtml));
+    });
+    async function parseOrderWithGemini(rawText) {
+        const apiKey = process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+        if (!apiKey || !apiKey.trim())
+            return null;
+        const prompt = `你是一位生鮮／蔬果訂單解析助理。請從以下訂單文字解析出每一筆品項，以 JSON 陣列回傳，每筆格式：{ "品項": "品名", "數量": 數字, "單位": "單位或空字串", "金額": "金額數字或空字串（沒有就空白）" }。只回傳一個 JSON 陣列，不要 markdown、不要其他說明。\n\n訂單文字：\n${rawText}`;
+        try {
+            const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey.trim())}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: prompt }] }],
+                    generationConfig: { maxOutputTokens: 2048 },
+                }),
+            });
+            if (!resp.ok)
+                return null;
+            const data = await resp.json();
+            const textPart = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!textPart || typeof textPart !== "string")
+                return null;
+            const cleaned = textPart.replace(/^[\s\S]*?\[/, "[").replace(/\][\s\S]*$/, "]").trim();
+            const arr = JSON.parse(cleaned);
+            if (!Array.isArray(arr) || arr.length === 0)
+                return null;
+            return arr.map((row) => ({
+                rawName: (row.品項 ?? row.rawName ?? "").toString().trim() || "",
+                quantity: typeof row.數量 === "number" ? row.數量 : parseFloat(row.數量) || 0,
+                unit: (row.單位 ?? row.unit ?? "").toString().trim() || null,
+                amount: row.金額 != null && String(row.金額).trim() !== "" ? String(row.金額).trim() : null,
+            })).filter((x) => x.rawName);
+        }
+        catch (_) {
+            return null;
+        }
+    }
+    router.post("/api/logistics/recognize", uploadImage, async (req, res) => {
+        let rawText = (req.body && req.body.raw_message) ? String(req.body.raw_message).trim() : "";
+        const file = req.file;
+        if (file && file.buffer) {
+            const apiKey = process.env.GOOGLE_CLOUD_VISION_API_KEY;
+            if (!apiKey || !apiKey.trim()) {
+                res.status(503).json({ error: "請設定 GOOGLE_CLOUD_VISION_API_KEY 才能辨識圖片。本機開發：在專案目錄建立或編輯 .env 檔案，加入一行 GOOGLE_CLOUD_VISION_API_KEY=你的金鑰，重啟後即可。Cloud Run：在「變數與密碼」設定該變數。金鑰請至 GCP 專案啟用「Cloud Vision API」後取得。" });
+                return;
+            }
+            const ocrText = await (0, vision_ocr_js_1.getTextFromImageBuffer)(file.buffer);
+            if (ocrText)
+                rawText = (rawText ? rawText + "\n" : "") + ocrText;
+            else if (file.buffer.length > 0)
+                rawText = (rawText ? rawText + "\n" : "") + "(圖片辨識無結果：請確認 GCP 已啟用 Cloud Vision API、金鑰正確，且圖片內有清晰文字)";
+        }
+        if (!rawText || !rawText.trim()) {
+            res.status(400).json({ error: "無法取得文字（請貼上內容或上傳可辨識的圖片；若已上傳圖片仍無結果，請檢查 GOOGLE_CLOUD_VISION_API_KEY 與 Cloud Vision API 是否已啟用）。" });
+            return;
+        }
+        let parsed = await parseOrderWithGemini(rawText);
+        if (!parsed || parsed.length === 0) {
+            const ruleBased = (0, parse_order_message_js_1.parseOrderMessage)(rawText);
+            parsed = ruleBased.map((p) => ({ rawName: p.rawName, quantity: p.quantity, unit: p.unit || null, amount: null }));
+        }
+        const items = [];
+        for (const p of parsed) {
+            const resolved = await (0, resolve_product_js_1.resolveProductName)(db, p.rawName, null);
+            items.push({
+                rawName: p.rawName,
+                quantity: p.quantity,
+                unit: p.unit || null,
+                amount: p.amount ?? null,
+                productId: resolved?.productId ?? null,
+                productName: resolved?.productId ? (resolved.name || null) : null,
+                needReview: resolved ? 0 : 1,
+            });
+        }
+        res.json({ raw_message: rawText, items });
+    });
+    router.get("/api/logistics/wholesale-prices", async (req, res) => {
+        const dateStr = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+            res.status(400).json({ error: "請提供有效日期參數 date（YYYY-MM-DD）。" });
+            return;
+        }
+        try {
+            const prices = await (0, wholesale_price_js_1.fetchTaipeiWholesalePrices)(dateStr);
+            if (!prices || prices.length === 0) {
+                res.json({ prices: [], message: "該日尚無台北果菜市場（台北一、台北二）批發行情，可能為休市或資料尚未更新。" });
+                return;
+            }
+            res.json({ prices });
+        }
+        catch (e) {
+            console.error("[admin] 批發行情取得失敗:", e?.message || e);
+            res.status(500).json({ error: "無法取得批發行情，請稍後再試。" });
+        }
+    });
+    router.post("/logistics/orders", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const orderDate = (req.body.order_date || "").trim();
+        const rawMessage = (req.body.raw_message || "").trim();
+        let items = [];
+        try {
+            const j = req.body.items_json;
+            if (j)
+                items = JSON.parse(j);
+        }
+        catch (_) { }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(orderDate)) {
+            res.redirect("/admin/logistics/orders/new?err=date");
+            return;
+        }
+        const orderId = (0, id_js_1.newId)("log");
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        await db.prepare("INSERT INTO logistics_orders (id, order_date, raw_message, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(orderId, orderDate, rawMessage);
+        for (const it of items) {
+            const itemId = (0, id_js_1.newId)("logitem");
+            const qty = parseFloat(it.quantity);
+            const needReview = it.needReview === 1 || it.needReview === true ? 1 : 0;
+            const amountVal = it.amount != null && String(it.amount).trim() !== "" ? String(it.amount).trim() : null;
+            await db.prepare("INSERT INTO logistics_order_items (id, order_id, product_id, raw_name, quantity, unit, amount, need_review) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(itemId, orderId, it.productId || null, it.rawName || "", Number.isFinite(qty) ? qty : 0, it.unit || null, amountVal, needReview);
+        }
+        res.redirect("/admin/logistics/orders?from=" + encodeURIComponent(orderDate) + "&to=" + encodeURIComponent(orderDate) + "&ok=1");
+    });
+    router.get("/logistics/orders/:id", async (req, res) => {
+        const order = await db.prepare("SELECT id, order_date, raw_message, memo FROM logistics_orders WHERE id = ?").get(req.params.id);
+        if (!order) {
+            res.status(404).send("訂單不存在");
+            return;
+        }
+        const items = await db.prepare(`
+      SELECT oi.id, oi.raw_name, oi.quantity, oi.unit, oi.amount, oi.need_review, p.name AS product_name
+      FROM logistics_order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
+    `).all(order.id);
+        const rows = items.map((i) => `<tr><td>${escapeHtml(i.raw_name ?? "")}</td><td>${i.quantity}</td><td>${escapeHtml((i.unit || "") + (i.need_review === 1 ? " [待確認]" : ""))}</td><td>${escapeHtml(i.amount ?? "—")}</td><td>${escapeHtml(i.product_name || "—")}</td></tr>`).join("");
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/logistics/orders">訂單整理</a> / 明細</div>
+        <h1 class="notion-page-title">紙本訂單明細</h1>
+        <p>日期：${escapeHtml(order.order_date)}　<a href="/admin/logistics/orders">← 回列表</a></p>
+        <div class="notion-card raw-message-scroll"><h3 style="margin-top:0;">原始訂單</h3><pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);margin:0;font-size:13px;max-height:240px;overflow:auto;">${escapeHtml(order.raw_message || "")}</pre></div>
+        <div class="notion-card">
+          <table><thead><tr><th>品名</th><th>數量</th><th>單位</th><th>金額（元/公斤）</th><th>對應品項</th></tr></thead><tbody>${rows}</tbody></table>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("訂單明細", body, "logistics", res.locals.topBarHtml));
+    });
+    router.get("/logistics/procurement", async (req, res) => {
+        const dateFrom = req.query.from?.trim() || new Date().toISOString().slice(0, 10);
+        const dateTo = req.query.to?.trim() || dateFrom;
+        const rows = await db.prepare(`
+      SELECT oi.raw_name, oi.unit, oi.product_id, p.name AS product_name, SUM(oi.quantity) AS total_qty
+      FROM logistics_order_items oi
+      LEFT JOIN logistics_orders o ON o.id = oi.order_id
+      LEFT JOIN products p ON p.id = oi.product_id
+      WHERE o.order_date >= ? AND o.order_date <= ?
+      GROUP BY oi.product_id, oi.raw_name, oi.unit, p.name
+      ORDER BY p.name, oi.raw_name, oi.unit
+    `).all(dateFrom, dateTo);
+        const tableRows = rows.length === 0
+            ? "<tr><td colspan='4'>此區間無資料</td></tr>"
+            : rows.map((r) => `<tr><td>${escapeHtml(r.product_name || r.raw_name || "待確認")}</td><td>${Number(r.total_qty)}</td><td>${escapeHtml(r.unit || "—")}</td><td>${escapeHtml(r.raw_name && !r.product_name ? "待對照" : "—")}</td></tr>`).join("");
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 物流工具 / 採購分析</div>
+        <h1 class="notion-page-title">採購分析</h1>
+        <p>依日期區間彙總「訂單整理」內紙本訂單，某日某品項需採購數量（供採購人員使用）。</p>
+        <div class="notion-card">
+          <form method="get" action="/admin/logistics/procurement" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-bottom:12px;">
+            <label>日期區間 <input type="date" name="from" value="${escapeAttr(dateFrom)}"> ～ <input type="date" name="to" value="${escapeAttr(dateTo)}"></label>
+            <button type="submit" class="btn">查詢</button>
+          </form>
+          <table>
+            <thead><tr><th>品項</th><th>合計數量</th><th>單位</th><th>備註</th></tr></thead>
+            <tbody>${tableRows}</tbody>
+          </table>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("採購分析", body, "logistics-procurement", res.locals.topBarHtml));
+    });
+    // ---------- 環境衛生管理 ----------
+    router.get("/freezer-fridge", async (req, res) => {
+        const warehouses = await db.prepare("SELECT id, name, sort_order, compliant_temp, power_compliant, light_compliant, heat_compliant FROM freezer_fridge_warehouses ORDER BY sort_order, name").all();
+        const month = req.query.month?.trim() || new Date().toISOString().slice(0, 7);
+        const [y, m] = month.split("-").map(Number);
+        const nextMonthFirst = m === 12 ? (y + 1) + "-01-01" : y + "-" + String(m + 1).padStart(2, "0") + "-01";
+        const records = await db.prepare("SELECT date, filler_name, confirmed_at, anomaly FROM freezer_fridge_daily WHERE date >= ? AND date < ? ORDER BY date").all(month + "-01", nextMonthFirst);
+        const recordByDate = {};
+        records.forEach((r) => { recordByDate[r.date] = r; });
+        const firstDay = new Date(y, m - 1, 1);
+        const daysInMonth = new Date(y, m, 0).getDate();
+        const calRows = [];
+        let week = [];
+        const startPad = firstDay.getDay();
+        for (let i = 0; i < startPad; i++)
+            week.push("");
+        for (let d = 1; d <= daysInMonth; d++) {
+            const dateStr = month + "-" + String(d).padStart(2, "0");
+            const rec = recordByDate[dateStr];
+            week.push(rec ? `<a href="/admin/freezer-fridge/daily?date=${dateStr}" class="cal-day filled">${d}</a>` : `<a href="/admin/freezer-fridge/daily?date=${dateStr}" class="cal-day">${d}</a>`);
+            if (week.length === 7) {
+                calRows.push(week);
+                week = [];
+            }
+        }
+        if (week.length)
+            calRows.push(week);
+        const calHtml = "<table class=\"freezer-cal\"><thead><tr><th>日</th><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th></tr></thead><tbody>" + calRows.map((row) => "<tr>" + row.map((cell) => "<td>" + (cell || "") + "</td>").join("") + "</tr>").join("") + "</tbody></table>";
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 環境衛生管理 / 冷凍庫冷藏庫檢查表</div>
+        <h1 class="notion-page-title">冷凍庫冷藏庫檢查表</h1>
+        <p style="color:var(--notion-text-muted);margin-bottom:16px;">每日填寫各庫房溫度、電源、電燈、電熱；請先至「庫房管理」新增庫房。</p>
+        <p style="margin-bottom:16px;"><a href="/admin/freezer-fridge/warehouses" class="btn">庫房管理</a>（共 ${warehouses.length} 個庫房）</p>
+        <div class="notion-card">
+          <h2>${month} 月曆</h2>
+          <form method="get" action="/admin/freezer-fridge" style="margin-bottom:12px;">
+            <input type="month" name="month" value="${escapeAttr(month)}"> <button type="submit" class="btn">切換月份</button>
+          </form>
+          ${calHtml}
+          <p style="margin-top:12px;font-size:13px;color:var(--notion-text-muted);">點選日期填寫當日檢查表。</p>
+        </div>
+        <div class="notion-card">
+          <h2>當月填表紀錄</h2>
+          ${records.length ? "<table><thead><tr><th>日期</th><th>填表人</th><th>狀態</th><th>操作</th></tr></thead><tbody>" + records.map((r) => `<tr><td>${r.date}</td><td>${escapeHtml(r.filler_name || "")}</td><td>${r.confirmed_at ? "已確認" : "已填"}${r.anomaly ? "、異常" : ""}</td><td><a href="/admin/freezer-fridge/daily?date=${r.date}">編輯</a></td></tr>`).join("") + "</tbody></table>" : "<p>本月尚無填表紀錄</p>"}
+        </div>
+      `;
+        res.type("text/html").send(notionPage("冷凍庫冷藏庫檢查表", body + "\n<style>.freezer-cal td,.freezer-cal th{border:1px solid var(--notion-border);padding:8px;min-width:40px;}.freezer-cal .cal-day{display:block;text-align:center;text-decoration:none;color:var(--notion-accent);}.freezer-cal .cal-day.filled{font-weight:600;}</style>", "env", res.locals.topBarHtml));
+    });
+    router.get("/freezer-fridge/warehouses", async (req, res) => {
+        const rows = await db.prepare("SELECT id, name, sort_order, compliant_temp, power_compliant, light_compliant, heat_compliant FROM freezer_fridge_warehouses ORDER BY sort_order, name").all();
+        const msg = req.query.ok ? "<p class=\"notion-msg ok\">已儲存。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / 庫房管理</div>
+        <h1 class="notion-page-title">冷凍／冷藏庫房設定</h1>
+        ${msg}
+        <p style="margin-bottom:16px;"><a href="/admin/freezer-fridge/warehouses/new" class="btn btn-primary">＋ 新增庫房</a></p>
+        <div class="notion-card">
+          <table>
+            <thead><tr><th>順序</th><th>庫房名稱</th><th>合規溫度</th><th>電源</th><th>電燈</th><th>電熱</th><th>操作</th></tr></thead>
+            <tbody>
+              ${rows.length ? rows.map((r) => `<tr><td>${r.sort_order}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.compliant_temp || "")}</td><td>${r.power_compliant}</td><td>${r.light_compliant}</td><td>${r.heat_compliant}</td><td><a href="/admin/freezer-fridge/warehouses/${encodeURIComponent(r.id)}/edit">編輯</a> | <a href="/admin/freezer-fridge/warehouses/${encodeURIComponent(r.id)}/delete">刪除</a></td></tr>`).join("") : "<tr><td colspan=\"7\">尚無庫房</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("冷凍冷藏庫房管理", body, "env", res.locals.topBarHtml));
+    });
+    router.get("/freezer-fridge/warehouses/new", async (_req, res) => {
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / <a href="/admin/freezer-fridge/warehouses">庫房管理</a> / 新增</div>
+        <h1 class="notion-page-title">新增庫房</h1>
+        <div class="notion-card">
+          <form method="post" action="/admin/freezer-fridge/warehouses/new">
+            <label>庫房名稱 <input type="text" name="name" required placeholder="例：9號冷凍庫"></label>
+            <label>合規溫度 <input type="text" name="compliant_temp" placeholder="例：−18°C 以下 或 2~7"></label>
+            <label>電源合規 <select name="power_compliant"><option value="on">正常為開</option><option value="off">正常為關</option></select></label>
+            <label>電燈合規 <select name="light_compliant"><option value="off">應關閉</option><option value="on">應開啟</option></select></label>
+            <label>電熱合規 <select name="heat_compliant"><option value="off">符合為關</option><option value="on">符合為開</option></select></label>
+            <label>順序 <input type="number" name="sort_order" value="0"></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">新增</button> <a href="/admin/freezer-fridge/warehouses" class="btn">取消</a></p>
+          </form>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("新增庫房", body, "env", res.locals.topBarHtml));
+    });
+    router.post("/freezer-fridge/warehouses/new", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const name = (req.body.name || "").trim();
+        const compliantTemp = (req.body.compliant_temp || "").trim();
+        const powerCompliant = (req.body.power_compliant || "on").trim();
+        const lightCompliant = (req.body.light_compliant || "off").trim();
+        const heatCompliant = (req.body.heat_compliant || "off").trim();
+        const sortOrder = parseInt(req.body.sort_order, 10) || 0;
+        if (!name) {
+            res.redirect("/admin/freezer-fridge/warehouses/new?err=name");
+            return;
+        }
+        const id = (0, id_js_1.newId)("ffwh");
+        await db.prepare("INSERT INTO freezer_fridge_warehouses (id, name, sort_order, compliant_temp, power_compliant, light_compliant, heat_compliant) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, name, sortOrder, compliantTemp, powerCompliant, lightCompliant, heatCompliant);
+        res.redirect("/admin/freezer-fridge/warehouses?ok=1");
+    });
+    router.get("/freezer-fridge/warehouses/:id/edit", async (req, res) => {
+        const row = await db.prepare("SELECT * FROM freezer_fridge_warehouses WHERE id = ?").get(req.params.id);
+        if (!row) {
+            res.redirect("/admin/freezer-fridge/warehouses?err=notfound");
+            return;
+        }
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / <a href="/admin/freezer-fridge/warehouses">庫房管理</a> / 編輯</div>
+        <h1 class="notion-page-title">編輯庫房</h1>
+        <div class="notion-card">
+          <form method="post" action="/admin/freezer-fridge/warehouses/${encodeURIComponent(row.id)}/edit">
+            <label>庫房名稱 <input type="text" name="name" value="${escapeAttr(row.name)}" required></label>
+            <label>合規溫度 <input type="text" name="compliant_temp" value="${escapeAttr(row.compliant_temp || "")}"></label>
+            <label>電源合規 <select name="power_compliant"><option value="on" ${row.power_compliant === "on" ? "selected" : ""}>正常為開</option><option value="off" ${row.power_compliant === "off" ? "selected" : ""}>正常為關</option></select></label>
+            <label>電燈合規 <select name="light_compliant"><option value="off" ${row.light_compliant === "off" ? "selected" : ""}>應關閉</option><option value="on" ${row.light_compliant === "on" ? "selected" : ""}>應開啟</option></select></label>
+            <label>電熱合規 <select name="heat_compliant"><option value="off" ${row.heat_compliant === "off" ? "selected" : ""}>符合為關</option><option value="on" ${row.heat_compliant === "on" ? "selected" : ""}>符合為開</option></select></label>
+            <label>順序 <input type="number" name="sort_order" value="${row.sort_order}"></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button> <a href="/admin/freezer-fridge/warehouses" class="btn">取消</a></p>
+          </form>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("編輯庫房", body, "env", res.locals.topBarHtml));
+    });
+    router.post("/freezer-fridge/warehouses/:id/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const id = req.params.id;
+        const name = (req.body.name || "").trim();
+        const compliantTemp = (req.body.compliant_temp || "").trim();
+        const powerCompliant = (req.body.power_compliant || "on").trim();
+        const lightCompliant = (req.body.light_compliant || "off").trim();
+        const heatCompliant = (req.body.heat_compliant || "off").trim();
+        const sortOrder = parseInt(req.body.sort_order, 10) || 0;
+        const row = await db.prepare("SELECT id FROM freezer_fridge_warehouses WHERE id = ?").get(id);
+        if (!row || !name) {
+            res.redirect("/admin/freezer-fridge/warehouses?err=name");
+            return;
+        }
+        await db.prepare("UPDATE freezer_fridge_warehouses SET name = ?, sort_order = ?, compliant_temp = ?, power_compliant = ?, light_compliant = ?, heat_compliant = ? WHERE id = ?").run(name, sortOrder, compliantTemp, powerCompliant, lightCompliant, heatCompliant, id);
+        res.redirect("/admin/freezer-fridge/warehouses?ok=1");
+    });
+    router.get("/freezer-fridge/warehouses/:id/delete", async (req, res) => {
+        const row = await db.prepare("SELECT id, name FROM freezer_fridge_warehouses WHERE id = ?").get(req.params.id);
+        if (!row) {
+            res.redirect("/admin/freezer-fridge/warehouses?err=notfound");
+            return;
+        }
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / <a href="/admin/freezer-fridge/warehouses">庫房管理</a> / 確認刪除</div>
+        <h1 class="notion-page-title">確認刪除</h1>
+        <div class="notion-card"><p>確定要刪除「${escapeHtml(row.name)}」？<br><form method="post" action="/admin/freezer-fridge/warehouses/${encodeURIComponent(row.id)}/delete" style="display:inline;margin-top:12px;"><button type="submit" class="btn">確定刪除</button></form> <a href="/admin/freezer-fridge/warehouses" class="btn">取消</a></p></div>
+      `;
+        res.type("text/html").send(notionPage("確認刪除", body, "env", res.locals.topBarHtml));
+    });
+    router.post("/freezer-fridge/warehouses/:id/delete", async (req, res) => {
+        await db.prepare("DELETE FROM freezer_fridge_warehouses WHERE id = ?").run(req.params.id);
+        res.redirect("/admin/freezer-fridge/warehouses?ok=del");
+    });
+    router.get("/freezer-fridge/daily", async (req, res) => {
+        const date = req.query.date?.trim() || new Date().toISOString().slice(0, 10);
+        const warehouses = await db.prepare("SELECT id, name, sort_order, compliant_temp, power_compliant, light_compliant, heat_compliant FROM freezer_fridge_warehouses ORDER BY sort_order, name").all();
+        const row = await db.prepare("SELECT * FROM freezer_fridge_daily WHERE date = ?").get(date);
+        const entries = row ? parseFridgeEntriesJson(row.entries_json) : [];
+        const entryByWh = {};
+        entries.forEach((e) => { entryByWh[e.warehouseId] = e; });
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / 每日填報</div>
+        <h1 class="notion-page-title">${date} 冷凍冷藏庫房檢查</h1>
+        ${warehouses.length === 0 ? "<p class=\"notion-msg err\">請先至庫房管理新增庫房。</p>" : `
+        <div class="notion-card">
+          <form method="post" action="/admin/freezer-fridge/daily/save">
+            <input type="hidden" name="date" value="${escapeAttr(date)}">
+            <label>填表人 <input type="text" name="filler_name" value="${escapeAttr(row?.filler_name || "")}"></label>
+            <table>
+              <thead><tr><th>庫房</th><th>合規溫度</th><th>溫度</th><th>電源</th><th>電燈</th><th>電熱</th></tr></thead>
+              <tbody>
+                ${warehouses.map((w) => {
+            const e = entryByWh[w.id] || { warehouseId: w.id, temp: "", powerOk: true, lightOff: true, heatOk: true };
+            return `<tr>
+              <td>${escapeHtml(w.name)}</td>
+              <td>${escapeHtml(w.compliant_temp || "")}</td>
+              <td><input type="text" name="temp_${escapeAttr(w.id)}" value="${escapeAttr(e.temp || "")}" placeholder="例：-18"></td>
+              <td><select name="power_${escapeAttr(w.id)}"><option value="ok" ${e.powerOk ? "selected" : ""}>正常</option><option value="ng" ${!e.powerOk ? "selected" : ""}>異常</option></select></td>
+              <td><select name="light_${escapeAttr(w.id)}"><option value="off" ${e.lightOff ? "selected" : ""}>關閉</option><option value="on" ${!e.lightOff ? "selected" : ""}>開啟</option></select></td>
+              <td><select name="heat_${escapeAttr(w.id)}"><option value="ok" ${e.heatOk ? "selected" : ""}>符合</option><option value="ng" ${!e.heatOk ? "selected" : ""}>不符合</option></select></td>
+            </tr>`;
+        }).join("")}
+              </tbody>
+            </table>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button> <a href="/admin/freezer-fridge?month=${encodeURIComponent(date.slice(0, 7))}" class="btn">返回月曆</a></p>
+          </form>
+        </div>
+        `}
+      `;
+        res.type("text/html").send(notionPage(date + " 檢查表", body, "env", res.locals.topBarHtml));
+    });
+    router.post("/freezer-fridge/daily/save", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const date = (req.body.date || "").trim();
+        const fillerName = (req.body.filler_name || "").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            res.redirect("/admin/freezer-fridge/daily?date=" + encodeURIComponent(date || new Date().toISOString().slice(0, 10)) + "&err=date");
+            return;
+        }
+        const warehouses = await db.prepare("SELECT id FROM freezer_fridge_warehouses").all();
+        const entries = warehouses.map((w) => {
+            const temp = (req.body["temp_" + w.id] || "").trim();
+            const power = req.body["power_" + w.id];
+            const light = req.body["light_" + w.id];
+            const heat = req.body["heat_" + w.id];
+            return {
+                warehouseId: w.id,
+                temp,
+                powerOk: power === "ok",
+                lightOff: light === "off",
+                heatOk: heat === "ok",
+            };
+        });
+        const entriesJson = JSON.stringify(entries);
+        const existing = await db.prepare("SELECT date FROM freezer_fridge_daily WHERE date = ?").get(date);
+        if (existing) {
+            await db.prepare("UPDATE freezer_fridge_daily SET entries_json = ?, filler_name = ? WHERE date = ?").run(entriesJson, fillerName || "—", date);
+        }
+        else {
+            await db.prepare("INSERT INTO freezer_fridge_daily (date, entries_json, filler_name) VALUES (?, ?, ?)").run(date, entriesJson, fillerName || "—");
+        }
+        res.redirect("/admin/freezer-fridge/daily?date=" + encodeURIComponent(date) + "&ok=1");
     });
     router.get("/api/binding-status", async (_req, res) => {
         try {
@@ -592,6 +1797,7 @@ function createAdminRouter() {
         <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 訂單查詢</div>
         <h1 class="notion-page-title">訂單查詢</h1>
         ${orderListDbWarning}
+        <p class="notion-msg" style="background:#f0f7ff;border-left:4px solid var(--notion-accent);margin-bottom:12px;">若 LINE 有回覆「已記入」「收單結束」但這裡看不到訂單：請確認您開的是<strong>與 LINE 機器人同一台主機</strong>的後台（例如 Cloud Run 網址 <code>https://xxx.run.app/admin</code>），不是本機 <code>localhost</code>；本機與雲端資料庫不同，訂單只會寫入收到訊息的那台。</p>
         ${req.query.ok === "seq" ? "<p class=\"notion-msg ok\">已儲存本日起始編號。</p>" : ""}
         <p style="margin-bottom:8px;">${showAllDates ? "顯示全部訂單（已忽略結轉日期）。" : "僅顯示日期 ≥ 結轉日期（" + escapeHtml(workingDate) + "）的訂單。"} <a href="/admin/orders${showAllDates ? "" : "?all=1"}">${showAllDates ? "改回依結轉日期篩選" : "顯示全部訂單（不限結轉日期）"}</a></p>
         <p style="margin-bottom:12px;"><a href="/admin/review">待確認品名</a>（補對照）　${filterLink}</p>
@@ -747,12 +1953,21 @@ function createAdminRouter() {
             return;
         }
         if (!productId) {
-            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=product");
+            if (req.get("X-Requested-With") === "XMLHttpRequest") {
+                res.status(400).json({ error: "請選擇有效品項。" });
+                return;
+            }
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=product#items");
             return;
         }
-        const product = await db.prepare("SELECT id FROM products WHERE id = ?").get(productId);
+        const product = await db.prepare("SELECT id, name FROM products WHERE id = ?").get(productId);
         if (!product) {
-            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=product");
+            const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest";
+            if (wantsJson) {
+                res.status(400).json({ error: "請選擇有效品項。" });
+                return;
+            }
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=product#items");
             return;
         }
         const item = await db.prepare("SELECT raw_name FROM order_items WHERE id = ? AND order_id = ?").get(itemId, orderId);
@@ -776,7 +1991,12 @@ function createAdminRouter() {
                 catch (_) { /* 可能重複 */ }
             }
         }
-        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=product");
+        const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest";
+        if (wantsJson) {
+            res.json({ ok: true, productName: product.name || "" });
+            return;
+        }
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=product#items");
     });
     router.get("/orders/:orderId", async (req, res) => {
         const { orderId } = req.params;
@@ -832,7 +2052,7 @@ function createAdminRouter() {
             <td>${unitSelectWithVal}</td>
             <td><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:120px;"></td>
             <td>${teraokaCell}</td>
-            <td><form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(i.item_id)}/delete" style="display:inline;" onsubmit="return confirm('確定要刪除此筆明細？');"><button type="submit" class="btn">刪除</button></form></td>
+            <td><button type="button" class="btn btn-delete-item" data-item-id="${escapeAttr(i.item_id)}" data-order-id="${escapeAttr(orderId)}">刪除</button></td>
           </tr>`;
         })
             .join("");
@@ -852,9 +2072,9 @@ function createAdminRouter() {
           <div id="aiAnalyzeResult" style="display:none;margin-top:12px;padding:12px;background:var(--notion-sidebar);border-radius:var(--notion-radius);font-size:14px;white-space:pre-wrap;line-height:1.5;"></div>
           <div id="aiAnalyzeErr" style="display:none;margin-top:8px;color:#c00;font-size:13px;"></div>
         </div>
-        <div class="notion-card"><pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);margin:0;font-size:13px;">${escapeHtml(order.raw_message ?? "")}</pre></div>
+        <div class="notion-card raw-message-scroll" id="rawOrderBlock"><h3 style="margin-top:0;">原始訂單</h3><div style="max-height:200px;overflow-y:auto;overflow-x:auto;border:1px solid var(--notion-border);border-radius:var(--notion-radius);"><pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);margin:0;font-size:13px;white-space:pre-wrap;word-break:break-all;">${escapeHtml(order.raw_message ?? "")}</pre></div></div>
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items">
-          <div class="notion-card">
+          <div class="notion-card" id="items">
             <table>
               <thead><tr><th>選取</th><th>原始品名</th><th>原始數量</th><th>原始單位</th><th class="order-table-col-system">凌越料號</th><th>凌越品名</th><th>叫貨數量</th><th>叫貨單位</th><th>備註</th><th>寺岡（料號／條碼）</th><th>刪除</th></tr></thead>
               <tbody>${itemsRows}</tbody>
@@ -887,8 +2107,9 @@ function createAdminRouter() {
           }
           searchProducts('');
           searchEl.oninput = function(){ searchProducts(searchEl.value); };
-          document.querySelectorAll('.product-pick').forEach(function(a){
-            a.addEventListener('click', function(e){ e.preventDefault(); currentItemId = this.getAttribute('data-item-id'); modal.style.display = 'flex'; searchEl.value = this.getAttribute('data-raw') || ''; searchProducts(searchEl.value); });
+          document.addEventListener('click', function(e){
+            var pick = e.target.closest('.product-pick');
+            if (pick) { e.preventDefault(); currentItemId = pick.getAttribute('data-item-id'); modal.style.display = 'flex'; searchEl.value = pick.getAttribute('data-raw') || ''; searchProducts(searchEl.value); }
           });
           listEl.addEventListener('click', function(e){
             var div = e.target.closest('.product-option');
@@ -896,20 +2117,64 @@ function createAdminRouter() {
             var productId = div.getAttribute('data-product-id');
             if (!productId) return;
             modal.style.display = 'none';
-            var form = document.createElement('form');
-            form.method = 'post';
-            form.action = '/admin/orders/' + encodeURIComponent(orderId) + '/items/' + encodeURIComponent(currentItemId) + '/product';
-            form.innerHTML = '<input type="hidden" name="product_id" value="' + (productId.replace(/&/g, "&amp;").replace(/"/g, "&quot;")) + '">';
-            document.body.appendChild(form);
-            form.submit();
+            var url = '/admin/orders/' + encodeURIComponent(orderId) + '/items/' + encodeURIComponent(currentItemId) + '/product';
+            var body = 'product_id=' + encodeURIComponent(productId);
+            fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' }, body: body })
+              .then(function(r){ return r.json(); })
+              .then(function(data){
+                if (data && data.ok && data.productName !== undefined) {
+                  var tr = document.querySelector('tr[data-item-id="' + currentItemId.replace(/"/g, '\\"') + '"]');
+                  if (tr && tr.cells[5]) tr.cells[5].innerHTML = (data.productName || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + ' <a href="#" class="product-pick product-change" data-item-id="' + currentItemId.replace(/"/g, '&quot;') + '">改品項</a>';
+                } else { alert(data && data.error ? data.error : '更新失敗'); }
+              })
+              .catch(function(){ alert('請求失敗'); });
+          });
+          document.addEventListener('click', function(e){
+            var btn = e.target.closest('.btn-delete-item');
+            if (!btn) return;
+            var itemId = btn.getAttribute('data-item-id');
+            var ordId = btn.getAttribute('data-order-id');
+            if (!itemId || !ordId || !confirm('確定要刪除此筆明細？')) return;
+            var url = '/admin/orders/' + encodeURIComponent(ordId) + '/items/' + encodeURIComponent(itemId) + '/delete';
+            fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+              .then(function(r){ return r.json(); })
+              .then(function(data){ if (data && data.ok) { var tr = btn.closest('tr'); if (tr) tr.remove(); } else { alert(data && data.error ? data.error : '刪除失敗'); } })
+              .catch(function(){ alert('請求失敗'); });
           });
           var itemsForm = document.getElementById('itemsForm');
-          if (itemsForm) itemsForm.addEventListener('change', function(e){
-            if (e.target.name && e.target.name.indexOf('include_') === 0 && e.target.type === 'checkbox') {
-              var tr = e.target.closest('tr');
-              if (tr) tr.classList.toggle('order-row-excluded', !e.target.checked);
-            }
-          });
+          if (itemsForm) {
+            itemsForm.addEventListener('change', function(e){
+              if (e.target.name && e.target.name.indexOf('include_') === 0 && e.target.type === 'checkbox') {
+                var tr = e.target.closest('tr');
+                if (tr) tr.classList.toggle('order-row-excluded', !e.target.checked);
+              }
+            });
+            itemsForm.addEventListener('submit', function(e){
+              e.preventDefault();
+              var btn = itemsForm.querySelector('button[type="submit"]');
+              var origText = btn ? btn.textContent : '';
+              if (btn) { btn.disabled = true; btn.textContent = '儲存中…'; }
+              var formData = new FormData(itemsForm);
+              fetch(itemsForm.action, { method: 'POST', body: new URLSearchParams(formData), headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' } })
+                .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, data: d }; }); })
+                .then(function(result){
+                  if (btn) { btn.disabled = false; btn.textContent = origText; }
+                  if (result.ok && result.data && result.data.ok) {
+                    var msg = document.getElementById('itemsFormSavedMsg');
+                    if (!msg) { msg = document.createElement('p'); msg.id = 'itemsFormSavedMsg'; msg.className = 'notion-msg ok'; itemsForm.querySelector('.notion-card').appendChild(msg); }
+                    msg.textContent = '已儲存數量、單位、備註與選取。';
+                    msg.style.display = 'block';
+                    setTimeout(function(){ msg.style.display = 'none'; }, 3000);
+                  } else {
+                    alert(result.data && result.data.error ? result.data.error : '儲存失敗，請稍後再試。');
+                  }
+                })
+                .catch(function(){
+                  if (btn) { btn.disabled = false; btn.textContent = origText; }
+                  alert('儲存請求失敗，請稍後再試。');
+                });
+            });
+          }
           var aiBtn = document.getElementById('aiAnalyzeBtn');
           if (aiBtn) aiBtn.addEventListener('click', function(){
             var btn = this;
@@ -921,18 +2186,23 @@ function createAdminRouter() {
             btn.disabled = true;
             btn.textContent = '分析中…';
             fetch('/admin/api/orders/' + encodeURIComponent(orderId) + '/ai-analyze')
-              .then(function(r){ return r.json(); })
-              .then(function(data){
+              .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, data: d }; }); })
+              .then(function(result){
                 btn.disabled = false;
                 btn.textContent = '分析此筆訂單';
-                if (data.error) { errEl.textContent = data.error; errEl.style.display = 'block'; return; }
-                resultEl.textContent = data.analysis || '';
+                if (!result.ok || result.data.error) {
+                  errEl.textContent = (result.data && result.data.error) ? result.data.error : (result.ok ? '' : 'AI 服務無法連線，請檢查網路或稍後再試。');
+                  errEl.style.display = 'block';
+                  return;
+                }
+                resultEl.textContent = result.data.analysis || '';
                 resultEl.style.display = 'block';
+                errEl.style.display = 'none';
               })
-              .catch(function(){
+              .catch(function(e){
                 btn.disabled = false;
                 btn.textContent = '分析此筆訂單';
-                errEl.textContent = '請求失敗，請稍後再試。';
+                errEl.textContent = (e && e.message) ? e.message : '請求失敗，請稍後再試。';
                 errEl.style.display = 'block';
               });
           });
@@ -990,7 +2260,20 @@ function createAdminRouter() {
             if (!resp.ok) {
                 const errBody = await resp.text();
                 console.warn("[admin] Gemini API 非 200:", resp.status, errBody.slice(0, 200));
-                res.status(resp.status).json({ error: "AI 服務暫時無法使用，請稍後再試。" });
+                let errMsg = "AI 服務暫時無法使用，請稍後再試。";
+                try {
+                    const errJson = JSON.parse(errBody);
+                    const detail = errJson?.error?.message || errJson?.error?.status || errJson?.message;
+                    if (detail)
+                        errMsg = typeof detail === "string" ? detail : String(detail);
+                }
+                catch (_) {
+                    if (errBody && errBody.length < 500)
+                        errMsg = errBody;
+                    else if (errBody)
+                        errMsg = errBody.slice(0, 400) + (errBody.length > 400 ? "…" : "");
+                }
+                res.status(resp.status >= 400 ? resp.status : 502).json({ error: errMsg });
                 return;
             }
             const data = await resp.json();
@@ -1003,8 +2286,9 @@ function createAdminRouter() {
             res.json({ analysis: content });
         }
         catch (e) {
-            console.error("[admin] AI 分析失敗:", e?.message || e);
-            res.status(500).json({ error: "分析時發生錯誤，請稍後再試。" });
+            const msg = e?.message || String(e);
+            console.error("[admin] AI 分析失敗:", msg);
+            res.status(500).json({ error: msg.slice(0, 500) || "分析時發生錯誤，請稍後再試。" });
         }
     });
     router.get("/orders/:orderId/attachment/:messageId", async (req, res) => {
@@ -1039,8 +2323,13 @@ function createAdminRouter() {
     });
     router.post("/orders/:orderId/items", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { orderId } = req.params;
+        const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest" || (req.get("Accept") || "").includes("application/json");
         const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
         if (!order) {
+            if (wantsJson) {
+                res.status(404).json({ error: "訂單不存在" });
+                return;
+            }
             res.status(404).send("訂單不存在");
             return;
         }
@@ -1069,6 +2358,10 @@ function createAdminRouter() {
             const includeExport = body["include_" + row.id] === "1" ? 1 : 0;
             await db.prepare("UPDATE order_items SET include_export = ? WHERE id = ? AND order_id = ?").run(includeExport, row.id, orderId);
         }
+        if (wantsJson) {
+            res.json({ ok: true });
+            return;
+        }
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=items");
     });
     router.post("/orders/:orderId/items/:itemId/delete", async (req, res) => {
@@ -1079,7 +2372,12 @@ function createAdminRouter() {
             return;
         }
         await db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(itemId, orderId);
-        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=del_item");
+        const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest";
+        if (wantsJson) {
+            res.json({ ok: true });
+            return;
+        }
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=del_item#items");
     });
     router.get("/orders/:orderId/items/add", async (req, res) => {
         const { orderId } = req.params;
@@ -1100,7 +2398,7 @@ function createAdminRouter() {
             <label>品項 <select name="product_id" required style="width:100%;">${productOptions}</select></label>
             <label>數量 <input type="number" name="quantity" step="any" min="0" value="0" required style="width:8rem;"></label>
             <label>單位 <select name="unit" style="width:8rem;">${unitOpts}</select></label>
-            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">新增</button> <a href="/admin/orders/${encodeURIComponent(orderId)}" class="btn">取消</a></p>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">新增</button> <a href="/admin/orders/${encodeURIComponent(orderId)}#items" class="btn">取消</a></p>
           </form>
         </div>
       `;
@@ -1127,7 +2425,7 @@ function createAdminRouter() {
         }
         const itemId = (0, id_js_1.newId)("item");
         await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, ?, ?, 0, 1)").run(itemId, orderId, productId, product.name, qty, unit);
-        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=add_item");
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=add_item#items");
     });
     router.get("/barcode", async (req, res) => {
         const code = req.query.code?.trim();

@@ -82,6 +82,27 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
     }
     catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec("ALTER TABLE inventory_warehouse_products ADD COLUMN safety_stock REAL NOT NULL DEFAULT 0");
+    }
+    catch (_) { /* column may already exist */ }
+    try {
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_sales (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, warehouse_id TEXT NOT NULL, product_id TEXT NOT NULL, qty_sold REAL NOT NULL DEFAULT 0, imported_at TEXT)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TEXT)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT, raw_name TEXT, quantity REAL NOT NULL DEFAULT 0, unit TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (order_id) REFERENCES logistics_orders(id), FOREIGN KEY (product_id) REFERENCES products(id))");
+    }
+    catch (_) { /* tables may already exist */ }
+    try {
+        sqlite.exec("ALTER TABLE logistics_order_items ADD COLUMN amount TEXT");
+    }
+    catch (_) { /* column may already exist */ }
+    try {
+        sqlite.exec("CREATE TABLE IF NOT EXISTS line_bot_state_log (id TEXT PRIMARY KEY, event_type TEXT NOT NULL, detail TEXT, created_at TEXT)");
+    }
+    catch (_) { /* table may already exist */ }
     for (const alt of alters) {
         try {
             sqlite.exec(alt);
@@ -121,6 +142,27 @@ async function initPg() {
             catch (_) { /* column may already exist */ }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), line_message_id TEXT NOT NULL, created_at TIMESTAMPTZ)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query("ALTER TABLE inventory_warehouse_products ADD COLUMN safety_stock DOUBLE PRECISION NOT NULL DEFAULT 0");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("CREATE TABLE IF NOT EXISTS erp_sales (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, warehouse_id TEXT NOT NULL REFERENCES inventory_warehouses(id), product_id TEXT NOT NULL REFERENCES products(id), qty_sold DOUBLE PRECISION NOT NULL DEFAULT 0, imported_at TIMESTAMPTZ)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TIMESTAMPTZ)");
+                await client.query("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES logistics_orders(id), product_id TEXT REFERENCES products(id), raw_name TEXT, quantity DOUBLE PRECISION NOT NULL DEFAULT 0, unit TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0)");
+            }
+            catch (_) { /* tables may already exist */ }
+            try {
+                await client.query("ALTER TABLE logistics_order_items ADD COLUMN amount TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("CREATE TABLE IF NOT EXISTS line_bot_state_log (id TEXT PRIMARY KEY, event_type TEXT NOT NULL, detail TEXT, created_at TIMESTAMPTZ)");
             }
             catch (_) { /* table may already exist */ }
         }

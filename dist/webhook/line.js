@@ -11,6 +11,7 @@ const parse_order_message_js_1 = require("../lib/parse-order-message.js");
 const resolve_product_js_1 = require("../lib/resolve-product.js");
 const id_js_1 = require("../lib/id.js");
 const vision_ocr_js_1 = require("../lib/vision-ocr.js");
+const line_bot_control_js_1 = require("../lib/line-bot-control.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
@@ -50,7 +51,7 @@ function createLineWebhook() {
       <h1>LINE Webhook</h1>
       <p>此網址僅接受 <strong>POST</strong> 請求，供 LINE 平台推送訊息使用。</p>
       <p>請勿在瀏覽器直接開啟此頁面來「測試」；請到 <strong>LINE Developers Console</strong> → 您的 Channel → <strong>Messaging API</strong> → 將 <strong>Webhook URL</strong> 設為本頁網址，並將 <strong>Use webhook</strong> 設為 Enabled。</p>
-      <p><a href="/">← 回首頁</a>　<a href="/admin">後台</a></p>
+      <p><a href="/admin">← 回後台</a></p>
     </body></html>`);
     });
     router.post("/", (req, res) => {
@@ -107,6 +108,11 @@ function createLineWebhook() {
                         }
                         if (!customer) {
                             await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。", db);
+                            continue;
+                        }
+                        const acceptingImg = await (0, line_bot_control_js_1.isBotAcceptingOrders)(db);
+                        if (!acceptingImg) {
+                            console.log("[LINE] 圖片：機器人目前不收單，略過");
                             continue;
                         }
                         const inCollecting = groupId ? collectingByGroup.has(groupId) : false;
@@ -214,6 +220,11 @@ function createLineWebhook() {
                     }
                     if (!customer) {
                         await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。", db);
+                        continue;
+                    }
+                    const accepting = await (0, line_bot_control_js_1.isBotAcceptingOrders)(db);
+                    if (!accepting) {
+                        console.log("[LINE] 文字：機器人目前不收單（關閉或不在排程），略過回覆");
                         continue;
                     }
                     const customerId = customer.id;
@@ -324,6 +335,17 @@ function createLineWebhook() {
                             await reply(lineClient, event.replyToken, "目前沒有在收單。請先傳「收單」或「訂單」開始，傳完說「以上X收單」結束。", db);
                         }
                         continue;
+                    }
+                    const gateSettings = await (0, line_bot_control_js_1.getLineBotSettings)(db);
+                    if (gateSettings.aiGate) {
+                        const inCollect = groupId && collectingByGroup.has(groupId);
+                        if (!inCollect) {
+                            const cls = await (0, line_bot_control_js_1.classifyTextAsOrderIntent)(text);
+                            if (cls === false) {
+                                console.log("[LINE] AI 判定非訂單相關，不回覆");
+                                continue;
+                            }
+                        }
                     }
                     if (groupId && collectingByGroup.has(groupId)) {
                         const session = collectingByGroup.get(groupId);
