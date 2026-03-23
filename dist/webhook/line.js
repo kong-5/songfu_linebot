@@ -12,13 +12,99 @@ const resolve_product_js_1 = require("../lib/resolve-product.js");
 const id_js_1 = require("../lib/id.js");
 const vision_ocr_js_1 = require("../lib/vision-ocr.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
+const wholesale_price_js_1 = require("../lib/wholesale-price.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
 const hasLineConfig = Boolean(channelAccessToken && channelSecret);
-/** 收單模式：群組 ID -> { orderId, customerId, lastActivity }；逾時 1 分鐘自動結單 */
-const COLLECT_TIMEOUT_MS = 1 * 60 * 1000;
+/** 收單模式：群組 ID -> { orderId, customerId, lastActivity }；逾時 30 秒自動結單 */
+const COLLECT_TIMEOUT_MS = 30 * 1000;
 const collectingByGroup = new Map();
+const autoFinalizeTimers = new Map();
+function getTaipeiOrderDate() {
+    // 00:00~05:59 算當天；06:00 之後算隔天
+    const now = new Date();
+    const tw = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Taipei" }));
+    if (tw.getHours() >= 6) {
+        tw.setDate(tw.getDate() + 1);
+    }
+    return tw.toISOString().slice(0, 10);
+}
+function money(v) {
+    const n = Number(v || 0);
+    return Number.isFinite(n) ? n.toLocaleString("zh-TW") : "0";
+}
+function normalizeOrderUnit(raw, fallbackUnit) {
+    const u = String(raw || "").trim().toUpperCase();
+    if (!u)
+        return fallbackUnit || "公斤";
+    if (u === "K" || u === "KG" || u === "公斤" || u === "千克" || u === "斤") {
+        return "公斤";
+    }
+    return String(raw || "").trim();
+}
+function isKgUnit(unit) {
+    const u = String(unit || "").trim().toUpperCase();
+    return u === "公斤" || u === "KG" || u === "K";
+}
+function shiftDate(isoDate, deltaDays) {
+    const d = new Date(isoDate + "T12:00:00");
+    d.setDate(d.getDate() + deltaDays);
+    return d.toISOString().slice(0, 10);
+}
+async function fetchPricesWithFallback(baseDate, maxBackDays = 7) {
+    for (let i = 0; i <= maxBackDays; i++) {
+        const d = i === 0 ? baseDate : shiftDate(baseDate, -i);
+        const prices = await (0, wholesale_price_js_1.fetchTaipeiWholesalePrices)(d);
+        if (prices && prices.length > 0) {
+            return { dateUsed: d, prices };
+        }
+    }
+    return { dateUsed: baseDate, prices: [] };
+}
+async function loadPricePrefixRules(db) {
+    const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_price_prefix_rules");
+    const fallback = { "*": 2, LM: 10 };
+    if (!row?.value)
+        return fallback;
+    try {
+        const parsed = JSON.parse(String(row.value));
+        if (!parsed || typeof parsed !== "object")
+            return fallback;
+        const out = {};
+        for (const [k, v] of Object.entries(parsed)) {
+            const n = Number(v);
+            if (Number.isFinite(n))
+                out[String(k).toUpperCase()] = n;
+        }
+        if (Object.keys(out).length === 0)
+            return fallback;
+        if (out["*"] == null)
+            out["*"] = 2;
+        return out;
+    }
+    catch (_) {
+        return fallback;
+    }
+}
+function unitPriceFromRules(item, match, prefixRules) {
+    const high = Number(match?.highPrice);
+    if (!Number.isFinite(high))
+        return 0;
+    const erp = String(item?.erp_code || "").toUpperCase();
+    let markup = Number(prefixRules["*"] ?? 2);
+    let hitLen = 0;
+    for (const [prefix, val] of Object.entries(prefixRules)) {
+        if (!prefix || prefix === "*")
+            continue;
+        const p = String(prefix).toUpperCase();
+        if (erp.startsWith(p) && p.length > hitLen) {
+            hitLen = p.length;
+            markup = Number(val);
+        }
+    }
+    return Math.max(0, Math.round((high + (Number.isFinite(markup) ? markup : 0)) * 100) / 100);
+}
 async function getNextOrderNo(db, orderDate) {
     const nextKey = "order_seq_next_" + orderDate;
     const startKey = "order_seq_start_" + orderDate;
@@ -37,6 +123,72 @@ function createLineWebhook() {
     const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
     const db = (0, index_js_1.getDb)(dbPath);
     const lineClient = hasLineConfig ? new bot_sdk_1.Client(lineConfig) : null;
+    const scheduleAutoFinalize = (groupId, session) => {
+        if (!groupId)
+            return;
+        const old = autoFinalizeTimers.get(groupId);
+        if (old)
+            clearTimeout(old);
+        const t = setTimeout(async () => {
+            try {
+                const active = collectingByGroup.get(groupId);
+                if (!active || active.orderId !== session.orderId)
+                    return;
+                collectingByGroup.delete(groupId);
+                autoFinalizeTimers.delete(groupId);
+                const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId);
+                const items = await db.prepare(`
+          SELECT oi.raw_name, oi.quantity, oi.unit, p.name AS product_name, p.erp_code
+          FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
+          WHERE oi.order_id = ? ORDER BY oi.id
+        `).all(session.orderId);
+                const dateStr = order?.order_date || getTaipeiOrderDate();
+                const pricePrefixRules = await loadPricePrefixRules(db);
+                const priceData = await fetchPricesWithFallback(dateStr, 7);
+                const priceList = priceData.prices;
+                const lines = [];
+                let idx = 1;
+                let total = 0;
+                let pricedCount = 0;
+                for (const it of items) {
+                    const qty = Number(it.quantity || 0);
+                    const unit = normalizeOrderUnit(it.unit, "公斤");
+                    const m = (0, wholesale_price_js_1.matchCropPrice)(priceList || [], it.product_name || it.raw_name || "");
+                    const unitPrice = isKgUnit(unit) ? unitPriceFromRules(it, m, pricePrefixRules) : 0;
+                    const sub = qty * unitPrice;
+                    total += sub;
+                    if (unitPrice > 0)
+                        pricedCount += 1;
+                    const name = it.product_name || it.raw_name || "待確認";
+                    if (unitPrice > 0) {
+                        lines.push(`${idx}. ${name} ${qty}${unit || ""} 單價$${money(unitPrice)} 小計$${money(sub)}`);
+                    }
+                    else {
+                        lines.push(`${idx}. ${name} ${qty}${unit || ""}`);
+                    }
+                    idx += 1;
+                }
+                const hasPrice = pricedCount > 0;
+                const summary = [
+                    "收到，已收單喔。",
+                    `送貨日期為：${dateStr}`,
+                    `行情日期參考：${priceData.dateUsed}`,
+                    "訂購項目如下：",
+                    hasPrice ? "項次 品項 數量 單位 單價 小計" : "項次 品項 數量 單位",
+                    ...(lines.length ? lines : ["（目前尚無可辨識品項）"]),
+                    ...(hasPrice ? [`總計：$${money(total)}`] : []),
+                    "價格僅供參考，依當日會單為主。",
+                ].join("\n");
+                if (lineClient) {
+                    await lineClient.pushMessage(groupId, { type: "text", text: summary });
+                }
+            }
+            catch (e) {
+                console.error("[LINE] 30 秒自動結單失敗:", e?.message || e);
+            }
+        }, COLLECT_TIMEOUT_MS);
+        autoFinalizeTimers.set(groupId, t);
+    };
     if (hasLineConfig) {
         router.use((0, bot_sdk_1.middleware)(lineConfig));
     }
@@ -110,11 +262,7 @@ function createLineWebhook() {
                             await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。", db);
                             continue;
                         }
-                        const acceptingImg = await (0, line_bot_control_js_1.isBotAcceptingOrders)(db);
-                        if (!acceptingImg) {
-                            console.log("[LINE] 圖片：機器人目前不收單，略過");
-                            continue;
-                        }
+                        // 改為每則都可處理，不再檢查是否處於收單時段
                         const inCollecting = groupId ? collectingByGroup.has(groupId) : false;
                         const messageId = event.message.id;
                         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
@@ -149,7 +297,7 @@ function createLineWebhook() {
                                         const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, session.customerId);
                                         const itemId = (0, id_js_1.newId)("item");
                                         const productId = resolved?.productId ?? null;
-                                        const unit = item.unit && item.unit.trim() ? item.unit.trim() : fallbackUnit;
+                                        const unit = normalizeOrderUnit(item.unit, fallbackUnit);
                                         await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
              VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, session.orderId, productId, item.rawName, item.quantity, unit, resolved ? 0 : 1);
                                     }
@@ -157,13 +305,10 @@ function createLineWebhook() {
                                 }
                             }
                             await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, session.orderId);
-                            const replyMsg = parsedCount > 0
-                                ? `已收到圖片並辨識出 ${parsedCount} 項。可繼續傳品項或說「以上X收單」結束。`
-                                : "已收到圖片，會一併處理。請繼續傳品項或說「以上X收單」結束。";
-                            await reply(lineClient, event.replyToken, replyMsg, db);
+                            // 不回中途提示，僅在 30 秒自動結單時推送摘要
                         }
                         else {
-                            const orderDate = new Date().toISOString().slice(0, 10);
+                            const orderDate = getTaipeiOrderDate();
                             let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customer.id, orderDate);
                             let orderId;
                             if (orderRow) {
@@ -175,11 +320,13 @@ function createLineWebhook() {
                                 await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status)
                VALUES (?, ?, ?, ?, ?, ?, 'pending')`).run(orderId, orderNo, customer.id, orderDate, groupId, "");
                             }
-                            if (groupId)
-                                collectingByGroup.set(groupId, { orderId, customerId: customer.id, lastActivity: Date.now() });
+                            if (groupId) {
+                                const session = { orderId, customerId: customer.id, lastActivity: Date.now() };
+                                collectingByGroup.set(groupId, session);
+                                scheduleAutoFinalize(groupId, session);
+                            }
                             const attId = (0, id_js_1.newId)("att");
                             await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, orderId, messageId);
-                            let replyMsg = "已開始收單並收到您傳的圖片，可繼續傳品項或再傳圖。傳完說「以上X收單」結束。";
                             if (ocrText) {
                                 const parsed = (0, parse_order_message_js_1.parseOrderMessage)(ocrText);
                                 if (parsed.length > 0) {
@@ -189,16 +336,15 @@ function createLineWebhook() {
                                         const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, customer.id);
                                         const itemId = (0, id_js_1.newId)("item");
                                         const productId = resolved?.productId ?? null;
-                                        const unit = item.unit && item.unit.trim() ? item.unit.trim() : fallbackUnit;
+                                        const unit = normalizeOrderUnit(item.unit, fallbackUnit);
                                         await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
              VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, resolved ? 0 : 1);
                                     }
                                     const newRaw = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + ocrText;
                                     await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, orderId);
-                                    replyMsg = `已開始收單並辨識出 ${parsed.length} 項。可繼續傳品項或再傳圖，傳完說「以上X收單」結束。`;
                                 }
                             }
-                            await reply(lineClient, event.replyToken, replyMsg, db);
+                            // 不回中途提示，僅在 30 秒自動結單時推送摘要
                         }
                         continue;
                     }
@@ -222,13 +368,9 @@ function createLineWebhook() {
                         await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。", db);
                         continue;
                     }
-                    const accepting = await (0, line_bot_control_js_1.isBotAcceptingOrders)(db);
-                    if (!accepting) {
-                        console.log("[LINE] 文字：機器人目前不收單（關閉或不在排程），略過回覆");
-                        continue;
-                    }
+                    // 改為每則都可處理，不再檢查是否處於收單時段
                     const customerId = customer.id;
-                    const orderDate = new Date().toISOString().slice(0, 10);
+                    const orderDate = getTaipeiOrderDate();
                     const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_start");
                     const startTriggers = (startRow?.value ?? "收單\n開始收單\n訂單\n我要下訂\n明日訂單").split(/\n/).map((s) => s.trim()).filter(Boolean);
                     const intentRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_intent");
@@ -254,9 +396,11 @@ function createLineWebhook() {
                             await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status)
                VALUES (?, ?, ?, ?, ?, ?, 'pending')`).run(orderId, orderNo, customerId, orderDate, groupId, "");
                         }
-                        if (groupId)
-                            collectingByGroup.set(groupId, { orderId, customerId, lastActivity: Date.now() });
-                        let replyDone = "開始收單。請傳品項，傳完說「以上X收單」結束；一分鐘內無訊息將自動結單。";
+                        if (groupId) {
+                            const session = { orderId, customerId, lastActivity: Date.now() };
+                            collectingByGroup.set(groupId, session);
+                            scheduleAutoFinalize(groupId, session);
+                        }
                         if (rest) {
                             const parsed = (0, parse_order_message_js_1.parseOrderMessage)(rest);
                             const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
@@ -268,18 +412,15 @@ function createLineWebhook() {
                                 const productId = resolved?.productId ?? null;
                                 if (!resolved)
                                     needReview.push(item.rawName);
-                                const unit = item.unit && item.unit.trim() ? item.unit.trim() : fallbackUnit;
+                                const unit = normalizeOrderUnit(item.unit, fallbackUnit);
                                 await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
              VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, resolved ? 0 : 1);
                             }
                             const orderRow2 = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
                             const newRaw = (orderRow2?.raw_message ? orderRow2.raw_message + "\n" : "") + rest;
                             await db.prepare("UPDATE orders SET raw_message = ?, updated_at = datetime('now') WHERE id = ?").run(newRaw, orderId);
-                            replyDone = parsed.length > 0
-                                ? `已記入本則 ${parsed.length} 項。可繼續傳品項，傳完說「以上X收單」結束。`
-                                : "已開始收單。本則未辨識到品名與數量，請另傳「品名 數量 單位」。傳完說「以上X收單」結束。";
                         }
-                        await reply(lineClient, event.replyToken, replyDone, db);
+                        // 不回中途提示，僅在 30 秒自動結單時推送摘要
                         continue;
                     }
                     if (text === "今天叫了什麼" || text === "今日訂單" || text === "今日叫貨") {
@@ -307,6 +448,10 @@ function createLineWebhook() {
                         if (groupId && collectingByGroup.has(groupId)) {
                             const session = collectingByGroup.get(groupId);
                             collectingByGroup.delete(groupId);
+                            const oldTimer = autoFinalizeTimers.get(groupId);
+                            if (oldTimer)
+                                clearTimeout(oldTimer);
+                            autoFinalizeTimers.delete(groupId);
                             const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(session.customerId);
                             const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
                             const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
@@ -325,65 +470,49 @@ function createLineWebhook() {
                             const orderInfo = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId);
                             const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
                             const n = count?.c ?? 0;
-                            const dateStr = orderInfo?.order_date || new Date().toISOString().slice(0, 10);
+                            const dateStr = orderInfo?.order_date || getTaipeiOrderDate();
                             const weekdays = "日一二三四五六";
                             const dayIdx = new Date(dateStr + "T12:00:00").getDay();
                             const weekday = "星期" + weekdays[dayIdx];
-                            await reply(lineClient, event.replyToken, `收單結束。訂單日期：${dateStr} ${weekday}，共收 ${n} 項。`, db);
+                            console.log("[LINE] 手動關單完成 date=%s count=%s %s", dateStr, n, weekday);
                         }
                         else {
-                            await reply(lineClient, event.replyToken, "目前沒有在收單。請先傳「收單」或「訂單」開始，傳完說「以上X收單」結束。", db);
+                            console.log("[LINE] 手動關單但目前無 session");
                         }
                         continue;
                     }
-                    const gateSettings = await (0, line_bot_control_js_1.getLineBotSettings)(db);
-                    if (gateSettings.aiGate) {
-                        const inCollect = groupId && collectingByGroup.has(groupId);
-                        if (!inCollect) {
-                            const cls = await (0, line_bot_control_js_1.classifyTextAsOrderIntent)(text);
-                            if (cls === false) {
-                                console.log("[LINE] AI 判定非訂單相關，不回覆");
-                                continue;
-                            }
-                        }
+                    // 每則文字都跑 AI 判斷（僅作記錄，不再阻擋收單流程）
+                    try {
+                        const cls = await (0, line_bot_control_js_1.classifyTextAsOrderIntent)(text);
+                        console.log("[LINE] AI 判斷 is_order_related =", cls);
+                    }
+                    catch (e) {
+                        console.log("[LINE] AI 判斷失敗，改走規則流程");
                     }
                     if (groupId && collectingByGroup.has(groupId)) {
                         const session = collectingByGroup.get(groupId);
-                        if (Date.now() - (session.lastActivity || 0) > COLLECT_TIMEOUT_MS) {
-                            collectingByGroup.delete(groupId);
-                            const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(session.customerId);
-                            const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
-                            const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
-                            if (emptyBasketErp) {
-                                const emptyBasket = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(emptyBasketErp);
-                                if (emptyBasket) {
-                                    const itemId1 = (0, id_js_1.newId)("item");
-                                    await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId1, session.orderId, emptyBasket.id, emptyBasket.name, emptyBasket.unit || "個");
-                                }
-                            }
-                            const squareBasket = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get("C0100065");
-                            if (squareBasket) {
-                                const itemId2 = (0, id_js_1.newId)("item");
-                                await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId2, session.orderId, squareBasket.id, squareBasket.name, squareBasket.unit || "個");
-                            }
-                            const orderInfo = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId);
-                            const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
-                            const n = count?.c ?? 0;
-                            const dateStr = orderInfo?.order_date || new Date().toISOString().slice(0, 10);
-                            const weekdays = "日一二三四五六";
-                            const dayIdx = new Date(dateStr + "T12:00:00").getDay();
-                            const weekday = "星期" + weekdays[dayIdx];
-                            await reply(lineClient, event.replyToken, `已自動結單（1 分鐘內無新訊息）。訂單日期：${dateStr} ${weekday}，共收 ${n} 項。`, db);
-                            continue;
-                        }
                         session.lastActivity = Date.now();
+                        scheduleAutoFinalize(groupId, session);
                     }
-                    // 未在收單模式：若內容像叫貨（含數字），回覆一句提示，否則不回覆
-                    if (!groupId || !collectingByGroup.has(groupId)) {
-                        const looksLikeOrder = /[\d\uFF10-\uFF19]/.test(text) && text.length >= 2;
-                        if (looksLikeOrder) {
-                            await reply(lineClient, event.replyToken, "請先傳「收單」或「訂單」開始收單，再傳品項。", db);
+                    // 不再要求先輸入「收單」；若尚未有 session，收到文字即自動開單
+                    if (groupId && !collectingByGroup.has(groupId)) {
+                        const autoOrderDate = getTaipeiOrderDate();
+                        let autoOrder = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, autoOrderDate);
+                        let autoOrderId;
+                        if (autoOrder) {
+                            autoOrderId = autoOrder.id;
                         }
+                        else {
+                            autoOrderId = (0, id_js_1.newId)("ord");
+                            const autoOrderNo = await getNextOrderNo(db, autoOrderDate);
+                            await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending')`).run(autoOrderId, autoOrderNo, customerId, autoOrderDate, groupId, "");
+                        }
+                        const autoSession = { orderId: autoOrderId, customerId, lastActivity: Date.now() };
+                        collectingByGroup.set(groupId, autoSession);
+                        scheduleAutoFinalize(groupId, autoSession);
+                    }
+                    if (!groupId || !collectingByGroup.has(groupId)) {
                         continue;
                     }
                     // 收單模式：將本則當成叫貨累加
@@ -406,15 +535,11 @@ function createLineWebhook() {
                         const needReviewFlag = resolved ? 0 : 1;
                         if (!resolved)
                             needReview.push(item.rawName);
-                        const unit = item.unit && item.unit.trim() ? item.unit.trim() : fallbackUnit;
+                        const unit = normalizeOrderUnit(item.unit, fallbackUnit);
                         await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
              VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, needReviewFlag);
                     }
-                    let replyText = parsed.length > 0
-                        ? `已記入本則 ${parsed.length} 項。傳完說「以上X收單」結束。`
-                        : "本則沒有辨識到品名與數量，請用「品名 數量 單位」格式。傳完由我方輸入「以上X收單」結束。";
-                    console.log("[LINE] 準備回覆:", replyText);
-                    await reply(lineClient, event.replyToken, replyText, db);
+                    // 不回中途提示，僅在 30 秒自動結單時推送摘要
                     console.log("[LINE] 訂單已寫入", orderId);
                 }
                 catch (err) {

@@ -41,8 +41,11 @@ function createPgWrapper(pool) {
     };
 }
 function getDb(dbPath) {
-    if (DATABASE_URL && pgPool) {
-        return createPgWrapper(pgPool);
+    if (DATABASE_URL) {
+        if (pgPool) {
+            return createPgWrapper(pgPool);
+        }
+        throw new Error("PostgreSQL 尚未連線成功。請檢查 DATABASE_URL（Supabase 請用 Transaction Pooler 主機如 aws-0-區域.pooler.supabase.com、使用者 postgres.專案ref、埠 6543）與 Cloud Run Logs。");
     }
     if (!db) {
         const sqlite = new better_sqlite3_1.default(dbPath);
@@ -121,12 +124,27 @@ function initSqlite(dbPath) {
         close() { sqlite.close(); },
     };
 }
+function pgPoolOptions() {
+    const raw = (DATABASE_URL || "").trim();
+    // 連線字串內的 sslmode=require 可能讓 node-pg 仍驗證憑證鏈（自簽名鏈報錯）；改由 opts.ssl 強制關閉驗證
+    let conn = raw.replace(/[?&]sslmode=[^&]*/gi, "");
+    conn = conn.replace(/\?$/, "");
+    const opts = {
+        connectionString: conn,
+        connectionTimeoutMillis: 20000,
+        max: Number(process.env.PG_POOL_MAX || 8),
+    };
+    const needInsecureTls = /supabase\.(co|com)/i.test(raw) ||
+        process.env.PGSSLMODE === "require" ||
+        /[?&]sslmode=require/i.test(raw);
+    if (needInsecureTls) {
+        opts.ssl = { rejectUnauthorized: false };
+    }
+    return opts;
+}
 async function initPg() {
     const pg = require("pg");
-    pgPool = new pg.Pool({
-        connectionString: DATABASE_URL,
-        connectionTimeoutMillis: 15000,
-    });
+    pgPool = new pg.Pool(pgPoolOptions());
     try {
         const client = await pgPool.connect();
         try {
@@ -171,13 +189,13 @@ async function initPg() {
         }
     }
     catch (e) {
-        console.error("[startup] PostgreSQL 連線失敗，請檢查 DATABASE_URL 與 Cloud Run「連線」是否已加 Cloud SQL:", e.message || e);
+        console.error("[startup] PostgreSQL 連線失敗，請檢查 DATABASE_URL（Supabase 請用 Pooling 連線字串、含 ssl）:", e.message || e);
         throw e;
     }
 }
 function initDb(dbPath) {
     if (DATABASE_URL) {
-        console.log("[startup] 使用 PostgreSQL (Cloud SQL)");
+        console.log("[startup] 使用 PostgreSQL（Cloud SQL / Supabase 等）");
         return initPg();
     }
     console.log("[startup] 使用 SQLite（部署後資料不會保留，請在 Cloud Run 設定 DATABASE_URL）");

@@ -48,6 +48,7 @@ const resolve_product_js_1 = require("../lib/resolve-product.js");
 const vision_ocr_js_1 = require("../lib/vision-ocr.js");
 const wholesale_price_js_1 = require("../lib/wholesale-price.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
+const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 let ADMIN_UI_VERSION = process.env.ADMIN_UI_VERSION || "";
 if (!ADMIN_UI_VERSION) {
@@ -104,6 +105,10 @@ const NOTION_STYLE = `
   .notion-msg { padding: 10px 14px; border-radius: var(--notion-radius); margin-bottom: 16px; font-size: 14px; }
   .notion-msg.ok { background: #e7f5e9; color: #2e7d32; }
   .notion-msg.err { background: #ffebee; color: #c62828; }
+  .notion-sidebar .notion-brand { display: block; padding: 10px 14px 14px; font-size: 17px; font-weight: 700; color: #1a1a1a; text-decoration: none; border-bottom: 1px solid var(--notion-border); margin-bottom: 6px; }
+  .notion-sidebar .notion-brand:hover { background: var(--notion-hover); }
+  .notion-sidebar .notion-brand.active { color: var(--notion-accent); background: var(--notion-hover); }
+  .notion-actionbar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; padding: 12px 40px 0; flex-shrink: 0; width: 100%; box-sizing: border-box; }
   .notion-topbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 20px; background: var(--notion-sidebar); border-bottom: 1px solid var(--notion-border); }
   .notion-topbar .topbar-date { font-size: 14px; display: flex; align-items: center; gap: 8px; }
   .notion-topbar .topbar-date input[type=date] { padding: 6px 10px; }
@@ -129,18 +134,11 @@ const NOTION_STYLE = `
 `;
 const NOTION_SIDEBAR = (active) => `
   <nav class="notion-sidebar">
+    <a href="/admin" class="notion-brand ${active === "dashboard" ? "active" : ""}">松富物流</a>
     <details class="sidebar-group" ${active === "line-bot" ? "open" : ""}>
       <summary class="sidebar-group-title">LINE 機器人</summary>
       <div class="sidebar-links">
         <a href="/admin/line-bot" class="${active === "line-bot" ? "active" : ""}">啟動與排程</a>
-      </div>
-    </details>
-    <a href="/admin" class="${active === "dashboard" ? "active" : ""}">回後台</a>
-    <a href="javascript:history.back()">上一頁</a>
-    <details class="sidebar-group">
-      <summary class="sidebar-group-title">日期結轉</summary>
-      <div class="sidebar-links">
-        <a href="/admin">結轉日期</a>
       </div>
     </details>
     <details class="sidebar-group">
@@ -179,11 +177,12 @@ const NOTION_SIDEBAR = (active) => `
         <a href="/admin/inventory/manager" class="${active === "inv-manager" ? "active" : ""}">管理人設定</a>
       </div>
     </details>
-    <details class="sidebar-group" ${active === "logistics" || active === "logistics-procurement" ? "open" : ""}>
+    <details class="sidebar-group" ${active === "logistics" || active === "logistics-procurement" || active === "logistics-market" ? "open" : ""}>
       <summary class="sidebar-group-title">物流工具</summary>
       <div class="sidebar-links">
         <a href="/admin/logistics/orders" class="${active === "logistics" ? "active" : ""}">訂單整理</a>
         <a href="/admin/logistics/procurement" class="${active === "logistics-procurement" ? "active" : ""}">採購分析</a>
+        <a href="/admin/logistics/market" class="${active === "logistics-market" ? "active" : ""}">北農行情</a>
       </div>
     </details>
     <details class="sidebar-group" ${active === "env" ? "open" : ""}>
@@ -195,6 +194,87 @@ const NOTION_SIDEBAR = (active) => `
     <div class="sidebar-version" style="padding:10px 14px;font-size:11px;color:var(--notion-text-muted);border-top:1px solid var(--notion-border);margin-top:8px;">後台 v${ADMIN_UI_VERSION}</div>
   </nav>
 `;
+function parseAdminCookies(header) {
+    const out = {};
+    if (!header)
+        return out;
+    for (const part of header.split(";")) {
+        const idx = part.indexOf("=");
+        if (idx < 0)
+            continue;
+        const k = part.slice(0, idx).trim();
+        const v = decodeURIComponent(part.slice(idx + 1).trim());
+        out[k] = v;
+    }
+    return out;
+}
+function getAdminSessionSecret() {
+    return process.env.ADMIN_SESSION_SECRET || "songfu-admin-dev-secret-change-in-production";
+}
+function hashAdminPassword(password) {
+    const salt = crypto_1.randomBytes(16).toString("hex");
+    const hash = crypto_1.pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
+    return salt + ":" + hash;
+}
+function verifyAdminPassword(password, stored) {
+    const parts = String(stored).split(":");
+    if (parts.length !== 2)
+        return false;
+    const salt = parts[0];
+    const hash = parts[1];
+    const h = crypto_1.pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
+    try {
+        return crypto_1.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(h, "hex"));
+    }
+    catch {
+        return false;
+    }
+}
+function signAdminSession(username) {
+    const exp = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    const payload = Buffer.from(JSON.stringify({ u: username, exp })).toString("base64url");
+    const sig = crypto_1.createHmac("sha256", getAdminSessionSecret()).update(payload).digest("base64url");
+    return payload + "." + sig;
+}
+function verifyAdminSessionToken(token) {
+    if (!token || typeof token !== "string")
+        return null;
+    const parts = token.split(".");
+    if (parts.length !== 2)
+        return null;
+    const payload = parts[0];
+    const sig = parts[1];
+    const expected = crypto_1.createHmac("sha256", getAdminSessionSecret()).update(payload).digest("base64url");
+    try {
+        if (!crypto_1.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)))
+            return null;
+    }
+    catch {
+        return null;
+    }
+    try {
+        const data = JSON.parse(Buffer.from(payload, "base64url").toString());
+        if (!data.u || !data.exp || Date.now() > data.exp)
+            return null;
+        return String(data.u);
+    }
+    catch {
+        return null;
+    }
+}
+function renderAdminActionBar(username) {
+    const u = escapeHtml(username || "");
+    return `
+    <div class="notion-actionbar no-print">
+      <div style="flex:1;"></div>
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;justify-content:flex-end;">
+        <button type="button" class="btn" onclick="history.back()">上一頁</button>
+        <a href="/admin/users" class="btn">人員管理</a>
+        <span style="font-size:13px;color:var(--notion-text-muted);">${u}</span>
+        <form method="post" action="/admin/logout" style="display:inline;margin:0;"><button type="submit" class="btn">登出</button></form>
+      </div>
+    </div>`;
+}
 async function getWorkingDate(database) {
     const row = await database.prepare("SELECT value FROM app_settings WHERE key = ?").get("working_date");
     if (row && row.value)
@@ -220,23 +300,170 @@ function renderTopBar(workingDate, canUndo) {
       </div>
     </div>`;
 }
-function notionPage(title, body, active = "", topBar = "") {
-    const main = topBar ? `<div class="notion-main-wrap">${topBar}<main class="notion-main">${body}</main></div>` : `<main class="notion-main">${body}</main>`;
-    return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富叫貨後台</title><style>${NOTION_STYLE}</style></head><body><div class="notion-layout">${NOTION_SIDEBAR(active)}${main}</div></body></html>`;
+function notionPage(title, body, active = "", topBar = "", actionBar = "") {
+    const ab = actionBar || "";
+    const tb = topBar || "";
+    const main = ab || tb
+        ? `<div class="notion-main-wrap">${ab}${tb}<main class="notion-main">${body}</main></div>`
+        : `<main class="notion-main">${body}</main>`;
+    return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富物流後台</title><style>${NOTION_STYLE}</style></head><body><div class="notion-layout">${NOTION_SIDEBAR(active)}${main}</div></body></html>`;
 }
 function createAdminRouter() {
     const router = express_1.default.Router();
     const db = (0, index_js_1.getDb)(dbPath);
-    router.use(async (_req, res, next) => {
+    async function loadAdminUsers() {
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("admin_users");
+        if (!row?.value)
+            return [];
         try {
-            const workingDate = await getWorkingDate(db);
-            const prev = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("previous_working_date");
-            res.locals.topBarHtml = renderTopBar(workingDate, !!(prev && prev.value));
-            next();
+            const j = JSON.parse(row.value);
+            return Array.isArray(j) ? j : [];
         }
-        catch (e) {
-            next(e);
+        catch {
+            return [];
         }
+    }
+    async function saveAdminUsers(users) {
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("admin_users", JSON.stringify(users));
+    }
+    router.use((_req, res, next) => {
+        res.locals.topBarHtml = "";
+        res.locals.actionBarHtml = "";
+        next();
+    });
+    router.get("/login", async (_req, res) => {
+        const users = await loadAdminUsers();
+        if (users.length === 0) {
+            res.redirect(302, "/admin/setup");
+            return;
+        }
+        const err = _req.query.err === "1";
+        const ok = _req.query.ok === "1";
+        const nextParam = typeof _req.query.next === "string" && _req.query.next.startsWith("/admin") ? _req.query.next : "/admin";
+        res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>登入 － 松富物流後台</title><style>body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:#f7f6f3;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}.box{max-width:400px;width:100%;background:#fff;border:1px solid #e3e2e0;border-radius:8px;padding:28px;}.box h1{font-size:22px;margin:0 0 16px;color:#37352f;}label{display:block;margin-top:12px;font-size:14px;}input{width:100%;padding:10px 12px;margin-top:6px;border:1px solid #e3e2e0;border-radius:6px;font-size:14px;box-sizing:border-box;}button{margin-top:20px;width:100%;padding:10px;background:#2383e2;color:#fff;border:none;border-radius:6px;font-size:15px;cursor:pointer;font-weight:600;}.err{background:#ffebee;color:#c62828;padding:10px 12px;border-radius:6px;font-size:14px;margin-bottom:12px;}.ok{background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:6px;font-size:14px;margin-bottom:12px;}</style></head><body><div class="box"><h1>松富物流 後台登入</h1>${err ? "<div class=\"err\">帳號或密碼錯誤。</div>" : ""}${ok ? "<div class=\"ok\">已建立管理員，請登入。</div>" : ""}<form method="post" action="/admin/login"><input type="hidden" name="next" value="${escapeAttr(nextParam)}"><label>帳號 <input type="text" name="username" required autocomplete="username"></label><label>密碼 <input type="password" name="password" required autocomplete="current-password"></label><button type="submit">登入</button></form></div></body></html>`);
+    });
+    router.get("/setup", async (_req, res) => {
+        const users = await loadAdminUsers();
+        if (users.length > 0) {
+            res.redirect(302, "/admin/login");
+            return;
+        }
+        const err = _req.query.err;
+        const errHtml = err === "weak" ? "<div class=\"err\">帳號至少 2 字元、密碼至少 4 字元。</div>" : "";
+        res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>首次設定管理員 － 松富物流</title><style>body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:#f7f6f3;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}.box{max-width:400px;width:100%;background:#fff;border:1px solid #e3e2e0;border-radius:8px;padding:28px;}.box h1{font-size:22px;margin:0 0 8px;color:#37352f;}p{color:#787774;font-size:14px;margin:0 0 16px;}label{display:block;margin-top:12px;font-size:14px;}input{width:100%;padding:10px 12px;margin-top:6px;border:1px solid #e3e2e0;border-radius:6px;font-size:14px;box-sizing:border-box;}button{margin-top:20px;width:100%;padding:10px;background:#2383e2;color:#fff;border:none;border-radius:6px;font-size:15px;cursor:pointer;font-weight:600;}.err{background:#ffebee;color:#c62828;padding:10px 12px;border-radius:6px;font-size:14px;margin-bottom:12px;}</style></head><body><div class="box"><h1>首次設定管理員</h1><p>尚無後台帳號，請建立第一組帳號密碼。</p>${errHtml}<form method="post" action="/admin/setup"><label>帳號 <input type="text" name="username" required minlength="2" autocomplete="username"></label><label>密碼 <input type="password" name="password" required minlength="4" autocomplete="new-password"></label><button type="submit">建立並前往登入</button></form></div></body></html>`);
+    });
+    router.post("/setup", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const users = await loadAdminUsers();
+        if (users.length > 0) {
+            res.redirect("/admin/login");
+            return;
+        }
+        const username = (req.body.username || "").trim();
+        const password = (req.body.password || "").toString();
+        if (username.length < 2 || password.length < 4) {
+            res.redirect("/admin/setup?err=weak");
+            return;
+        }
+        await saveAdminUsers([{ username, passwordHash: hashAdminPassword(password) }]);
+        res.redirect("/admin/login?ok=1");
+    });
+    router.post("/login", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const users = await loadAdminUsers();
+        const username = (req.body.username || "").trim();
+        const password = (req.body.password || "").toString();
+        const u = users.find((x) => x.username === username);
+        if (!u || !verifyAdminPassword(password, u.passwordHash)) {
+            res.redirect("/admin/login?err=1");
+            return;
+        }
+        const token = signAdminSession(username);
+        res.setHeader("Set-Cookie", `sf_admin_session=${encodeURIComponent(token)}; Path=/admin; HttpOnly; Max-Age=${7 * 24 * 3600}; SameSite=Lax`);
+        let nextUrl = (req.body.next || "/admin").toString();
+        if (!nextUrl.startsWith("/admin"))
+            nextUrl = "/admin";
+        res.redirect(302, nextUrl);
+    });
+    router.post("/logout", (_req, res) => {
+        res.setHeader("Set-Cookie", "sf_admin_session=; Path=/admin; HttpOnly; Max-Age=0; SameSite=Lax");
+        res.redirect(302, "/admin/login");
+    });
+    router.use(async (req, res, next) => {
+        const pathname = req.path || "/";
+        if (pathname === "/login" && req.method === "GET")
+            return next();
+        if (pathname === "/setup" && req.method === "GET")
+            return next();
+        if (pathname === "/login" && req.method === "POST")
+            return next();
+        if (pathname === "/setup" && req.method === "POST")
+            return next();
+        if (pathname === "/logout" && req.method === "POST")
+            return next();
+        const cookies = parseAdminCookies(req.headers.cookie || "");
+        const token = cookies.sf_admin_session;
+        const uname = verifyAdminSessionToken(token);
+        if (!uname) {
+            const nu = encodeURIComponent(req.originalUrl || "/admin");
+            res.redirect(302, "/admin/login?next=" + nu);
+            return;
+        }
+        req.adminUsername = uname;
+        res.locals.actionBarHtml = renderAdminActionBar(uname);
+        next();
+    });
+    router.get("/users", async (req, res) => {
+        const users = await loadAdminUsers();
+        const msg = req.query.ok === "add" ? "<p class=\"notion-msg ok\">已新增帳號。</p>" : req.query.ok === "del" ? "<p class=\"notion-msg ok\">已刪除帳號。</p>" : req.query.err === "dup" ? "<p class=\"notion-msg err\">帳號已存在。</p>" : req.query.err === "last" ? "<p class=\"notion-msg err\">至少需保留一個帳號。</p>" : req.query.err === "weak" ? "<p class=\"notion-msg err\">帳號至少 2 字元、密碼至少 4 字元。</p>" : "";
+        const rows = users.map((u) => `<tr><td>${escapeHtml(u.username)}</td><td>${users.length <= 1 ? "—" : `<form method="post" action="/admin/users/delete" style="display:inline;margin:0;" onsubmit="return confirm('確定刪除 ${escapeAttr(u.username)}？');"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="btn">刪除</button></form>`}</td></tr>`).join("");
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 人員管理</div>
+        <h1 class="notion-page-title">人員管理</h1>
+        ${msg}
+        <div class="notion-card">
+          <h2 style="margin-top:0;">帳號列表</h2>
+          <table><thead><tr><th>帳號</th><th>操作</th></tr></thead><tbody>${rows || "<tr><td colspan=\"2\">尚無資料</td></tr>"}</tbody></table>
+        </div>
+        <div class="notion-card">
+          <h2 style="margin-top:0;">新增帳號</h2>
+          <form method="post" action="/admin/users/add">
+            <label>帳號 <input type="text" name="username" required minlength="2" autocomplete="off"></label>
+            <label>密碼 <input type="password" name="password" required minlength="4" autocomplete="new-password"></label>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">新增</button></p>
+          </form>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("人員管理", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
+    });
+    router.post("/users/add", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const username = (req.body.username || "").trim();
+        const password = (req.body.password || "").toString();
+        if (username.length < 2 || password.length < 4) {
+            res.redirect("/admin/users?err=weak");
+            return;
+        }
+        const users = await loadAdminUsers();
+        if (users.some((x) => x.username === username)) {
+            res.redirect("/admin/users?err=dup");
+            return;
+        }
+        users.push({ username, passwordHash: hashAdminPassword(password) });
+        await saveAdminUsers(users);
+        res.redirect("/admin/users?ok=add");
+    });
+    router.post("/users/delete", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const delName = (req.body.username || "").trim();
+        const users = await loadAdminUsers();
+        if (users.length <= 1) {
+            res.redirect("/admin/users?err=last");
+            return;
+        }
+        const next = users.filter((x) => x.username !== delName);
+        if (next.length === users.length) {
+            res.redirect("/admin/users");
+            return;
+        }
+        await saveAdminUsers(next);
+        res.redirect("/admin/users?ok=del");
     });
     router.post("/api/working-date", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const date = req.body.date?.trim();
@@ -284,7 +511,7 @@ function createAdminRouter() {
             ? logs.map((r) => `<tr><td style="white-space:nowrap;font-size:12px;">${escapeHtml(r.created_at || "")}</td><td>${escapeHtml(r.event_type || "")}</td><td style="font-size:12px;word-break:break-all;">${escapeHtml((r.detail || "").slice(0, 200))}</td></tr>`).join("")
             : "<tr><td colspan='3'>尚無紀錄</td></tr>";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / LINE 機器人</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / LINE 機器人</div>
         <h1 class="notion-page-title">LINE 機器人：啟動與排程</h1>
         ${_req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存設定。</p>" : ""}
         <p>${statusBadge}</p>
@@ -309,7 +536,7 @@ function createAdminRouter() {
           <table><thead><tr><th>時間</th><th>類型</th><th>內容</th></tr></thead><tbody>${logRows}</tbody></table>
         </div>
       `;
-        res.type("text/html").send(notionPage("LINE 機器人", body, "line-bot", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("LINE 機器人", body, "line-bot", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/line-bot", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const mode = (req.body.line_bot_mode || "always_on").toString().trim();
@@ -326,54 +553,31 @@ function createAdminRouter() {
         res.redirect("/admin/line-bot?ok=1");
     });
     router.get("/", async (_req, res) => {
-        const monthKey = "line_replies_" + new Date().toISOString().slice(0, 7);
-        let replyCount = 0;
+        const dateStr = new Date().toISOString().slice(0, 10);
+        let prices = [];
+        let marketMsg = "";
         try {
-            const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(monthKey);
-            replyCount = (row && parseInt(row.value, 10)) || 0;
+            prices = (await (0, wholesale_price_js_1.fetchTaipeiWholesalePrices)(dateStr)) || [];
+            if (!prices.length)
+                marketMsg = "今日尚無台北果菜市場行情或 API 暫無資料。";
         }
-        catch (_) { /* app_settings 可能尚無該 key */ }
-        const usingCloudSql = Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.trim());
-        const dbNotice = usingCloudSql
-            ? `<div class="notion-card" style="border-left:4px solid #0a0;"><h2 style="margin-top:0;">資料庫狀態</h2><p><strong>PostgreSQL (Cloud SQL)</strong> － 訂單、客戶、品項會長期保留。</p></div>`
-            : `<div class="notion-card" style="border-left:4px solid #c00;"><h2 style="margin-top:0;">⚠️ 資料不會長期保留</h2><p>目前使用 <strong>SQLite</strong>，資料存在容器內，<strong>重新部署、關機或縮容後會消失</strong>，收單後後台可能看不到、前幾天的資料也會不見。</p><p>請在 Cloud Run 設定 <strong>DATABASE_URL</strong> 連線 Cloud SQL（PostgreSQL），才能長期記憶。詳見 <a href="https://github.com/kong-5/songfu_linebot#readme" target="_blank" rel="noopener">說明</a> 或後台文件「觸發程式設定 DATABASE_URL」。</p></div>`;
+        catch (e) {
+            marketMsg = "讀取行情失敗，請稍後再試。";
+        }
+        const previewRows = prices.slice(0, 18).map((p) => `<tr><td>${escapeHtml(p.marketName || "")}</td><td>${escapeHtml(p.cropName || "")}</td><td>${p.avgPrice ?? "—"}</td></tr>`).join("");
         const body = `
-        <div class="notion-breadcrumb">工作台</div>
-        <h1 class="notion-page-title">工作台</h1>
-        ${dbNotice}
+        <div class="notion-breadcrumb">儀表板</div>
+        <h1 class="notion-page-title">儀表板</h1>
         <div class="notion-card" style="border-left:4px solid var(--notion-accent);">
-          <h2>LINE 用量（本系統紀錄）</h2>
-          <p><strong>本月已回覆 ${replyCount} 則</strong>（僅統計本機器人成功發送的回覆則數，僅供參考。）</p>
-          <p style="color:var(--notion-text-muted);font-size:13px;">實際則數與剩餘額度請至 <a href="https://manager.line.biz/" target="_blank" rel="noopener">LINE 官方帳號管理後台</a> 查看。LINE 不提供「剩餘則數」API，故本頁無法顯示剩餘則數。</p>
+          <h2 style="margin-top:0;">北農行情（${escapeHtml(dateStr)}）</h2>
+          <p style="font-size:14px;color:var(--notion-text-muted);margin-top:0;">台北一、台北二批發均價等（資料來源：農業部開放資料）</p>
+          ${marketMsg ? `<p class="notion-msg err">${escapeHtml(marketMsg)}</p>` : ""}
+          <table><thead><tr><th>市場</th><th>作物</th><th>平均價（元／公斤）</th></tr></thead><tbody>${previewRows || "<tr><td colspan=\"3\">無資料</td></tr>"}</tbody></table>
+          <p style="margin-top:12px;"><a href="/admin/logistics/market" class="btn btn-primary">查看完整北農行情</a></p>
         </div>
-        <div class="notion-card">
-          <h2>可花到錢的項目（LINE 官方帳號計費）</h2>
-          <p>以下為 LINE 官方帳號常見計費方式，<strong>實際以 LINE 官方公告與您的方案為準</strong>。</p>
-          <ul style="margin:12px 0 0;padding-left:20px;">
-            <li><strong>回覆訊息（Reply）</strong>：用戶傳訊息後機器人回覆，會計入「則數」。輕用量免費約 200 則/月，超過後需升級方案或加購。</li>
-            <li><strong>主動推播（Push）</strong>：機器人主動發訊息給用戶（非回覆），也會計費。</li>
-            <li><strong>方案與月費</strong>：輕用量 0 元/月（約 200 則）；中用量約 800 元/月（約 3,000 則）；高用量約 1,200 元/月起（約 6,000 則起，可加購則數，每則約 0.2 元起）。</li>
-          </ul>
-          <p style="margin-top:12px;font-size:13px;"><a href="https://tw.linebiz.com/faq/oa-price/message-price-list/" target="_blank" rel="noopener">LINE 訊息費用說明</a></p>
-        </div>
-        <div class="notion-card">
-          <h2>資料匯入</h2>
-          <p><a href="/admin/import-customers">匯入客戶</a>（CSV / Excel，含 CustName 格式）</p>
-          <p><a href="/admin/import">匯入品項</a>（標準品名、ERP、寺岡條碼）</p>
-          <p><a href="/admin/import-teraoka">寺岡資料對照</a>（依品名寫入寺岡條碼）</p>
-        </div>
-        <div class="notion-card">
-          <h2>查詢與維護</h2>
-          <ul style="margin:0;padding-left:20px;">
-            <li><a href="/admin/review">待確認品名</a> － 補正俗名／客戶別名</li>
-            <li><a href="/admin/orders">訂單查詢</a></li>
-            <li><a href="/admin/customers">客戶管理</a>、<a href="/admin/customers/new">新增客戶</a></li>
-            <li><a href="/admin/line-binding">LINE 綁定檢查</a> － 確認群組 ID 是否正確</li>
-            <li><a href="/admin/products">品項與俗名</a></li>
-          </ul>
-        </div>
+        <p style="color:var(--notion-text-muted);font-size:13px;">更多儀表板項目將陸續新增。</p>
       `;
-        res.type("text/html").send(notionPage("工作台", body, "dashboard", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("儀表板", body, "dashboard", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/inventory", async (req, res) => {
         const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
@@ -420,7 +624,7 @@ function createAdminRouter() {
             rows = rows.filter((r) => (r.product_name || "").toLowerCase().indexOf(qFilter) >= 0);
         const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}" ${w.id === whFilter ? "selected" : ""}>${escapeHtml(w.name)}</option>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 盤點作業</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 盤點作業</div>
         <h1 class="notion-page-title">盤點作業</h1>
         <div class="notion-card">
           <h2>各品項目前存量與安全庫存</h2>
@@ -451,13 +655,13 @@ function createAdminRouter() {
           </ul>
         </div>
       `;
-        res.type("text/html").send(notionPage("盤點作業", body, "inventory", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("盤點作業", body, "inventory", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/inventory/warehouses", async (req, res) => {
         const rows = await db.prepare("SELECT id, name, sort_order FROM inventory_warehouses ORDER BY sort_order, name").all();
         const msg = req.query.ok === "1" ? "<p class=\"notion-msg ok\">已新增庫房。</p>" : req.query.ok === "edit" ? "<p class=\"notion-msg ok\">已儲存。</p>" : req.query.ok === "del" ? "<p class=\"notion-msg ok\">已刪除。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 庫房管理</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 庫房管理</div>
         <h1 class="notion-page-title">庫房管理</h1>
         ${msg}
         <p style="margin-bottom:16px;"><a href="/admin/inventory/warehouses/new" class="btn btn-primary">＋ 新增庫房</a></p>
@@ -470,11 +674,11 @@ function createAdminRouter() {
           </table>
         </div>
       `;
-        res.type("text/html").send(notionPage("庫房管理", body, "inv-wh", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("庫房管理", body, "inv-wh", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/inventory/warehouses/new", async (_req, res) => {
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 新增庫房</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 新增庫房</div>
         <h1 class="notion-page-title">新增庫房</h1>
         <div class="notion-card">
           <form method="post" action="/admin/inventory/warehouses/new">
@@ -484,7 +688,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("新增庫房", body, "inv-wh", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("新增庫房", body, "inv-wh", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/inventory/warehouses/new", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const name = (req.body.name || "").trim();
@@ -505,7 +709,7 @@ function createAdminRouter() {
             return;
         }
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 編輯庫房</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 編輯庫房</div>
         <h1 class="notion-page-title">編輯庫房</h1>
         <div class="notion-card">
           <form method="post" action="/admin/inventory/warehouses/${encodeURIComponent(row.id)}/edit">
@@ -515,7 +719,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("編輯庫房", body, "inv-wh", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("編輯庫房", body, "inv-wh", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/inventory/warehouses/:id/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const id = req.params.id;
@@ -540,7 +744,7 @@ function createAdminRouter() {
             return;
         }
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 確認刪除</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 確認刪除</div>
         <h1 class="notion-page-title">確認刪除庫房</h1>
         <div class="notion-card">
           <p>確定要刪除「${escapeHtml(row.name)}」？此庫房內已歸倉的品項與每日盤點紀錄將一併移除關聯。</p>
@@ -550,7 +754,7 @@ function createAdminRouter() {
           </p>
         </div>
       `;
-        res.type("text/html").send(notionPage("確認刪除庫房", body, "inv-wh", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("確認刪除庫房", body, "inv-wh", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/inventory/warehouses/:id/delete", async (req, res) => {
         const id = req.params.id;
@@ -578,7 +782,7 @@ function createAdminRouter() {
         const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}" ${w.id === whId ? "selected" : ""}>${escapeHtml(w.name)}</option>`).join("");
         const availableProducts = whId ? allProducts.filter((p) => !inWarehouse.some((x) => x.product_id === p.id)) : [];
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 品項歸倉</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 品項歸倉</div>
         <h1 class="notion-page-title">品項歸倉</h1>
         ${req.query.ok === "1" ? "<p class=\"notion-msg ok\">已加入品項。</p>" : req.query.ok === "settings" ? "<p class=\"notion-msg ok\">已儲存排序與安全庫存。</p>" : req.query.ok === "remove" ? "<p class=\"notion-msg ok\">已移出。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : ""}
         <p>選擇庫房後，將「貨品管理」中的品項加入此庫房；加入後才會在「每日盤點」中出現。</p>
@@ -623,7 +827,7 @@ function createAdminRouter() {
         </div>
         ` : ""}
       `;
-        res.type("text/html").send(notionPage("品項歸倉", body, "inv-assign", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("品項歸倉", body, "inv-assign", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/inventory/assign/add", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const whId = (req.body.warehouse_id || "").trim();
@@ -682,7 +886,7 @@ function createAdminRouter() {
         const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}" ${w.id === whId ? "selected" : ""}>${escapeHtml(w.name)}</option>`).join("");
         const msg = req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存盤點。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 每日盤點</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 每日盤點</div>
         <h1 class="notion-page-title">每日盤點</h1>
         ${msg}
         <form method="get" action="/admin/inventory/daily" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
@@ -711,7 +915,7 @@ function createAdminRouter() {
         </div>
         ` : whId ? "<p class=\"notion-msg err\">此庫房尚無品項，請先至「品項歸倉」將品項加入此庫房。</p>" : ""}
       `;
-        res.type("text/html").send(notionPage("每日盤點", body, "inv-daily", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("每日盤點", body, "inv-daily", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/inventory/daily/save", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const recordDate = (req.body.record_date || "").trim();
@@ -750,7 +954,7 @@ function createAdminRouter() {
         const count = req.query.count ? Number(req.query.count) : 0;
         const msg = req.query.ok ? "<p class=\"notion-msg ok\">已匯入 ERP 資料" + (count ? "，共 " + count + " 筆。" : "。") + "</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 匯入 ERP 資料</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 匯入 ERP 資料</div>
         <h1 class="notion-page-title">匯入 ERP 銷貨資料</h1>
         ${msg}
         <p>上傳 CSV 或貼上內容，格式：<strong>日期,品項,銷貨數量,倉庫</strong>。日期為 YYYY-MM-DD；品項為品項 ID 或品名；倉庫為倉庫 ID 或名稱（可省略則需於下方選擇預設倉庫）。</p>
@@ -764,7 +968,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("匯入 ERP 資料", body, "inv-erp", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("匯入 ERP 資料", body, "inv-erp", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     const multer = require("multer");
     const uploadMemory = multer({ storage: multer.memoryStorage() });
@@ -869,7 +1073,7 @@ function createAdminRouter() {
         }
         const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}" ${w.id === whId ? "selected" : ""}>${escapeHtml(w.name)}</option>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 盤差報表</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 盤差報表</div>
         <h1 class="notion-page-title">盤差報表</h1>
         <p>依日期區間與倉庫計算盤差（盤點數量 − 帳面數量，帳面 = 前日盤點 − 當日 ERP 銷貨）。可匯出 CSV，並檢視易盤差品項統計。</p>
         <div class="notion-card">
@@ -886,14 +1090,14 @@ function createAdminRouter() {
           ${rows.length ? `<table><thead><tr><th>日期</th><th>倉庫</th><th>品項</th><th>帳面</th><th>盤點</th><th>盤差</th></tr></thead><tbody>${rows.slice(0, 500).map((r) => `<tr><td>${r.date}</td><td>${escapeHtml(r.warehouse_name)}</td><td>${escapeHtml(r.product_name)}</td><td>${r.book}</td><td>${r.curr}</td><td style="color:${r.variance !== 0 ? "#c00" : ""}">${r.variance}</td></tr>`).join("")}</tbody></table>${rows.length > 500 ? "<p>僅顯示前 500 筆，請用匯出 CSV 取得完整資料。</p>" : ""}` : "<p>請選擇日期區間並查詢。</p>"}
         </div>
       `;
-        res.type("text/html").send(notionPage("盤差報表", body, "inv-report", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("盤差報表", body, "inv-report", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/inventory/manager", async (req, res) => {
         const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("inventory_manager");
         const current = (row && row.value) || "";
         const msg = req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存管理人。</p>" : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/inventory">盤點作業</a> / 管理人設定</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 管理人設定</div>
         <h1 class="notion-page-title">盤點作業管理人</h1>
         ${msg}
         <div class="notion-card">
@@ -903,7 +1107,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("管理人設定", body, "inv-manager", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("管理人設定", body, "inv-manager", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/inventory/manager", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const name = (req.body.manager_name || "").trim();
@@ -933,7 +1137,7 @@ function createAdminRouter() {
             ? "<tr><td colspan='4'>此區間無紙本訂單</td></tr>"
             : orders.map((o) => `<tr><td>${escapeHtml(o.order_date)}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml((o.raw_message || "").slice(0, 60))}${(o.raw_message || "").length > 60 ? "…" : ""}</td><td>${escapeHtml(o.memo || "—")}</td><td><a href="/admin/logistics/orders/${encodeURIComponent(o.id)}">檢視／編輯</a></td></tr>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 物流工具 / 訂單整理</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 訂單整理</div>
         <h1 class="notion-page-title">訂單整理（紙本訂單）</h1>
         ${req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存訂單。</p>" : ""}
         <p>整理紙本訂單：上傳圖片或貼上文字後由 Google AI 辨識，預覽調整後儲存。可依日期查詢。</p>
@@ -949,12 +1153,12 @@ function createAdminRouter() {
           </table>
         </div>
       `;
-        res.type("text/html").send(notionPage("訂單整理", body, "logistics", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("訂單整理", body, "logistics", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/logistics/orders/new", async (_req, res) => {
         const today = new Date().toISOString().slice(0, 10);
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/logistics/orders">訂單整理</a> / 新增</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/logistics/orders">訂單整理</a> / 新增</div>
         <h1 class="notion-page-title">新增紙本訂單</h1>
         <p>貼上訂單文字，或上傳訂單照片，由 Google AI 辨識後預覽品項、可調整再儲存。</p>
         <div class="notion-card">
@@ -1070,7 +1274,73 @@ function createAdminRouter() {
         })();
         </script>
       `;
-        res.type("text/html").send(notionPage("新增紙本訂單", body, "logistics", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("新增紙本訂單", body, "logistics", res.locals.topBarHtml, res.locals.actionBarHtml));
+    });
+    router.get("/logistics/market", async (req, res) => {
+        const dateStr = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
+        let prices = [];
+        let msg = "";
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+            try {
+                prices = (await (0, wholesale_price_js_1.fetchTaipeiWholesalePrices)(dateStr)) || [];
+                if (!prices.length)
+                    msg = "該日尚無台北果菜市場（台北一、台北二）行情。";
+            }
+            catch (e) {
+                msg = "讀取行情失敗，請稍後再試。";
+            }
+        }
+        else {
+            msg = "日期格式錯誤，請使用 YYYY-MM-DD。";
+        }
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_price_prefix_rules");
+        const rulesText = row?.value || JSON.stringify({ "*": 2, LM: 10 }, null, 2);
+        const rows = prices.slice(0, 300).map((p) => `<tr><td>${escapeHtml(p.marketName || "")}</td><td>${escapeHtml(p.cropName || "")}</td><td>${p.highPrice ?? "—"}</td><td>${p.midPrice ?? "—"}</td><td>${p.lowPrice ?? "—"}</td><td>${p.avgPrice ?? "—"}</td></tr>`).join("");
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 北農行情</div>
+        <h1 class="notion-page-title">北農行情（台北一、台北二）</h1>
+        ${req.query.ok === "1" ? '<p class="notion-msg ok">已儲存加價規則。</p>' : ""}
+        ${req.query.err === "rules" ? '<p class="notion-msg err">規則格式錯誤，請輸入 JSON 物件。</p>' : ""}
+        <form method="get" action="/admin/logistics/market" style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+          <label>日期 <input type="date" name="date" value="${escapeAttr(dateStr)}"></label>
+          <button type="submit" class="btn">查詢</button>
+        </form>
+        ${msg ? `<p class="notion-msg warn">${escapeHtml(msg)}</p>` : ""}
+        <div class="notion-card">
+          <table><thead><tr><th>市場</th><th>作物</th><th>上價</th><th>中價</th><th>下價</th><th>平均價</th></tr></thead><tbody>${rows || "<tr><td colspan='6'>無資料</td></tr>"}</tbody></table>
+        </div>
+        <div class="notion-card" style="margin-top:16px;">
+          <h2 style="margin-top:0;">LINE 報價加價規則</h2>
+          <p style="font-size:13px;color:var(--notion-text-muted);">格式為 JSON，key 為 ERP 料號前綴、value 為加價。<code>*</code> 代表預設。例：<code>{"*":2,"LM":10}</code>。</p>
+          <form method="post" action="/admin/logistics/market/rules">
+            <textarea name="rules_json" rows="8" style="width:100%;box-sizing:border-box;">${escapeHtml(rulesText)}</textarea>
+            <p style="margin-top:8px;"><button type="submit" class="btn btn-primary">儲存規則</button></p>
+          </form>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("北農行情", body, "logistics-market", res.locals.topBarHtml, res.locals.actionBarHtml));
+    });
+    router.post("/logistics/market/rules", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const txt = String(req.body?.rules_json || "").trim();
+        try {
+            const j = JSON.parse(txt || "{}");
+            if (!j || typeof j !== "object")
+                throw new Error("規則必須是 JSON 物件");
+            const normalized = {};
+            for (const [k, v] of Object.entries(j)) {
+                const n = Number(v);
+                if (!Number.isFinite(n))
+                    continue;
+                normalized[String(k).toUpperCase()] = n;
+            }
+            if (normalized["*"] == null)
+                normalized["*"] = 2;
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_price_prefix_rules", JSON.stringify(normalized));
+            res.redirect("/admin/logistics/market?ok=1");
+        }
+        catch (_e) {
+            res.redirect("/admin/logistics/market?err=rules");
+        }
     });
     async function parseOrderWithGemini(rawText) {
         const apiKey = process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
@@ -1203,7 +1473,7 @@ function createAdminRouter() {
     `).all(order.id);
         const rows = items.map((i) => `<tr><td>${escapeHtml(i.raw_name ?? "")}</td><td>${i.quantity}</td><td>${escapeHtml((i.unit || "") + (i.need_review === 1 ? " [待確認]" : ""))}</td><td>${escapeHtml(i.amount ?? "—")}</td><td>${escapeHtml(i.product_name || "—")}</td></tr>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/logistics/orders">訂單整理</a> / 明細</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/logistics/orders">訂單整理</a> / 明細</div>
         <h1 class="notion-page-title">紙本訂單明細</h1>
         <p>日期：${escapeHtml(order.order_date)}　<a href="/admin/logistics/orders">← 回列表</a></p>
         <div class="notion-card raw-message-scroll"><h3 style="margin-top:0;">原始訂單</h3><pre style="background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);margin:0;font-size:13px;max-height:240px;overflow:auto;">${escapeHtml(order.raw_message || "")}</pre></div>
@@ -1211,7 +1481,7 @@ function createAdminRouter() {
           <table><thead><tr><th>品名</th><th>數量</th><th>單位</th><th>金額（元/公斤）</th><th>對應品項</th></tr></thead><tbody>${rows}</tbody></table>
         </div>
       `;
-        res.type("text/html").send(notionPage("訂單明細", body, "logistics", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("訂單明細", body, "logistics", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/logistics/procurement", async (req, res) => {
         const dateFrom = req.query.from?.trim() || new Date().toISOString().slice(0, 10);
@@ -1229,7 +1499,7 @@ function createAdminRouter() {
             ? "<tr><td colspan='4'>此區間無資料</td></tr>"
             : rows.map((r) => `<tr><td>${escapeHtml(r.product_name || r.raw_name || "待確認")}</td><td>${Number(r.total_qty)}</td><td>${escapeHtml(r.unit || "—")}</td><td>${escapeHtml(r.raw_name && !r.product_name ? "待對照" : "—")}</td></tr>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 物流工具 / 採購分析</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 採購分析</div>
         <h1 class="notion-page-title">採購分析</h1>
         <p>依日期區間彙總「訂單整理」內紙本訂單，某日某品項需採購數量（供採購人員使用）。</p>
         <div class="notion-card">
@@ -1243,7 +1513,7 @@ function createAdminRouter() {
           </table>
         </div>
       `;
-        res.type("text/html").send(notionPage("採購分析", body, "logistics-procurement", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("採購分析", body, "logistics-procurement", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     // ---------- 環境衛生管理 ----------
     router.get("/freezer-fridge", async (req, res) => {
@@ -1274,7 +1544,7 @@ function createAdminRouter() {
             calRows.push(week);
         const calHtml = "<table class=\"freezer-cal\"><thead><tr><th>日</th><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th></tr></thead><tbody>" + calRows.map((row) => "<tr>" + row.map((cell) => "<td>" + (cell || "") + "</td>").join("") + "</tr>").join("") + "</tbody></table>";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 環境衛生管理 / 冷凍庫冷藏庫檢查表</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 環境衛生管理 / 冷凍庫冷藏庫檢查表</div>
         <h1 class="notion-page-title">冷凍庫冷藏庫檢查表</h1>
         <p style="color:var(--notion-text-muted);margin-bottom:16px;">每日填寫各庫房溫度、電源、電燈、電熱；請先至「庫房管理」新增庫房。</p>
         <p style="margin-bottom:16px;"><a href="/admin/freezer-fridge/warehouses" class="btn">庫房管理</a>（共 ${warehouses.length} 個庫房）</p>
@@ -1291,13 +1561,13 @@ function createAdminRouter() {
           ${records.length ? "<table><thead><tr><th>日期</th><th>填表人</th><th>狀態</th><th>操作</th></tr></thead><tbody>" + records.map((r) => `<tr><td>${r.date}</td><td>${escapeHtml(r.filler_name || "")}</td><td>${r.confirmed_at ? "已確認" : "已填"}${r.anomaly ? "、異常" : ""}</td><td><a href="/admin/freezer-fridge/daily?date=${r.date}">編輯</a></td></tr>`).join("") + "</tbody></table>" : "<p>本月尚無填表紀錄</p>"}
         </div>
       `;
-        res.type("text/html").send(notionPage("冷凍庫冷藏庫檢查表", body + "\n<style>.freezer-cal td,.freezer-cal th{border:1px solid var(--notion-border);padding:8px;min-width:40px;}.freezer-cal .cal-day{display:block;text-align:center;text-decoration:none;color:var(--notion-accent);}.freezer-cal .cal-day.filled{font-weight:600;}</style>", "env", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("冷凍庫冷藏庫檢查表", body + "\n<style>.freezer-cal td,.freezer-cal th{border:1px solid var(--notion-border);padding:8px;min-width:40px;}.freezer-cal .cal-day{display:block;text-align:center;text-decoration:none;color:var(--notion-accent);}.freezer-cal .cal-day.filled{font-weight:600;}</style>", "env", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/freezer-fridge/warehouses", async (req, res) => {
         const rows = await db.prepare("SELECT id, name, sort_order, compliant_temp, power_compliant, light_compliant, heat_compliant FROM freezer_fridge_warehouses ORDER BY sort_order, name").all();
         const msg = req.query.ok ? "<p class=\"notion-msg ok\">已儲存。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / 庫房管理</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / 庫房管理</div>
         <h1 class="notion-page-title">冷凍／冷藏庫房設定</h1>
         ${msg}
         <p style="margin-bottom:16px;"><a href="/admin/freezer-fridge/warehouses/new" class="btn btn-primary">＋ 新增庫房</a></p>
@@ -1310,11 +1580,11 @@ function createAdminRouter() {
           </table>
         </div>
       `;
-        res.type("text/html").send(notionPage("冷凍冷藏庫房管理", body, "env", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("冷凍冷藏庫房管理", body, "env", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/freezer-fridge/warehouses/new", async (_req, res) => {
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / <a href="/admin/freezer-fridge/warehouses">庫房管理</a> / 新增</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / <a href="/admin/freezer-fridge/warehouses">庫房管理</a> / 新增</div>
         <h1 class="notion-page-title">新增庫房</h1>
         <div class="notion-card">
           <form method="post" action="/admin/freezer-fridge/warehouses/new">
@@ -1328,7 +1598,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("新增庫房", body, "env", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("新增庫房", body, "env", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/freezer-fridge/warehouses/new", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const name = (req.body.name || "").trim();
@@ -1352,7 +1622,7 @@ function createAdminRouter() {
             return;
         }
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / <a href="/admin/freezer-fridge/warehouses">庫房管理</a> / 編輯</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / <a href="/admin/freezer-fridge/warehouses">庫房管理</a> / 編輯</div>
         <h1 class="notion-page-title">編輯庫房</h1>
         <div class="notion-card">
           <form method="post" action="/admin/freezer-fridge/warehouses/${encodeURIComponent(row.id)}/edit">
@@ -1366,7 +1636,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("編輯庫房", body, "env", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("編輯庫房", body, "env", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/freezer-fridge/warehouses/:id/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const id = req.params.id;
@@ -1391,11 +1661,11 @@ function createAdminRouter() {
             return;
         }
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / <a href="/admin/freezer-fridge/warehouses">庫房管理</a> / 確認刪除</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / <a href="/admin/freezer-fridge/warehouses">庫房管理</a> / 確認刪除</div>
         <h1 class="notion-page-title">確認刪除</h1>
         <div class="notion-card"><p>確定要刪除「${escapeHtml(row.name)}」？<br><form method="post" action="/admin/freezer-fridge/warehouses/${encodeURIComponent(row.id)}/delete" style="display:inline;margin-top:12px;"><button type="submit" class="btn">確定刪除</button></form> <a href="/admin/freezer-fridge/warehouses" class="btn">取消</a></p></div>
       `;
-        res.type("text/html").send(notionPage("確認刪除", body, "env", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("確認刪除", body, "env", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/freezer-fridge/warehouses/:id/delete", async (req, res) => {
         await db.prepare("DELETE FROM freezer_fridge_warehouses WHERE id = ?").run(req.params.id);
@@ -1409,7 +1679,7 @@ function createAdminRouter() {
         const entryByWh = {};
         entries.forEach((e) => { entryByWh[e.warehouseId] = e; });
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / 每日填報</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / 每日填報</div>
         <h1 class="notion-page-title">${date} 冷凍冷藏庫房檢查</h1>
         ${warehouses.length === 0 ? "<p class=\"notion-msg err\">請先至庫房管理新增庫房。</p>" : `
         <div class="notion-card">
@@ -1437,7 +1707,7 @@ function createAdminRouter() {
         </div>
         `}
       `;
-        res.type("text/html").send(notionPage(date + " 檢查表", body, "env", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage(date + " 檢查表", body, "env", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/freezer-fridge/daily/save", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const date = (req.body.date || "").trim();
@@ -1498,7 +1768,7 @@ function createAdminRouter() {
             return `<tr><td>${escapeHtml(c.name)}</td><td><code style="font-size:12px;word-break:break-all;">${gid}</code></td><td>${bound}</td><td>${status}</td><td><a href="/admin/customers/${encodeURIComponent(c.id)}/edit">編輯</a></td></tr>`;
         });
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / LINE 綁定檢查</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / LINE 綁定檢查</div>
         <h1 class="notion-page-title">LINE 綁定檢查</h1>
         <div class="notion-card" style="border-left:4px solid #e03;background:var(--notion-sidebar);">
           <h2 style="margin-top:0;">⚠️ 仍顯示「尚未綁定」請先確認</h2>
@@ -1564,9 +1834,9 @@ function createAdminRouter() {
             <tbody>${rows.length ? rows.join("") : "<tr><td colspan='5'>尚無客戶</td></tr>"}</tbody>
           </table>
         </div>
-        <p><a href="/admin">← 回工作台</a></p>
+        <p><a href="/admin">← 回儀表板</a></p>
       `;
-        res.type("text/html").send(notionPage("LINE 綁定檢查", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("LINE 綁定檢查", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/triggers", async (req, res) => {
         const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_start");
@@ -1576,7 +1846,7 @@ function createAdminRouter() {
         const endVal = (endRow?.value ?? "完成\n結束收單").trim();
         const intentVal = (intentRow?.value ?? "幫我送\n明天\n今天早上要\n要送\n訂\n叫貨\n送過來\n請送").trim();
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 提示詞管理</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 提示詞管理</div>
         <h1 class="notion-page-title">提示詞管理</h1>
         <p style="color:var(--notion-text-muted);">設定 LINE 收單時，哪些關鍵字可觸發「開始收單」與「結束收單」。一列一個；可同則帶品項（例：收單 高麗菜 5 斤）。</p>
         ${req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存。</p>" : ""}
@@ -1602,7 +1872,7 @@ function createAdminRouter() {
           <p><strong>結束收單</strong>：以上X收單（X=數字）、${escapeHtml(endVal.split(/\n/).filter(Boolean).join("、") || "（未設定，使用預設）")}</p>
         </div>
       `;
-        res.type("text/html").send(notionPage("提示詞管理", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("提示詞管理", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/triggers", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const start = (req.body?.start ?? "").trim().split(/\n/).map((s) => s.trim()).filter(Boolean).join("\n");
@@ -1652,7 +1922,7 @@ function createAdminRouter() {
       `)
                 .join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 待確認品名</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 待確認品名</div>
         <h1 class="notion-page-title">待確認品名</h1>
         ${msg ? `<div class="notion-msg ${msg.indexOf("已加入") >= 0 ? "ok" : "err"}">${msg.replace(/<p style='[^']*'>|<\/p>/g, "").trim()}</div>` : ""}
         <div class="notion-card">
@@ -1702,7 +1972,7 @@ function createAdminRouter() {
           })();
         </script>
       `;
-        res.type("text/html").send(notionPage("待確認品名", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("待確認品名", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/alias", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { alias, product_id, customer_id, scope, redirect } = req.body;
@@ -1740,14 +2010,13 @@ function createAdminRouter() {
     });
     router.get("/orders", async (req, res) => {
         try {
-            const workingDate = await getWorkingDate(db);
-            const showAllDates = req.query.all === "1";
+            const today = new Date().toISOString().slice(0, 10);
             const onlyNeedReview = req.query.need_review === "1";
             const filterDate = req.query.date?.trim();
             const filterCustomerId = req.query.customer_id?.trim();
             const filterOrderNo = req.query.order_no?.trim();
-            const dateCondition = showAllDates ? "1=1" : "o.order_date >= ?";
-            const dateParam = showAllDates ? [] : [workingDate];
+            const dateCondition = "1=1";
+            const dateParam = [];
             let orders = await db.prepare(`
       SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
@@ -1766,7 +2035,7 @@ function createAdminRouter() {
         if (onlyNeedReview) {
             orders = orders.filter((o) => (o.need_review_count ?? 0) > 0);
         }
-        const orderSeqStartRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("order_seq_start_" + workingDate);
+        const orderSeqStartRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("order_seq_start_" + today);
         const orderSeqStartVal = orderSeqStartRow?.value ?? "";
         const customers = await db.prepare("SELECT id, name FROM customers ORDER BY name").all();
         const customerOptions = customers.map((c) => `<option value="${escapeAttr(c.id)}" ${c.id === filterCustomerId ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("");
@@ -1794,17 +2063,16 @@ function createAdminRouter() {
         const usingCloudSqlOrders = Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.trim());
         const orderListDbWarning = usingCloudSqlOrders ? "" : `<p class="notion-msg err" style="margin-bottom:12px;">目前未連線 Cloud SQL，資料不會長期保留，收單後可能看不到或重開就消失。請在 Cloud Run 設定 <strong>DATABASE_URL</strong>。</p>`;
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 訂單查詢</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 訂單查詢</div>
         <h1 class="notion-page-title">訂單查詢</h1>
         ${orderListDbWarning}
         <p class="notion-msg" style="background:#f0f7ff;border-left:4px solid var(--notion-accent);margin-bottom:12px;">若 LINE 有回覆「已記入」「收單結束」但這裡看不到訂單：請確認您開的是<strong>與 LINE 機器人同一台主機</strong>的後台（例如 Cloud Run 網址 <code>https://xxx.run.app/admin</code>），不是本機 <code>localhost</code>；本機與雲端資料庫不同，訂單只會寫入收到訊息的那台。</p>
         ${req.query.ok === "seq" ? "<p class=\"notion-msg ok\">已儲存本日起始編號。</p>" : ""}
-        <p style="margin-bottom:8px;">${showAllDates ? "顯示全部訂單（已忽略結轉日期）。" : "僅顯示日期 ≥ 結轉日期（" + escapeHtml(workingDate) + "）的訂單。"} <a href="/admin/orders${showAllDates ? "" : "?all=1"}">${showAllDates ? "改回依結轉日期篩選" : "顯示全部訂單（不限結轉日期）"}</a></p>
+        <p style="margin-bottom:8px;">已顯示全部訂單（不使用結轉日期）。</p>
         <p style="margin-bottom:12px;"><a href="/admin/review">待確認品名</a>（補對照）　${filterLink}</p>
         <div class="notion-card" style="margin-bottom:16px;">
           <h2 style="margin-top:0;">篩選</h2>
           <form method="get" action="/admin/orders" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;">
-            ${showAllDates ? '<input type="hidden" name="all" value="1">' : ""}
             ${onlyNeedReview ? '<input type="hidden" name="need_review" value="1">' : ""}
             <label style="margin:0;">日期 <input type="date" name="date" value="${escapeAttr(filterDate)}" style="width:140px;"></label>
             <label style="margin:0;">客戶 <select name="customer_id" style="width:180px;"><option value="">全部</option>${customerOptions}</select></label>
@@ -1815,9 +2083,9 @@ function createAdminRouter() {
         </div>
         <div class="notion-card" style="margin-bottom:16px;">
           <h2 style="margin-top:0;">本日起始編號（與 ERP 對齊）</h2>
-          <p style="color:var(--notion-text-muted);font-size:13px;">訂單編號規則：西元年月日＋流水號（例 20250226001）。設定本日（${escapeHtml(workingDate)}）的起始流水號，之後新訂單依序遞增。</p>
+          <p style="color:var(--notion-text-muted);font-size:13px;">訂單編號規則：西元年月日＋流水號（例 20250226001）。設定本日（${escapeHtml(today)}）的起始流水號，之後新訂單依序遞增。</p>
           <form method="post" action="/admin/api/order-seq-start" style="display:flex;align-items:center;gap:8px;">
-            <input type="hidden" name="date" value="${escapeAttr(workingDate)}">
+            <input type="hidden" name="date" value="${escapeAttr(today)}">
             <label>起始流水號 <input type="number" name="start" value="${escapeAttr(orderSeqStartVal)}" min="1" placeholder="1" style="width:80px;"></label>
             <button type="submit" class="btn">儲存</button>
           </form>
@@ -1829,7 +2097,7 @@ function createAdminRouter() {
           </table>
         </div>
       `;
-            res.type("text/html").send(notionPage("訂單查詢", body, "", res.locals.topBarHtml));
+            res.type("text/html").send(notionPage("訂單查詢", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
         }
         catch (e) {
             const errMsg = (e?.message || String(e)).slice(0, 500);
@@ -1841,7 +2109,7 @@ function createAdminRouter() {
           <p>請稍後再試，或聯絡管理員檢查後台與資料庫連線。</p>
           <p style="margin-top:1rem;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;word-break:break-all;"><strong>錯誤訊息：</strong><br>${escapeHtml(errMsg)}</p>
           <p style="margin-top:1rem;font-size:13px;color:#666;">若為「column … does not exist」，請確認 Cloud SQL 已執行過最新 schema（含 order_no、order_attachments 等）。</p>
-          <p style="margin-top:1rem;"><a href="/admin">回工作台</a></p>
+          <p style="margin-top:1rem;"><a href="/admin">回儀表板</a></p>
         </body></html>`);
         }
     });
@@ -1877,7 +2145,7 @@ function createAdminRouter() {
         const customerOptions = customers.map((c) => `<option value="${escapeAttr(c.id)}" ${c.id === customerId ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("");
         const rows = orders.map((o) => `<tr><td>${escapeHtml(o.order_date)}</td><td>${escapeHtml(o.customer_name)}</td><td><a href="/admin/orders/${encodeURIComponent(o.id)}">明細</a></td></tr>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 資料匯出</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 資料匯出</div>
         <h1 class="notion-page-title">資料匯出</h1>
         <div class="notion-card">
           <form method="get" action="/admin/export">
@@ -1895,7 +2163,7 @@ function createAdminRouter() {
           ${orders.length ? `<p style="margin-top:12px;"><a href="/admin/export/download?date=${encodeURIComponent(date)}${customerId ? "&customer_id=" + encodeURIComponent(customerId) : ""}" class="btn">匯出 CSV</a></p>` : ""}
         </div>
       `;
-        res.type("text/html").send(notionPage("資料匯出", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("資料匯出", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/export/download", async (req, res) => {
         const date = req.query.date?.trim();
@@ -2057,7 +2325,7 @@ function createAdminRouter() {
         })
             .join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / 訂單明細</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / 訂單明細</div>
         <h1 class="notion-page-title">訂單明細</h1>
         <p>訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：<a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a>　狀態：${escapeHtml(order.status)}</p>
         ${needReviewNote}
@@ -2209,7 +2477,7 @@ function createAdminRouter() {
         })();
         </script>
       `;
-        res.type("text/html").send(notionPage("訂單明細", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("訂單明細", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/api/orders/:orderId/ai-analyze", async (req, res) => {
         const { orderId } = req.params;
@@ -2391,7 +2659,7 @@ function createAdminRouter() {
         const units = ["公斤", "斤", "把", "包", "件", "箱", "顆", "粒", "盒", "袋", "個"];
         const unitOpts = units.map((u) => `<option value="${escapeAttr(u)}">${escapeHtml(u)}</option>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品項</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品項</div>
         <h1 class="notion-page-title">增加品項</h1>
         <div class="notion-card">
           <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add">
@@ -2402,7 +2670,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("增加品項", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("增加品項", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/orders/:orderId/items/add", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { orderId } = req.params;
@@ -2481,7 +2749,7 @@ function createAdminRouter() {
             ? `<p><strong>客戶條碼</strong>（${escapeHtml(order.customer_name)}）<br><img src="/admin/barcode?code=${encodeURIComponent(order.customer_teraoka_code.trim())}" alt="客戶條碼" style="height:56px;"></p>`
             : "";
         const sheetBody = `
-        <div class="no-print notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 訂貨單</div>
+        <div class="no-print notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 訂貨單</div>
         ${preview ? "<p class=\"no-print\"><button type=\"button\" class=\"btn btn-primary\" id=\"exportJpgBtn\">匯出 JPG</button> 預覽下方訂單圖後可點此匯出</p>" : ""}
         <div id="order-sheet-content" style="margin-top:12px; width:210mm; min-height:297mm; box-sizing:border-box; background:white; padding:1rem;" class="order-sheet-a4">
         <div class="notion-card">
@@ -2497,11 +2765,11 @@ function createAdminRouter() {
         <p class="no-print" style="margin-top:1rem;"><a href="/admin/orders/${encodeURIComponent(orderId)}">← 回訂單明細</a></p>
         ${preview ? '<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script><script>document.getElementById("exportJpgBtn").onclick=function(){ var el = document.getElementById("order-sheet-content"); if (typeof html2canvas !== "undefined") { html2canvas(el, { useCORS: true, allowTaint: true, scale: 2 }).then(function(canvas){ var a = document.createElement("a"); a.download = "order-sheet-' + orderId + '.jpg"; a.href = canvas.toDataURL("image/jpeg", 0.92); a.click(); }); } };</script>' : ""}
       `;
-        res.type("text/html").send(notionPage("訂貨單", sheetBody, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("訂貨單", sheetBody, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/customers/new", async (req, res) => {
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/customers">客戶管理</a> / 新增客戶</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / 新增客戶</div>
         <h1 class="notion-page-title">新增客戶</h1>
         <div class="notion-card">
           <form method="post" action="/admin/customers/new">
@@ -2516,7 +2784,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("新增客戶", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("新增客戶", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/customers/new", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const name = req.body.name?.trim();
@@ -2555,7 +2823,7 @@ function createAdminRouter() {
             : `<a href="/admin/customers/${encodeURIComponent(customer.id)}/edit">編輯</a>`;
         const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td></tr>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/customers">客戶管理</a> / ${escapeHtml(customer.name)}</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / ${escapeHtml(customer.name)}</div>
         <h1 class="notion-page-title">${escapeHtml(customer.name)}</h1>
         <div class="notion-card">
           <p><strong>聯絡</strong>：${escapeHtml(customer.contact ?? "—")}</p>
@@ -2573,7 +2841,7 @@ function createAdminRouter() {
         </div>
         <p>${editLink}　${backLink}</p>
       `;
-        res.type("text/html").send(notionPage("客戶資料", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("客戶資料", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/customers/:id/edit", async (req, res) => {
         try {
@@ -2598,7 +2866,7 @@ function createAdminRouter() {
             .map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td><td><form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/alias/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td></tr>`)
             .join("");
         const editBody = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/customers">客戶管理</a> / 編輯客戶</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / 編輯客戶</div>
         <h1 class="notion-page-title">編輯客戶</h1>
         ${editMsg ? `<div class="notion-msg ${editMsg.indexOf("已") >= 0 ? "ok" : "err"}">${editMsg.replace(/<p[^>]*>|<\/p>/g, "").trim()}</div>` : ""}
         <div class="notion-card">
@@ -2643,7 +2911,7 @@ function createAdminRouter() {
         </div>
         <p>${req.query.from === "orders" ? `<a href="/admin/orders">← 回訂單查詢</a>` : `<a href="/admin/customers">← 回客戶列表</a>`}</p>
       `;
-            res.type("text/html").send(notionPage("編輯客戶", editBody, "", res.locals.topBarHtml));
+            res.type("text/html").send(notionPage("編輯客戶", editBody, "", res.locals.topBarHtml, res.locals.actionBarHtml));
         }
         catch (e) {
             console.error("[admin] 客戶編輯頁錯誤:", e);
@@ -2743,7 +3011,7 @@ function createAdminRouter() {
         const tbodyInactive = inactiveList.map(makeRow).join("") || "<tr class=\"customers-placeholder\"><td colspan='8'>無停用客戶</td></tr>";
         const searchVal = escapeAttr(q);
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 客戶管理</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 客戶管理</div>
         <h1 class="notion-page-title">客戶管理</h1>
         ${msg}
         <p style="margin-bottom:16px;"><a href="/admin/customers/new">＋ 新增客戶</a>、<a href="/admin/import-customers">匯入客戶</a></p>
@@ -2822,7 +3090,7 @@ function createAdminRouter() {
         })();
         </script>
       `;
-        res.type("text/html").send(notionPage("客戶管理", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("客戶管理", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/api/customers/:id/toggle", async (req, res) => {
         const id = req.params.id;
@@ -2857,7 +3125,7 @@ function createAdminRouter() {
         const orderCount = await db.prepare("SELECT COUNT(*) AS c FROM orders WHERE customer_id = ?").get(customer.id);
         const hasOrders = (orderCount?.c ?? 0) > 0;
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/customers">客戶管理</a> / 確認刪除</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / 確認刪除</div>
         <h1 class="notion-page-title">確認刪除客戶</h1>
         <div class="notion-card">
           <p>確定要刪除「${escapeHtml(customer.name)}」？</p>
@@ -2868,7 +3136,7 @@ function createAdminRouter() {
           </p>
         </div>
       `;
-        res.type("text/html").send(notionPage("確認刪除", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("確認刪除", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/customers/:id/delete", async (req, res) => {
         const id = req.params.id;
@@ -2938,7 +3206,7 @@ function createAdminRouter() {
         const tbodyActive = activeList.map(makeRow).join("") || "<tr class=\"products-placeholder\"><td colspan='8'>無啟用品項</td></tr>";
         const tbodyInactive = inactiveList.map(makeRow).join("") || "<tr class=\"products-placeholder\"><td colspan='8'>無停用品項</td></tr>";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 品項與俗名</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 品項與俗名</div>
         <h1 class="notion-page-title">品項與俗名</h1>
         ${msg}
         <p style="margin-bottom:16px;"><a href="/admin/import">匯入品項</a>、<a href="/admin/import-teraoka">寺岡資料對照</a></p>
@@ -3015,7 +3283,7 @@ function createAdminRouter() {
         })();
         </script>
       `;
-        res.type("text/html").send(notionPage("品項與俗名", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("品項與俗名", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.get("/products/:id/aliases", async (req, res) => {
         const productId = req.params.id;
@@ -3047,7 +3315,7 @@ function createAdminRouter() {
           </tr>`)
             .join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/products">品項與俗名</a> / 俗名管理</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/products">品項與俗名</a> / 俗名管理</div>
         <h1 class="notion-page-title">俗名管理：${escapeHtml(product.name)}</h1>
         ${msg}${specMsg}
         <div class="notion-card">
@@ -3082,7 +3350,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
       `;
-        res.type("text/html").send(notionPage("俗名管理", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("俗名管理", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/products/:id/specs", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const productId = req.params.id;
@@ -3128,7 +3396,7 @@ function createAdminRouter() {
         }
         const errMsg = req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/products">品項與俗名</a> / <a href="/admin/products/${encodeURIComponent(row.product_id)}/aliases">俗名管理</a> / 編輯俗名</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/products">品項與俗名</a> / <a href="/admin/products/${encodeURIComponent(row.product_id)}/aliases">俗名管理</a> / 編輯俗名</div>
         <h1 class="notion-page-title">編輯俗名</h1>
         <div class="notion-card">
           <p>品項：${escapeHtml(row.product_name)}</p>
@@ -3140,7 +3408,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin/products/${encodeURIComponent(row.product_id)}/aliases">← 回俗名管理</a></p>
       `;
-        res.type("text/html").send(notionPage("編輯俗名", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("編輯俗名", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/aliases/:id/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const id = req.params.id;
@@ -3180,7 +3448,7 @@ function createAdminRouter() {
         }
         const errMsg = req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/products">品項與俗名</a> / 編輯品項</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/products">品項與俗名</a> / 編輯品項</div>
         <h1 class="notion-page-title">編輯品項</h1>
         ${errMsg ? `<div class="notion-msg err">${errMsg.replace(/<p[^>]*>|<\/p>/g, "").trim()}</div>` : ""}
         <div class="notion-card">
@@ -3205,7 +3473,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
       `;
-        res.type("text/html").send(notionPage("編輯品項", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("編輯品項", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/products/:id/edit", async (req, res) => {
         const id = req.params.id;
@@ -3265,7 +3533,7 @@ function createAdminRouter() {
         const refCount = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE product_id = ?").get(id);
         const hasOrders = (refCount?.c ?? 0) > 0;
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / <a href="/admin/products">品項與俗名</a> / 確認刪除</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/products">品項與俗名</a> / 確認刪除</div>
         <h1 class="notion-page-title">確認刪除品項</h1>
         <div class="notion-card">
           <p>確定要刪除「${escapeHtml(product.name)}」？</p>
@@ -3277,7 +3545,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
       `;
-        res.type("text/html").send(notionPage("確認刪除品項", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("確認刪除品項", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/products/:id/delete", async (req, res) => {
         const id = req.params.id;
@@ -3292,7 +3560,7 @@ function createAdminRouter() {
     router.get("/import", async (req, res) => {
         const msg = req.query.ok ? `<p style='color:green'>已匯入 ${req.query.ok} 筆品項。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 匯入品項</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 匯入品項</div>
         <h1 class="notion-page-title">匯入品項</h1>
         ${msg ? `<div class="notion-msg ${msg.indexOf("已匯入") >= 0 ? "ok" : "err"}">${msg.replace(/<p[^>]*>|<\/p>/g, "").trim()}</div>` : ""}
         <div class="notion-card">
@@ -3325,7 +3593,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin/products">← 回品項列表</a></p>
       `;
-        res.type("text/html").send(notionPage("匯入品項", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("匯入品項", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/import", upload, async (req, res) => {
         try {
@@ -3378,7 +3646,7 @@ function createAdminRouter() {
     router.get("/import-customers", async (req, res) => {
         const msg = req.query.ok ? `<p style='color:green'>匯入結果：${escapeHtml(String(req.query.ok))}。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 匯入客戶</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 匯入客戶</div>
         <h1 class="notion-page-title">匯入客戶</h1>
         ${msg ? `<div class="notion-msg ${msg.indexOf("匯入結果") >= 0 ? "ok" : "err"}">${msg.replace(/<p[^>]*>|<\/p>/g, "").trim()}</div>` : ""}
         <div class="notion-card">
@@ -3401,7 +3669,7 @@ YY小吃, C5678...,</pre>
         </div>
         <p style="margin-top:16px;"><a href="/admin/customers" class="btn">← 回客戶列表</a></p>
         `;
-        res.type("text/html").send(notionPage("匯入客戶", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("匯入客戶", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/import-customers", upload, async (req, res) => {
         const sheet = parseRequestToSheet(req);
@@ -3465,7 +3733,7 @@ YY小吃, C5678...,</pre>
         if (req.query.err)
             msg += `<p class="notion-msg err">${escapeHtml(String(req.query.err))}</p>`;
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">工作台</a> / 寺岡資料對照</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 寺岡資料對照</div>
         <h1 class="notion-page-title">寺岡資料對照</h1>
         ${msg}
         <div class="notion-card">
@@ -3484,7 +3752,7 @@ YY小吃, C5678...,</pre>
         </div>
         <p style="margin-top:16px;"><a href="/admin/products" class="btn">← 回品項列表</a></p>
         `;
-        res.type("text/html").send(notionPage("寺岡資料對照", body, "", res.locals.topBarHtml));
+        res.type("text/html").send(notionPage("寺岡資料對照", body, "", res.locals.topBarHtml, res.locals.actionBarHtml));
     });
     router.post("/import-teraoka", upload, async (req, res) => {
         const sheet = parseRequestToSheet(req);

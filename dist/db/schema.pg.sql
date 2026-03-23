@@ -1,4 +1,4 @@
-  -- PostgreSQL schema for songfu_linebot (Cloud SQL)
+  -- PostgreSQL schema for songfu_linebot（Cloud SQL / Supabase 等）
   CREATE TABLE IF NOT EXISTS customers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
