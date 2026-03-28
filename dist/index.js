@@ -29,18 +29,21 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     let dbReady = false;
     let dbError = null;
     app.get("/health", (_req, res) => {
+        if (!dbReady) {
+            res.status(503).json({
+                ok: false,
+                service: "songfu_linebot",
+                dbReady: false,
+                ...(dbError ? { dbError: String(dbError) } : {}),
+            });
+            return;
+        }
         res.json({
             ok: true,
             service: "songfu_linebot",
-            dbReady,
-            ...(dbError ? { dbError: String(dbError) } : {}),
+            dbReady: true,
         });
     });
-    await new Promise((resolve, reject) => {
-        const server = app.listen(PORT, "0.0.0.0", () => resolve());
-        server.on("error", reject);
-    });
-    console.log(`[startup] listening on 0.0.0.0:${PORT}（Cloud Run 探測可通過，載入 db / webhook / admin…）`);
     console.log("[startup] 載入 db 模組…");
     const index_js_1 = require("./db/index.js");
     console.log("[startup] 初始化資料庫…");
@@ -114,6 +117,11 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
       </ul>
     </body></html>`);
     });
+    await new Promise((resolve, reject) => {
+        const server = app.listen(PORT, "0.0.0.0", () => resolve());
+        server.on("error", reject);
+    });
+    console.log(`[startup] listening on 0.0.0.0:${PORT}（路由已掛載，LINE webhook 可收訊）`);
     console.log(`[startup] LINE webhook: POST ${webhookPath}`);
 })().catch((e) => {
     console.error("[startup] 無法啟動:", e);

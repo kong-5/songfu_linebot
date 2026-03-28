@@ -10,9 +10,12 @@ const index_js_1 = require("../db/index.js");
 const parse_order_message_js_1 = require("../lib/parse-order-message.js");
 const resolve_product_js_1 = require("../lib/resolve-product.js");
 const id_js_1 = require("../lib/id.js");
-const vision_ocr_js_1 = require("../lib/vision-ocr.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
-const wholesale_price_js_1 = require("../lib/wholesale-price.js");
+const unit_conversion_js_1 = require("../lib/unit-conversion.js");
+const parse_order_from_image_js_1 = require("../lib/parse-order-from-image.js");
+const line_image_compress_js_1 = require("../lib/line-image-compress.js");
+const customer_handwriting_hints_js_1 = require("../lib/customer-handwriting-hints.js");
+const rebuild_order_from_sources_js_1 = require("../lib/rebuild-order-from-sources.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
@@ -21,6 +24,25 @@ const hasLineConfig = Boolean(channelAccessToken && channelSecret);
 const COLLECT_TIMEOUT_MS = 30 * 1000;
 const collectingByGroup = new Map();
 const autoFinalizeTimers = new Map();
+/** LINE webhook 偶發重送同一 message.id，避免重複寫入品項／raw_message */
+const recentLineMessageIdQueue = [];
+const recentLineMessageIdSet = new Set();
+const LINE_MSG_ID_CAP = 8000;
+function consumeLineWebhookMessageOnce(messageId) {
+    const id = messageId != null ? String(messageId).trim() : "";
+    if (!id)
+        return true;
+    if (recentLineMessageIdSet.has(id))
+        return false;
+    recentLineMessageIdSet.add(id);
+    recentLineMessageIdQueue.push(id);
+    if (recentLineMessageIdQueue.length > LINE_MSG_ID_CAP) {
+        const old = recentLineMessageIdQueue.shift();
+        if (old)
+            recentLineMessageIdSet.delete(old);
+    }
+    return true;
+}
 function getTaipeiOrderDate() {
     // 00:00~05:59 算當天；06:00 之後算隔天
     const now = new Date();
@@ -30,80 +52,14 @@ function getTaipeiOrderDate() {
     }
     return tw.toISOString().slice(0, 10);
 }
-function money(v) {
-    const n = Number(v || 0);
-    return Number.isFinite(n) ? n.toLocaleString("zh-TW") : "0";
-}
 function normalizeOrderUnit(raw, fallbackUnit) {
-    const u = String(raw || "").trim().toUpperCase();
-    if (!u)
-        return fallbackUnit || "公斤";
-    if (u === "K" || u === "KG" || u === "公斤" || u === "千克" || u === "斤") {
-        return "公斤";
-    }
-    return String(raw || "").trim();
+    return (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(raw, fallbackUnit);
 }
-function isKgUnit(unit) {
-    const u = String(unit || "").trim().toUpperCase();
-    return u === "公斤" || u === "KG" || u === "K";
-}
-function shiftDate(isoDate, deltaDays) {
-    const d = new Date(isoDate + "T12:00:00");
-    d.setDate(d.getDate() + deltaDays);
-    return d.toISOString().slice(0, 10);
-}
-async function fetchPricesWithFallback(baseDate, maxBackDays = 7) {
-    for (let i = 0; i <= maxBackDays; i++) {
-        const d = i === 0 ? baseDate : shiftDate(baseDate, -i);
-        const prices = await (0, wholesale_price_js_1.fetchTaipeiWholesalePrices)(d);
-        if (prices && prices.length > 0) {
-            return { dateUsed: d, prices };
-        }
-    }
-    return { dateUsed: baseDate, prices: [] };
-}
-async function loadPricePrefixRules(db) {
-    const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_price_prefix_rules");
-    const fallback = { "*": 2, LM: 10 };
-    if (!row?.value)
-        return fallback;
-    try {
-        const parsed = JSON.parse(String(row.value));
-        if (!parsed || typeof parsed !== "object")
-            return fallback;
-        const out = {};
-        for (const [k, v] of Object.entries(parsed)) {
-            const n = Number(v);
-            if (Number.isFinite(n))
-                out[String(k).toUpperCase()] = n;
-        }
-        if (Object.keys(out).length === 0)
-            return fallback;
-        if (out["*"] == null)
-            out["*"] = 2;
-        return out;
-    }
-    catch (_) {
-        return fallback;
-    }
-}
-function unitPriceFromRules(item, match, prefixRules) {
-    const high = Number(match?.highPrice);
-    if (!Number.isFinite(high))
-        return 0;
-    const erp = String(item?.erp_code || "").toUpperCase();
-    let markup = Number(prefixRules["*"] ?? 2);
-    let hitLen = 0;
-    for (const [prefix, val] of Object.entries(prefixRules)) {
-        if (!prefix || prefix === "*")
-            continue;
-        const p = String(prefix).toUpperCase();
-        if (erp.startsWith(p) && p.length > hitLen) {
-            hitLen = p.length;
-            markup = Number(val);
-        }
-    }
-    return Math.max(0, Math.round((high + (Number.isFinite(markup) ? markup : 0)) * 100) / 100);
+function formatOrderQty(q) {
+    const n = Number(q);
+    if (!Number.isFinite(n))
+        return String(q ?? "");
+    return String(parseFloat(n.toFixed(4)));
 }
 async function getNextOrderNo(db, orderDate) {
     const nextKey = "order_seq_next_" + orderDate;
@@ -136,6 +92,20 @@ function createLineWebhook() {
                     return;
                 collectingByGroup.delete(groupId);
                 autoFinalizeTimers.delete(groupId);
+                if (process.env.LINE_SKIP_FINALIZE_FULL_REBUILD !== "1") {
+                    try {
+                        const rawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
+                        const atts = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(session.orderId);
+                        const fr = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, session.orderId, session.customerId, rawRow?.raw_message, atts);
+                        if (fr.ok)
+                            console.log("[LINE] 結單整單重辨識完成 orderId=%s", session.orderId);
+                        else
+                            console.warn("[LINE] 結單整單重辨識未覆寫（沿用逐則明細）orderId=%s err=%s", session.orderId, fr.error);
+                    }
+                    catch (e) {
+                        console.error("[LINE] 結單整單重辨識例外:", e?.message || e);
+                    }
+                }
                 const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId);
                 const items = await db.prepare(`
           SELECT oi.raw_name, oi.quantity, oi.unit, p.name AS product_name, p.erp_code
@@ -143,44 +113,31 @@ function createLineWebhook() {
           WHERE oi.order_id = ? ORDER BY oi.id
         `).all(session.orderId);
                 const dateStr = order?.order_date || getTaipeiOrderDate();
-                const pricePrefixRules = await loadPricePrefixRules(db);
-                const priceData = await fetchPricesWithFallback(dateStr, 7);
-                const priceList = priceData.prices;
                 const lines = [];
                 let idx = 1;
-                let total = 0;
-                let pricedCount = 0;
                 for (const it of items) {
                     const qty = Number(it.quantity || 0);
                     const unit = normalizeOrderUnit(it.unit, "公斤");
-                    const m = (0, wholesale_price_js_1.matchCropPrice)(priceList || [], it.product_name || it.raw_name || "");
-                    const unitPrice = isKgUnit(unit) ? unitPriceFromRules(it, m, pricePrefixRules) : 0;
-                    const sub = qty * unitPrice;
-                    total += sub;
-                    if (unitPrice > 0)
-                        pricedCount += 1;
                     const name = it.product_name || it.raw_name || "待確認";
-                    if (unitPrice > 0) {
-                        lines.push(`${idx}. ${name} ${qty}${unit || ""} 單價$${money(unitPrice)} 小計$${money(sub)}`);
-                    }
-                    else {
-                        lines.push(`${idx}. ${name} ${qty}${unit || ""}`);
-                    }
+                    lines.push(`${idx}. ${name} ${formatOrderQty(it.quantity)}${unit || ""}`);
                     idx += 1;
                 }
-                const hasPrice = pricedCount > 0;
                 const summary = [
                     "收到，已收單喔。",
                     `送貨日期為：${dateStr}`,
-                    `行情日期參考：${priceData.dateUsed}`,
                     "訂購項目如下：",
-                    hasPrice ? "項次 品項 數量 單位 單價 小計" : "項次 品項 數量 單位",
                     ...(lines.length ? lines : ["（目前尚無可辨識品項）"]),
-                    ...(hasPrice ? [`總計：$${money(total)}`] : []),
-                    "價格僅供參考，依當日會單為主。",
+                    "",
+                    "※ 若內容有誤：可傳「線上改單」查看項次，並傳「改第1項 3 公斤」或「刪第1項」修改（數字請自換）；品名錯誤請洽業務或後台改品項。",
+                    "（目前未連動批發行情，僅顯示叫貨數量與單位。）",
                 ].join("\n");
                 if (lineClient) {
-                    await lineClient.pushMessage(groupId, { type: "text", text: summary });
+                    if (!(await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(db))) {
+                        await lineClient.pushMessage(groupId, { type: "text", text: summary });
+                    }
+                    else {
+                        console.log("[LINE] 已略過 30 秒結單推播（對客戶靜音） orderId=%s", session.orderId);
+                    }
                 }
             }
             catch (e) {
@@ -221,6 +178,10 @@ function createLineWebhook() {
                         console.log("[LINE] 略過非訊息, type:", event.type);
                         continue;
                     }
+                    if (!consumeLineWebhookMessageOnce(event.message?.id)) {
+                        console.log("[LINE] 略過重複訊息（同 message.id），避免重複建品項");
+                        continue;
+                    }
                     const msgType = event.message.type;
                     if (event.source)
                         console.log("[LINE] event.source", JSON.stringify(event.source));
@@ -233,6 +194,20 @@ function createLineWebhook() {
                         console.log("[LINE] source.type=%s 識別碼長度=%s", sourceType, groupId.length);
                     if (groupId)
                         console.log("[LINE] 群組/聊天室 ID：", groupId, "（長度", groupId.length, "）");
+                    /** 休眠：非收單時段不跑 OCR／Gemini／訂單；僅允許「取得群組ID」（無 AI） */
+                    let textEarly = null;
+                    if (msgType === "text" && event.message.text) {
+                        textEarly = String(event.message.text).trim();
+                    }
+                    if (groupId && textEarly && (textEarly === "取得群組ID" || textEarly === "群組ID")) {
+                        await reply(lineClient, event.replyToken, `此群組/聊天室 ID：\n${groupId}\n請將此 ID 提供給管理員，在後台「客戶管理」編輯該客戶的「LINE 群組 ID」並儲存。`, db, { force: true });
+                        continue;
+                    }
+                    const accepting = await (0, line_bot_control_js_1.isBotAcceptingOrders)(db);
+                    if (!accepting) {
+                        console.log("[LINE] 非收單時段（休眠），略過（不呼叫 Gemini／OCR／訂單）");
+                        continue;
+                    }
                     let customer = null;
                     if (groupId) {
                         const allActive = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE (active IS NULL OR active = 1)").all();
@@ -262,25 +237,37 @@ function createLineWebhook() {
                             await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。", db);
                             continue;
                         }
-                        // 改為每則都可處理，不再檢查是否處於收單時段
                         const inCollecting = groupId ? collectingByGroup.has(groupId) : false;
                         const messageId = event.message.id;
                         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-                        let ocrText = null;
-                        if (process.env.GOOGLE_CLOUD_VISION_API_KEY && channelAccessToken) {
+                        let imageBuf = null;
+                        if (channelAccessToken) {
                             try {
                                 const imgResp = await fetch(`https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`, {
                                     headers: { Authorization: `Bearer ${channelAccessToken}` },
                                 });
                                 if (imgResp.ok) {
-                                    const buf = Buffer.from(await imgResp.arrayBuffer());
-                                    ocrText = await (0, vision_ocr_js_1.getTextFromImageBuffer)(buf);
+                                    const rawBuf = Buffer.from(await imgResp.arrayBuffer());
+                                    imageBuf = await (0, line_image_compress_js_1.compressLineImageBuffer)(rawBuf);
                                 }
                             }
                             catch (e) {
-                                console.warn("[LINE] 取得圖片或 OCR 失敗:", e?.message || e);
+                                console.warn("[LINE] 取得圖片失敗:", e?.message || e);
                             }
                         }
+                        const custRowImg = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customer.id);
+                        const fallbackUnitImg = custRowImg?.default_unit?.trim() || "公斤";
+                        let handwritingSuffix = "";
+                        try {
+                            handwritingSuffix = await customer_handwriting_hints_js_1.buildPromptSuffixForCustomerHandwritingHints(db, customer.id);
+                        }
+                        catch (_) { /* ignore */ }
+                        const imgParseOpts = {
+                            ...(handwritingSuffix ? { geminiExtraSuffix: handwritingSuffix } : {}),
+                            db,
+                            customerId: customer.id,
+                        };
+                        const { parsed: parsedFromImg, ocrText } = await (0, parse_order_from_image_js_1.parseOrderItemsFromImageBuffer)(imageBuf, fallbackUnitImg, imgParseOpts);
                         if (inCollecting) {
                             const session = collectingByGroup.get(groupId);
                             const attId = (0, id_js_1.newId)("att");
@@ -288,21 +275,27 @@ function createLineWebhook() {
                             let orderRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
                             let newRaw = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + (ocrText || "[圖片]");
                             let parsedCount = 0;
-                            if (ocrText) {
-                                const parsed = (0, parse_order_message_js_1.parseOrderMessage)(ocrText);
-                                if (parsed.length > 0) {
-                                    const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(session.customerId);
-                                    const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
-                                    for (const item of parsed) {
-                                        const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, session.customerId);
-                                        const itemId = (0, id_js_1.newId)("item");
-                                        const productId = resolved?.productId ?? null;
-                                        const unit = normalizeOrderUnit(item.unit, fallbackUnit);
-                                        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, session.orderId, productId, item.rawName, item.quantity, unit, resolved ? 0 : 1);
+                            if (parsedFromImg.length > 0) {
+                                const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
+                                for (const item of parsedFromImg) {
+                                    const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, session.customerId);
+                                    const itemId = (0, id_js_1.newId)("item");
+                                    const productId = resolved?.productId ?? null;
+                                    const inputUnit = normalizeOrderUnit(item.unit, fallbackUnitImg);
+                                    let unit = inputUnit;
+                                    let qty = item.quantity;
+                                    let itemRemark = null;
+                                    if (resolved) {
+                                        const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
+                                        qty = c.quantity;
+                                        unit = normalizeOrderUnit(c.unit, fallbackUnitImg);
+                                        itemRemark = c.remark ?? null;
                                     }
-                                    parsedCount = parsed.length;
+                                    itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
+                                    await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, session.orderId, productId, item.rawName, qty, unit, resolved ? 0 : 1, itemRemark);
                                 }
+                                parsedCount = parsedFromImg.length;
                             }
                             await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, session.orderId);
                             // 不回中途提示，僅在 30 秒自動結單時推送摘要
@@ -327,23 +320,29 @@ function createLineWebhook() {
                             }
                             const attId = (0, id_js_1.newId)("att");
                             await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, orderId, messageId);
-                            if (ocrText) {
-                                const parsed = (0, parse_order_message_js_1.parseOrderMessage)(ocrText);
-                                if (parsed.length > 0) {
-                                    const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customer.id);
-                                    const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
-                                    for (const item of parsed) {
-                                        const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, customer.id);
-                                        const itemId = (0, id_js_1.newId)("item");
-                                        const productId = resolved?.productId ?? null;
-                                        const unit = normalizeOrderUnit(item.unit, fallbackUnit);
-                                        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, resolved ? 0 : 1);
+                            const newRawImg = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + (ocrText || "[圖片]");
+                            if (parsedFromImg.length > 0) {
+                                const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
+                                for (const item of parsedFromImg) {
+                                    const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, customer.id);
+                                    const itemId = (0, id_js_1.newId)("item");
+                                    const productId = resolved?.productId ?? null;
+                                    const inputUnit = normalizeOrderUnit(item.unit, fallbackUnitImg);
+                                    let unit = inputUnit;
+                                    let qty = item.quantity;
+                                    let itemRemark = null;
+                                    if (resolved) {
+                                        const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
+                                        qty = c.quantity;
+                                        unit = normalizeOrderUnit(c.unit, fallbackUnitImg);
+                                        itemRemark = c.remark ?? null;
                                     }
-                                    const newRaw = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + ocrText;
-                                    await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, orderId);
+                                    itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
+                                    await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, resolved ? 0 : 1, itemRemark);
                                 }
                             }
+                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawImg, orderId);
                             // 不回中途提示，僅在 30 秒自動結單時推送摘要
                         }
                         continue;
@@ -352,13 +351,8 @@ function createLineWebhook() {
                         console.log("[LINE] 略過非文字訊息, type:", msgType);
                         continue;
                     }
-                    const text = event.message.text.trim();
+                    const text = textEarly !== null && textEarly !== undefined ? textEarly : String(event.message.text || "").trim();
                     console.log("[LINE] 收到文字:", JSON.stringify(text));
-                    // 取得群組 ID（未綁定也可用）
-                    if (groupId && (text === "取得群組ID" || text === "群組ID")) {
-                        await reply(lineClient, event.replyToken, `此群組/聊天室 ID：\n${groupId}\n請將此 ID 提供給管理員，在後台「客戶管理」編輯該客戶的「LINE 群組 ID」並儲存。`, db);
-                        continue;
-                    }
                     if (groupId && !customer) {
                         console.log("[LINE] 未綁定群組，群組 ID:", groupId);
                         await reply(lineClient, event.replyToken, "此群組尚未綁定客戶，無法收單。請確認：① 機器人已加入此群組 ② 在後台「客戶管理」編輯該客戶，將「LINE 群組 ID」設為與本群組一致（在群組傳「取得群組ID」可取得，請複製貼上）。", db);
@@ -368,7 +362,6 @@ function createLineWebhook() {
                         await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。", db);
                         continue;
                     }
-                    // 改為每則都可處理，不再檢查是否處於收單時段
                     const customerId = customer.id;
                     const orderDate = getTaipeiOrderDate();
                     const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_start");
@@ -402,22 +395,37 @@ function createLineWebhook() {
                             scheduleAutoFinalize(groupId, session);
                         }
                         if (rest) {
-                            const parsed = (0, parse_order_message_js_1.parseOrderMessage)(rest);
                             const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
                             const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
+                            const parsed = (0, parse_order_message_js_1.parseOrderMessage)(rest, fallbackUnit);
                             const needReview = [];
+                            const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
                             for (const item of parsed) {
                                 const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, customerId);
                                 const itemId = (0, id_js_1.newId)("item");
                                 const productId = resolved?.productId ?? null;
                                 if (!resolved)
                                     needReview.push(item.rawName);
-                                const unit = normalizeOrderUnit(item.unit, fallbackUnit);
-                                await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, resolved ? 0 : 1);
+                                const inputUnit = normalizeOrderUnit(item.unit, fallbackUnit);
+                                let unit = inputUnit;
+                                let qty = item.quantity;
+                                let itemRemark = null;
+                                if (resolved) {
+                                    const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
+                                    qty = c.quantity;
+                                    unit = normalizeOrderUnit(c.unit, fallbackUnit);
+                                    itemRemark = c.remark ?? null;
+                                }
+                                itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
+                                await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, resolved ? 0 : 1, itemRemark);
                             }
-                            const orderRow2 = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
-                            const newRaw = (orderRow2?.raw_message ? orderRow2.raw_message + "\n" : "") + rest;
+                        }
+                        // 原始訂單：一律存客戶傳來的**整句**（含「收單／叫貨」等觸發詞）；舊版只存 rest 會漏字
+                        const orderRowRaw = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
+                        const lineForRaw = String(text || "").trim();
+                        if (lineForRaw) {
+                            const newRaw = (orderRowRaw?.raw_message ? orderRowRaw.raw_message + "\n" : "") + lineForRaw;
                             await db.prepare("UPDATE orders SET raw_message = ?, updated_at = datetime('now') WHERE id = ?").run(newRaw, orderId);
                         }
                         // 不回中途提示，僅在 30 秒自動結單時推送摘要
@@ -440,6 +448,71 @@ function createLineWebhook() {
                         await reply(lineClient, event.replyToken, "今日叫貨：\n" + (lines.length ? lines.join("\n") : "（尚無品項）"), db);
                         continue;
                     }
+                    const normLineText = text.replace(/[\uFF10-\uFF19]/g, (ch) => String(ch.charCodeAt(0) - 0xff10));
+                    const orderRowForEdit = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
+                    if (orderRowForEdit) {
+                        const custRowEdit = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
+                        const fallbackUnitEdit = custRowEdit?.default_unit?.trim() || "公斤";
+                        const itemsOrdered = await db.prepare(`
+          SELECT oi.id, oi.raw_name, oi.quantity, oi.unit, p.name AS product_name
+          FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
+          ORDER BY oi.id`).all(orderRowForEdit.id);
+                        const delMatch = normLineText.match(/^刪第?(\d+)項?$/) || normLineText.match(/^刪除\s*(\d+)\s*$/);
+                        if (delMatch) {
+                            const num = parseInt(delMatch[1], 10);
+                            if (num >= 1 && num <= itemsOrdered.length) {
+                                const t = itemsOrdered[num - 1];
+                                await db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(t.id, orderRowForEdit.id);
+                                const nm = t.product_name || t.raw_name || "品項";
+                                await reply(lineClient, event.replyToken, `已刪除第${num}項：${nm}`, db);
+                            }
+                            else {
+                                await reply(lineClient, event.replyToken, `找不到第${num}項。今日共 ${itemsOrdered.length} 項，請先傳「今天叫了什麼」或「線上改單」確認編號。`, db);
+                            }
+                            continue;
+                        }
+                        const editMatch = normLineText.match(/^改第?(\d+)項?\s*([\d.]+)\s*(.*?)\s*$/) || normLineText.match(/^更正\s*(\d+)\s+([\d.]+)\s*(.*?)\s*$/);
+                        if (editMatch) {
+                            const num = parseInt(editMatch[1], 10);
+                            const qtyNew = parseFloat(editMatch[2]);
+                            const unitTail = (editMatch[3] || "").trim();
+                            if (num >= 1 && num <= itemsOrdered.length && Number.isFinite(qtyNew) && qtyNew >= 0) {
+                                const t = itemsOrdered[num - 1];
+                                const unitNew = normalizeOrderUnit(unitTail || null, fallbackUnitEdit);
+                                await db.prepare("UPDATE order_items SET quantity = ?, unit = ? WHERE id = ? AND order_id = ?").run(qtyNew, unitNew, t.id, orderRowForEdit.id);
+                                const nm = t.product_name || t.raw_name || "品項";
+                                await reply(lineClient, event.replyToken, `已更新第${num}項 ${nm}：${formatOrderQty(qtyNew)}${unitNew}`, db);
+                            }
+                            else {
+                                await reply(lineClient, event.replyToken, `無法更新（項次或數量有誤）。今日共 ${itemsOrdered.length} 項。\n格式：改第1項 3 公斤`, db);
+                            }
+                            continue;
+                        }
+                        if (normLineText === "線上改單" || normLineText === "訂單更正說明") {
+                            const numbered = itemsOrdered.map((it, i) => {
+                                const nm = it.product_name || it.raw_name || "待確認";
+                                return `${i + 1}. ${nm} ${formatOrderQty(it.quantity)}${it.unit || ""}`;
+                            }).join("\n");
+                            const hint = `【線上改今日叫貨】\n${numbered || "（尚無品項）"}\n\n改數量：改第1項 3 公斤\n刪除：刪第1項\n（請把 1 改成您的項次；品名辨識錯誤請洽業務或由後台改品項）`;
+                            await reply(lineClient, event.replyToken, hint, db);
+                            continue;
+                        }
+                        if (/^改第?\d+項?$/.test(normLineText) || /^更正\s*\d+\s*$/.test(normLineText)) {
+                            await reply(lineClient, event.replyToken, "請寫完整，例如：改第1項 3 公斤", db);
+                            continue;
+                        }
+                    }
+                    else {
+                        const looksLikeLineEdit = /^改第?\d+項?/.test(normLineText) || /^刪第?\d+項?$/.test(normLineText) || /^刪除\s*\d+\s*$/.test(normLineText) || normLineText === "線上改單" || normLineText === "訂單更正說明";
+                        if (looksLikeLineEdit) {
+                            await reply(lineClient, event.replyToken, "今日尚無訂單，無法使用線上修改。", db);
+                            continue;
+                        }
+                    }
+                    if (text === "改單" || text === "如何改單" || text === "改單說明" || text === "訂單錯誤" || text === "叫貨錯誤") {
+                        await reply(lineClient, event.replyToken, "【訂單有誤時】\n1. 傳「今天叫了什麼」或「線上改單」查看項次編號。\n2. 在 LINE 可直接修改數量：\n　改第1項 3 公斤\n　刪第1項\n（數字請改成實際項次）\n3. 若品名整筆辨識錯誤，請聯絡業務，或由管理員至後台「訂單明細」改品項／刪除重下。", db);
+                        continue;
+                    }
                     const endRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_end");
                     const endTriggers = (endRow?.value ?? "完成\n結束收單").split(/\n/).map((s) => s.trim()).filter(Boolean);
                     const aboveMatch = text.match(/^以上\s*([\d\uFF10-\uFF19]+)\s*收單$/);
@@ -452,6 +525,20 @@ function createLineWebhook() {
                             if (oldTimer)
                                 clearTimeout(oldTimer);
                             autoFinalizeTimers.delete(groupId);
+                            if (process.env.LINE_SKIP_FINALIZE_FULL_REBUILD !== "1") {
+                                try {
+                                    const rawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
+                                    const atts = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(session.orderId);
+                                    const fr = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, session.orderId, session.customerId, rawRow?.raw_message, atts);
+                                    if (fr.ok)
+                                        console.log("[LINE] 手動完成：整單重辨識完成 orderId=%s", session.orderId);
+                                    else
+                                        console.warn("[LINE] 手動完成：整單重辨識未覆寫 orderId=%s err=%s", session.orderId, fr.error);
+                                }
+                                catch (e) {
+                                    console.error("[LINE] 手動完成：整單重辨識例外:", e?.message || e);
+                                }
+                            }
                             const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(session.customerId);
                             const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
                             const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
@@ -523,11 +610,12 @@ function createLineWebhook() {
                         const newRaw = (orderRow.raw_message ? orderRow.raw_message + "\n" : "") + text;
                         await db.prepare("UPDATE orders SET raw_message = ?, updated_at = datetime('now') WHERE id = ?").run(newRaw, orderId);
                     }
-                    const parsed = (0, parse_order_message_js_1.parseOrderMessage)(text);
-                    console.log("[LINE] 解析結果 筆數:", parsed.length, parsed.length ? "品項:" + parsed.map((p) => p.rawName + " " + p.quantity).join(", ") : "");
                     const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(cid);
                     const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
+                    const parsed = (0, parse_order_message_js_1.parseOrderMessage)(text, fallbackUnit);
+                    console.log("[LINE] 解析結果 筆數:", parsed.length, parsed.length ? "品項:" + parsed.map((p) => p.rawName + " " + p.quantity).join(", ") : "");
                     const needReview = [];
+                    const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
                     for (const item of parsed) {
                         const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, cid);
                         const itemId = (0, id_js_1.newId)("item");
@@ -535,9 +623,19 @@ function createLineWebhook() {
                         const needReviewFlag = resolved ? 0 : 1;
                         if (!resolved)
                             needReview.push(item.rawName);
-                        const unit = normalizeOrderUnit(item.unit, fallbackUnit);
-                        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, item.quantity, unit, needReviewFlag);
+                        const inputUnit = normalizeOrderUnit(item.unit, fallbackUnit);
+                        let unit = inputUnit;
+                        let qty = item.quantity;
+                        let itemRemark = null;
+                        if (resolved) {
+                            const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
+                            qty = c.quantity;
+                            unit = normalizeOrderUnit(c.unit, fallbackUnit);
+                            itemRemark = c.remark ?? null;
+                        }
+                        itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
+                        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, needReviewFlag, itemRemark);
                     }
                     // 不回中途提示，僅在 30 秒自動結單時推送摘要
                     console.log("[LINE] 訂單已寫入", orderId);
@@ -567,7 +665,12 @@ async function recordLineReply(db) {
         console.error("[LINE] 紀錄回覆則數失敗:", e?.message || e);
     }
 }
-async function reply(client, token, text, dbOptional) {
+/** options.force：略過靜音，仍發送（僅用於取得群組 ID 等管理用途）。靜音狀態見後台「LINE 機器人」或環境變數 LINE_SUPPRESS_LINE_REPLIES（未存 DB 時） */
+async function reply(client, token, text, dbOptional, options) {
+    if (!options?.force && await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(dbOptional)) {
+        console.log("[LINE] 已略過回覆（對客戶靜音；收單仍照常寫入）:", String(text).slice(0, 120));
+        return;
+    }
     if (!client) {
         console.warn("[LINE] 未設定 LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET，無法發送回覆。本應回覆:", text.slice(0, 80));
         return;

@@ -78,8 +78,11 @@ function initSqlite(dbPath) {
         "ALTER TABLE customers ADD COLUMN order_notes TEXT",
         "ALTER TABLE customers ADD COLUMN default_unit TEXT",
         "ALTER TABLE order_items ADD COLUMN remark TEXT",
+        "ALTER TABLE order_items ADD COLUMN display_order INTEGER",
         "ALTER TABLE customers ADD COLUMN route_line INTEGER",
         "ALTER TABLE orders ADD COLUMN order_no TEXT",
+        "ALTER TABLE orders ADD COLUMN sheet_exported_at TEXT",
+        "ALTER TABLE orders ADD COLUMN lingyue_exported_at TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -95,7 +98,7 @@ function initSqlite(dbPath) {
     catch (_) { /* table may already exist */ }
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TEXT)");
-        sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT, raw_name TEXT, quantity REAL NOT NULL DEFAULT 0, unit TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (order_id) REFERENCES logistics_orders(id), FOREIGN KEY (product_id) REFERENCES products(id))");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT, raw_name TEXT, quantity REAL NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (order_id) REFERENCES logistics_orders(id), FOREIGN KEY (product_id) REFERENCES products(id))");
     }
     catch (_) { /* tables may already exist */ }
     try {
@@ -103,7 +106,90 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* column may already exist */ }
     try {
+        sqlite.exec("ALTER TABLE logistics_order_items ADD COLUMN remark TEXT");
+    }
+    catch (_) { /* column may already exist */ }
+    try {
+        sqlite.exec("ALTER TABLE logistics_orders ADD COLUMN customer_id TEXT");
+    }
+    catch (_) { /* column may already exist */ }
+    try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS line_bot_state_log (id TEXT PRIMARY KEY, event_type TEXT NOT NULL, detail TEXT, created_at TEXT)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec("CREATE TABLE IF NOT EXISTS wholesale_market_snapshots (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, market_name TEXT NOT NULL, crop_name TEXT NOT NULL, category TEXT, high_price REAL, mid_price REAL, low_price REAL, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_wholesale_snap_date ON wholesale_market_snapshots(record_date)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS data_change_log (
+          id TEXT PRIMARY KEY,
+          entity_type TEXT NOT NULL,
+          entity_id TEXT NOT NULL,
+          product_id TEXT,
+          action TEXT NOT NULL,
+          summary TEXT,
+          meta_json TEXT,
+          actor_username TEXT,
+          created_at TEXT
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_data_change_product ON data_change_log(product_id)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_data_change_created ON data_change_log(created_at)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS customer_handwriting_hints (
+          id TEXT PRIMARY KEY,
+          customer_id TEXT NOT NULL,
+          raw_key TEXT NOT NULL,
+          raw_name_last TEXT,
+          product_id TEXT NOT NULL,
+          hit_count INTEGER NOT NULL DEFAULT 1,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (customer_id) REFERENCES customers(id),
+          FOREIGN KEY (product_id) REFERENCES products(id),
+          UNIQUE(customer_id, raw_key)
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cust_handwriting_hints_customer ON customer_handwriting_hints(customer_id)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS customer_order_image_examples (
+          id TEXT PRIMARY KEY,
+          customer_id TEXT NOT NULL,
+          source_order_id TEXT,
+          image_path TEXT NOT NULL,
+          parsed_json TEXT NOT NULL,
+          quality_score INTEGER DEFAULT 100,
+          is_active INTEGER DEFAULT 1,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          order_id TEXT,
+          attachment_id TEXT,
+          note TEXT,
+          FOREIGN KEY (customer_id) REFERENCES customers(id),
+          FOREIGN KEY (order_id) REFERENCES orders(id),
+          FOREIGN KEY (attachment_id) REFERENCES order_attachments(id)
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_customer_examples ON customer_order_image_examples(customer_id, is_active)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cust_order_img_ex_customer ON customer_order_image_examples(customer_id)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cust_order_img_ex_order ON customer_order_image_examples(order_id)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS product_packaging_ratios (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL,
+          outer_unit TEXT NOT NULL,
+          inner_unit TEXT NOT NULL,
+          inner_count REAL NOT NULL,
+          note TEXT,
+          created_at TEXT,
+          FOREIGN KEY (product_id) REFERENCES products(id)
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_product_pack_ratio ON product_packaging_ratios(product_id)");
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_pack_pair ON product_packaging_ratios(product_id, outer_unit, inner_unit)");
     }
     catch (_) { /* table may already exist */ }
     for (const alt of alters) {
@@ -159,6 +245,18 @@ async function initPg() {
             }
             catch (_) { /* column may already exist */ }
             try {
+                await client.query("ALTER TABLE orders ADD COLUMN sheet_exported_at TIMESTAMPTZ");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_exported_at TIMESTAMPTZ");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE order_items ADD COLUMN display_order INTEGER");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
                 await client.query("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), line_message_id TEXT NOT NULL, created_at TIMESTAMPTZ)");
             }
             catch (_) { /* table may already exist */ }
@@ -172,7 +270,7 @@ async function initPg() {
             catch (_) { /* table may already exist */ }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TIMESTAMPTZ)");
-                await client.query("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES logistics_orders(id), product_id TEXT REFERENCES products(id), raw_name TEXT, quantity DOUBLE PRECISION NOT NULL DEFAULT 0, unit TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0)");
+                await client.query("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES logistics_orders(id), product_id TEXT REFERENCES products(id), raw_name TEXT, quantity DOUBLE PRECISION NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0)");
             }
             catch (_) { /* tables may already exist */ }
             try {
@@ -180,7 +278,94 @@ async function initPg() {
             }
             catch (_) { /* column may already exist */ }
             try {
+                await client.query("ALTER TABLE logistics_order_items ADD COLUMN remark TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE logistics_orders ADD COLUMN customer_id TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
                 await client.query("CREATE TABLE IF NOT EXISTS line_bot_state_log (id TEXT PRIMARY KEY, event_type TEXT NOT NULL, detail TEXT, created_at TIMESTAMPTZ)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS wholesale_market_snapshots (
+            id TEXT PRIMARY KEY,
+            record_date TEXT NOT NULL,
+            market_name TEXT NOT NULL,
+            crop_name TEXT NOT NULL,
+            category TEXT,
+            high_price DOUBLE PRECISION,
+            mid_price DOUBLE PRECISION,
+            low_price DOUBLE PRECISION,
+            created_at TIMESTAMPTZ
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_wholesale_snap_date ON wholesale_market_snapshots(record_date)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS product_packaging_ratios (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL REFERENCES products(id),
+            outer_unit TEXT NOT NULL,
+            inner_unit TEXT NOT NULL,
+            inner_count DOUBLE PRECISION NOT NULL,
+            note TEXT,
+            created_at TIMESTAMPTZ
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_product_pack_ratio ON product_packaging_ratios(product_id)");
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_pack_pair ON product_packaging_ratios(product_id, outer_unit, inner_unit)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS data_change_log (
+            id TEXT PRIMARY KEY,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            product_id TEXT,
+            action TEXT NOT NULL,
+            summary TEXT,
+            meta_json TEXT,
+            actor_username TEXT,
+            created_at TIMESTAMPTZ
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_data_change_product ON data_change_log(product_id)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_data_change_created ON data_change_log(created_at)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS customer_order_image_examples (
+            id TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL REFERENCES customers(id),
+            source_order_id TEXT,
+            image_path TEXT NOT NULL,
+            parsed_json TEXT NOT NULL,
+            quality_score INTEGER DEFAULT 100,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            order_id TEXT REFERENCES orders(id),
+            attachment_id TEXT REFERENCES order_attachments(id),
+            note TEXT
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_customer_examples ON customer_order_image_examples(customer_id, is_active)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cust_order_img_ex_customer ON customer_order_image_examples(customer_id)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cust_order_img_ex_order ON customer_order_image_examples(order_id)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS customer_handwriting_hints (
+            id TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL REFERENCES customers(id),
+            raw_key TEXT NOT NULL,
+            raw_name_last TEXT,
+            product_id TEXT NOT NULL REFERENCES products(id),
+            hit_count INTEGER NOT NULL DEFAULT 1,
+            updated_at TIMESTAMPTZ NOT NULL,
+            UNIQUE(customer_id, raw_key)
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cust_handwriting_hints_customer ON customer_handwriting_hints(customer_id)");
             }
             catch (_) { /* table may already exist */ }
         }

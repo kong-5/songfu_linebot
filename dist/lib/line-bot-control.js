@@ -2,16 +2,39 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getLineBotSettings = getLineBotSettings;
 exports.isBotAcceptingOrders = isBotAcceptingOrders;
+exports.isLineSuppressCustomerReply = isLineSuppressCustomerReply;
 exports.classifyTextAsOrderIntent = classifyTextAsOrderIntent;
 exports.appendLineBotLog = appendLineBotLog;
 
 const DEFAULT_MODE = "always_on";
 const DEFAULT_START = "18:00";
 const DEFAULT_END = "03:00";
+const KEY_SUPPRESS_REPLY = "line_suppress_customer_reply";
+function parseBoolSetting(v) {
+    const s = String(v ?? "").trim();
+    return s === "1" || s.toLowerCase() === "true" || s.toLowerCase() === "yes";
+}
+/** 資料庫未存過此鍵時，沿用環境變數 LINE_SUPPRESS_LINE_REPLIES */
+async function isLineSuppressCustomerReply(db) {
+    if (!db) {
+        return parseBoolSetting(process.env.LINE_SUPPRESS_LINE_REPLIES);
+    }
+    const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(KEY_SUPPRESS_REPLY);
+    if (row && row.value !== undefined && row.value !== null && String(row.value).trim() !== "") {
+        return parseBoolSetting(row.value);
+    }
+    return parseBoolSetting(process.env.LINE_SUPPRESS_LINE_REPLIES);
+}
 
 async function getLineBotSettings(db) {
     const keys = ["line_bot_mode", "line_bot_window_start", "line_bot_window_end", "line_bot_ai_gate"];
-    const out = { mode: DEFAULT_MODE, windowStart: DEFAULT_START, windowEnd: DEFAULT_END, aiGate: false };
+    const out = {
+        mode: DEFAULT_MODE,
+        windowStart: DEFAULT_START,
+        windowEnd: DEFAULT_END,
+        aiGate: false,
+        suppressCustomerReply: false,
+    };
     for (const k of keys) {
         const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(k);
         const v = row?.value;
@@ -24,6 +47,7 @@ async function getLineBotSettings(db) {
         if (k === "line_bot_ai_gate" && v)
             out.aiGate = v === "1" || v === "true";
     }
+    out.suppressCustomerReply = await isLineSuppressCustomerReply(db);
     return out;
 }
 
