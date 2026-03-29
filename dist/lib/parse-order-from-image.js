@@ -15,7 +15,14 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
     const geminiExtraSuffix = (options && typeof options.geminiExtraSuffix === "string" && options.geminiExtraSuffix.trim())
         ? options.geminiExtraSuffix.trim()
         : "";
-    const geminiTextOpts = geminiExtraSuffix ? { extraPromptSuffix: geminiExtraSuffix } : undefined;
+    const knownSub = options && typeof options.knownSubCustomers === "string" && options.knownSubCustomers.trim()
+        ? options.knownSubCustomers.trim()
+        : "";
+    const geminiTextOpts = {
+        ...(geminiExtraSuffix ? { extraPromptSuffix: geminiExtraSuffix } : {}),
+        ...(knownSub ? { knownSubCustomers: knownSub } : {}),
+    };
+    const hasGeminiTextOpts = Object.keys(geminiTextOpts).length > 0;
     let ocrText = null;
     if (buffer?.length && process.env.GOOGLE_CLOUD_VISION_API_KEY) {
         try {
@@ -32,7 +39,7 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
     if (template) {
         console.log("[parse-order-from-image] matched template=%s", template.id);
     }
-    let parsed = parseText ? await (0, parse_order_message_js_1.parseOrderMessage)(parseText, fallbackUnit, geminiTextOpts) : [];
+    let parsed = parseText ? await (0, parse_order_message_js_1.parseOrderMessage)(parseText, fallbackUnit, hasGeminiTextOpts ? geminiTextOpts : undefined) : [];
     parsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(parsed);
     const geminiKey = (0, gemini_order_helpers_js_1.getGeminiApiKey)();
     /**
@@ -55,6 +62,8 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
             visionOpts.db = options.db;
             visionOpts.customerId = options.customerId;
         }
+        if (knownSub)
+            visionOpts.knownSubCustomers = knownSub;
         const rows = await (0, gemini_order_helpers_js_1.parseOrderWithGeminiImage)(buffer, Object.keys(visionOpts).length ? visionOpts : undefined);
         if (rows && rows.length) {
             let visionParsed = rows.map((p) => ({
@@ -62,6 +71,7 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
                 quantity: (0, gemini_order_helpers_js_1.coerceQuantityFromGemini)(p.quantity),
                 unit: (0, gemini_order_helpers_js_1.coerceUnitFromGemini)(p.unit) || "公斤",
                 remark: p.remark ?? null,
+                subCustomer: p.subCustomer != null && String(p.subCustomer).trim() !== "" ? String(p.subCustomer).trim() : null,
             }));
             visionParsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(visionParsed);
             if (visionParsed.length > parsed.length) {

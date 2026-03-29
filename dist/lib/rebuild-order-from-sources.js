@@ -43,15 +43,17 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
             }
         }
         itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, p.quantity, inputUnit, unit);
-        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, include_export) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)").run(itemId, orderId, resolved?.productId ?? null, p.rawName || "", qty, unit, needReview, itemRemark);
+        const subCust = p.subCustomer != null && String(p.subCustomer).trim() !== "" ? String(p.subCustomer).trim() : null;
+        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, include_export, sub_customer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)").run(itemId, orderId, resolved?.productId ?? null, p.rawName || "", qty, unit, needReview, itemRemark, subCust);
     }
 }
 /**
  * 文字（略過「[圖片]」行）+ 附件圖逐張解析，合併為一個 parsed 陣列（不寫庫）。
  */
 async function collectParsedFromOrderSources(db, customerId, rawMessage, attachmentRows) {
-    const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
+    const custRow = await db.prepare("SELECT default_unit, known_sub_customers FROM customers WHERE id = ?").get(customerId);
     const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
+    const knownSub = custRow?.known_sub_customers != null ? String(custRow.known_sub_customers).trim() : "";
     let handwritingSuffix = "";
     try {
         handwritingSuffix = await customer_handwriting_hints_js_1.buildPromptSuffixForCustomerHandwritingHints(db, customerId);
@@ -59,9 +61,13 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
     catch (e) {
         console.warn("[rebuild-order] handwriting hints:", e?.message || e);
     }
-    const geminiHintOpts = handwritingSuffix ? { extraPromptSuffix: handwritingSuffix } : undefined;
+    const geminiHintOpts = {
+        ...(handwritingSuffix ? { extraPromptSuffix: handwritingSuffix } : {}),
+        ...(knownSub ? { knownSubCustomers: knownSub } : {}),
+    };
     const imageHintOpts = {
         ...(handwritingSuffix ? { geminiExtraSuffix: handwritingSuffix } : {}),
+        ...(knownSub ? { knownSubCustomers: knownSub } : {}),
         db,
         customerId,
     };
@@ -73,7 +79,7 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
         .trim();
     const parsed = [];
     if (textForParse) {
-        const fromText = await (0, parse_order_message_js_1.parseOrderMessage)(textForParse, fallbackUnit, geminiHintOpts);
+        const fromText = await (0, parse_order_message_js_1.parseOrderMessage)(textForParse, fallbackUnit, Object.keys(geminiHintOpts).length ? geminiHintOpts : undefined);
         parsed.push(...fromText);
     }
     const token = process.env.LINE_CHANNEL_ACCESS_TOKEN?.trim();
@@ -112,11 +118,28 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
     }
     return { parsed, error };
 }
+/** order_sub_split_key：NULL＝未拆單（整張單重算全部品項）；空字串＝拆單後「主客戶／預設」桶；非空＝該子客戶名稱 */
+function filterParsedRowsForOrderSplit(parsed, orderSubSplitKey) {
+    if (orderSubSplitKey === undefined || orderSubSplitKey === null)
+        return parsed;
+    if (orderSubSplitKey === "")
+        return parsed.filter((p) => {
+            const sc = p.subCustomer;
+            return sc == null || String(sc).trim() === "";
+        });
+    const k = String(orderSubSplitKey);
+    return parsed.filter((p) => String(p.subCustomer || "").trim() === k);
+}
 /** 有解析到至少一筆才覆寫明細；否則保留既有品項 */
 async function rebuildOrderItemsFromOrderSources(db, orderId, customerId, rawMessage, attachmentRows) {
     const { parsed, error } = await collectParsedFromOrderSources(db, customerId, rawMessage, attachmentRows);
     if (!parsed.length)
         return { ok: false, error };
-    await replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed);
+    const meta = await db.prepare("SELECT order_sub_split_key FROM orders WHERE id = ?").get(orderId);
+    const splitKey = meta?.order_sub_split_key !== undefined ? meta.order_sub_split_key : null;
+    const filtered = filterParsedRowsForOrderSplit(parsed, splitKey);
+    if (!filtered.length)
+        return { ok: false, error: splitKey != null ? "split_no_match" : error };
+    await replaceOrderItemsFromParsedRows(db, orderId, customerId, filtered);
     return { ok: true };
 }

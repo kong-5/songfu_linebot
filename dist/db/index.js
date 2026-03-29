@@ -83,6 +83,10 @@ function initSqlite(dbPath) {
         "ALTER TABLE orders ADD COLUMN order_no TEXT",
         "ALTER TABLE orders ADD COLUMN sheet_exported_at TEXT",
         "ALTER TABLE orders ADD COLUMN lingyue_exported_at TEXT",
+        "ALTER TABLE customers ADD COLUMN known_sub_customers TEXT",
+        "ALTER TABLE order_items ADD COLUMN sub_customer TEXT",
+        "ALTER TABLE orders ADD COLUMN remark TEXT",
+        "ALTER TABLE orders ADD COLUMN order_sub_split_key TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -254,6 +258,22 @@ async function initPg() {
             catch (_) { /* column may already exist */ }
             try {
                 await client.query("ALTER TABLE order_items ADD COLUMN display_order INTEGER");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE customers ADD COLUMN known_sub_customers TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE order_items ADD COLUMN sub_customer TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN remark TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN order_sub_split_key TEXT");
             }
             catch (_) { /* column may already exist */ }
             try {

@@ -114,11 +114,13 @@ async function parseOrderMessage(text, fallbackUnit, options) {
         const q = coerceQuantityFromGemini(p.quantity);
         const u = coerceUnitFromGemini(p.unit) || fb;
         const remarkRaw = p.remark != null ? String(p.remark).trim() : "";
+        const subRaw = p.subCustomer != null ? String(p.subCustomer).trim() : (p.sub_customer != null ? String(p.sub_customer).trim() : "");
         return {
             rawName: p.rawName,
             quantity: Number.isFinite(q) ? q : 0,
             unit: u,
             remark: remarkRaw !== "" ? remarkRaw : null,
+            subCustomer: subRaw !== "" ? subRaw : null,
         };
     });
 }

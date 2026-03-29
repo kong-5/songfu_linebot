@@ -11,7 +11,8 @@
     default_unit TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     updated_at TIMESTAMPTZ,
-    route_line INTEGER
+    route_line INTEGER,
+    known_sub_customers TEXT
   );
 
   CREATE TABLE IF NOT EXISTS products (
@@ -34,7 +35,9 @@
     status TEXT,
     updated_at TIMESTAMPTZ,
     sheet_exported_at TIMESTAMPTZ,
-    lingyue_exported_at TIMESTAMPTZ
+    lingyue_exported_at TIMESTAMPTZ,
+    remark TEXT,
+    order_sub_split_key TEXT
   );
 
   CREATE TABLE IF NOT EXISTS order_items (
@@ -47,7 +50,8 @@
     remark TEXT,
     display_order INTEGER,
     need_review INTEGER NOT NULL DEFAULT 0,
-    include_export INTEGER
+    include_export INTEGER,
+    sub_customer TEXT
   );
 
   CREATE TABLE IF NOT EXISTS order_attachments (

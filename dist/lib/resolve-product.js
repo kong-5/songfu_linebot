@@ -123,7 +123,7 @@ async function tryResolve(db, customerId, candidates) {
                 return true;
             if (nm === token)
                 return true;
-            if (nm.startsWith(token) && blockedSuffix.some((s) => nm.endsWith(s)) && !token.endsWith(s))
+            if (nm.startsWith(token) && blockedSuffix.some((s) => nm.endsWith(s) && !token.endsWith(s)))
                 return false;
             return true;
         })
@@ -244,7 +244,7 @@ async function aiFallbackResolveProductId(db, rawName, customerId) {
         `1) 只允許回傳「候選品項」中的某個 id；若真的都不像，回傳 productId=null。`,
         `2) 回傳理由可簡短，但必須是 JSON 可解析。`,
     ].join("\n");
-    const systemPrompt = `你是品項對應器。使用者提供一段叫貨文字rawName，需要在候選品項中找出最可能的標準品項。請只回傳嚴格 JSON（不要包在 ``` ``` 代碼塊內）。JSON 格式：{"productId":"<id或null>","reason":"<一句話>"}`;
+    const systemPrompt = "你是品項對應器。使用者提供一段叫貨文字 rawName，需要在候選品項中找出最可能的標準品項。請只回傳嚴格 JSON（勿用 markdown 程式碼區塊包起來）。JSON 格式：{\"productId\":\"<id或null>\",\"reason\":\"<一句話>\"}";
     const reply = await (0, gemini_chat_js_1.chatWithGemini)(userMessage, systemPrompt);
     if (!reply)
         return null;

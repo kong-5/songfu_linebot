@@ -61,6 +61,107 @@ function formatOrderQty(q) {
         return String(q ?? "");
     return String(parseFloat(n.toFixed(4)));
 }
+/** Gemini 品項依 sub_customer 分組；空字串／null／undefined 視為預設主客戶 */
+function subCustomerGroupKeyFromParsedItem(item) {
+    const sc = item.subCustomer;
+    if (sc == null || String(sc).trim() === "")
+        return "";
+    return String(sc).trim();
+}
+function mustSplitOrdersBySubCustomer(parsed) {
+    if (!parsed?.length)
+        return false;
+    const keys = new Set(parsed.map(subCustomerGroupKeyFromParsedItem));
+    return keys.size > 1;
+}
+function groupParsedItemsBySubCustomer(parsed) {
+    const map = new Map();
+    for (const item of parsed) {
+        const k = subCustomerGroupKeyFromParsedItem(item);
+        if (!map.has(k))
+            map.set(k, []);
+        map.get(k).push(item);
+    }
+    return map;
+}
+function mergeSessionOrderIds(session, newIds) {
+    const set = new Set();
+    if (Array.isArray(session.allOrderIds))
+        for (const x of session.allOrderIds)
+            if (x)
+                set.add(x);
+    if (session.orderId)
+        set.add(session.orderId);
+    for (const id of newIds || [])
+        if (id)
+            set.add(id);
+    session.allOrderIds = Array.from(set);
+    if (session.allOrderIds.length && !session.orderId)
+        session.orderId = session.allOrderIds[0];
+}
+function formatSplitSubNamesForReply(keySet) {
+    const arr = [...keySet].sort((a, b) => {
+        if (a === "")
+            return -1;
+        if (b === "")
+            return 1;
+        return a.localeCompare(b, "zh-Hant");
+    });
+    return arr.map((k) => (k === "" ? "主客戶" : k)).join("、");
+}
+async function insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, { orderDate, customerId, groupId, rawMessage, remark, orderSubSplitKey, }) {
+    const orderId = (0, id_js_1.newId)("ord");
+    const orderNo = await getNextOrderNo(db, orderDate);
+    const splitVal = orderSubSplitKey === undefined ? null : orderSubSplitKey;
+    await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ` + nowSql + `)`).run(orderId, orderNo, customerId, orderDate, groupId ?? null, rawMessage ?? "", remark ?? null, splitVal);
+    return orderId;
+}
+async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fallbackUnit) {
+    const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
+    for (const item of parsedRows) {
+        const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, customerId);
+        const itemId = (0, id_js_1.newId)("item");
+        const productId = resolved?.productId ?? null;
+        const inputUnit = normalizeOrderUnit(item.unit, fallbackUnit);
+        let unit = inputUnit;
+        let qty = Number(item.quantity);
+        if (!Number.isFinite(qty))
+            qty = 0;
+        let itemRemark = item.remark != null && String(item.remark).trim() !== "" ? String(item.remark).trim() : null;
+        if (resolved) {
+            const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
+            qty = Number(c.quantity);
+            unit = normalizeOrderUnit(c.unit, fallbackUnit);
+            if (c.remark) {
+                itemRemark = itemRemark ? (itemRemark + "；" + c.remark) : c.remark;
+            }
+        }
+        itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
+        const needReviewFlag = resolved ? 0 : 1;
+        const subC = item.subCustomer != null && String(item.subCustomer).trim() !== "" ? String(item.subCustomer).trim() : null;
+        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, sub_customer)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, needReviewFlag, itemRemark, subC);
+    }
+}
+async function appendRawLineToOrders(db, orderIds, lineText, nowSql) {
+    const line = String(lineText ?? "").trim();
+    if (!line || !orderIds?.length)
+        return;
+    for (const oid of orderIds) {
+        const row = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
+        const newRaw = (row?.raw_message ? row.raw_message + "\n" : "") + line;
+        await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, oid);
+    }
+}
+async function duplicateAttachmentToOrders(db, lineMessageId, orderIds, nowSql) {
+    if (!lineMessageId || !orderIds?.length)
+        return;
+    for (const oid of orderIds) {
+        const attId = (0, id_js_1.newId)("att");
+        await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, oid, lineMessageId);
+    }
+}
 async function getNextOrderNo(db, orderDate) {
     const nextKey = "order_seq_next_" + orderDate;
     const startKey = "order_seq_start_" + orderDate;
@@ -92,41 +193,52 @@ function createLineWebhook() {
                     return;
                 collectingByGroup.delete(groupId);
                 autoFinalizeTimers.delete(groupId);
+                const orderIdsForSession = (session.allOrderIds && session.allOrderIds.length)
+                    ? [...new Set(session.allOrderIds)]
+                    : [session.orderId];
                 if (process.env.LINE_SKIP_FINALIZE_FULL_REBUILD !== "1") {
-                    try {
-                        const rawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
-                        const atts = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(session.orderId);
-                        const fr = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, session.orderId, session.customerId, rawRow?.raw_message, atts);
-                        if (fr.ok)
-                            console.log("[LINE] 結單整單重辨識完成 orderId=%s", session.orderId);
-                        else
-                            console.warn("[LINE] 結單整單重辨識未覆寫（沿用逐則明細）orderId=%s err=%s", session.orderId, fr.error);
-                    }
-                    catch (e) {
-                        console.error("[LINE] 結單整單重辨識例外:", e?.message || e);
+                    for (const oid of orderIdsForSession) {
+                        try {
+                            const rawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
+                            const atts = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(oid);
+                            const fr = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, oid, session.customerId, rawRow?.raw_message, atts);
+                            if (fr.ok)
+                                console.log("[LINE] 結單整單重辨識完成 orderId=%s", oid);
+                            else
+                                console.warn("[LINE] 結單整單重辨識未覆寫（沿用逐則明細）orderId=%s err=%s", oid, fr.error);
+                        }
+                        catch (e) {
+                            console.error("[LINE] 結單整單重辨識例外 orderId=%s:", oid, e?.message || e);
+                        }
                     }
                 }
-                const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId);
-                const items = await db.prepare(`
+                const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(orderIdsForSession[0]);
+                const dateStr = order?.order_date || getTaipeiOrderDate();
+                const orderBlocks = [];
+                for (const oid of orderIdsForSession) {
+                    const ord = await db.prepare("SELECT order_no, remark FROM orders WHERE id = ?").get(oid);
+                    const items = await db.prepare(`
           SELECT oi.raw_name, oi.quantity, oi.unit, p.name AS product_name, p.erp_code
           FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
           WHERE oi.order_id = ? ORDER BY oi.id
-        `).all(session.orderId);
-                const dateStr = order?.order_date || getTaipeiOrderDate();
-                const lines = [];
-                let idx = 1;
-                for (const it of items) {
-                    const qty = Number(it.quantity || 0);
-                    const unit = normalizeOrderUnit(it.unit, "公斤");
-                    const name = it.product_name || it.raw_name || "待確認";
-                    lines.push(`${idx}. ${name} ${formatOrderQty(it.quantity)}${unit || ""}`);
-                    idx += 1;
+        `).all(oid);
+                    const lines = [];
+                    let idx = 1;
+                    for (const it of items) {
+                        const unit = normalizeOrderUnit(it.unit, "公斤");
+                        const name = it.product_name || it.raw_name || "待確認";
+                        lines.push(`${idx}. ${name} ${formatOrderQty(it.quantity)}${unit || ""}`);
+                        idx += 1;
+                    }
+                    const hdr = ord?.remark ? `${ord.remark}\n` : "";
+                    orderBlocks.push(`【${ord?.order_no ?? oid}】\n${hdr}${lines.length ? lines.join("\n") : "（目前尚無可辨識品項）"}`);
                 }
+                const multi = orderIdsForSession.length > 1;
                 const summary = [
-                    "收到，已收單喔。",
+                    multi ? `收到，已收單喔（共 ${orderIdsForSession.length} 張訂單）。` : "收到，已收單喔。",
                     `送貨日期為：${dateStr}`,
-                    "訂購項目如下：",
-                    ...(lines.length ? lines : ["（目前尚無可辨識品項）"]),
+                    multi ? "各張訂單明細如下：" : "訂購項目如下：",
+                    ...orderBlocks,
                     "",
                     "※ 若內容有誤：可傳「線上改單」查看項次，並傳「改第1項 3 公斤」或「刪第1項」修改（數字請自換）；品名錯誤請洽業務或後台改品項。",
                     "（目前未連動批發行情，僅顯示叫貨數量與單位。）",
@@ -136,7 +248,7 @@ function createLineWebhook() {
                         await lineClient.pushMessage(groupId, { type: "text", text: summary });
                     }
                     else {
-                        console.log("[LINE] 已略過 30 秒結單推播（對客戶靜音） orderId=%s", session.orderId);
+                        console.log("[LINE] 已略過 30 秒結單推播（對客戶靜音） orders=%s", orderIdsForSession.join(","));
                     }
                 }
             }
@@ -208,6 +320,7 @@ function createLineWebhook() {
                         console.log("[LINE] 非收單時段（休眠），略過（不呼叫 Gemini／OCR／訂單）");
                         continue;
                     }
+                    const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
                     let customer = null;
                     if (groupId) {
                         const allActive = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE (active IS NULL OR active = 1)").all();
@@ -239,7 +352,6 @@ function createLineWebhook() {
                         }
                         const inCollecting = groupId ? collectingByGroup.has(groupId) : false;
                         const messageId = event.message.id;
-                        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
                         let imageBuf = null;
                         if (channelAccessToken) {
                             try {
@@ -255,8 +367,9 @@ function createLineWebhook() {
                                 console.warn("[LINE] 取得圖片失敗:", e?.message || e);
                             }
                         }
-                        const custRowImg = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customer.id);
+                        const custRowImg = await db.prepare("SELECT default_unit, known_sub_customers FROM customers WHERE id = ?").get(customer.id);
                         const fallbackUnitImg = custRowImg?.default_unit?.trim() || "公斤";
+                        const knownSubImg = custRowImg?.known_sub_customers != null ? String(custRowImg.known_sub_customers).trim() : "";
                         let handwritingSuffix = "";
                         try {
                             handwritingSuffix = await customer_handwriting_hints_js_1.buildPromptSuffixForCustomerHandwritingHints(db, customer.id);
@@ -264,86 +377,113 @@ function createLineWebhook() {
                         catch (_) { /* ignore */ }
                         const imgParseOpts = {
                             ...(handwritingSuffix ? { geminiExtraSuffix: handwritingSuffix } : {}),
+                            ...(knownSubImg ? { knownSubCustomers: knownSubImg } : {}),
                             db,
                             customerId: customer.id,
                         };
                         const { parsed: parsedFromImg, ocrText } = await (0, parse_order_from_image_js_1.parseOrderItemsFromImageBuffer)(imageBuf, fallbackUnitImg, imgParseOpts);
                         if (inCollecting) {
                             const session = collectingByGroup.get(groupId);
-                            const attId = (0, id_js_1.newId)("att");
-                            await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, session.orderId, messageId);
-                            let orderRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
-                            let newRaw = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + (ocrText || "[圖片]");
-                            let parsedCount = 0;
-                            if (parsedFromImg.length > 0) {
-                                const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
-                                for (const item of parsedFromImg) {
-                                    const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, session.customerId);
-                                    const itemId = (0, id_js_1.newId)("item");
-                                    const productId = resolved?.productId ?? null;
-                                    const inputUnit = normalizeOrderUnit(item.unit, fallbackUnitImg);
-                                    let unit = inputUnit;
-                                    let qty = item.quantity;
-                                    let itemRemark = null;
-                                    if (resolved) {
-                                        const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
-                                        qty = c.quantity;
-                                        unit = normalizeOrderUnit(c.unit, fallbackUnitImg);
-                                        itemRemark = c.remark ?? null;
-                                    }
-                                    itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
-                                    await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, session.orderId, productId, item.rawName, qty, unit, resolved ? 0 : 1, itemRemark);
+                            const ocrLine = ocrText || "[圖片]";
+                            const orderDateVal = (await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId))?.order_date || getTaipeiOrderDate();
+                            const baseRawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
+                            const newRawAppend = (baseRawRow?.raw_message ? baseRawRow.raw_message + "\n" : "") + ocrLine;
+                            if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
+                                const map = groupParsedItemsBySubCustomer(parsedFromImg);
+                                const newOrderIds = [];
+                                for (const [subKey, items] of map) {
+                                    const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
+                                    const splitKey = subKey === "" ? "" : subKey;
+                                    const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                                        orderDate: orderDateVal,
+                                        customerId: session.customerId,
+                                        groupId,
+                                        rawMessage: "",
+                                        remark,
+                                        orderSubSplitKey: splitKey,
+                                    });
+                                    newOrderIds.push(oid);
+                                    await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, oid);
+                                    await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
+                                    await insertParsedItemsForOrder(db, oid, session.customerId, items, fallbackUnitImg);
                                 }
-                                parsedCount = parsedFromImg.length;
+                                mergeSessionOrderIds(session, newOrderIds);
+                                if (lineClient && newOrderIds.length > 1) {
+                                    await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                                }
                             }
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, session.orderId);
-                            // 不回中途提示，僅在 30 秒自動結單時推送摘要
+                            else if (parsedFromImg.length > 0) {
+                                const attId = (0, id_js_1.newId)("att");
+                                await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, session.orderId, messageId);
+                                await insertParsedItemsForOrder(db, session.orderId, session.customerId, parsedFromImg, fallbackUnitImg);
+                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, session.orderId);
+                            }
+                            else {
+                                const attId = (0, id_js_1.newId)("att");
+                                await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, session.orderId, messageId);
+                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, session.orderId);
+                            }
                         }
                         else {
                             const orderDate = getTaipeiOrderDate();
                             let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customer.id, orderDate);
-                            let orderId;
-                            if (orderRow) {
-                                orderId = orderRow.id;
-                            }
-                            else {
-                                orderId = (0, id_js_1.newId)("ord");
-                                const orderNo = await getNextOrderNo(db, orderDate);
-                                await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending')`).run(orderId, orderNo, customer.id, orderDate, groupId, "");
-                            }
-                            if (groupId) {
-                                const session = { orderId, customerId: customer.id, lastActivity: Date.now() };
-                                collectingByGroup.set(groupId, session);
-                                scheduleAutoFinalize(groupId, session);
-                            }
-                            const attId = (0, id_js_1.newId)("att");
-                            await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, orderId, messageId);
-                            const newRawImg = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + (ocrText || "[圖片]");
-                            if (parsedFromImg.length > 0) {
-                                const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
-                                for (const item of parsedFromImg) {
-                                    const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, customer.id);
-                                    const itemId = (0, id_js_1.newId)("item");
-                                    const productId = resolved?.productId ?? null;
-                                    const inputUnit = normalizeOrderUnit(item.unit, fallbackUnitImg);
-                                    let unit = inputUnit;
-                                    let qty = item.quantity;
-                                    let itemRemark = null;
-                                    if (resolved) {
-                                        const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
-                                        qty = c.quantity;
-                                        unit = normalizeOrderUnit(c.unit, fallbackUnitImg);
-                                        itemRemark = c.remark ?? null;
-                                    }
-                                    itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
-                                    await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, resolved ? 0 : 1, itemRemark);
+                            const ocrLine = ocrText || "[圖片]";
+                            if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
+                                const map = groupParsedItemsBySubCustomer(parsedFromImg);
+                                const newOrderIds = [];
+                                for (const [subKey, items] of map) {
+                                    const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
+                                    const splitKey = subKey === "" ? "" : subKey;
+                                    const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                                        orderDate,
+                                        customerId: customer.id,
+                                        groupId,
+                                        rawMessage: "",
+                                        remark,
+                                        orderSubSplitKey: splitKey,
+                                    });
+                                    newOrderIds.push(oid);
+                                    const rawFull = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + ocrLine;
+                                    await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(rawFull, oid);
+                                    await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
+                                    await insertParsedItemsForOrder(db, oid, customer.id, items, fallbackUnitImg);
+                                }
+                                if (groupId) {
+                                    const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId: customer.id, lastActivity: Date.now() };
+                                    collectingByGroup.set(groupId, session);
+                                    scheduleAutoFinalize(groupId, session);
+                                }
+                                if (lineClient && newOrderIds.length > 1) {
+                                    await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
                                 }
                             }
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawImg, orderId);
-                            // 不回中途提示，僅在 30 秒自動結單時推送摘要
+                            else {
+                                let orderId;
+                                if (orderRow) {
+                                    orderId = orderRow.id;
+                                }
+                                else {
+                                    orderId = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                                        orderDate,
+                                        customerId: customer.id,
+                                        groupId,
+                                        rawMessage: "",
+                                        remark: null,
+                                        orderSubSplitKey: null,
+                                    });
+                                }
+                                if (groupId) {
+                                    const session = { orderId, allOrderIds: [orderId], customerId: customer.id, lastActivity: Date.now() };
+                                    collectingByGroup.set(groupId, session);
+                                    scheduleAutoFinalize(groupId, session);
+                                }
+                                await duplicateAttachmentToOrders(db, messageId, [orderId], nowSql);
+                                const newRawImg = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + ocrLine;
+                                if (parsedFromImg.length > 0) {
+                                    await insertParsedItemsForOrder(db, orderId, customer.id, parsedFromImg, fallbackUnitImg);
+                                }
+                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawImg, orderId);
+                            }
                         }
                         continue;
                     }
@@ -378,59 +518,95 @@ function createLineWebhook() {
                             console.log("[LINE] 意圖關鍵字進入收單 customerId=%s orderDate=%s text=%s", customerId, orderDate, rest.slice(0, 80));
                         else
                             console.log("[LINE] 進入收單流程 customerId=%s orderDate=%s rest=%s", customerId, orderDate, rest.slice(0, 50));
+                        const lineForRaw = String(text || "").trim();
+                        if (!rest) {
+                            let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
+                            let orderId;
+                            if (orderRow) {
+                                orderId = orderRow.id;
+                            }
+                            else {
+                                orderId = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                                    orderDate,
+                                    customerId,
+                                    groupId,
+                                    rawMessage: "",
+                                    remark: null,
+                                    orderSubSplitKey: null,
+                                });
+                            }
+                            if (groupId) {
+                                const session = { orderId, allOrderIds: [orderId], customerId, lastActivity: Date.now() };
+                                collectingByGroup.set(groupId, session);
+                                scheduleAutoFinalize(groupId, session);
+                            }
+                            if (lineForRaw) {
+                                const orderRowRaw = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
+                                const newRaw = (orderRowRaw?.raw_message ? orderRowRaw.raw_message + "\n" : "") + lineForRaw;
+                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, orderId);
+                            }
+                            continue;
+                        }
+                        const custRow = await db.prepare("SELECT default_unit, known_sub_customers FROM customers WHERE id = ?").get(customerId);
+                        const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
+                        const knownSub = custRow?.known_sub_customers != null ? String(custRow.known_sub_customers).trim() : "";
+                        const parseOpts = {
+                            ...(knownSub ? { knownSubCustomers: knownSub } : {}),
+                        };
+                        const parsed = await (0, parse_order_message_js_1.parseOrderMessage)(rest, fallbackUnit, Object.keys(parseOpts).length ? parseOpts : undefined);
+                        if (mustSplitOrdersBySubCustomer(parsed)) {
+                            const map = groupParsedItemsBySubCustomer(parsed);
+                            const newOrderIds = [];
+                            for (const [subKey, items] of map) {
+                                const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
+                                const splitKey = subKey === "" ? "" : subKey;
+                                const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                                    orderDate,
+                                    customerId,
+                                    groupId,
+                                    rawMessage: lineForRaw,
+                                    remark,
+                                    orderSubSplitKey: splitKey,
+                                });
+                                newOrderIds.push(oid);
+                                await insertParsedItemsForOrder(db, oid, customerId, items, fallbackUnit);
+                            }
+                            if (groupId) {
+                                const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId, lastActivity: Date.now() };
+                                collectingByGroup.set(groupId, session);
+                                scheduleAutoFinalize(groupId, session);
+                            }
+                            if (lineClient && newOrderIds.length > 1) {
+                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                            }
+                            continue;
+                        }
                         let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
                         let orderId;
                         if (orderRow) {
                             orderId = orderRow.id;
                         }
                         else {
-                            orderId = (0, id_js_1.newId)("ord");
-                            const orderNo = await getNextOrderNo(db, orderDate);
-                            await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending')`).run(orderId, orderNo, customerId, orderDate, groupId, "");
+                            orderId = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                                orderDate,
+                                customerId,
+                                groupId,
+                                rawMessage: "",
+                                remark: null,
+                                orderSubSplitKey: null,
+                            });
                         }
                         if (groupId) {
-                            const session = { orderId, customerId, lastActivity: Date.now() };
+                            const session = { orderId, allOrderIds: [orderId], customerId, lastActivity: Date.now() };
                             collectingByGroup.set(groupId, session);
                             scheduleAutoFinalize(groupId, session);
                         }
-                        if (rest) {
-                            const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
-                            const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
-                            const parsed = await (0, parse_order_message_js_1.parseOrderMessage)(rest, fallbackUnit);
-                            const needReview = [];
-                            const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
-                            for (const item of parsed) {
-                                const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, customerId);
-                                const itemId = (0, id_js_1.newId)("item");
-                                const productId = resolved?.productId ?? null;
-                                if (!resolved)
-                                    needReview.push(item.rawName);
-                                const inputUnit = normalizeOrderUnit(item.unit, fallbackUnit);
-                                let unit = inputUnit;
-                                let qty = Number.isFinite(Number(item.quantity)) ? Number(item.quantity) : 0;
-                                let itemRemark = item.remark != null && String(item.remark).trim() !== "" ? String(item.remark).trim() : null;
-                                if (resolved) {
-                                    const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
-                                    qty = Number(c.quantity);
-                                    unit = normalizeOrderUnit(c.unit, fallbackUnit);
-                                    if (c.remark) {
-                                        itemRemark = itemRemark ? (itemRemark + "；" + c.remark) : c.remark;
-                                    }
-                                }
-                                itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
-                                await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, resolved ? 0 : 1, itemRemark);
-                            }
-                        }
-                        // 原始訂單：一律存客戶傳來的**整句**（含「收單／叫貨」等觸發詞）；舊版只存 rest 會漏字
+                        await insertParsedItemsForOrder(db, orderId, customerId, parsed, fallbackUnit);
                         const orderRowRaw = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
-                        const lineForRaw = String(text || "").trim();
                         if (lineForRaw) {
                             const newRaw = (orderRowRaw?.raw_message ? orderRowRaw.raw_message + "\n" : "") + lineForRaw;
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = datetime('now') WHERE id = ?").run(newRaw, orderId);
+                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, orderId);
                         }
-                        // 不回中途提示，僅在 30 秒自動結單時推送摘要
                         continue;
                     }
                     if (text === "今天叫了什麼" || text === "今日訂單" || text === "今日叫貨") {
@@ -527,18 +703,21 @@ function createLineWebhook() {
                             if (oldTimer)
                                 clearTimeout(oldTimer);
                             autoFinalizeTimers.delete(groupId);
+                            const doneOrderIds = (session.allOrderIds && session.allOrderIds.length) ? [...new Set(session.allOrderIds)] : [session.orderId];
                             if (process.env.LINE_SKIP_FINALIZE_FULL_REBUILD !== "1") {
-                                try {
-                                    const rawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
-                                    const atts = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(session.orderId);
-                                    const fr = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, session.orderId, session.customerId, rawRow?.raw_message, atts);
-                                    if (fr.ok)
-                                        console.log("[LINE] 手動完成：整單重辨識完成 orderId=%s", session.orderId);
-                                    else
-                                        console.warn("[LINE] 手動完成：整單重辨識未覆寫 orderId=%s err=%s", session.orderId, fr.error);
-                                }
-                                catch (e) {
-                                    console.error("[LINE] 手動完成：整單重辨識例外:", e?.message || e);
+                                for (const oid of doneOrderIds) {
+                                    try {
+                                        const rawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
+                                        const atts = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(oid);
+                                        const fr = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, oid, session.customerId, rawRow?.raw_message, atts);
+                                        if (fr.ok)
+                                            console.log("[LINE] 手動完成：整單重辨識完成 orderId=%s", oid);
+                                        else
+                                            console.warn("[LINE] 手動完成：整單重辨識未覆寫 orderId=%s err=%s", oid, fr.error);
+                                    }
+                                    catch (e) {
+                                        console.error("[LINE] 手動完成：整單重辨識例外 orderId=%s:", oid, e?.message || e);
+                                    }
                                 }
                             }
                             const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(session.customerId);
@@ -547,14 +726,18 @@ function createLineWebhook() {
                             if (emptyBasketErp) {
                                 const emptyBasket = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(emptyBasketErp);
                                 if (emptyBasket) {
-                                    const itemId1 = (0, id_js_1.newId)("item");
-                                    await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId1, session.orderId, emptyBasket.id, emptyBasket.name, emptyBasket.unit || "個");
+                                    for (const oid of doneOrderIds) {
+                                        const itemId1 = (0, id_js_1.newId)("item");
+                                        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, 0, ?, 0, 1, NULL)").run(itemId1, oid, emptyBasket.id, emptyBasket.name, emptyBasket.unit || "個");
+                                    }
                                 }
                             }
                             const squareBasket = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get("C0100065");
                             if (squareBasket) {
-                                const itemId2 = (0, id_js_1.newId)("item");
-                                await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, 0, ?, 0, 1)").run(itemId2, session.orderId, squareBasket.id, squareBasket.name, squareBasket.unit || "個");
+                                for (const oid of doneOrderIds) {
+                                    const itemId2 = (0, id_js_1.newId)("item");
+                                    await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, 0, ?, 0, 1, NULL)").run(itemId2, oid, squareBasket.id, squareBasket.name, squareBasket.unit || "個");
+                                }
                             }
                             const orderInfo = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId);
                             const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
@@ -592,12 +775,16 @@ function createLineWebhook() {
                             autoOrderId = autoOrder.id;
                         }
                         else {
-                            autoOrderId = (0, id_js_1.newId)("ord");
-                            const autoOrderNo = await getNextOrderNo(db, autoOrderDate);
-                            await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending')`).run(autoOrderId, autoOrderNo, customerId, autoOrderDate, groupId, "");
+                            autoOrderId = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                                orderDate: autoOrderDate,
+                                customerId,
+                                groupId,
+                                rawMessage: "",
+                                remark: null,
+                                orderSubSplitKey: null,
+                            });
                         }
-                        const autoSession = { orderId: autoOrderId, customerId, lastActivity: Date.now() };
+                        const autoSession = { orderId: autoOrderId, allOrderIds: [autoOrderId], customerId, lastActivity: Date.now() };
                         collectingByGroup.set(groupId, autoSession);
                         scheduleAutoFinalize(groupId, autoSession);
                     }
@@ -607,41 +794,41 @@ function createLineWebhook() {
                     // 收單模式：將本則當成叫貨累加
                     const session = collectingByGroup.get(groupId);
                     const { orderId, customerId: cid } = session;
-                    let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE id = ?").get(orderId);
-                    if (orderRow) {
-                        const newRaw = (orderRow.raw_message ? orderRow.raw_message + "\n" : "") + text;
-                        await db.prepare("UPDATE orders SET raw_message = ?, updated_at = datetime('now') WHERE id = ?").run(newRaw, orderId);
-                    }
-                    const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(cid);
+                    const idsForRaw = (session.allOrderIds && session.allOrderIds.length) ? [...new Set(session.allOrderIds)] : [orderId];
+                    await appendRawLineToOrders(db, idsForRaw, text, nowSql);
+                    const custRow = await db.prepare("SELECT default_unit, known_sub_customers FROM customers WHERE id = ?").get(cid);
                     const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
-                    const parsed = await (0, parse_order_message_js_1.parseOrderMessage)(text, fallbackUnit);
+                    const knownSub2 = custRow?.known_sub_customers != null ? String(custRow.known_sub_customers).trim() : "";
+                    const parseOpts2 = { ...(knownSub2 ? { knownSubCustomers: knownSub2 } : {}) };
+                    const parsed = await (0, parse_order_message_js_1.parseOrderMessage)(text, fallbackUnit, Object.keys(parseOpts2).length ? parseOpts2 : undefined);
                     console.log("[LINE] 解析結果 筆數:", parsed.length, parsed.length ? "品項:" + parsed.map((p) => p.rawName + " " + p.quantity).join(", ") : "");
-                    const needReview = [];
-                    const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
-                    for (const item of parsed) {
-                        const resolved = await (0, resolve_product_js_1.resolveProductName)(db, item.rawName, cid);
-                        const itemId = (0, id_js_1.newId)("item");
-                        const productId = resolved?.productId ?? null;
-                        const needReviewFlag = resolved ? 0 : 1;
-                        if (!resolved)
-                            needReview.push(item.rawName);
-                        const inputUnit = normalizeOrderUnit(item.unit, fallbackUnit);
-                        let unit = inputUnit;
-                        let qty = Number.isFinite(Number(item.quantity)) ? Number(item.quantity) : 0;
-                        let itemRemark = item.remark != null && String(item.remark).trim() !== "" ? String(item.remark).trim() : null;
-                        if (resolved) {
-                            const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
-                            qty = Number(c.quantity);
-                            unit = normalizeOrderUnit(c.unit, fallbackUnit);
-                            if (c.remark) {
-                                itemRemark = itemRemark ? (itemRemark + "；" + c.remark) : c.remark;
-                            }
+                    const rawSnap = (await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId))?.raw_message ?? "";
+                    if (parsed.length > 0 && mustSplitOrdersBySubCustomer(parsed)) {
+                        const map = groupParsedItemsBySubCustomer(parsed);
+                        const orderDateVal = (await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(orderId))?.order_date || getTaipeiOrderDate();
+                        const newOrderIds = [];
+                        for (const [subKey, items] of map) {
+                            const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
+                            const splitKey = subKey === "" ? "" : subKey;
+                            const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                                orderDate: orderDateVal,
+                                customerId: cid,
+                                groupId,
+                                rawMessage: rawSnap,
+                                remark,
+                                orderSubSplitKey: splitKey,
+                            });
+                            newOrderIds.push(oid);
+                            await insertParsedItemsForOrder(db, oid, cid, items, fallbackUnit);
                         }
-                        itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
-                        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, needReviewFlag, itemRemark);
+                        mergeSessionOrderIds(session, newOrderIds);
+                        if (lineClient && newOrderIds.length > 1) {
+                            await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                        }
                     }
-                    // 不回中途提示，僅在 30 秒自動結單時推送摘要
+                    else if (parsed.length > 0) {
+                        await insertParsedItemsForOrder(db, orderId, cid, parsed, fallbackUnit);
+                    }
                     console.log("[LINE] 訂單已寫入", orderId);
                 }
                 catch (err) {

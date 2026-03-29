@@ -2493,19 +2493,28 @@ function createAdminRouter() {
             let geminiImageOpts = undefined;
             if (customerId) {
                 try {
-                    const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
+                    const custRow = await db.prepare("SELECT default_unit, known_sub_customers FROM customers WHERE id = ?").get(customerId);
                     fallbackUnit = custRow?.default_unit?.trim() || "公斤";
-                }
-                catch (_) { }
-                try {
-                    const hw = await customer_handwriting_hints_js_1.buildPromptSuffixForCustomerHandwritingHints(db, customerId);
-                    if (hw) {
-                        geminiHintOpts = { extraPromptSuffix: hw };
-                        geminiImageOpts = { extraPromptSuffix: hw };
+                    const knownSub = custRow?.known_sub_customers != null ? String(custRow.known_sub_customers).trim() : "";
+                    let hw = "";
+                    try {
+                        hw = (await customer_handwriting_hints_js_1.buildPromptSuffixForCustomerHandwritingHints(db, customerId)) || "";
                     }
+                    catch (_) { }
+                    geminiHintOpts = {
+                        ...(hw ? { extraPromptSuffix: hw } : {}),
+                        ...(knownSub ? { knownSubCustomers: knownSub } : {}),
+                    };
+                    if (Object.keys(geminiHintOpts).length === 0)
+                        geminiHintOpts = undefined;
+                    geminiImageOpts = {
+                        ...(hw ? { extraPromptSuffix: hw } : {}),
+                        ...(knownSub ? { knownSubCustomers: knownSub } : {}),
+                        db,
+                        customerId,
+                    };
                 }
                 catch (_) { }
-                geminiImageOpts = { ...(geminiImageOpts || {}), db, customerId };
             }
             if (file && file.buffer) {
                 const visionKey = process.env.GOOGLE_CLOUD_VISION_API_KEY;
@@ -2522,7 +2531,7 @@ function createAdminRouter() {
                 if (!rawText || !rawText.trim()) {
                 if (file?.buffer?.length && (0, gemini_order_helpers_js_1.getGeminiApiKey)()) {
                     const visRaw = await (0, gemini_order_helpers_js_1.parseOrderWithGeminiImage)(file.buffer, geminiImageOpts);
-                    const vis = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)((visRaw || []).map((p) => ({ rawName: p.rawName, quantity: p.quantity, unit: p.unit || null, remark: p.remark ?? null, amount: p.amount ?? null })));
+                    const vis = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)((visRaw || []).map((p) => ({ rawName: p.rawName, quantity: p.quantity, unit: p.unit || null, remark: p.remark ?? null, amount: p.amount ?? null, subCustomer: p.subCustomer ?? null })));
                     if (vis && vis.length) {
                         const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
                         const items = [];
@@ -2547,6 +2556,7 @@ function createAdminRouter() {
                                     unit: unit || null,
                                     remark,
                                     amount: p.amount ?? null,
+                                    subCustomer: p.subCustomer != null && String(p.subCustomer).trim() !== "" ? String(p.subCustomer).trim() : null,
                                     productId: resolved?.productId ?? null,
                                     productName: resolved?.productId ? (resolved.productName || null) : null,
                                     needReview: resolved ? 0 : 1,
@@ -2560,6 +2570,7 @@ function createAdminRouter() {
                                     unit: p.unit || null,
                                     remark: p.remark || null,
                                     amount: p.amount ?? null,
+                                    subCustomer: p.subCustomer != null && String(p.subCustomer).trim() !== "" ? String(p.subCustomer).trim() : null,
                                     productId: null,
                                     productName: null,
                                     needReview: 1,
@@ -2574,11 +2585,11 @@ function createAdminRouter() {
                 return;
             }
             const ruleBased = await (0, parse_order_message_js_1.parseOrderMessage)(normalizedRawText, fallbackUnit, geminiHintOpts);
-            let parsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(ruleBased.map((p) => ({ rawName: p.rawName, quantity: p.quantity, unit: p.unit || null, remark: p.remark || null, amount: null })));
+            let parsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(ruleBased.map((p) => ({ rawName: p.rawName, quantity: p.quantity, unit: p.unit || null, remark: p.remark || null, amount: null, subCustomer: p.subCustomer ?? null })));
             if (!parsed.length && file?.buffer?.length && (0, gemini_order_helpers_js_1.getGeminiApiKey)()) {
                 const vis = await (0, gemini_order_helpers_js_1.parseOrderWithGeminiImage)(file.buffer, geminiImageOpts);
                 if (vis && vis.length) {
-                    parsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(vis.map((p) => ({ rawName: p.rawName, quantity: p.quantity, unit: p.unit || null, remark: p.remark ?? null, amount: p.amount ?? null })));
+                    parsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(vis.map((p) => ({ rawName: p.rawName, quantity: p.quantity, unit: p.unit || null, remark: p.remark ?? null, amount: p.amount ?? null, subCustomer: p.subCustomer ?? null })));
                 }
             }
             const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
@@ -2605,6 +2616,7 @@ function createAdminRouter() {
                         unit: unit || null,
                         remark,
                         amount: p.amount ?? null,
+                        subCustomer: p.subCustomer != null && String(p.subCustomer).trim() !== "" ? String(p.subCustomer).trim() : null,
                         productId: resolved?.productId ?? null,
                         productName: resolved?.productId ? (resolved.productName || null) : null,
                         needReview: resolved ? 0 : 1,
@@ -2618,6 +2630,7 @@ function createAdminRouter() {
                         unit: p.unit || null,
                         remark: p.remark || null,
                         amount: p.amount ?? null,
+                        subCustomer: p.subCustomer != null && String(p.subCustomer).trim() !== "" ? String(p.subCustomer).trim() : null,
                         productId: null,
                         productName: null,
                         needReview: 1,
@@ -4202,7 +4215,7 @@ function createAdminRouter() {
             return;
         }
         const items = await db.prepare(`
-      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.display_order, oi.need_review,
+      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.display_order, oi.need_review, oi.sub_customer,
         p.id AS product_id, p.erp_code, p.name AS product_name
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = ?
@@ -4245,6 +4258,7 @@ function createAdminRouter() {
                 ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
                 : `<span class="order-final-product">${nameEditLink}</span> <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
+            const subCustomerVal = (i.sub_customer && String(i.sub_customer).trim()) ? escapeAttr(String(i.sub_customer).trim()) : "";
             const rowClasses = i.need_review === 1 ? "order-item-need-review" : "";
             const rawCard = `${idx + 1}. 原始：${String(i.raw_name ?? "").trim() || "—"} ${String(q)}${(i.unit && i.unit.trim()) || ""}`;
             return `<tr data-item-id="${escapeAttr(i.item_id)}" data-raw-name="${escapeAttr(i.raw_name ?? "")}" data-line-unit="${escapeAttr((i.unit && i.unit.trim()) || "")}" data-raw-card="${escapeAttr(rawCard)}" class="${escapeAttr(rowClasses)}">
@@ -4257,6 +4271,7 @@ function createAdminRouter() {
             <td class="order-detail-col-idx"><span class="order-detail-idx-num">${idx + 1}</span></td>
             <td class="order-table-col-system"><span class="order-final-erp">${escapeHtml(erp)}</span></td>
             <td>${productCell}</td>
+            <td><input type="text" name="sub_customer_${i.item_id}" form="itemsForm" value="${subCustomerVal}" placeholder="子客戶" style="width:100%;max-width:7rem;"></td>
             <td><input type="number" class="order-detail-qty-input" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0"></td>
             <td>${unitSelectWithVal}</td>
             <td><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:100px;"></td>
@@ -4334,9 +4349,9 @@ function createAdminRouter() {
             </p>
             <p class="order-legend"><span class="order-legend-swatch sw-need"></span>待確認</p>
             <div class="table-scroll-mobile"><table class="order-detail-table" style="font-size:12px;">
-              <thead><tr><th class="order-detail-th-sort" title="順序（上移／下移）"></th><th class="order-detail-th-idx">項次</th><th class="order-table-col-system">料號</th><th>品名</th><th style="width:3.5rem;">數量</th><th>單位</th><th>備註</th><th style="width:2.75rem;">刪除</th></tr></thead>
+              <thead><tr><th class="order-detail-th-sort" title="順序（上移／下移）"></th><th class="order-detail-th-idx">項次</th><th class="order-table-col-system">料號</th><th>品名</th><th>子客戶/分店</th><th style="width:3.5rem;">數量</th><th>單位</th><th>備註</th><th style="width:2.75rem;">刪除</th></tr></thead>
               <tbody>${itemsRows}</tbody>
-              <tr><td colspan="8" style="background:var(--notion-sidebar);padding:6px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="btn">＋ 增加品項</a></td></tr>
+              <tr><td colspan="9" style="background:var(--notion-sidebar);padding:6px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="btn">＋ 增加品項</a></td></tr>
             </table></div>
             <p style="margin:10px 0 0;"><button type="submit" class="btn btn-cute-save" title="儲存數量、單位、備註與排序">儲存明細</button></p>
           </div>
@@ -4460,7 +4475,7 @@ function createAdminRouter() {
                   var pid = (data.productId || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
                   var pnm = (data.productName || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                   var namePart = pid ? ('<a href="#" class="product-name-edit" data-product-id="' + pid + '" title="編輯此品項（俗名、單位等）">' + pnm + '</a>') : pnm;
-                  if (tr && tr.cells[6]) tr.cells[6].innerHTML = namePart + ' <a href="#" class="product-pick product-change" data-item-id="' + currentItemId.replace(/"/g, '&quot;') + '">改品項</a>';
+                  if (tr && tr.cells[3]) tr.cells[3].innerHTML = namePart + ' <a href="#" class="product-pick product-change" data-item-id="' + currentItemId.replace(/"/g, '&quot;') + '">改品項</a>';
                 } else { alert(data && data.error ? data.error : '更新失敗'); }
               })
               .catch(function(){ alert('請求失敗'); });
@@ -4859,7 +4874,7 @@ function createAdminRouter() {
             return;
         }
         const body = req.body;
-        const existingItems = await db.prepare("SELECT id, quantity, unit, remark FROM order_items WHERE order_id = ?").all(orderId);
+        const existingItems = await db.prepare("SELECT id, quantity, unit, remark, sub_customer FROM order_items WHERE order_id = ?").all(orderId);
         const fmtQty = (v) => {
             const n = Number(v);
             if (!Number.isFinite(n))
@@ -4874,6 +4889,7 @@ function createAdminRouter() {
             const unitRaw = (body["unit_" + itemId] ?? "").trim();
             const nextUnit = unitRaw || "公斤";
             const remarkInput = (body["remark_" + itemId] ?? "").trim();
+            const subCustomerInput = (body["sub_customer_" + itemId] ?? "").trim();
             const prevUnit = String(row.unit || "").trim();
             const prevRemark = String(row.remark || "").trim();
             let nextRemark = remarkInput;
@@ -4884,7 +4900,7 @@ function createAdminRouter() {
                     ? (prevRemark.includes(originTag) ? prevRemark : (prevRemark + "；" + originTag))
                     : originTag;
             }
-            await db.prepare("UPDATE order_items SET quantity = ?, unit = ?, remark = ?, include_export = 1 WHERE id = ? AND order_id = ?").run(nextQty, nextUnit, nextRemark || null, itemId, orderId);
+            await db.prepare("UPDATE order_items SET quantity = ?, unit = ?, remark = ?, sub_customer = ?, include_export = 1 WHERE id = ? AND order_id = ?").run(nextQty, nextUnit, nextRemark || null, subCustomerInput || null, itemId, orderId);
             const ordRaw = body["ord_" + row.id];
             const ordNum = parseInt(String(ordRaw || ""), 10);
             if (Number.isFinite(ordNum) && ordNum > 0) {
@@ -4987,7 +5003,7 @@ function createAdminRouter() {
             return;
         }
         const itemId = (0, id_js_1.newId)("item");
-        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export) VALUES (?, ?, ?, ?, ?, ?, 0, 1)").run(itemId, orderId, productId, product.name, qty, unit);
+        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, ?, ?, 0, 1, NULL)").run(itemId, orderId, productId, product.name, qty, unit);
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=add_item#items");
     });
     router.get("/barcode", async (req, res) => {
@@ -5123,6 +5139,7 @@ function createAdminRouter() {
             <label>LINE 群組 ID <input type="text" name="line_group_id" placeholder="C開頭群組 ID，可留空後補" style="width:100%;"></label>
             <label>聯絡方式 <input type="text" name="contact" placeholder="電話或備註，可留空" style="width:100%;"></label>
             <label>第幾號線（檢貨路線）<select name="route_line"><option value="">— 不指定</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n} 號線</option>`).join("")}</select></label>
+            <label>專屬子客戶/分店名單 (請用逗號分隔) <input type="text" name="known_sub_customers" placeholder="例：東大附小,豐源國小,馬蘭國小" style="width:100%;"></label>
             <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">建立</button></p>
           </form>
         </div>
@@ -5138,12 +5155,13 @@ function createAdminRouter() {
         const contact = req.body.contact?.trim() || null;
         const routeLineRaw = req.body.route_line?.trim();
         const routeLine = routeLineRaw && /^[1-9]$/.test(routeLineRaw) ? parseInt(routeLineRaw, 10) : null;
+        const knownSubCustomers = req.body.known_sub_customers?.trim() || null;
         if (!name) {
             res.redirect("/admin/customers/new?err=name");
             return;
         }
         const id = (0, id_js_1.newId)("cust");
-        await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine);
+        await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, known_sub_customers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, knownSubCustomers);
         res.redirect("/admin/customers?ok=1");
     });
     router.get("/customers/:id/quick-view", async (req, res) => {
@@ -5188,7 +5206,7 @@ function createAdminRouter() {
     });
     router.get("/customers/:id/edit", async (req, res) => {
         try {
-            const customer = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active, route_line FROM customers WHERE id = ?").get(req.params.id);
+            const customer = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active, route_line, known_sub_customers FROM customers WHERE id = ?").get(req.params.id);
             if (!customer) {
                 res.status(404).send("客戶不存在");
                 return;
@@ -5227,6 +5245,7 @@ function createAdminRouter() {
               ${ORDER_LINE_UNITS.map((u) => `<option value="${escapeAttr(u)}" ${customer.default_unit === u ? "selected" : ""}>${escapeHtml(u)}</option>`).join("")}
             </select></label>
             <label>叫貨備註／習慣說明 <textarea name="order_notes" placeholder="此客戶叫貨的習慣、特定說法或規則，僅供內部參考" style="width:100%;min-height:60px;">${v(customer.order_notes)}</textarea></label>
+            <label>專屬子客戶/分店名單 (請用逗號分隔) <input type="text" name="known_sub_customers" value="${v(customer.known_sub_customers)}" placeholder="例：東大附小,豐源國小,馬蘭國小" style="width:100%;"></label>
             <label><input type="checkbox" name="active" value="1" ${activeChecked ? "checked" : ""}> 啟用（未勾選＝停用）</label>
             <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
           </form>
@@ -5264,12 +5283,13 @@ function createAdminRouter() {
         const routeLine = routeLineRaw && /^[1-9]$/.test(routeLineRaw) ? parseInt(routeLineRaw, 10) : null;
         const defaultUnit = req.body.default_unit?.trim() || null;
         const orderNotes = req.body.order_notes?.trim() || null;
+        const knownSubCustomers = req.body.known_sub_customers?.trim() || null;
         const active = req.body.active === "1" ? 1 : 0;
         if (!name) {
             res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=name");
             return;
         }
-        await db.prepare("UPDATE customers SET name = ?, teraoka_code = ?, hq_cust_code = ?, line_group_name = ?, line_group_id = ?, contact = ?, route_line = ?, default_unit = ?, order_notes = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, defaultUnit, orderNotes, active, id);
+        await db.prepare("UPDATE customers SET name = ?, teraoka_code = ?, hq_cust_code = ?, line_group_name = ?, line_group_id = ?, contact = ?, route_line = ?, default_unit = ?, order_notes = ?, known_sub_customers = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, defaultUnit, orderNotes, knownSubCustomers, active, id);
         const fromOrders = req.body?.from === "orders";
         res.redirect(fromOrders ? "/admin/orders?ok=edit" : "/admin/customers?ok=edit");
     });
