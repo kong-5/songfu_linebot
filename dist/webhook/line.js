@@ -397,7 +397,7 @@ function createLineWebhook() {
                         if (rest) {
                             const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
                             const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
-                            const parsed = (0, parse_order_message_js_1.parseOrderMessage)(rest, fallbackUnit);
+                            const parsed = await (0, parse_order_message_js_1.parseOrderMessage)(rest, fallbackUnit);
                             const needReview = [];
                             const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
                             for (const item of parsed) {
@@ -408,13 +408,15 @@ function createLineWebhook() {
                                     needReview.push(item.rawName);
                                 const inputUnit = normalizeOrderUnit(item.unit, fallbackUnit);
                                 let unit = inputUnit;
-                                let qty = item.quantity;
-                                let itemRemark = null;
+                                let qty = Number.isFinite(Number(item.quantity)) ? Number(item.quantity) : 0;
+                                let itemRemark = item.remark != null && String(item.remark).trim() !== "" ? String(item.remark).trim() : null;
                                 if (resolved) {
                                     const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
-                                    qty = c.quantity;
+                                    qty = Number(c.quantity);
                                     unit = normalizeOrderUnit(c.unit, fallbackUnit);
-                                    itemRemark = c.remark ?? null;
+                                    if (c.remark) {
+                                        itemRemark = itemRemark ? (itemRemark + "；" + c.remark) : c.remark;
+                                    }
                                 }
                                 itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
                                 await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark)
@@ -612,7 +614,7 @@ function createLineWebhook() {
                     }
                     const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(cid);
                     const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
-                    const parsed = (0, parse_order_message_js_1.parseOrderMessage)(text, fallbackUnit);
+                    const parsed = await (0, parse_order_message_js_1.parseOrderMessage)(text, fallbackUnit);
                     console.log("[LINE] 解析結果 筆數:", parsed.length, parsed.length ? "品項:" + parsed.map((p) => p.rawName + " " + p.quantity).join(", ") : "");
                     const needReview = [];
                     const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
@@ -625,13 +627,15 @@ function createLineWebhook() {
                             needReview.push(item.rawName);
                         const inputUnit = normalizeOrderUnit(item.unit, fallbackUnit);
                         let unit = inputUnit;
-                        let qty = item.quantity;
-                        let itemRemark = null;
+                        let qty = Number.isFinite(Number(item.quantity)) ? Number(item.quantity) : 0;
+                        let itemRemark = item.remark != null && String(item.remark).trim() !== "" ? String(item.remark).trim() : null;
                         if (resolved) {
                             const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
-                            qty = c.quantity;
+                            qty = Number(c.quantity);
                             unit = normalizeOrderUnit(c.unit, fallbackUnit);
-                            itemRemark = c.remark ?? null;
+                            if (c.remark) {
+                                itemRemark = itemRemark ? (itemRemark + "；" + c.remark) : c.remark;
+                            }
                         }
                         itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
                         await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark)

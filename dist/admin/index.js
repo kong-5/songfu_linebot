@@ -59,7 +59,7 @@ const customer_handwriting_hints_js_1 = require("../lib/customer-handwriting-hin
 const few_shot_example_save_js_1 = require("../lib/few-shot-example-save.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
-/** 與 `dist/lib/parse-order-message.js` 之 UNIT_PATTERN 一致，供訂單／客戶預設單位等下拉選單 */
+/** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
 const ORDER_LINE_UNITS = [
     "公斤", "斤", "k", "小把", "大把", "包", "把", "束", "桶", "箱", "顆", "粒", "盒", "袋", "台", "件", "支", "根", "條", "入", "罐", "瓶", "組", "份", "塊", "片", "尾",
 ];
@@ -2462,9 +2462,6 @@ function createAdminRouter() {
             res.redirect("/admin/logistics/market?err=rules");
         }
     });
-    async function parseOrderWithGemini(rawText, options) {
-        return (0, gemini_order_helpers_js_1.parseOrderWithGeminiText)(rawText, options);
-    }
     /** 將已解析列寫入訂單（先刪除既有品項）。 */
     async function replaceOrderItemsFromParsedRows(orderId, customerId, parsed) {
         await (0, rebuild_order_from_sources_js_1.replaceOrderItemsFromParsedRows)(db, orderId, customerId, parsed);
@@ -2576,14 +2573,8 @@ function createAdminRouter() {
                 res.status(400).json({ error: "無法取得內容（請貼上文字，或上傳圖片並設定 GOOGLE_CLOUD_VISION_API_KEY／GOOGLE_GEMINI_API_KEY）。" });
                 return;
             }
-            const ruleBased = (0, parse_order_message_js_1.parseOrderMessage)(normalizedRawText, fallbackUnit);
+            const ruleBased = await (0, parse_order_message_js_1.parseOrderMessage)(normalizedRawText, fallbackUnit, geminiHintOpts);
             let parsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(ruleBased.map((p) => ({ rawName: p.rawName, quantity: p.quantity, unit: p.unit || null, remark: p.remark || null, amount: null })));
-            if (!parsed.length) {
-                const geminiRows = await parseOrderWithGemini(normalizedRawText, geminiHintOpts);
-                if (geminiRows && geminiRows.length > 0) {
-                    parsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(geminiRows);
-                }
-            }
             if (!parsed.length && file?.buffer?.length && (0, gemini_order_helpers_js_1.getGeminiApiKey)()) {
                 const vis = await (0, gemini_order_helpers_js_1.parseOrderWithGeminiImage)(file.buffer, geminiImageOpts);
                 if (vis && vis.length) {
@@ -4717,7 +4708,7 @@ function createAdminRouter() {
         let rows = [];
         try {
             rows = await db
-                .prepare(`SELECT e.id, e.customer_id, e.order_id, e.source_order_id, e.parsed_json, e.created_at, e.image_path, e.quality_score, e.note,
+                .prepare(`SELECT e.id, e.customer_id, e.order_id, e.parsed_json, e.created_at, e.image_path, e.quality_score, e.note,
         COALESCE(NULLIF(TRIM(COALESCE(c.name, '')), ''), '（未知客戶）') AS customer_name
      FROM customer_order_image_examples e
      LEFT JOIN customers c ON c.id = e.customer_id
@@ -4740,7 +4731,7 @@ function createAdminRouter() {
         };
         const tableRows = (rows || [])
             .map((r) => {
-            const oid = r.order_id || r.source_order_id || "";
+            const oid = r.order_id || "";
             const oidDisp = oid ? `<a href="/admin/orders/${encodeURIComponent(oid)}">${escapeHtml(oid)}</a>` : "—";
             const created = r.created_at != null ? escapeHtml(String(r.created_at)) : "—";
             const noteCell = r.note && String(r.note).trim() ? escapeHtml(String(r.note).trim()) : "—";

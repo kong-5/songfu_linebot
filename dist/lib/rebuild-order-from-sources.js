@@ -73,18 +73,7 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
         .trim();
     const parsed = [];
     if (textForParse) {
-        let fromText = (0, parse_order_message_js_1.parseOrderMessage)(textForParse, fallbackUnit);
-        if (!fromText.length && (0, gemini_order_helpers_js_1.getGeminiApiKey)()) {
-            const geminiRows = await (0, gemini_order_helpers_js_1.parseOrderWithGeminiText)(textForParse, geminiHintOpts);
-            if (geminiRows && geminiRows.length) {
-                fromText = geminiRows.map((p) => ({
-                    rawName: p.rawName,
-                    quantity: (0, gemini_order_helpers_js_1.coerceQuantityFromGemini)(p.quantity),
-                    unit: (0, gemini_order_helpers_js_1.coerceUnitFromGemini)(p.unit) || "公斤",
-                    remark: p.remark || null,
-                }));
-            }
-        }
+        const fromText = await (0, parse_order_message_js_1.parseOrderMessage)(textForParse, fallbackUnit, geminiHintOpts);
         parsed.push(...fromText);
     }
     const token = process.env.LINE_CHANNEL_ACCESS_TOKEN?.trim();

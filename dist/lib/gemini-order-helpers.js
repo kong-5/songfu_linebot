@@ -66,7 +66,13 @@ const SYSTEM_INSTRUCTION_TEXT = `${SYSTEM_INSTRUCTION_ERP_ORDER_CLERK_CORE}
 - 略過閒聊、地址、電話、條碼純數字等非叫貨內容。
 - 單位：客戶慣用 k／K 視為公斤；斤、包、把、箱、件等依原文合理保留。
 - 多欄／雙欄清單依閱讀順序拆成獨立品項，不可合併或漏列。
-- 每筆請給 confidence_score：0–100（整體對該列解析的信心）。`;
+- 每筆請給 confidence_score：0–100（整體對該列解析的信心）。
+
+【文字專用防呆（必須嚴格遵守）】
+1) **忽略無效發語詞**：如「另外」「明天幫我送」「麻煩了」等與食材無關的句子，直接忽略，**絕對不要**輸出成單獨品項。
+2) **中文／異體字／注音數量**：「二」「兩」「五」、注音如「ㄧ條」等，一律換算成阿拉伯數字填入 quantity（例如 2、2、5、1）。
+3) **形容詞與加工指示**：如「中小顆漂亮」「挑直的」「分二包」「(攪2次)」等，**不可**留在 raw_name；**完整**寫入 remark。raw_name 只留食材本體（如：大陸妹、蒜仁、辣椒）。
+4) **複雜寫法合併為一筆**：例如「蒜頭1kg +5包（攪2次)(攪2次)」為**單一品項**：quantity=1、unit="kg"（或客戶慣用單位）、remark 寫「另+5包；攪2次…」等**完整**加工／加購說明；**禁止**拆成兩筆品項。`;
 /** 生鮮物流訂單：圖像／手寫辨識 */
 const SYSTEM_INSTRUCTION_VISION = `${SYSTEM_INSTRUCTION_ERP_ORDER_CLERK_CORE}
 
@@ -220,13 +226,18 @@ function mapRowsToOrderItems(arr) {
         return null;
     const rows = arr
         .map((row) => ({
-        rawName: (row.品項 ?? row.rawName ?? row.raw_name ?? "").toString().trim() || "",
+        rawName: (row.品項 ?? row.rawName ?? row.raw_name ?? row.Raw_name ?? "").toString().trim() || "",
         quantity: typeof row.數量 === "number" && Number.isFinite(row.數量)
             ? row.數量
-            : coerceQuantityFromGemini(row.數量 ?? row.quantity ?? row.Qty ?? row.qty),
-        unit: coerceUnitFromGemini(row.單位 ?? row.unit ?? row.Unit) || null,
+            : coerceQuantityFromGemini(row.數量 ??
+                row.quantity ??
+                row.Quantity ??
+                row.QTY ??
+                row.Qty ??
+                row.qty),
+        unit: coerceUnitFromGemini(row.單位 ?? row.unit ?? row.Unit ?? row.UNIT) || null,
         amount: row.金額 != null && String(row.金額).trim() !== "" ? String(row.金額).trim() : null,
-        remark: (row.備註 ?? row.remark ?? "").toString().trim() || null,
+        remark: (row.備註 ?? row.remark ?? row.Remark ?? "").toString().trim() || null,
         confidenceScore: row.confidence_score != null ? Number(row.confidence_score) : undefined,
     }))
         .filter((x) => x.rawName)

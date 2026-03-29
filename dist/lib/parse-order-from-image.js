@@ -6,15 +6,7 @@ const vision_ocr_js_1 = require("./vision-ocr.js");
 const gemini_order_helpers_js_1 = require("./gemini-order-helpers.js");
 const order_parsed_heuristics_js_1 = require("./order-parsed-heuristics.js");
 const order_form_templates_js_1 = require("./order-form-templates.js");
-/** OCR 段落行數（非空行），用於判斷「正文很多行卻只拆出極少品項」→ 應改走 Gemini 文字 */
-function countOcrNonEmptyLines(text) {
-    return String(text || "")
-        .split(/\n/)
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0)
-        .length;
-}
-/** 圖片：OCR → 規則解析 → Gemini 文字 → Gemini 視覺（手寫／雙欄）
+/** 圖片：OCR → 版型清洗 → Gemini 文字（整段）→ Gemini 視覺（手寫／雙欄）
  * @param options.geminiExtraSuffix 可選，客戶筆跡對照等，併入 Gemini 文字／視覺提示
  * @param options.db 可選，搭配 options.customerId 載入該客戶 Few-Shot 範例
  * @param options.customerId 可選
@@ -40,44 +32,12 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
     if (template) {
         console.log("[parse-order-from-image] matched template=%s", template.id);
     }
-    let parsed = parseText ? (0, parse_order_message_js_1.parseOrderMessage)(parseText, fallbackUnit) : [];
+    let parsed = parseText ? await (0, parse_order_message_js_1.parseOrderMessage)(parseText, fallbackUnit, geminiTextOpts) : [];
     parsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(parsed);
-    const ocrLineCount = countOcrNonEmptyLines(parseText);
     const geminiKey = (0, gemini_order_helpers_js_1.getGeminiApiKey)();
-    /** OCR 看起來像長清單，規則卻只得到 0～2 筆：多為手寫被誤切或條碼雜訊 */
-    let ocrSparseVersusLines = Boolean(parseText && ocrLineCount >= 8 && parsed.length <= 2);
-    if (!parsed.length && parseText && geminiKey) {
-        const rows = await (0, gemini_order_helpers_js_1.parseOrderWithGeminiText)(parseText, geminiTextOpts);
-        if (rows && rows.length) {
-            parsed = rows.map((p) => ({
-                rawName: p.rawName,
-                quantity: (0, gemini_order_helpers_js_1.coerceQuantityFromGemini)(p.quantity),
-                unit: (0, gemini_order_helpers_js_1.coerceUnitFromGemini)(p.unit) || "公斤",
-                remark: p.remark ?? null,
-            }));
-            parsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(parsed);
-        }
-    }
-    // 規則已產出極少筆但 OCR 行數多：用整段 OCR 請 Gemini 文字重解
-    if (ocrSparseVersusLines && parsed.length > 0 && parsed.length <= 2 && parseText && geminiKey) {
-        const rows = await (0, gemini_order_helpers_js_1.parseOrderWithGeminiText)(parseText, geminiTextOpts);
-        if (rows && rows.length) {
-            let gParsed = rows.map((p) => ({
-                rawName: p.rawName,
-                quantity: (0, gemini_order_helpers_js_1.coerceQuantityFromGemini)(p.quantity),
-                unit: (0, gemini_order_helpers_js_1.coerceUnitFromGemini)(p.unit) || "公斤",
-                remark: p.remark ?? null,
-            }));
-            gParsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(gParsed);
-            if (gParsed.length > parsed.length) {
-                console.log("[parse-order-from-image] 採用 Gemini 文字（OCR 非空行=%s 規則筆數=%s → %s）", ocrLineCount, parsed.length, gParsed.length);
-                parsed = gParsed;
-            }
-        }
-    }
     /**
      * 只要有圖 + Gemini 金鑰就**一律**再跑視覺模型比對筆數。
-     * 雙欄手寫時 OCR+規則常已得到「看起來夠多」的筆數，但仍遠少於紙上實際條目；舊邏輯只在筆數≤2 才讀圖，會永遠不補齊。
+     * 雙欄手寫時 OCR+文字模型常已得到「看起來夠多」的筆數，但仍可能遠少於紙上實際條目；視覺模型可補齊。
      */
     if (buffer?.length && geminiKey) {
         const oc = ocrText || parseText || "";
