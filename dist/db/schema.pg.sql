@@ -37,8 +37,10 @@
     sheet_exported_at TIMESTAMPTZ,
     lingyue_exported_at TIMESTAMPTZ,
     remark TEXT,
-    order_sub_split_key TEXT
+    order_sub_split_key TEXT,
+    line_message_id TEXT
   );
+  CREATE INDEX IF NOT EXISTS idx_orders_line_message_id ON orders(line_message_id);
 
   CREATE TABLE IF NOT EXISTS order_items (
     id TEXT PRIMARY KEY,
@@ -93,6 +95,33 @@
   );
   CREATE INDEX IF NOT EXISTS idx_data_change_product ON data_change_log(product_id);
   CREATE INDEX IF NOT EXISTS idx_data_change_created ON data_change_log(created_at);
+  CREATE INDEX IF NOT EXISTS idx_data_change_entity ON data_change_log(entity_type);
+
+  CREATE TABLE IF NOT EXISTS gemini_usage_log (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT REFERENCES customers(id),
+    call_kind TEXT NOT NULL,
+    model_name TEXT,
+    latency_ms INTEGER,
+    prompt_tokens INTEGER,
+    candidates_tokens INTEGER,
+    total_tokens INTEGER,
+    prompt_version_id TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_gemini_usage_created ON gemini_usage_log(created_at);
+  CREATE INDEX IF NOT EXISTS idx_gemini_usage_customer ON gemini_usage_log(customer_id);
+
+  CREATE TABLE IF NOT EXISTS prompt_versions (
+    id TEXT PRIMARY KEY,
+    slot TEXT NOT NULL,
+    label TEXT NOT NULL,
+    body TEXT NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_prompt_versions_slot ON prompt_versions(slot);
 
   CREATE TABLE IF NOT EXISTS line_bot_state_log (
     id TEXT PRIMARY KEY,
@@ -240,3 +269,16 @@
     resolved_at TEXT,
     resolve_note TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS rhythm_daily_signals (
+    id TEXT PRIMARY KEY,
+    signal_date TEXT NOT NULL,
+    customer_id TEXT NOT NULL REFERENCES customers(id),
+    product_id TEXT NOT NULL REFERENCES products(id),
+    signal_type TEXT NOT NULL,
+    meta_json TEXT,
+    created_at TIMESTAMPTZ NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_rhythm_sig_date ON rhythm_daily_signals(signal_date);
+  CREATE INDEX IF NOT EXISTS idx_rhythm_sig_cust ON rhythm_daily_signals(customer_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS ux_rhythm_sig_unique ON rhythm_daily_signals(signal_date, customer_id, product_id, signal_type);

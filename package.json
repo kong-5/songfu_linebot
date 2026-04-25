@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "scripts": {
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "deploy": "node scripts/deploy-cloud-run.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -18,6 +19,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@google-cloud/tasks": "^5.5.2",
     "@google/generative-ai": "^0.21.0",
     "@line/bot-sdk": "^9.0.0",
     "better-sqlite3": "^11.6.0",

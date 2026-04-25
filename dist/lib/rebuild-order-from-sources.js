@@ -15,7 +15,9 @@ const gemini_order_helpers_js_1 = require("./gemini-order-helpers.js");
 const line_image_compress_js_1 = require("./line-image-compress.js");
 const parse_order_from_image_js_1 = require("./parse-order-from-image.js");
 const customer_handwriting_hints_js_1 = require("./customer-handwriting-hints.js");
+const order_parsed_heuristics_js_1 = require("./order-parsed-heuristics.js");
 async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) {
+    parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(Array.isArray(parsed) ? parsed : []);
     const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
     const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
     const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
@@ -64,6 +66,8 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
     const geminiHintOpts = {
         ...(handwritingSuffix ? { extraPromptSuffix: handwritingSuffix } : {}),
         ...(knownSub ? { knownSubCustomers: knownSub } : {}),
+        db,
+        customerId,
     };
     const imageHintOpts = {
         ...(handwritingSuffix ? { geminiExtraSuffix: handwritingSuffix } : {}),
@@ -77,7 +81,7 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
         .filter((l) => l && l !== "[圖片]")
         .join("\n")
         .trim();
-    const parsed = [];
+    let parsed = [];
     if (textForParse) {
         const fromText = await (0, parse_order_message_js_1.parseOrderMessage)(textForParse, fallbackUnit, Object.keys(geminiHintOpts).length ? geminiHintOpts : undefined);
         parsed.push(...fromText);
@@ -106,15 +110,24 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
             }
         }
     }
+    if (parsed.length)
+        parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(parsed);
+    const hasText = Boolean(textForParse);
     const hasAtt = Boolean(attachmentRows?.length);
     const hasVisionKey = Boolean(process.env.GOOGLE_CLOUD_VISION_API_KEY?.trim());
     const hasGeminiKey = Boolean((0, gemini_order_helpers_js_1.getGeminiApiKey)());
     let error = "parse";
     if (!parsed.length) {
-        if (!token && hasAtt)
+        if (!hasText && !hasAtt)
+            error = "empty_source";
+        else if (hasText && !hasGeminiKey)
+            error = "no_gemini_key";
+        else if (hasAtt && !token)
             error = "line_token";
         else if (hasAtt && !hasVisionKey && !hasGeminiKey)
             error = "no_vision";
+        else if (hasText && hasGeminiKey)
+            error = "gemini_empty";
     }
     return { parsed, error };
 }

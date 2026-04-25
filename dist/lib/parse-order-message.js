@@ -106,11 +106,23 @@ async function parseOrderMessage(text, fallbackUnit, options) {
         console.warn("[parse-order-message] 未設定 GOOGLE_GEMINI_API_KEY／GEMINI_API_KEY，無法解析純文字叫貨");
         return [];
     }
-    const rows = await parseOrderWithGeminiText(t, options);
+    let geminiOpts = options ? { ...options } : undefined;
+    if (geminiOpts?.db && geminiOpts?.customerId) {
+        try {
+            const cp = await require("./customer-profile.js").buildCustomerCheatSheetText(geminiOpts.db, geminiOpts.customerId);
+            if (cp) {
+                const base = geminiOpts.extraPromptSuffix ? String(geminiOpts.extraPromptSuffix).trim() : "";
+                geminiOpts.extraPromptSuffix = [cp, base].filter(Boolean).join("\n\n");
+            }
+        }
+        catch (_) { /* ignore */ }
+    }
+    const rows = await parseOrderWithGeminiText(t, geminiOpts);
     if (!rows || !rows.length)
         return [];
     const fb = (fallbackUnit && String(fallbackUnit).trim()) || "公斤";
-    return rows.map((p) => {
+    const { dedupeParsedOrderRows } = require("./order-parsed-heuristics.js");
+    const mapped = rows.map((p) => {
         const q = coerceQuantityFromGemini(p.quantity);
         const u = coerceUnitFromGemini(p.unit) || fb;
         const remarkRaw = p.remark != null ? String(p.remark).trim() : "";
@@ -123,4 +135,5 @@ async function parseOrderMessage(text, fallbackUnit, options) {
             subCustomer: subRaw !== "" ? subRaw : null,
         };
     });
+    return dedupeParsedOrderRows(mapped);
 }

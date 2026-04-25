@@ -1,8 +1,11 @@
 # 推送到 Git 後由 Cloud Build 建置映像並部署到 Cloud Run
 # DATABASE_URL 請在 Cloud Run 服務「變數與密碼」設一次，部署時會保留（不會覆寫）
+#
+# 若儲存庫根目錄就是本專案內容（沒有外層 songfu_linebot 資料夾），請刪除下面 build 步驟的 `dir: songfu_linebot` 兩行。
 
 steps:
   - name: "gcr.io/cloud-builders/docker"
+    dir: songfu_linebot
     args:
       - "build"
       - "--platform"

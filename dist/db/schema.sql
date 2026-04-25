@@ -38,8 +38,10 @@ CREATE TABLE IF NOT EXISTS orders (
   lingyue_exported_at TEXT,
   remark TEXT,
   order_sub_split_key TEXT,
+  line_message_id TEXT,
   FOREIGN KEY (customer_id) REFERENCES customers(id)
 );
+CREATE INDEX IF NOT EXISTS idx_orders_line_message_id ON orders(line_message_id);
 
 CREATE TABLE IF NOT EXISTS order_items (
   id TEXT PRIMARY KEY,
@@ -98,6 +100,35 @@ CREATE TABLE IF NOT EXISTS data_change_log (
 );
 CREATE INDEX IF NOT EXISTS idx_data_change_product ON data_change_log(product_id);
 CREATE INDEX IF NOT EXISTS idx_data_change_created ON data_change_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_data_change_entity ON data_change_log(entity_type);
+
+-- Gemini API 呼叫紀錄（延遲、token 估算，供辨識成效儀表）
+CREATE TABLE IF NOT EXISTS gemini_usage_log (
+  id TEXT PRIMARY KEY,
+  customer_id TEXT,
+  call_kind TEXT NOT NULL,
+  model_name TEXT,
+  latency_ms INTEGER,
+  prompt_tokens INTEGER,
+  candidates_tokens INTEGER,
+  total_tokens INTEGER,
+  prompt_version_id TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_gemini_usage_created ON gemini_usage_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_gemini_usage_customer ON gemini_usage_log(customer_id);
+
+-- Gemini system prompt 版本（後台可編輯；線上／A/B 指標存 app_settings）
+CREATE TABLE IF NOT EXISTS prompt_versions (
+  id TEXT PRIMARY KEY,
+  slot TEXT NOT NULL,
+  label TEXT NOT NULL,
+  body TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_versions_slot ON prompt_versions(slot);
 
 -- LINE 機器人：狀態／設定變更紀錄（啟動、排程、模式切換）
 CREATE TABLE IF NOT EXISTS line_bot_state_log (
@@ -265,3 +296,17 @@ CREATE TABLE IF NOT EXISTS freezer_fridge_daily (
   resolved_at TEXT,
   resolve_note TEXT
 );
+
+-- 週期分析：客戶×品項訂單節律（純 SQL 排程產生，零 AI）
+CREATE TABLE IF NOT EXISTS rhythm_daily_signals (
+  id TEXT PRIMARY KEY,
+  signal_date TEXT NOT NULL,
+  customer_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  signal_type TEXT NOT NULL,
+  meta_json TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rhythm_sig_date ON rhythm_daily_signals(signal_date);
+CREATE INDEX IF NOT EXISTS idx_rhythm_sig_cust ON rhythm_daily_signals(customer_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_rhythm_sig_unique ON rhythm_daily_signals(signal_date, customer_id, product_id, signal_type);

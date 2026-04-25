@@ -6,22 +6,38 @@ const vision_ocr_js_1 = require("./vision-ocr.js");
 const gemini_order_helpers_js_1 = require("./gemini-order-helpers.js");
 const order_parsed_heuristics_js_1 = require("./order-parsed-heuristics.js");
 const order_form_templates_js_1 = require("./order-form-templates.js");
+const order_history_items_js_1 = require("./order-history-items.js");
+const customer_profile_js_1 = require("./customer-profile.js");
 /** 圖片：OCR → 版型清洗 → Gemini 文字（整段）→ Gemini 視覺（手寫／雙欄）
  * @param options.geminiExtraSuffix 可選，客戶筆跡對照等，併入 Gemini 文字／視覺提示
  * @param options.db 可選，搭配 options.customerId 載入該客戶 Few-Shot 範例
  * @param options.customerId 可選
+ * @param options.historyItems 可選，若已預先撈好歷史品項小抄則直接使用；否則有 db+customerId 時自動查 order_items
+ * @param options.subClientId / options.sub_client_id 可選，篩選子客戶歷史品項
  */
 async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
     const geminiExtraSuffix = (options && typeof options.geminiExtraSuffix === "string" && options.geminiExtraSuffix.trim())
         ? options.geminiExtraSuffix.trim()
         : "";
+    let profileSheet = "";
+    if (options?.db && options?.customerId) {
+        try {
+            profileSheet = await customer_profile_js_1.buildCustomerCheatSheetText(options.db, options.customerId);
+        }
+        catch (_) { /* ignore */ }
+    }
+    const mergedGeminiSuffix = [profileSheet, geminiExtraSuffix].filter(Boolean).join("\n\n");
     const knownSub = options && typeof options.knownSubCustomers === "string" && options.knownSubCustomers.trim()
         ? options.knownSubCustomers.trim()
         : "";
     const geminiTextOpts = {
-        ...(geminiExtraSuffix ? { extraPromptSuffix: geminiExtraSuffix } : {}),
+        ...(mergedGeminiSuffix ? { extraPromptSuffix: mergedGeminiSuffix } : {}),
         ...(knownSub ? { knownSubCustomers: knownSub } : {}),
     };
+    if (options?.db && options?.customerId) {
+        geminiTextOpts.db = options.db;
+        geminiTextOpts.customerId = options.customerId;
+    }
     const hasGeminiTextOpts = Object.keys(geminiTextOpts).length > 0;
     let ocrText = null;
     if (buffer?.length && process.env.GOOGLE_CLOUD_VISION_API_KEY) {
@@ -53,8 +69,8 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
         const visionParts = [];
         if (lungangLike)
             visionParts.push(lungangSuffix);
-        if (geminiExtraSuffix)
-            visionParts.push(geminiExtraSuffix);
+        if (mergedGeminiSuffix)
+            visionParts.push(mergedGeminiSuffix);
         const visionOpts = {};
         if (visionParts.length)
             visionOpts.extraPromptSuffix = visionParts.join("\n\n");
@@ -64,6 +80,19 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
         }
         if (knownSub)
             visionOpts.knownSubCustomers = knownSub;
+        let historyItems = [];
+        if (options && Object.prototype.hasOwnProperty.call(options, "historyItems") && Array.isArray(options.historyItems)) {
+            historyItems = options.historyItems;
+        }
+        else if (options?.db && options?.customerId) {
+            try {
+                historyItems = await order_history_items_js_1.loadDistinctOrderItemNamesForCustomer(options.db, options.customerId, options.subClientId ?? options.sub_client_id);
+            }
+            catch (he) {
+                console.warn("[parse-order-from-image] history items:", he?.message || he);
+            }
+        }
+        visionOpts.historyItems = historyItems;
         const rows = await (0, gemini_order_helpers_js_1.parseOrderWithGeminiImage)(buffer, Object.keys(visionOpts).length ? visionOpts : undefined);
         if (rows && rows.length) {
             let visionParsed = rows.map((p) => ({
@@ -84,6 +113,7 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
             }
         }
     }
+    parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(parsed);
     // 訂單 raw_message 保留完整 OCR，解析仍用 parseText（版型清洗後）
     return { parsed, ocrText: ocrText || parseText || null };
 }

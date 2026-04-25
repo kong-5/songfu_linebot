@@ -6,6 +6,54 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isLikelyOcrJunkProduceName = isLikelyOcrJunkProduceName;
 exports.filterLikelyOcrJunkParsedItems = filterLikelyOcrJunkParsedItems;
+exports.dedupeParsedOrderRows = dedupeParsedOrderRows;
+/**
+ * 供去重鍵：合併 k／kg／公斤 等常見同義，避免模型重複輸出僅單位略異的兩筆。
+ */
+function normalizeUnitForDedupeKey(unit) {
+    const s = String(unit || "").trim().toLowerCase();
+    if (!s)
+        return "";
+    if (s === "kg" || s === "k" || s === "公斤" || s === "千克")
+        return "__kg__";
+    if (s === "g" || s === "克" || s === "公克")
+        return "__g__";
+    if (s === "斤")
+        return "__jin__";
+    return s;
+}
+/** 品名＋數量＋單位＋備註＋子客戶 皆相同 → 視為重複列，保留先出現者 */
+function dedupeSignature(p) {
+    const name = String(p.rawName || "").trim().replace(/\s+/g, " ");
+    const qty = Number(p.quantity);
+    const qk = Number.isFinite(qty) ? Math.round(qty * 10000) / 10000 : 0;
+    const uk = normalizeUnitForDedupeKey(p.unit);
+    const rem = p.remark != null ? String(p.remark).trim() : "";
+    const sub = p.subCustomer != null ? String(p.subCustomer).trim() : "";
+    return `${name}\t${qk}\t${uk}\t${rem}\t${sub}`;
+}
+/**
+ * 移除 Gemini／多來源合併時產生的**完全重複**品項列（語意與數量皆相同）。
+ * 不會合併「同名不同量」的兩筆（仍視為兩筆獨立叫貨）。
+ */
+function dedupeParsedOrderRows(items) {
+    if (!Array.isArray(items) || items.length <= 1)
+        return items || [];
+    const seen = new Set();
+    const out = [];
+    for (const p of items) {
+        if (!p)
+            continue;
+        const sig = dedupeSignature(p);
+        if (seen.has(sig)) {
+            console.warn("[order-parsed] 略過重複品項:", sig.slice(0, 120));
+            continue;
+        }
+        seen.add(sig);
+        out.push(p);
+    }
+    return out;
+}
 function isLikelyOcrJunkProduceName(rawName) {
     const s = String(rawName || "").trim();
     if (!s)

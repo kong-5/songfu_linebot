@@ -87,11 +87,16 @@ function initSqlite(dbPath) {
         "ALTER TABLE order_items ADD COLUMN sub_customer TEXT",
         "ALTER TABLE orders ADD COLUMN remark TEXT",
         "ALTER TABLE orders ADD COLUMN order_sub_split_key TEXT",
+        "ALTER TABLE orders ADD COLUMN line_message_id TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
     }
     catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_orders_line_message_id ON orders(line_message_id)");
+    }
+    catch (_) { /* index may already exist */ }
     try {
         sqlite.exec("ALTER TABLE inventory_warehouse_products ADD COLUMN safety_stock REAL NOT NULL DEFAULT 0");
     }
@@ -140,8 +145,43 @@ function initSqlite(dbPath) {
         )`);
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_data_change_product ON data_change_log(product_id)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_data_change_created ON data_change_log(created_at)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_data_change_entity ON data_change_log(entity_type)");
     }
     catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS gemini_usage_log (
+          id TEXT PRIMARY KEY,
+          customer_id TEXT,
+          call_kind TEXT NOT NULL,
+          model_name TEXT,
+          latency_ms INTEGER,
+          prompt_tokens INTEGER,
+          candidates_tokens INTEGER,
+          total_tokens INTEGER,
+          prompt_version_id TEXT,
+          created_at TEXT
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_gemini_usage_created ON gemini_usage_log(created_at)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_gemini_usage_customer ON gemini_usage_log(customer_id)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS prompt_versions (
+          id TEXT PRIMARY KEY,
+          slot TEXT NOT NULL,
+          label TEXT NOT NULL,
+          body TEXT NOT NULL,
+          notes TEXT,
+          created_at TEXT,
+          updated_at TEXT
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_prompt_versions_slot ON prompt_versions(slot)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec("ALTER TABLE gemini_usage_log ADD COLUMN prompt_version_id TEXT");
+    }
+    catch (_) { /* column may already exist */ }
     try {
         sqlite.exec(`CREATE TABLE IF NOT EXISTS customer_handwriting_hints (
           id TEXT PRIMARY KEY,
@@ -179,6 +219,21 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_customer_examples ON customer_order_image_examples(customer_id, is_active)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cust_order_img_ex_customer ON customer_order_image_examples(customer_id)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cust_order_img_ex_order ON customer_order_image_examples(order_id)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS rhythm_daily_signals (
+          id TEXT PRIMARY KEY,
+          signal_date TEXT NOT NULL,
+          customer_id TEXT NOT NULL,
+          product_id TEXT NOT NULL,
+          signal_type TEXT NOT NULL,
+          meta_json TEXT,
+          created_at TEXT NOT NULL
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_rhythm_sig_date ON rhythm_daily_signals(signal_date)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_rhythm_sig_cust ON rhythm_daily_signals(customer_id)");
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_rhythm_sig_unique ON rhythm_daily_signals(signal_date, customer_id, product_id, signal_type)");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -277,6 +332,14 @@ async function initPg() {
             }
             catch (_) { /* column may already exist */ }
             try {
+                await client.query("ALTER TABLE orders ADD COLUMN line_message_id TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("CREATE INDEX IF NOT EXISTS idx_orders_line_message_id ON orders(line_message_id)");
+            }
+            catch (_) { /* index may already exist */ }
+            try {
                 await client.query("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), line_message_id TEXT NOT NULL, created_at TIMESTAMPTZ)");
             }
             catch (_) { /* table may already exist */ }
@@ -352,8 +415,48 @@ async function initPg() {
           )`);
                 await client.query("CREATE INDEX IF NOT EXISTS idx_data_change_product ON data_change_log(product_id)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_data_change_created ON data_change_log(created_at)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_data_change_entity ON data_change_log(entity_type)");
             }
             catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS gemini_usage_log (
+            id TEXT PRIMARY KEY,
+            customer_id TEXT REFERENCES customers(id),
+            call_kind TEXT NOT NULL,
+            model_name TEXT,
+            latency_ms INTEGER,
+            prompt_tokens INTEGER,
+            candidates_tokens INTEGER,
+            total_tokens INTEGER,
+            prompt_version_id TEXT,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_gemini_usage_created ON gemini_usage_log(created_at)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_gemini_usage_customer ON gemini_usage_log(customer_id)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS prompt_versions (
+            id TEXT PRIMARY KEY,
+            slot TEXT NOT NULL,
+            label TEXT NOT NULL,
+            body TEXT NOT NULL,
+            notes TEXT,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_prompt_versions_slot ON prompt_versions(slot)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query("ALTER TABLE gemini_usage_log ADD COLUMN IF NOT EXISTS prompt_version_id TEXT");
+            }
+            catch (_) {
+                try {
+                    await client.query("ALTER TABLE gemini_usage_log ADD COLUMN prompt_version_id TEXT");
+                }
+                catch (_e) { /* column may exist */ }
+            }
             try {
                 await client.query(`CREATE TABLE IF NOT EXISTS customer_order_image_examples (
             id TEXT PRIMARY KEY,
@@ -386,6 +489,21 @@ async function initPg() {
             UNIQUE(customer_id, raw_key)
           )`);
                 await client.query("CREATE INDEX IF NOT EXISTS idx_cust_handwriting_hints_customer ON customer_handwriting_hints(customer_id)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS rhythm_daily_signals (
+            id TEXT PRIMARY KEY,
+            signal_date TEXT NOT NULL,
+            customer_id TEXT NOT NULL REFERENCES customers(id),
+            product_id TEXT NOT NULL REFERENCES products(id),
+            signal_type TEXT NOT NULL,
+            meta_json TEXT,
+            created_at TIMESTAMPTZ NOT NULL
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_rhythm_sig_date ON rhythm_daily_signals(signal_date)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_rhythm_sig_cust ON rhythm_daily_signals(customer_id)");
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_rhythm_sig_unique ON rhythm_daily_signals(signal_date, customer_id, product_id, signal_type)");
             }
             catch (_) { /* table may already exist */ }
         }

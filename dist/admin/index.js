@@ -56,7 +56,13 @@ const order_parsed_heuristics_js_1 = require("../lib/order-parsed-heuristics.js"
 const order_form_templates_js_1 = require("../lib/order-form-templates.js");
 const rebuild_order_from_sources_js_1 = require("../lib/rebuild-order-from-sources.js");
 const customer_handwriting_hints_js_1 = require("../lib/customer-handwriting-hints.js");
+const order_history_items_js_1 = require("../lib/order-history-items.js");
 const few_shot_example_save_js_1 = require("../lib/few-shot-example-save.js");
+const gemini_prompt_resolve_js_1 = require("../lib/gemini-prompt-resolve.js");
+const gemini_eval_harness_js_1 = require("../lib/gemini-eval-harness.js");
+const unit_spec_learn_js_1 = require("../lib/unit-spec-learn.js");
+const customer_profile_js_1 = require("../lib/customer-profile.js");
+const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
@@ -74,6 +80,30 @@ function uploadImageSafe(req, res, next) {
         }
         next();
     });
+}
+/** 客戶主檔逗號名單：去掉括號內簡稱，供下拉選單 */
+function parseKnownSubCustomerLabelsForSelect(raw) {
+    if (!raw || !String(raw).trim())
+        return [];
+    return String(raw)
+        .split(/[,，]/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => s.replace(/\([^)]*\)/g, "").trim())
+        .filter(Boolean);
+}
+async function getNextOrderNoAdmin(db, orderDate) {
+    const nextKey = "order_seq_next_" + orderDate;
+    const startKey = "order_seq_start_" + orderDate;
+    let row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(nextKey);
+    if (!row || !row.value) {
+        row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
+    }
+    const seq = row && row.value ? parseInt(row.value, 10) : 1;
+    const nextSeq = Number.isNaN(seq) ? 1 : Math.max(1, seq);
+    const orderNo = orderDate.replace(/-/g, "") + String(nextSeq).padStart(3, "0");
+    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(nextKey, String(nextSeq + 1));
+    return orderNo;
 }
 const NOTION_STYLE = `
   :root {
@@ -349,11 +379,23 @@ const NOTION_STYLE = `
   /* 訂單明細：待確認列上色（桌面表格式） */
   table.order-detail-table tbody tr.order-item-need-review > td { background: #fff7ed; }
   .order-detail-layout { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: stretch; gap: 16px; margin-top: 4px; }
+  /* 左欄寬度維持原本比例，避免擠壓右側辨識明細；內文區可較高、長行橫向捲動。整塊 sticky 捲動時仍跟著視窗 */
   .order-detail-raw-col { flex: 0 0 min(200px, 24vw); min-width: 160px; max-width: 220px; position: relative; }
   .order-detail-raw-inner { position: sticky; top: 10px; max-height: calc(100vh - 20px); overflow-y: auto; }
   .order-detail-raw-inner.notion-card { padding: 10px 12px; margin-bottom: 10px; }
   .order-detail-raw-title { margin: 0; font-size: 15px; font-weight: 600; }
-  .order-detail-raw-pre-wrap { max-height: min(18vh, 140px); overflow-y: auto; overflow-x: auto; border: 1px solid var(--notion-border); border-radius: var(--notion-radius); }
+  /* 垂直：至少約 20 行可見；水平：不拉寬整欄，長行用 overflow-x 捲動對照 */
+  .order-detail-raw-pre-wrap {
+    box-sizing: border-box;
+    font-size: 11px;
+    line-height: 1.4;
+    min-height: calc(1.4em * 20);
+    max-height: min(55vh, calc(1.4em * 42));
+    overflow-y: auto;
+    overflow-x: auto;
+    border: 1px solid var(--notion-border);
+    border-radius: var(--notion-radius);
+  }
   .order-detail-raw-pre-wrap pre { background: var(--notion-sidebar); padding: 6px 8px; border-radius: var(--notion-radius); margin: 0; font-size: 11px; line-height: 1.4; white-space: pre-wrap; word-break: break-all; }
   .order-detail-main-col { flex: 1; min-width: 0; }
   table.order-detail-table th.order-detail-th-sort,
@@ -524,12 +566,15 @@ const NOTION_STYLE = `
 const NOTION_SIDEBAR = (active) => `
   <nav class="notion-sidebar">
     <a href="/admin" class="notion-sidebar-home ${active === "dashboard" ? "active" : ""}">儀表板</a>
-    <details class="sidebar-group" ${active === "line-bot" || active === "line-bot-unit" || active === "ai-examples" ? "open" : ""}>
+    <details class="sidebar-group" ${active === "line-bot" || active === "line-bot-unit" || active === "ai-examples" || active === "recognition-stats" || active === "gemini-prompts" || active === "order-eval" ? "open" : ""}>
       <summary class="sidebar-group-title">LINE 機器人</summary>
       <div class="sidebar-links">
         <a href="/admin/line-bot" class="${active === "line-bot" ? "active" : ""}">啟動與排程</a>
         <a href="/admin/line-bot/unit-conversion" class="${active === "line-bot-unit" ? "active" : ""}">叫貨單位換算</a>
+        <a href="/admin/gemini-prompts" class="${active === "gemini-prompts" ? "active" : ""}">Gemini Prompt 版本</a>
         <a href="/admin/ai-examples" class="${active === "ai-examples" ? "active" : ""}">AI 學習庫管理</a>
+        <a href="/admin/recognition-stats" class="${active === "recognition-stats" ? "active" : ""}">辨識成效儀表</a>
+        <a href="/admin/order-eval" class="${active === "order-eval" ? "active" : ""}">訂單圖 Eval 評測</a>
       </div>
     </details>
     <details class="sidebar-group">
@@ -553,6 +598,7 @@ const NOTION_SIDEBAR = (active) => `
         <a href="/admin/orders">訂單查詢</a>
         <a href="/admin/review">待確認品項</a>
         <a href="/admin/export">資料匯出</a>
+        <a href="/admin/rhythm" class="${active === "rhythm" ? "active" : ""}">週期與預期清單</a>
         <a href="/admin/backup" class="${active === "backup" ? "active" : ""}">資料備份</a>
       </div>
     </details>
@@ -892,6 +938,68 @@ function notionEmbedPage(title, body, res) {
     const mainWrap = `<div class="notion-main-wrap"><main class="notion-main notion-main-embed">${body}</main></div>`;
     const shell = headerHtml ? `<div class="notion-app">${headerHtml}${mainWrap}</div>` : `<div class="notion-app">${mainWrap}</div>`;
     return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富物流後台</title><style>${NOTION_STYLE}</style></head><body>${shell}</body></html>`;
+}
+/** 編輯距離（品名短字串模糊比對） */
+function levenshteinDistance(a, b) {
+    if (!a?.length)
+        return b?.length ?? 0;
+    if (!b?.length)
+        return a.length;
+    const m = a.length, n = b.length;
+    const dp = new Array(n + 1);
+    for (let j = 0; j <= n; j++)
+        dp[j] = j;
+    for (let i = 1; i <= m; i++) {
+        let prev = dp[0];
+        dp[0] = i;
+        for (let j = 1; j <= n; j++) {
+            const tmp = dp[j];
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + cost);
+            prev = tmp;
+        }
+    }
+    return dp[n];
+}
+/** 查詢字元是否依序出現在字串中（簡易模糊） */
+function isSubsequenceInOrder(haystack, needle) {
+    if (!needle)
+        return true;
+    let i = 0;
+    for (let k = 0; k < haystack.length && i < needle.length; k++) {
+        if (haystack[k] === needle[i])
+            i++;
+    }
+    return i === needle.length;
+}
+/** 品項模糊相關分數（愈高愈相關） */
+function fuzzyProductScore(p, qNorm) {
+    const name = (p.name || "").toLowerCase();
+    const erp = (p.erp_code || "").toLowerCase();
+    const teraoka = (p.teraoka_barcode || "").toLowerCase();
+    const merged = `${name} ${erp} ${teraoka}`;
+    if (!qNorm)
+        return 0;
+    if (name.includes(qNorm))
+        return 10000;
+    if (erp.includes(qNorm) || teraoka.includes(qNorm))
+        return 9000;
+    if (merged.includes(qNorm))
+        return 7500;
+    let score = 0;
+    if (isSubsequenceInOrder(name, qNorm))
+        score += 4200;
+    const slice = name.slice(0, Math.min(name.length, 72));
+    const d = levenshteinDistance(qNorm, slice);
+    const maxL = Math.max(qNorm.length, slice.length, 1);
+    score += Math.max(0, 3500 - (d / maxL) * 3000);
+    let hit = 0;
+    for (const ch of qNorm) {
+        if (merged.includes(ch))
+            hit++;
+    }
+    score += (hit / Math.max(qNorm.length, 1)) * 600;
+    return score;
 }
 function createAdminRouter() {
     const router = express_1.default.Router();
@@ -1456,7 +1564,7 @@ function createAdminRouter() {
         <h1 class="notion-page-title">叫貨單位換算（LINE）</h1>
         ${ok ? "<p class=\"notion-msg ok\">已儲存規則。</p>" : ""}
         ${err ? "<p class=\"notion-msg err\">JSON 格式錯誤：須為物件且含 <code>rules</code> 陣列；每條規則須有 <code>fromUnits</code> 與有效的 <code>kgPerUnit</code>，並需設定 <code>productId</code> 或 <code>productNameContains</code>。</p>" : ""}
-        <p class="notion-hint">當客戶用「把／條／根／支／包」下單，但實際是公斤計價時，請先在本頁建立規則。第一分頁會自動列出系統偵測到的未確認品項；第二分頁是已確認規則，可搜尋與持續建置。</p>
+        <p class="notion-hint">當客戶用「把／條／根／支／包」下單，但實際是公斤計價時，請先在本頁建立規則。第一分頁會自動列出系統偵測到的未確認品項；第二分頁是已確認規則，可搜尋與持續建置。<strong>儲存規則後會自動同步寫入符合品項的「2-2 單位→公斤」（<code>product_unit_specs</code>）</strong>，進單時優先於通用 JSON 規則套用。</p>
         <div class="notion-card" style="margin-bottom:16px;">
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <button type="button" id="tabPendingBtn" class="btn btn-primary">未確認品項 ${pendingBadge}</button>
@@ -1530,6 +1638,12 @@ function createAdminRouter() {
                     remarkStyle: "prefix",
                 });
                 await saveLineUnitRulesObject(normalizeLineUnitRules(JSON.stringify(obj)));
+                try {
+                    await unit_spec_learn_js_1.syncProductUnitSpecsFromLineRules(db, await loadLineUnitRulesObject());
+                }
+                catch (e) {
+                    console.error("[admin] sync product_unit_specs from line rules", e?.message || e);
+                }
                 res.redirect("/admin/line-bot/unit-conversion?ok=1");
                 return;
             }
@@ -1539,6 +1653,12 @@ function createAdminRouter() {
                 if (Number.isInteger(idx) && idx >= 0 && idx < obj.rules.length) {
                     obj.rules.splice(idx, 1);
                     await saveLineUnitRulesObject(normalizeLineUnitRules(JSON.stringify(obj)));
+                    try {
+                        await unit_spec_learn_js_1.syncProductUnitSpecsFromLineRules(db, await loadLineUnitRulesObject());
+                    }
+                    catch (e) {
+                        console.error("[admin] sync product_unit_specs after rule delete", e?.message || e);
+                    }
                 }
                 res.redirect("/admin/line-bot/unit-conversion?ok=1");
                 return;
@@ -1559,6 +1679,12 @@ function createAdminRouter() {
             const txt = String(req.body?.rules_json ?? "").trim();
             const j = normalizeLineUnitRules(txt || "{}");
             await saveLineUnitRulesObject(j);
+            try {
+                await unit_spec_learn_js_1.syncProductUnitSpecsFromLineRules(db, await loadLineUnitRulesObject());
+            }
+            catch (e) {
+                console.error("[admin] sync product_unit_specs from line rules (json)", e?.message || e);
+            }
             res.redirect("/admin/line-bot/unit-conversion?ok=1");
         }
         catch (_e) {
@@ -1579,6 +1705,513 @@ function createAdminRouter() {
         <p class="notion-hint">更多儀表板項目將陸續新增。</p>
       `;
         res.type("text/html").send(notionPage("儀表板", body, "dashboard", res));
+    });
+    router.get("/recognition-stats", async (req, res) => {
+        const isPg = Boolean(process.env.DATABASE_URL);
+        const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+        let dateFromStr;
+        let dateToStr;
+        const qf = typeof req.query.date_from === "string" ? req.query.date_from.trim() : "";
+        const qt = typeof req.query.date_to === "string" ? req.query.date_to.trim() : "";
+        if (dateRe.test(qf) && dateRe.test(qt) && qf <= qt) {
+            dateFromStr = qf;
+            dateToStr = qt;
+        }
+        else {
+            const days = Math.min(9999, Math.max(1, parseInt(String(req.query.days ?? "30"), 10) || 30));
+            const end = new Date();
+            const start = new Date(Date.now() - days * 86400000);
+            dateFromStr = start.toISOString().slice(0, 10);
+            dateToStr = end.toISOString().slice(0, 10);
+        }
+        let orderDateMin = "2010-01-01";
+        let orderDateMax = new Date().toISOString().slice(0, 10);
+        try {
+            const b = await db.prepare("SELECT MIN(order_date) AS mn, MAX(order_date) AS mx FROM orders").get();
+            if (b?.mn != null && dateRe.test(String(b.mn).slice(0, 10)))
+                orderDateMin = String(b.mn).slice(0, 10);
+            if (b?.mx != null && dateRe.test(String(b.mx).slice(0, 10)))
+                orderDateMax = String(b.mx).slice(0, 10);
+        }
+        catch (_) { /* ignore */ }
+        const logDateClause = isPg
+            ? `(created_at::date >= ?::date AND created_at::date <= ?::date)`
+            : `(date(created_at) >= date(?) AND date(created_at) <= date(?))`;
+        let itemStats = [];
+        try {
+            itemStats = (await db
+                .prepare(`SELECT o.customer_id AS cid,
+         SUM(CASE WHEN oi.need_review = 1 THEN 1 ELSE 0 END) AS need_review_cnt,
+         COUNT(oi.id) AS item_cnt
+  FROM orders o
+  JOIN order_items oi ON oi.order_id = o.id
+  WHERE o.order_date >= ? AND o.order_date <= ?
+  GROUP BY o.customer_id`)
+                .all(dateFromStr, dateToStr)) || [];
+        }
+        catch (e) {
+            console.error("[admin] recognition-stats itemStats", e?.message || e);
+        }
+        let fixRows = [];
+        try {
+            fixRows =
+                (await db
+                    .prepare(`SELECT meta_json FROM data_change_log WHERE entity_type = 'order_item_product' AND action = 'set_product' AND ${logDateClause}`)
+                    .all(dateFromStr, dateToStr)) || [];
+        }
+        catch (e) {
+            console.error("[admin] recognition-stats fixes", e?.message || e);
+        }
+        const manualByCustomer = {};
+        for (const r of fixRows) {
+            try {
+                const raw = r.meta_json;
+                const m = typeof raw === "string" && raw.trim() ? JSON.parse(raw) : typeof raw === "object" && raw ? raw : {};
+                const cid = m.customer_id;
+                if (cid)
+                    manualByCustomer[cid] = (manualByCustomer[cid] || 0) + 1;
+            }
+            catch (_) { }
+        }
+        let hintRows = [];
+        try {
+            hintRows =
+                (await db
+                    .prepare(`SELECT customer_id AS cid, COUNT(*) AS hint_rows, COALESCE(SUM(hit_count), 0) AS hit_sum
+         FROM customer_handwriting_hints
+         GROUP BY customer_id`)
+                    .all()) || [];
+        }
+        catch (e) {
+            console.error("[admin] recognition-stats hints", e?.message || e);
+        }
+        const hintMap = Object.fromEntries((hintRows || []).map((h) => [h.cid, h]));
+        let fsRows = [];
+        try {
+            fsRows =
+                (await db
+                    .prepare(`SELECT customer_id AS cid, COUNT(*) AS few_shot_n
+         FROM customer_order_image_examples
+         WHERE is_active = 1
+         GROUP BY customer_id`)
+                    .all()) || [];
+        }
+        catch (e) {
+            console.error("[admin] recognition-stats few-shot", e?.message || e);
+        }
+        const fsMap = Object.fromEntries((fsRows || []).map((x) => [x.cid, x.few_shot_n]));
+        let gemAgg = [];
+        let gemTotals = null;
+        try {
+            gemAgg =
+                (await db
+                    .prepare(`SELECT call_kind,
+         COUNT(*) AS n,
+         AVG(latency_ms) AS avg_lat,
+         SUM(COALESCE(prompt_tokens, 0)) AS prompt_sum,
+         SUM(COALESCE(candidates_tokens, 0)) AS cand_sum,
+         SUM(COALESCE(total_tokens, 0)) AS total_tok_sum
+  FROM gemini_usage_log
+  WHERE ${logDateClause}
+  GROUP BY call_kind`)
+                    .all(dateFromStr, dateToStr)) || [];
+            gemTotals = await db
+                .prepare(`SELECT COUNT(*) AS n,
+         AVG(latency_ms) AS avg_lat,
+         SUM(COALESCE(prompt_tokens, 0)) AS prompt_sum,
+         SUM(COALESCE(candidates_tokens, 0)) AS cand_sum,
+         SUM(COALESCE(total_tokens, 0)) AS total_tok_sum
+  FROM gemini_usage_log
+  WHERE ${logDateClause}`)
+                .get(dateFromStr, dateToStr);
+        }
+        catch (e) {
+            console.error("[admin] recognition-stats gemini", e?.message || e);
+        }
+        const custRows = (await db.prepare("SELECT id, name FROM customers ORDER BY name").all()) || [];
+        const nameById = Object.fromEntries(custRows.map((c) => [c.id, c.name]));
+        const cidSet = new Set();
+        for (const r of itemStats)
+            cidSet.add(r.cid);
+        for (const cid of Object.keys(manualByCustomer))
+            cidSet.add(cid);
+        for (const h of hintRows || [])
+            cidSet.add(h.cid);
+        for (const x of fsRows || [])
+            cidSet.add(x.cid);
+        const pct = (a, b) => {
+            const aa = Number(a) || 0;
+            const bb = Number(b) || 0;
+            if (bb <= 0)
+                return "—";
+            return ((100 * aa) / bb).toFixed(1) + "%";
+        };
+        const fmtNum = (x) => (x == null || Number.isNaN(Number(x)) ? "—" : Number(x).toLocaleString("zh-TW"));
+        const fmtMs = (x) => (x == null || Number.isNaN(Number(x)) ? "—" : `${Math.round(Number(x))} ms`);
+        const combined = [...cidSet]
+            .map((cid) => {
+            const st = itemStats.find((x) => x.cid === cid);
+            const need = Number(st?.need_review_cnt) || 0;
+            const tot = Number(st?.item_cnt) || 0;
+            const man = manualByCustomer[cid] || 0;
+            const hm = hintMap[cid];
+            const hintRows = hm ? Number(hm.hint_rows) || 0 : 0;
+            const hitSum = hm ? Number(hm.hit_sum) || 0 : 0;
+            const fs = fsMap[cid] != null ? Number(fsMap[cid]) || 0 : 0;
+            return {
+                cid,
+                name: nameById[cid] || cid,
+                need,
+                tot,
+                needPct: pct(need, tot),
+                man,
+                manPct: pct(man, tot),
+                hintRows,
+                hitSum,
+                fs,
+            };
+        })
+            .sort((a, b) => {
+            const ra = a.tot > 0 ? a.need / a.tot : 0;
+            const rb = b.tot > 0 ? b.need / b.tot : 0;
+            return rb - ra || b.tot - a.tot;
+        });
+        const gemRowsHtml = (gemAgg || [])
+            .map((g) => {
+            const k = escapeHtml(String(g.call_kind || ""));
+            return `<tr><td><code>${k}</code></td><td style="text-align:right;">${fmtNum(g.n)}</td><td style="text-align:right;">${fmtMs(g.avg_lat)}</td><td style="text-align:right;">${fmtNum(g.prompt_sum)}</td><td style="text-align:right;">${fmtNum(g.cand_sum)}</td><td style="text-align:right;">${fmtNum(g.total_tok_sum)}</td></tr>`;
+        })
+            .join("");
+        const rangeLabel = `${dateFromStr} ～ ${dateToStr}`;
+        const fullRangeUrl = `/admin/recognition-stats?date_from=${encodeURIComponent(orderDateMin)}&date_to=${encodeURIComponent(orderDateMax)}`;
+        const filterForm = `
+        <form method="get" action="/admin/recognition-stats" style="margin:0 0 16px;padding:14px 16px;border:1px solid var(--notion-border);border-radius:var(--notion-radius-lg);background:var(--notion-bg);">
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
+            <label style="margin:0;font-size:13px;">起日<br><input type="date" name="date_from" value="${escapeAttr(dateFromStr)}" style="margin-top:4px;"></label>
+            <label style="margin:0;font-size:13px;">迄日<br><input type="date" name="date_to" value="${escapeAttr(dateToStr)}" style="margin-top:4px;"></label>
+            <button type="submit" class="btn btn-primary">套用區間</button>
+            <span style="font-size:13px;color:var(--notion-text-muted);align-self:center;">快捷</span>
+            <a href="/admin/recognition-stats?days=30" class="btn">近30日</a>
+            <a href="/admin/recognition-stats?days=90" class="btn">近90日</a>
+            <a href="/admin/recognition-stats?days=365" class="btn">近一年</a>
+            <a href="${escapeAttr(fullRangeUrl)}" class="btn">訂單全期（庫內最早～最晚）</a>
+          </div>
+        </form>`;
+        const gemSummary = gemTotals
+            ? `<p style="margin:0 0 10px;"><strong>本區間合計（${escapeHtml(rangeLabel)}）</strong>：呼叫 ${fmtNum(gemTotals.n)} 次 · 平均延遲 ${fmtMs(gemTotals.avg_lat)} · prompt tokens 約 ${fmtNum(gemTotals.prompt_sum)} · 輸出 tokens 約 ${fmtNum(gemTotals.cand_sum)} · total 約 ${fmtNum(gemTotals.total_tok_sum)}（若 API 未回傳欄位則為 0）</p>`
+            : "<p class=\"notion-hint\" style=\"margin:0 0 10px;\">尚無 Gemini 呼叫紀錄（上線前或區間內無紀錄；部署新版本後成功解析會寫入 <code>gemini_usage_log</code>）。</p>";
+        const custTable = combined.length
+            ? `<table class="notion-table-like" style="width:100%;border-collapse:collapse;font-size:14px;">
+    <thead><tr>
+      <th style="text-align:left;padding:8px;border-bottom:1px solid var(--notion-border);">客戶</th>
+      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">明細筆數<br><span style="font-weight:400;font-size:12px;color:var(--notion-text-muted);">（區間內）</span></th>
+      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">待確認比例</th>
+      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">後台改品項次數</th>
+      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">改品項／明細</th>
+      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">筆跡對照列數</th>
+      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">累積命中</th>
+      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">Few-Shot</th>
+    </tr></thead>
+    <tbody>
+      ${combined
+                .map((r) => `<tr>
+      <td style="padding:8px;border-bottom:1px solid var(--notion-border);"><a href="/admin/customers/${encodeURIComponent(r.cid)}/edit">${escapeHtml(r.name)}</a></td>
+      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${fmtNum(r.tot)}</td>
+      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${escapeHtml(r.needPct)} <span style="color:var(--notion-text-muted);font-size:12px;">(${fmtNum(r.need)})</span></td>
+      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${fmtNum(r.man)}</td>
+      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${escapeHtml(r.manPct)}</td>
+      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${fmtNum(r.hintRows)}</td>
+      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${fmtNum(r.hitSum)}</td>
+      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${fmtNum(r.fs)}</td>
+    </tr>`)
+                .join("")}
+    </tbody>
+  </table>`
+            : `<p class="notion-hint">此區間內尚無訂單明細（可改用上方「訂單全期」或調整起迄日）。</p>`;
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 辨識成效儀表</div>
+        <h1 class="notion-page-title">辨識成效儀表</h1>
+        ${filterForm}
+        <p class="notion-hint" style="margin-top:0;">目前統計區間：<strong>${escapeHtml(rangeLabel)}</strong>。訂單／待確認：依 <code>order_date</code>；後台改品項：依 <code>data_change_log</code> 紀錄日；Gemini：依 <code>gemini_usage_log</code> 紀錄日——<strong>過去訂單與（有留下的）日誌都會納入</strong>。Gemini 為事後才啟用者，早期區間可能為 0。筆跡對照／Few-Shot 兩欄為<strong>目前資料庫累積</strong>（不按上方日期篩選）。「累積命中」為 <code>hit_count</code> 加總。</p>
+        <div class="notion-card">
+          <h2 style="margin-top:0;">Gemini 呼叫（全站・區間內）</h2>
+          ${gemSummary}
+          <table style="width:100%;border-collapse:collapse;font-size:14px;">
+            <thead><tr>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid var(--notion-border);">類型</th>
+              <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">次數</th>
+              <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">平均延遲</th>
+              <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">prompt tokens</th>
+              <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">輸出 tokens</th>
+              <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">total tokens</th>
+            </tr></thead>
+            <tbody>
+              ${gemRowsHtml || "<tr><td colspan=\"6\" class=\"notion-hint\">尚無資料</td></tr>"}
+            </tbody>
+          </table>
+          <p class="notion-hint" style="margin-bottom:0;">類型：<code>text</code> 純文字叫貨 · <code>vision</code> 單圖視覺 · <code>vision_few_shot</code> 多輪 Few-Shot 視覺。每筆紀錄含 <code>prompt_version_id</code>（見 <a href="/admin/gemini-prompts">Gemini Prompt 版本</a>），可比對 A/B。</p>
+        </div>
+        <div class="notion-card">
+          <h2 style="margin-top:0;">依客戶（區間內訂單明細與改品項）</h2>
+          ${custTable}
+        </div>
+      `;
+        res.type("text/html").send(notionPage("辨識成效儀表", body, "recognition-stats", res));
+    });
+    router.get("/order-eval", requireManager, async (req, res) => {
+        await gemini_prompt_resolve_js_1.ensureSeedPromptVersions(db);
+        const quota = await gemini_eval_harness_js_1.getEvalQuotaToday(db);
+        const visionRows = (await db.prepare("SELECT id, label, updated_at FROM prompt_versions WHERE slot = 'vision' ORDER BY updated_at DESC").all()) || [];
+        const preview = await gemini_eval_harness_js_1.loadGoldenExampleRows(db, {
+            maxExamples: 100,
+            activeOnly: true,
+        });
+        const keyOk = Boolean((process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || "").trim());
+        const errMsg = req.query.err === "quota"
+            ? `<p class="notion-msg err">今日「全量評測」已達上限（每日最多 ${gemini_eval_harness_js_1.EVAL_FULL_RUN_DAILY_CAP} 次）。請明日再試，或聯絡負責人調整流程。</p>`
+            : req.query.err === "confirm"
+                ? `<p class="notion-msg err">請勾選確認後再執行。</p>`
+                : "";
+        const pvOpts = [`<option value="">（線上解析：目前生效之 vision 版本）</option>`].concat(visionRows.map((r) => `<option value="${escapeAttr(r.id)}">${escapeHtml(r.label || r.id)} — ${escapeHtml(String(r.updated_at || "—"))}</option>`));
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 訂單圖 Eval 評測</div>
+        <h1 class="notion-page-title">訂單圖 Golden Set 評測（Eval Harness）</h1>
+        ${errMsg}
+        <p class="notion-hint" style="margin-top:0;">以 <code>customer_order_image_examples</code> 的 <code>parsed_json</code> 為標準答案，對同一批圖重跑 Gemini。調整 <code>SYSTEM_INSTRUCTION_ERP_ORDER_CLERK_CORE</code>（vision prompt）前後各跑一次，可比對<strong>精確度／召回率／數量誤差／單位一致率</strong>。評測時會<strong>排除當前題目圖</strong>作 Few-Shot，避免洩題。</p>
+        <div class="notion-card">
+          <p style="margin-top:0;"><strong>今日全量配額</strong>：已用 ${quota.used}／${gemini_eval_harness_js_1.EVAL_FULL_RUN_DAILY_CAP} 次 · 剩餘 ${quota.remaining} 次（每日曆日重置）。</p>
+          <p class="notion-hint" style="margin-bottom:0;">防呆：避免腳本或誤操作在迴圈中連續呼叫全量評測；每次按下「重跑全部評測」會預扣配額。</p>
+        </div>
+        <div class="notion-card">
+          <p style="margin-top:0;"><strong>目前 Golden 後選</strong>：最多 ${preview.length} 張有效（有明細、啟用中、依品質排序；實際張數受「最多評測張數」表單限制）。${!keyOk ? " <span style=\"color:#c92a2a;\">尚未設定 GOOGLE_GEMINI_API_KEY／GEMINI_API_KEY，無法呼叫 API。</span>" : ""}</p>
+          <form method="post" action="/admin/order-eval/run" style="margin-top:12px;">
+            <label style="display:block;margin:8px 0;">Vision Prompt 版本
+              <select name="prompt_version_id" style="margin-top:4px;min-width:280px;">${pvOpts.join("")}</select>
+            </label>
+            <label style="display:block;margin:8px 0;">模型（留空＝環境變數預設）
+              <select name="model_name" style="margin-top:4px;min-width:280px;">
+                <option value="">（GEMINI_MODEL_VISION／GEMINI_MODEL）</option>
+                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+              </select>
+            </label>
+            <label style="display:block;margin:8px 0;">Few-Shot 策略
+              <select name="few_shot_strategy" style="margin-top:4px;min-width:280px;">
+                <option value="standard">standard（與線上單圖視覺相同 + 動態 Few-Shot）</option>
+                <option value="none">none（無參考範例圖）</option>
+                <option value="explicit">explicit（長前言，同 vision_few_shot 風格）</option>
+              </select>
+            </label>
+            <label style="display:block;margin:8px 0;">Few-Shot 範例數（0–5；standard／explicit 有效）
+              <input type="number" name="example_limit" value="2" min="0" max="5" style="margin-top:4px;width:100px;">
+            </label>
+            <label style="display:block;margin:8px 0;">最多評測張數（1–100）
+              <input type="number" name="max_examples" value="80" min="1" max="100" style="margin-top:4px;width:100px;">
+            </label>
+            <label style="display:block;margin:8px 0;"><input type="checkbox" name="active_only" value="1" checked> 僅啟用中的範例（<code>is_active=1</code>）</label>
+            <label style="display:block;margin:12px 0;"><input type="checkbox" name="confirm" value="1" required> 我了解將對 Golden Set 逐張呼叫 Gemini（可能產生費用與較長等待），並同意預扣今日全量配額一次。</label>
+            <p><button type="submit" class="btn btn-primary" ${!keyOk ? "disabled" : ""}>重跑全部評測</button></p>
+          </form>
+        </div>
+        <div class="notion-card">
+          <h2 style="margin-top:0;">指標說明</h2>
+          <ul style="margin:0;padding-left:1.2em;line-height:1.65;">
+            <li><strong>精確度（micro）</strong>：ΣTP／(ΣTP+ΣFP)，預測列中多少對應到標準品項列。</li>
+            <li><strong>召回率（micro）</strong>：ΣTP／(ΣTP+ΣFN)，標準品項列有多少被預測到（品名規格化後相同算命中）。</li>
+            <li><strong>數量誤差</strong>：命中列之平均 |預測量−標準量|／標準量（標準量為 0 時改絕對差）。</li>
+            <li><strong>單位一致率</strong>：命中列中單位字串（去空白）一致的比例。</li>
+          </ul>
+          <p class="notion-hint" style="margin-bottom:0;">品名比對規則：去空白、小寫、連續空白折疊後完全相同才算同一品項（與潦草異體字仍可能漏配對）。</p>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("訂單圖 Eval 評測", body, "order-eval", res));
+    });
+    router.post("/order-eval/run", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
+        if (req.body.confirm !== "1") {
+            res.redirect(302, "/admin/order-eval?err=confirm");
+            return;
+        }
+        const reserve = await gemini_eval_harness_js_1.reserveFullEvalSlot(db);
+        if (!reserve.ok) {
+            res.redirect(302, "/admin/order-eval?err=quota");
+            return;
+        }
+        const promptVersionId = String(req.body.prompt_version_id || "").trim();
+        const modelName = String(req.body.model_name || "").trim();
+        const fewShotStrategy = String(req.body.few_shot_strategy || "standard").trim();
+        const exampleLimit = Math.min(5, Math.max(0, parseInt(String(req.body.example_limit || "2"), 10) || 2));
+        const maxExamples = Math.min(100, Math.max(1, parseInt(String(req.body.max_examples || "80"), 10) || 80));
+        const activeOnly = req.body.active_only === "1";
+        let result;
+        try {
+            result = await gemini_eval_harness_js_1.runVisionGoldenEval(db, {
+                promptVersionId: promptVersionId || undefined,
+                modelName: modelName || undefined,
+                fewShotStrategy,
+                exampleLimit,
+                maxExamples,
+                activeOnly,
+            });
+        }
+        catch (e) {
+            console.error("[admin] order-eval run", e?.message || e, e?.stack);
+            const bodyErr = `
+            <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/order-eval">Eval</a></div>
+            <h1 class="notion-page-title">評測失敗</h1>
+            <p class="notion-msg err">${escapeHtml(String(e?.message || e).slice(0, 800))}</p>
+            <p><a href="/admin/order-eval" class="btn">返回</a></p>`;
+            res.type("text/html").send(notionPage("Eval 失敗", bodyErr, "order-eval", res));
+            return;
+        }
+        const fmtPct = (x) => x == null || Number.isNaN(Number(x)) ? "—" : `${(100 * Number(x)).toFixed(2)}%`;
+        const fmtFloat = (x) => x == null || Number.isNaN(Number(x)) ? "—" : Number(x).toFixed(4);
+        const rowSlice = result.perImage.slice(0, 80);
+        const perRows = rowSlice
+            .map((r) => `<tr><td><code style="font-size:11px;">${escapeHtml(r.exampleId)}</code></td><td><code>${escapeHtml(r.customerId)}</code></td><td style="text-align:right;">${r.goldLines}</td><td style="text-align:right;">${r.predLines}</td><td style="text-align:right;">${fmtPct(r.precision)}</td><td style="text-align:right;">${fmtPct(r.recall)}</td><td style="text-align:right;">${fmtFloat(r.avgQtyRelErr)}</td><td style="text-align:right;">${fmtPct(r.unitMatchRate)}</td><td>${r.readErr ? escapeHtml(r.readErr) : "—"}</td></tr>`)
+            .join("");
+        const moreHint = result.perImage.length > rowSlice.length
+            ? `<p class="notion-hint">僅顯示前 ${rowSlice.length} 筆，共 ${result.perImage.length} 筆。</p>`
+            : "";
+        const quotaAfter = await gemini_eval_harness_js_1.getEvalQuotaToday(db);
+        const bodyResult = `
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/order-eval">Eval</a></div>
+        <h1 class="notion-page-title">評測結果</h1>
+        <div class="notion-card">
+          <p style="margin-top:0;"><strong>設定</strong>：Prompt 版本 <code>${escapeHtml(result.promptVersionId || "—")}</code> · 模型 ${escapeHtml(result.modelLabel)} · Few-Shot ${escapeHtml(result.fewShotStrategy)} · 範例數 ${result.exampleLimit} · 實際評測 ${result.goldenCount} 張</p>
+          <p><strong>Micro 精確度</strong>：${fmtPct(result.microPrecision)}　<strong>Micro 召回率</strong>：${fmtPct(result.microRecall)}　<strong>平均數量相對誤差</strong>：${fmtFloat(result.microAvgQtyRelErr)}　<strong>單位一致率</strong>：${fmtPct(result.microUnitMatchRate)}</p>
+          <p class="notion-hint" style="margin-bottom:0;">ΣTP=${result.sumTp} ΣFP=${result.sumFp} ΣFN=${result.sumFn} · API／讀圖失敗列≈${result.apiErrors} · 今日剩餘全量次數：${quotaAfter.remaining}</p>
+        </div>
+        <div class="notion-card">
+          <h2 style="margin-top:0;">逐圖摘要</h2>
+          ${moreHint}
+          <div style="overflow:auto;max-height:480px;">
+          <table class="notion-table-like" style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead><tr>
+              <th style="text-align:left;padding:6px;border-bottom:1px solid var(--notion-border);">範例 id</th>
+              <th style="text-align:left;padding:6px;border-bottom:1px solid var(--notion-border);">客戶</th>
+              <th style="text-align:right;padding:6px;border-bottom:1px solid var(--notion-border);">標準列數</th>
+              <th style="text-align:right;padding:6px;border-bottom:1px solid var(--notion-border);">預測列數</th>
+              <th style="text-align:right;padding:6px;border-bottom:1px solid var(--notion-border);">精確度</th>
+              <th style="text-align:right;padding:6px;border-bottom:1px solid var(--notion-border);">召回率</th>
+              <th style="text-align:right;padding:6px;border-bottom:1px solid var(--notion-border);">數量誤差</th>
+              <th style="text-align:right;padding:6px;border-bottom:1px solid var(--notion-border);">單位一致</th>
+              <th style="text-align:left;padding:6px;border-bottom:1px solid var(--notion-border);">錯誤</th>
+            </tr></thead>
+            <tbody>${perRows || "<tr><td colspan=\"9\" class=\"notion-hint\">無資料</td></tr>"}</tbody>
+          </table>
+          </div>
+          <p style="margin-top:16px;"><a href="/admin/order-eval" class="btn btn-primary">再跑一次</a> <a href="/admin/gemini-prompts" class="btn">編輯 Prompt</a></p>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("Eval 結果", bodyResult, "order-eval", res));
+    });
+    router.get("/rhythm", async (req, res) => {
+        const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+        const dateRaw = typeof req.query.date === "string" ? req.query.date.trim() : "";
+        const signalDate = dateRe.test(dateRaw) ? dateRaw : rhythm_analysis_js_1.taipeiTodayIso();
+        let rows = [];
+        try {
+            rows =
+                (await db
+                    .prepare(`SELECT r.signal_type, r.meta_json, r.customer_id, r.product_id,
+               c.name AS customer_name, p.name AS product_name
+        FROM rhythm_daily_signals r
+        LEFT JOIN customers c ON c.id = r.customer_id
+        LEFT JOIN products p ON p.id = r.product_id
+        WHERE r.signal_date = ?
+        ORDER BY r.signal_type, c.name, p.name`)
+                    .all(signalDate)) || [];
+        }
+        catch (e) {
+            console.error("[admin] rhythm list", e?.message || e);
+        }
+        let forecast = null;
+        try {
+            forecast = await rhythm_analysis_js_1.forecastTomorrowCompanyOrders(db);
+        }
+        catch (_) {
+            forecast = null;
+        }
+        let lastJobAt = "";
+        try {
+            const jr = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("rhythm_last_job_at");
+            lastJobAt = jr?.value ? String(jr.value) : "";
+        }
+        catch (_) { /* ignore */ }
+        const typeLabel = (t) => t === "churn_risk"
+            ? "流失風險"
+            : t === "expected_missing"
+                ? "預期應叫（尚未叫）"
+                : escapeHtml(String(t || ""));
+        const tbody = rows.length
+            ? rows
+                .map((r) => {
+                let meta = {};
+                try {
+                    meta = r.meta_json ? JSON.parse(String(r.meta_json)) : {};
+                }
+                catch {
+                    meta = {};
+                }
+                const bits = [
+                    meta.avg_cycle_days != null ? `平均間隔 ${meta.avg_cycle_days} 天` : "",
+                    meta.days_since_last != null ? `距上次 ${meta.days_since_last} 天` : "",
+                    meta.last_order_date ? `最後叫貨日 ${meta.last_order_date}` : "",
+                    meta.weekday_distribution ? String(meta.weekday_distribution).slice(0, 120) : "",
+                ].filter(Boolean);
+                const metaCell = escapeHtml(bits.join(" · "));
+                return `<tr><td>${typeLabel(r.signal_type)}</td><td><a href="/admin/customers/${encodeURIComponent(r.customer_id)}/edit">${escapeHtml(r.customer_name || r.customer_id)}</a></td><td>${escapeHtml(r.product_name || r.product_id)}</td><td style="font-size:13px;">${escapeHtml(meta.reason || "")}</td><td style="font-size:12px;color:var(--notion-text-muted);line-height:1.45;">${metaCell}</td></tr>`;
+            })
+                .join("")
+            : "<tr><td colspan=\"5\" class=\"notion-hint\">尚無紀錄。請執行每日排程或由經理按「立即重算」。</td></tr>";
+        const fcHtml = forecast?.avgOrders != null
+            ? `<p style="margin:0 0 8px;"><strong>明日（${escapeHtml(forecast.weekdayLabel || "")} ${escapeHtml(forecast.tomorrow || "")}）</strong>粗估訂單量：歷史同日平均約 <strong>${escapeHtml(String(forecast.avgOrders))}</strong> 張（樣本 ${forecast.sampleDays} 個曆日，僅供備貨參考）。</p>`
+            : "<p class=\"notion-hint\" style=\"margin:0 0 8px;\">明日訂單量粗估：資料不足。</p>";
+        const flash = req.query.ok === "1"
+            ? "<p class=\"notion-msg ok\">已重算並寫入今日訊號。</p>"
+            : req.query.err === "1"
+                ? "<p class=\"notion-msg err\">重算失敗，請見伺服器日誌。</p>"
+                : "";
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 週期與預期清單</div>
+        <h1 class="notion-page-title">客戶×品項週期分析（零 AI 成本）</h1>
+        ${flash}
+        <p class="notion-hint" style="margin-top:0;">以最近 90 天訂單明細統計：平均叫貨間隔、星期分佈、數量均值／標準差（見最右欄摘要）。每日排程將符合「今日常叫星期 + 已超過平均週期 + 今日尚未叫該品項」者列入<strong>預期應叫</strong>；並另列<strong>流失風險</strong>（過往頻繁卻長時間未叫）。排程請設 <code>POST /api/jobs/rhythm-daily</code>（標頭 <code>X-Rhythm-Job-Secret</code>，與環境變數 <code>RHYTHM_JOB_SECRET</code> 或 <code>LINE_WORKER_SECRET</code> 相同時驗證）。</p>
+        <div class="notion-card">
+          ${fcHtml}
+          <form method="get" action="/admin/rhythm" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;">
+            <label style="margin:0;">日期 <input type="date" name="date" value="${escapeAttr(signalDate)}"></label>
+            <button type="submit" class="btn">檢視</button>
+          </form>
+          <p class="notion-hint" style="margin:0 0 12px;">上次排程完成時間：${lastJobAt ? escapeHtml(lastJobAt) : "—"}（見 <code>app_settings.rhythm_last_job_at</code>）</p>
+          <form method="post" action="/admin/rhythm/run" style="margin-bottom:12px;">
+            <button type="submit" class="btn btn-primary">立即重算今日清單</button>
+            <span class="notion-hint" style="margin-left:8px;">（僅經理）</span>
+          </form>
+          <table class="notion-table-like" style="width:100%;border-collapse:collapse;font-size:14px;">
+            <thead><tr>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid var(--notion-border);">類型</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid var(--notion-border);">客戶</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid var(--notion-border);">品項</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid var(--notion-border);">說明</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid var(--notion-border);">統計摘要（meta）</th>
+            </tr></thead>
+            <tbody>${tbody}</tbody>
+          </table>
+        </div>
+      `;
+        res.type("text/html").send(notionPage("週期與預期清單", body, "rhythm", res));
+    });
+    router.post("/rhythm/run", express_1.default.urlencoded({ extended: true }), requireManager, async (_req, res) => {
+        try {
+            await rhythm_analysis_js_1.runRhythmDailyJob(db);
+            res.redirect(302, "/admin/rhythm?ok=1");
+        }
+        catch (e) {
+            console.error("[admin] rhythm run", e?.message || e);
+            res.redirect(302, "/admin/rhythm?err=1");
+        }
     });
     router.get("/inventory", async (req, res) => {
         const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
@@ -2216,6 +2849,7 @@ function createAdminRouter() {
                 <div id="orderCustomerPicker" style="position:relative;min-width:260px;max-width:min(360px,92vw);">
                   <input type="text" id="orderCustomerSearch" placeholder="輸入客戶名稱搜尋…" autocomplete="off" style="width:100%;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:var(--notion-radius);font-size:14px;box-sizing:border-box;">
                   <input type="hidden" name="customer_id" id="orderCustomerId" value="">
+                  <label style="margin-top:8px;font-size:13px;display:block;">子客戶（選填，圖片辨識歷史品項小抄用）<input type="text" id="subClientIdInput" placeholder="與訂單子客戶欄一致時填" autocomplete="off" style="width:100%;padding:6px 8px;margin-top:4px;box-sizing:border-box;border:1px solid var(--notion-border-strong);border-radius:var(--notion-radius);font-size:14px;"></label>
                   <span id="orderCustomerLabel" class="notion-hint" style="display:block;margin-top:4px;font-size:12px;"></span>
                   <div id="orderCustomerDropdown" style="display:none;position:absolute;left:0;top:100%;margin-top:2px;max-height:220px;overflow:auto;border:1px solid var(--notion-border);background:var(--notion-bg);border-radius:var(--notion-radius);box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:20;width:100%;box-sizing:border-box;"></div>
                 </div>
@@ -2310,6 +2944,8 @@ function createAdminRouter() {
             formData.append('raw_message', text);
             var custEl = document.getElementById('orderCustomerId');
             if (custEl && custEl.value) formData.append('customer_id', custEl.value);
+            var subClientEl = document.getElementById('subClientIdInput');
+            if (subClientEl && subClientEl.value.trim()) formData.append('sub_client_id', subClientEl.value.trim());
             if (file) formData.append('image', file);
             fetch('/admin/api/logistics/recognize', { method: 'POST', body: formData, credentials: 'same-origin' })
               .then(function(r){
@@ -2486,7 +3122,8 @@ function createAdminRouter() {
     router.post("/api/logistics/recognize", uploadImageSafe, async (req, res) => {
         try {
             let rawText = (req.body && req.body.raw_message) ? String(req.body.raw_message).trim() : "";
-            const customerId = (req.body && req.body.customer_id) ? String(req.body.customer_id).trim() || null : null;
+            const customerId = (req.body && (req.body.customer_id || req.body.client_id)) ? String(req.body.customer_id || req.body.client_id).trim() || null : null;
+            const subClientId = (req.body && (req.body.sub_client_id || req.body.subClientId)) ? String(req.body.sub_client_id || req.body.subClientId).trim() || null : null;
             const file = req.file;
             let fallbackUnit = "公斤";
             let geminiHintOpts = undefined;
@@ -2501,17 +3138,26 @@ function createAdminRouter() {
                         hw = (await customer_handwriting_hints_js_1.buildPromptSuffixForCustomerHandwritingHints(db, customerId)) || "";
                     }
                     catch (_) { }
+                    let historyItems = [];
+                    try {
+                        historyItems = await order_history_items_js_1.loadDistinctOrderItemNamesForCustomer(db, customerId, subClientId);
+                    }
+                    catch (he) {
+                        console.warn("[admin] logistics historyItems:", he?.message || he);
+                    }
                     geminiHintOpts = {
                         ...(hw ? { extraPromptSuffix: hw } : {}),
                         ...(knownSub ? { knownSubCustomers: knownSub } : {}),
+                        db,
+                        customerId,
                     };
-                    if (Object.keys(geminiHintOpts).length === 0)
-                        geminiHintOpts = undefined;
                     geminiImageOpts = {
                         ...(hw ? { extraPromptSuffix: hw } : {}),
                         ...(knownSub ? { knownSubCustomers: knownSub } : {}),
                         db,
                         customerId,
+                        historyItems,
+                        ...(subClientId ? { subClientId } : {}),
                     };
                 }
                 catch (_) { }
@@ -3245,7 +3891,9 @@ function createAdminRouter() {
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count,
         0 AS non_kg_count,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND (oi.include_export IS NULL OR oi.include_export = 1)) AS export_item_count,
-        o.sheet_exported_at, o.lingyue_exported_at
+        o.sheet_exported_at, o.lingyue_exported_at,
+        o.raw_message AS source_raw_message,
+        (SELECT COUNT(*) FROM order_attachments oa WHERE oa.order_id = o.id) AS source_attachment_count
       FROM orders o
       JOIN customers c ON c.id = o.customer_id
       WHERE o.order_date >= ? AND o.order_date <= ? AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
@@ -3359,6 +4007,31 @@ function createAdminRouter() {
                 }
                 return `<div class="order-status-icons">${pieces.join("")}</div>`;
             };
+            /** LINE 訂單：raw 含非「[圖片]」行視為文字來源；order_attachments 有一筆以上視為圖片來源 */
+            const buildOrderSourceIcons = (o) => {
+                if (o.is_logistics)
+                    return "";
+                let hasText = false;
+                const raw = o.source_raw_message;
+                if (raw != null && String(raw).trim() !== "") {
+                    for (const line of String(raw).split(/\r?\n/)) {
+                        const t = line.trim();
+                        if (t && t !== "[圖片]") {
+                            hasText = true;
+                            break;
+                        }
+                    }
+                }
+                const hasImg = (o.source_attachment_count ?? 0) > 0;
+                if (!hasText && !hasImg)
+                    return "";
+                const parts = [];
+                if (hasText)
+                    parts.push(`<span class="order-src-icon order-src-t" title="含文字叫貨">字</span>`);
+                if (hasImg)
+                    parts.push(`<span class="order-src-icon order-src-i" title="含圖片叫貨">圖</span>`);
+                return `<span class="order-src-icons">${parts.join("")}</span>`;
+            };
             const rows = orders
                 .map((o, idx) => {
                 const n = o.need_review_count ?? 0;
@@ -3366,9 +4039,10 @@ function createAdminRouter() {
                 const labels = labelByOrder.get(o.id) || [];
                 const preview = labels.slice(0, 4).join("、");
                 const previewShort = preview.length > 72 ? preview.slice(0, 72) + "…" : preview;
+                const srcIcons = buildOrderSourceIcons(o);
                 const infoHtml = cnt > 0
-                    ? `<span>${cnt} 筆品項</span>${previewShort ? `<span class="notion-hint" style="display:block;margin-top:4px;font-size:12px;">${escapeHtml(previewShort)}</span>` : ""}${n > 0 ? `<span style="color:#c00;font-size:12px;display:block;margin-top:2px;">${n} 項待確認</span>` : ""}`
-                    : `<span class="notion-hint">無品項</span>`;
+                    ? `<span style="display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;max-width:100%;">${srcIcons}<span>${cnt} 筆品項</span></span>${previewShort ? `<span class="notion-hint" style="display:block;margin-top:4px;font-size:12px;">${escapeHtml(previewShort)}</span>` : ""}${n > 0 ? `<span style="color:#c00;font-size:12px;display:block;margin-top:2px;">${n} 項待確認</span>` : ""}`
+                    : `${srcIcons ? `<span style="display:block;margin-bottom:4px;">${srcIcons}</span>` : ""}<span class="notion-hint">無品項</span>`;
                 const custDisp = o.customer_name || "未選客戶";
                 const custLink = o.customer_id
                     ? `<a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders">${escapeHtml(o.customer_name)}</a>`
@@ -3452,12 +4126,19 @@ function createAdminRouter() {
           </div>
         </details>
         <div class="notion-card">
-          <h2 style="margin-top:0;display:flex;align-items:center;flex-wrap:wrap;">訂單列表<span class="admin-info-icon" title="勾選訂單後，可批次刪除、下載揀貨單（含條碼）。凌越 Excel：多筆合併為同一檔案（表頭一列），依訂單日期／編號排序；一次勾選過多若下載失敗請分批。" tabindex="0">i</span></h2>
+          <h2 style="margin-top:0;display:flex;align-items:center;flex-wrap:wrap;">訂單列表<span class="admin-info-icon" title="勾選訂單後，可批次刪除、下載揀貨單（含條碼，已改 POST 傳送 ID，避免網址過長）。凌越 Excel：多筆合併為同一檔案（表頭一列），依訂單日期／編號排序；一次勾選過多若下載失敗請分批。" tabindex="0">i</span></h2>
           <p style="margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:center;gap:12px;">
             <label style="margin:0;display:flex;align-items:center;gap:6px;font-size:14px;">貨單編號 <input type="search" id="orderFilterOrderNo" placeholder="篩選列表內" autocomplete="off" style="width:min(200px, 50vw);padding:6px 8px;border:1px solid var(--notion-border-strong);border-radius:var(--notion-radius);font-size:14px;"></label>
             <label style="margin:0;display:flex;align-items:center;gap:6px;font-size:14px;">客戶 <input type="search" id="orderFilterCustomer" placeholder="篩選列表內" autocomplete="off" style="width:min(200px, 50vw);padding:6px 8px;border:1px solid var(--notion-border-strong);border-radius:var(--notion-radius);font-size:14px;"></label>
           </p>
-          <p class="notion-hint" style="margin-top:0;margin-bottom:10px;">狀態圖示：<span class="osi osi-approve" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">✓</span> 已確認、<span class="osi osi-warn" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">!</span> 待確認、<span class="osi osi-sheet" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">🖨</span> 已匯出揀貨單、<span class="osi osi-xlsx" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">▦</span> 已匯出凌越。</p>
+          <style>
+            .order-src-icons{display:inline-flex;align-items:center;gap:4px;flex-shrink:0;margin-right:2px;}
+            .order-src-icon{font-size:10px;line-height:1.2;padding:2px 5px;border-radius:4px;font-weight:600;border:1px solid var(--notion-border);letter-spacing:0.02em;}
+            .order-src-t{background:#e8f4fc;color:#0369a1;border-color:#93c5fd;}
+            .order-src-i{background:#faf5ff;color:#7e22ce;border-color:#d8b4fe;}
+          </style>
+          <p class="notion-hint" style="margin-top:0;margin-bottom:10px;">狀態圖示：<span class="osi osi-approve" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">✓</span> 已確認、<span class="osi osi-warn" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">!</span> 待確認、<span class="osi osi-sheet" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">🖨</span> 已匯出揀貨單、<span class="osi osi-xlsx" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">▦</span> 已匯出凌越。<br>
+          來源標籤（LINE）：<span class="order-src-icon order-src-t">字</span> 原始對話含文字叫貨、<span class="order-src-icon order-src-i">圖</span> 曾附圖片；兩者皆有則並列。（紙本後台訂單不顯示）</p>
           <form id="batchOrderActionsForm" method="post" action="/admin/orders/batch-delete" style="margin-bottom:12px;">
           <p style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
             <button type="button" class="btn" id="orderSelectAll">全選</button>
@@ -3499,9 +4180,20 @@ function createAdminRouter() {
             function openBatch(kind){
               var ids = selectedIds();
               if (!ids.length) { alert("請先勾選訂單"); return; }
-              var q = ids.map(encodeURIComponent).join(",");
               if (kind === "sheet") {
-                window.location.href = "/admin/orders/batch-order-sheet?ids=" + q;
+                var formSheet = document.createElement("form");
+                formSheet.method = "post";
+                formSheet.action = "/admin/orders/batch-order-sheet";
+                ids.forEach(function(id){
+                  var inp = document.createElement("input");
+                  inp.type = "hidden";
+                  inp.name = "order_ids";
+                  inp.value = id;
+                  formSheet.appendChild(inp);
+                });
+                document.body.appendChild(formSheet);
+                formSheet.submit();
+                document.body.removeChild(formSheet);
                 return;
               }
               /* 凌越：一律 POST，避免 GET 網址過長被瀏覽器／Proxy／Cloud Run 截斷導致匯出失敗 */
@@ -3748,9 +4440,10 @@ function createAdminRouter() {
     router.get("/api/products-search", async (req, res) => {
         const q = (req.query.q || "").trim().toLowerCase();
         const activeOnly = req.query.active === "1";
-        let list = await db.prepare(activeOnly
+        const fullList = await db.prepare(activeOnly
             ? "SELECT id, name, erp_code, teraoka_barcode FROM products WHERE (active IS NULL OR active = 1) ORDER BY name"
             : "SELECT id, name, erp_code, teraoka_barcode FROM products ORDER BY name").all();
+        let list = fullList || [];
         if (q) {
             const parts = q.split(/\s+/).filter(Boolean);
             let filtered = list.filter((p) => {
@@ -3767,7 +4460,18 @@ function createAdminRouter() {
                     const all = name + " " + erp + " " + teraoka;
                     return parts.some((part) => all.includes(part));
                 });
-            list = filtered;
+            if (filtered.length > 0) {
+                filtered.sort((a, b) => fuzzyProductScore(b, q) - fuzzyProductScore(a, q));
+                list = filtered;
+            }
+            else {
+                const scored = list
+                    .map((p) => ({ p, s: fuzzyProductScore(p, q) }))
+                    .filter((x) => x.s >= 650)
+                    .sort((a, b) => b.s - a.s)
+                    .map((x) => x.p);
+                list = scored;
+            }
         }
         res.json(list.slice(0, 80));
     });
@@ -3815,8 +4519,21 @@ function createAdminRouter() {
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=product#items");
             return;
         }
-        const item = await db.prepare("SELECT raw_name FROM order_items WHERE id = ? AND order_id = ?").get(itemId, orderId);
+        const item = await db.prepare("SELECT raw_name, product_id AS prev_product_id FROM order_items WHERE id = ? AND order_id = ?").get(itemId, orderId);
         await db.prepare("UPDATE order_items SET product_id = ?, need_review = 0 WHERE id = ? AND order_id = ?").run(productId, itemId, orderId);
+        await logDataChange(req, {
+            entityType: "order_item_product",
+            entityId: itemId,
+            productId,
+            action: "set_product",
+            summary: `後台將訂單明細改對應品項（${(item?.raw_name || "").trim().slice(0, 40) || itemId}）`,
+            meta: {
+                order_id: orderId,
+                customer_id: order.customer_id,
+                old_product_id: item?.prev_product_id ?? null,
+                new_product_id: productId,
+            },
+        });
         const rawNameTrim = item?.raw_name?.trim();
         if (rawNameTrim) {
             const existing = await db.prepare("SELECT id FROM product_aliases WHERE alias = ?").get(rawNameTrim);
@@ -3890,9 +4607,19 @@ function createAdminRouter() {
         }
         res.redirect("/admin/orders?ok=approved");
     });
-    router.get("/orders/batch-order-sheet", async (req, res) => {
-        const raw = (req.query.ids || "").toString();
-        const ids = raw.split(/[,，]/).map((s) => s.trim()).filter(Boolean).slice(0, 50);
+    /** 合併揀貨單 HTML；GET／POST 共用。一次最多 50 筆訂單。 */
+    async function sendBatchOrderSheetHtml(res, inputIds) {
+        const seen = new Set();
+        const ids = [];
+        for (const x of inputIds || []) {
+            const id = String(x || "").trim();
+            if (!id || seen.has(id))
+                continue;
+            seen.add(id);
+            ids.push(id);
+            if (ids.length >= 50)
+                break;
+        }
         if (!ids.length) {
             res.status(400).type("text/html").send("<!DOCTYPE html><html><body><p>請先勾選訂單。</p><a href=\"/admin/orders\">回訂單查詢</a></body></html>");
             return;
@@ -3999,6 +4726,24 @@ function createAdminRouter() {
         const dlName = `${meta.date}_${safeCustomer}_${seq}_揀貨單.html`;
         res.setHeader("Content-Disposition", "attachment; filename=\"" + dlName + "\"");
         res.type("text/html").send(notionPage("合併揀貨單", sheetBody, "", res));
+    }
+    router.get("/orders/batch-order-sheet", async (req, res) => {
+        const raw = (req.query.ids || "").toString();
+        const ids = raw.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+        await sendBatchOrderSheetHtml(res, ids);
+    });
+    /** POST：與凌越 Excel 相同，避免 GET 網址過長被瀏覽器／Proxy／Cloud Run 截斷而回傳 502／503。 */
+    router.post("/orders/batch-order-sheet", express_1.default.urlencoded({ extended: true, limit: "2mb" }), async (req, res) => {
+        let ids = req.body.order_ids;
+        if (ids == null)
+            ids = [];
+        if (!Array.isArray(ids))
+            ids = [ids];
+        ids = ids.map((x) => String(x).trim()).filter(Boolean);
+        if (!ids.length && typeof req.body.ids === "string") {
+            ids = req.body.ids.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+        }
+        await sendBatchOrderSheetHtml(res, ids);
     });
     /** 凌越 Excel 儲存格：避免 null／不可列印字元導致 xlsx 寫入失敗 */
     function cellForLingyueXlsx(v) {
@@ -4207,7 +4952,7 @@ function createAdminRouter() {
             ? req.query.back
             : "/admin/orders?date_from=" + encodeURIComponent(getTaipeiCalendarDateYYYYMMDD()) + "&date_to=" + encodeURIComponent(getTaipeiCalendarDateYYYYMMDD());
         const order = await db.prepare(`
-      SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code
+      SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code, c.known_sub_customers
       FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
         if (!order) {
@@ -4262,6 +5007,7 @@ function createAdminRouter() {
             const rowClasses = i.need_review === 1 ? "order-item-need-review" : "";
             const rawCard = `${idx + 1}. 原始：${String(i.raw_name ?? "").trim() || "—"} ${String(q)}${(i.unit && i.unit.trim()) || ""}`;
             return `<tr data-item-id="${escapeAttr(i.item_id)}" data-raw-name="${escapeAttr(i.raw_name ?? "")}" data-line-unit="${escapeAttr((i.unit && i.unit.trim()) || "")}" data-raw-card="${escapeAttr(rawCard)}" class="${escapeAttr(rowClasses)}">
+            <td class="order-detail-col-cb"><input type="checkbox" class="item-select-cb" name="selected_items" value="${escapeAttr(i.item_id)}"></td>
             <td class="order-detail-col-sort">
               <span class="item-sort-stack">
                 <button type="button" class="btn btn-move-up" title="上移">↑</button>
@@ -4279,6 +5025,23 @@ function createAdminRouter() {
           </tr>`;
         })
             .join("");
+        const subCustomerLabels = parseKnownSubCustomerLabelsForSelect(order.known_sub_customers);
+        const subCustomerSelectOpts = [
+            `<option value="">主客戶（未分拆／預設）</option>`,
+            ...subCustomerLabels.map((l) => `<option value="${escapeAttr(l)}">${escapeHtml(l)}</option>`),
+            `<option value="__custom__">自訂名稱…</option>`,
+        ].join("");
+        const batchMoveBarHtml = `
+            <div class="order-batch-move-bar" style="margin:0 0 12px;padding:10px 12px;background:var(--notion-sidebar);border-radius:6px;border:1px solid var(--notion-border);display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+              <span style="font-weight:600;font-size:13px;">手動拆併單</span>
+              <label style="margin:0;display:flex;align-items:center;gap:6px;font-size:13px;">
+                <span>目標子客戶</span>
+                <select id="target_sub_customer" style="min-width:11rem;padding:4px 8px;">${subCustomerSelectOpts}</select>
+              </label>
+              <input type="text" id="target_sub_customer_custom" placeholder="選「自訂」或額外輸入正式名稱" style="min-width:12rem;max-width:20rem;padding:4px 8px;" />
+              <button type="button" id="btn_move_items" class="btn btn-primary">轉移選取品項</button>
+              <span id="move_items_status" style="font-size:12px;color:var(--notion-text-secondary);"></span>
+            </div>`;
         const orderStatusLc = String(order.status || "").toLowerCase();
         const orderStatusDisplay = orderStatusLc === "approved" ? "已確認" : orderStatusLc === "pending" ? "待確認" : orderStatusLc === "deleted" ? "已刪除" : escapeHtml(String(order.status || ""));
         const confirmOrderFormHtml = orderStatusLc === "approved"
@@ -4296,7 +5059,11 @@ function createAdminRouter() {
         ${req.query.ok === "rerecog" ? "<p class=\"notion-msg ok\">已重新辨識明細。</p>" : ""}
         ${req.query.ok === "raw_applied" ? "<p class=\"notion-msg ok\">已補登並解析。</p>" : ""}
         ${req.query.err === "product" ? "<p class=\"notion-msg err\">請選擇有效品項。</p>" : ""}
-        ${req.query.err === "rerecog" ? "<p class=\"notion-msg err\">重新辨識失敗：無法從文字或圖片解析出品項。圖片訂單請確認已設定 LINE_CHANNEL_ACCESS_TOKEN，並至少設定 GOOGLE_CLOUD_VISION_API_KEY 或 GOOGLE_GEMINI_API_KEY／GEMINI_API_KEY。</p>" : ""}
+        ${req.query.err === "rerecog" ? "<p class=\"notion-msg err\">重新辨識失敗：無法解析出品項（原因未細分）。若含圖片請確認 LINE_TOKEN 與 Vision／Gemini 金鑰；純文字請確認已設定 Gemini 金鑰且「原始訂單文字」有內容。</p>" : ""}
+        ${req.query.err === "rerecog_empty" ? "<p class=\"notion-msg err\">重新辨識失敗：此訂單沒有可解析的<strong>原始文字</strong>（略過 [圖片] 後為空），也無附件。請在明細上方「補登／覆寫原始訂單文字」貼上叫貨內容後再試。</p>" : ""}
+        ${req.query.err === "rerecog_gemini" ? "<p class=\"notion-msg err\">重新辨識失敗：<strong>純文字</strong>叫貨須設定 <code>GOOGLE_GEMINI_API_KEY</code> 或 <code>GEMINI_API_KEY</code>（Cloud Run 環境變數）。請在部署設定中補上後再試。</p>" : ""}
+        ${req.query.err === "rerecog_gemini_empty" ? "<p class=\"notion-msg err\">重新辨識失敗：已設定 Gemini，但未解析出任何品項（可能原文格式不易辨識、API 暫時失敗、429 配額，或 <strong>AI Studio 每月支出上限</strong> 已滿）。請查看 Cloud Run Logs 是否出現 spending cap／429；必要時至 <a href=\"https://ai.studio/spend\" target=\"_blank\" rel=\"noopener\">ai.studio/spend</a> 調高額度。</p>" : ""}
+        ${req.query.err === "rerecog_split" ? "<p class=\"notion-msg err\">重新辨識失敗：此訂單為子客戶拆單，解析結果中沒有對應子客戶的品項。請檢查叫貨內容或子客戶設定。</p>" : ""}
         ${req.query.err === "rerecog_line" ? "<p class=\"notion-msg err\">重新辨識失敗：訂單有圖片附件，但未設定 LINE_CHANNEL_ACCESS_TOKEN，無法向 LINE 取回圖片。</p>" : ""}
         ${req.query.err === "rerecog_vision" ? "<p class=\"notion-msg err\">重新辨識失敗：有圖片附件但無法辨識。請設定 Cloud Vision 或 Gemini API 金鑰。</p>" : ""}
         ${req.query.err === "apply_raw_empty" ? "<p class=\"notion-msg err\">請貼上內容後再送出。</p>" : ""}
@@ -4348,10 +5115,11 @@ function createAdminRouter() {
               <button type="submit" class="btn btn-cute-save" id="itemsSaveBtnTop" title="儲存數量、單位、備註與排序">儲存明細</button>
             </p>
             <p class="order-legend"><span class="order-legend-swatch sw-need"></span>待確認</p>
+            ${batchMoveBarHtml}
             <div class="table-scroll-mobile"><table class="order-detail-table" style="font-size:12px;">
-              <thead><tr><th class="order-detail-th-sort" title="順序（上移／下移）"></th><th class="order-detail-th-idx">項次</th><th class="order-table-col-system">料號</th><th>品名</th><th>子客戶/分店</th><th style="width:3.5rem;">數量</th><th>單位</th><th>備註</th><th style="width:2.75rem;">刪除</th></tr></thead>
+              <thead><tr><th style="width:2.25rem;"><input type="checkbox" id="select_all_items" title="全選"></th><th class="order-detail-th-sort" title="順序（上移／下移）"></th><th class="order-detail-th-idx">項次</th><th class="order-table-col-system">料號</th><th>品名</th><th>子客戶/分店</th><th style="width:3.5rem;">數量</th><th>單位</th><th>備註</th><th style="width:2.75rem;">刪除</th></tr></thead>
               <tbody>${itemsRows}</tbody>
-              <tr><td colspan="9" style="background:var(--notion-sidebar);padding:6px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="btn">＋ 增加品項</a></td></tr>
+              <tr><td colspan="10" style="background:var(--notion-sidebar);padding:6px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="btn">＋ 增加品項</a></td></tr>
             </table></div>
             <p style="margin:10px 0 0;"><button type="submit" class="btn btn-cute-save" title="儲存數量、單位、備註與排序">儲存明細</button></p>
           </div>
@@ -4475,7 +5243,7 @@ function createAdminRouter() {
                   var pid = (data.productId || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
                   var pnm = (data.productName || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                   var namePart = pid ? ('<a href="#" class="product-name-edit" data-product-id="' + pid + '" title="編輯此品項（俗名、單位等）">' + pnm + '</a>') : pnm;
-                  if (tr && tr.cells[3]) tr.cells[3].innerHTML = namePart + ' <a href="#" class="product-pick product-change" data-item-id="' + currentItemId.replace(/"/g, '&quot;') + '">改品項</a>';
+                  if (tr && tr.cells[4]) tr.cells[4].innerHTML = namePart + ' <a href="#" class="product-pick product-change" data-item-id="' + currentItemId.replace(/"/g, '&quot;') + '">改品項</a>';
                 } else { alert(data && data.error ? data.error : '更新失敗'); }
               })
               .catch(function(){ alert('請求失敗'); });
@@ -4520,6 +5288,7 @@ function createAdminRouter() {
               var origText = btn ? btn.textContent : '';
               if (btn) { btn.disabled = true; btn.textContent = '儲存中…'; }
               var formData = new FormData(itemsForm);
+              formData.delete("selected_items");
               var params = new URLSearchParams(formData);
               var seq = 1;
               itemsForm.querySelectorAll('tbody tr[data-item-id]').forEach(function(tr){
@@ -4583,6 +5352,57 @@ function createAdminRouter() {
             var h = (window.location.hash || '').replace(/^#/, '');
             if (h === 'pasteRaw' || /err=apply_raw/.test(qs)) setPasteOpen(true);
           }
+          var selAllItems = document.getElementById('select_all_items');
+          if (selAllItems) {
+            selAllItems.addEventListener('change', function(){
+              document.querySelectorAll('tbody .item-select-cb').forEach(function(cb){ cb.checked = selAllItems.checked; });
+            });
+          }
+          var btnMoveItems = document.getElementById('btn_move_items');
+          if (btnMoveItems) {
+            btnMoveItems.addEventListener('click', function(){
+              var ids = [];
+              document.querySelectorAll('tbody .item-select-cb:checked').forEach(function(cb){ ids.push(cb.value); });
+              var sel = document.getElementById('target_sub_customer');
+              var custom = document.getElementById('target_sub_customer_custom');
+              var customVal = (custom && custom.value.trim()) ? custom.value.trim() : '';
+              var targetName = '';
+              if (customVal) {
+                targetName = customVal;
+              } else if (sel) {
+                if (sel.value === '__custom__') {
+                  alert('請在下方輸入框填寫目標子客戶正式名稱。');
+                  return;
+                }
+                targetName = sel.value || '';
+              }
+              if (!ids.length) { alert('請至少勾選一筆品項。'); return; }
+              var st = document.getElementById('move_items_status');
+              if (st) st.textContent = '處理中…';
+              btnMoveItems.disabled = true;
+              fetch('/admin/api/orders/' + encodeURIComponent(orderId) + '/move-items', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ itemIds: ids, targetSubCustomer: targetName })
+              })
+                .then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); })
+                .then(function(x){
+                  btnMoveItems.disabled = false;
+                  if (st) st.textContent = '';
+                  if (x.ok && x.j && x.j.ok) {
+                    window.location.reload();
+                    return;
+                  }
+                  alert(x.j && x.j.error ? x.j.error : '轉移失敗');
+                })
+                .catch(function(){
+                  btnMoveItems.disabled = false;
+                  if (st) st.textContent = '';
+                  alert('請求失敗');
+                });
+            });
+          }
         })();
         </script>
       `;
@@ -4635,7 +5455,21 @@ function createAdminRouter() {
             const attachments = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(orderId);
             const result = await rebuildOrderItemsForReRecognize(orderId, order.customer_id, order.raw_message, attachments);
             if (!result.ok) {
-                redirErr(result.error === "line_token" ? "rerecog_line" : result.error === "no_vision" ? "rerecog_vision" : "rerecog");
+                const err = result.error;
+                const code = err === "line_token"
+                    ? "rerecog_line"
+                    : err === "no_vision"
+                        ? "rerecog_vision"
+                        : err === "empty_source"
+                            ? "rerecog_empty"
+                            : err === "no_gemini_key"
+                                ? "rerecog_gemini"
+                                : err === "gemini_empty"
+                                    ? "rerecog_gemini_empty"
+                                    : err === "split_no_match"
+                                        ? "rerecog_split"
+                                        : "rerecog";
+                redirErr(code);
                 return;
             }
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=rerecog&back=" + encodeURIComponent(backTo) + "#items");
@@ -4717,6 +5551,265 @@ function createAdminRouter() {
             res.status(500).json({ ok: false, error: msg.slice(0, 800), message: msg.slice(0, 800) });
         }
     });
+    /** 手動將勾選品項轉移至同客戶／同送貨日之目標子客戶訂單（找不到則新建並複製 raw、附件） */
+    router.post("/api/orders/:orderId/move-items", express_1.default.json(), async (req, res) => {
+        try {
+            const { orderId } = req.params;
+            const rawIds = req.body?.itemIds;
+            const itemIds = Array.isArray(rawIds)
+                ? [...new Set(rawIds.map((x) => String(x).trim()).filter(Boolean))]
+                : [];
+            const targetSubCustomer = req.body?.targetSubCustomer != null ? String(req.body.targetSubCustomer).trim() : "";
+            if (!itemIds.length) {
+                res.status(400).json({ ok: false, error: "請選擇至少一筆品項" });
+                return;
+            }
+            const sourceOrder = await db.prepare(`
+        SELECT o.id, o.customer_id, o.order_date, o.raw_message, o.line_group_id, o.remark, o.order_sub_split_key
+        FROM orders o WHERE o.id = ?
+      `).get(orderId);
+            if (!sourceOrder) {
+                res.status(404).json({ ok: false, error: "訂單不存在" });
+                return;
+            }
+            const phCheck = itemIds.map(() => "?").join(",");
+            const belong = await db.prepare(`SELECT id FROM order_items WHERE order_id = ? AND id IN (${phCheck})`).all(orderId, ...itemIds);
+            if (belong.length !== itemIds.length) {
+                res.status(400).json({ ok: false, error: "部分品項不存在或不屬於此訂單" });
+                return;
+            }
+            const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+            const subVal = targetSubCustomer === "" ? null : targetSubCustomer;
+            let targetOrderId = null;
+            if (targetSubCustomer === "") {
+                const row = await db.prepare(`
+          SELECT id FROM orders
+          WHERE customer_id = ? AND order_date = ?
+          AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key, '')) = '')
+          ORDER BY id ASC LIMIT 1
+        `).get(sourceOrder.customer_id, sourceOrder.order_date);
+                targetOrderId = row?.id ?? null;
+            }
+            else {
+                const row = await db.prepare(`
+          SELECT id FROM orders
+          WHERE customer_id = ? AND order_date = ?
+          AND TRIM(order_sub_split_key) = ?
+          ORDER BY id ASC LIMIT 1
+        `).get(sourceOrder.customer_id, sourceOrder.order_date, targetSubCustomer);
+                targetOrderId = row?.id ?? null;
+            }
+            if (!targetOrderId) {
+                const newOid = (0, id_js_1.newId)("ord");
+                const orderNo = await getNextOrderNoAdmin(db, sourceOrder.order_date);
+                const remarkNew = targetSubCustomer ? `[子單拆分: ${targetSubCustomer}]` : null;
+                const splitKeyNew = targetSubCustomer ? targetSubCustomer : null;
+                await db.prepare(`
+          INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, line_message_id, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ` + nowSql + `)
+        `).run(newOid, orderNo, sourceOrder.customer_id, sourceOrder.order_date, sourceOrder.line_group_id ?? null, sourceOrder.raw_message ?? "", remarkNew, splitKeyNew);
+                const attRows = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ?").all(orderId);
+                for (const ar of attRows) {
+                    if (!ar?.line_message_id)
+                        continue;
+                    const attId = (0, id_js_1.newId)("att");
+                    await db.prepare(`INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, ` + nowSql + `)`).run(attId, newOid, ar.line_message_id);
+                }
+                targetOrderId = newOid;
+            }
+            const phUp = itemIds.map(() => "?").join(",");
+            if (targetOrderId === orderId) {
+                await db.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
+            }
+            else {
+                await db.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(targetOrderId, subVal, orderId, ...itemIds);
+            }
+            res.json({ ok: true, targetOrderId });
+        }
+        catch (e) {
+            console.error("[admin] move-items", e?.message || e, e?.stack);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 400) });
+        }
+    });
+    router.get("/gemini-prompts", async (req, res) => {
+        await gemini_prompt_resolve_js_1.ensureSeedPromptVersions(db);
+        const SK = gemini_prompt_resolve_js_1.SETTINGS_KEYS;
+        async function gv(k) {
+            const r = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(k);
+            return r?.value != null ? String(r.value).trim() : "";
+        }
+        const liveText = await gv(SK.KEY_TEXT_LIVE);
+        const liveVision = await gv(SK.KEY_VISION_LIVE);
+        const abTextId = await gv(SK.KEY_TEXT_AB);
+        const abTextPct = (await gv(SK.KEY_TEXT_AB_PCT)) || "0";
+        const abVisId = await gv(SK.KEY_VISION_AB);
+        const abVisPct = (await gv(SK.KEY_VISION_AB_PCT)) || "0";
+        let textRows = [];
+        let visionRows = [];
+        try {
+            textRows = (await db.prepare("SELECT id, label, notes, updated_at FROM prompt_versions WHERE slot = 'text' ORDER BY updated_at DESC").all()) || [];
+            visionRows = (await db.prepare("SELECT id, label, notes, updated_at FROM prompt_versions WHERE slot = 'vision' ORDER BY updated_at DESC").all()) || [];
+        }
+        catch (e) {
+            console.error("[admin] gemini-prompts list", e);
+        }
+        const editId = typeof req.query.edit === "string" ? req.query.edit.trim() : "";
+        let editRow = null;
+        if (editId) {
+            editRow = await db.prepare("SELECT id, slot, label, body, notes FROM prompt_versions WHERE id = ?").get(editId);
+        }
+        const msg = req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存。</p>"
+            : req.query.ok === "live" ? "<p class=\"notion-msg ok\">已更新線上版本。</p>"
+                : req.query.ok === "dup" ? "<p class=\"notion-msg ok\">已複製新版本。</p>"
+                    : req.query.ok === "ab" ? "<p class=\"notion-msg ok\">已更新 A/B 設定（快取已清除）。</p>"
+                        : "";
+        const err = req.query.err === "1" ? "<p class=\"notion-msg err\">操作失敗。</p>" : "";
+        const rowHtml = (rows, liveId, slot) => (rows || []).map((r) => {
+            const isLive = r.id === liveId;
+            return `<tr><td><code style="font-size:11px;">${escapeHtml(r.id)}</code></td><td>${escapeHtml(r.label || "")}</td><td>${escapeHtml(String(r.updated_at || "—"))}</td><td>${isLive ? "<strong>線上</strong>" : "—"}</td><td style="white-space:normal;"><a href="/admin/gemini-prompts?edit=${encodeURIComponent(r.id)}" class="btn">編輯</a> <form method="post" action="/admin/gemini-prompts/set-live" style="display:inline;"><input type="hidden" name="slot" value="${escapeAttr(slot)}"><input type="hidden" name="version_id" value="${escapeAttr(r.id)}"><button type="submit" class="btn">設為線上</button></form> <form method="post" action="/admin/gemini-prompts/duplicate" style="display:inline;" onsubmit="return confirm('複製此版本為新草稿？');"><input type="hidden" name="slot" value="${escapeAttr(slot)}"><input type="hidden" name="from_id" value="${escapeAttr(r.id)}"><button type="submit" class="btn">複製新建</button></form></td></tr>`;
+        }).join("");
+        const editForm = editRow ? `
+        <div class="notion-card" style="margin-top:16px;">
+          <h2 style="margin-top:0;">編輯版本</h2>
+          <form method="post" action="/admin/gemini-prompts/save-version">
+            <input type="hidden" name="id" value="${escapeAttr(editRow.id)}">
+            <label>標籤 <input type="text" name="label" value="${escapeAttr(editRow.label || "")}" style="width:100%;max-width:420px;"></label>
+            <label style="display:block;margin-top:12px;">備註 <input type="text" name="notes" value="${escapeAttr(editRow.notes || "")}" style="width:100%;max-width:520px;"></label>
+            <label style="display:block;margin-top:12px;">System instruction 全文<br><textarea name="body" rows="24" style="width:100%;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.45;">${escapeHtml(editRow.body || "")}</textarea></label>
+            <p><button type="submit" class="btn btn-primary">儲存</button> <a href="/admin/gemini-prompts" class="btn">取消</a></p>
+          </form>
+        </div>` : "";
+        const body = `
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / Gemini Prompt 版本</div>
+        <h1 class="notion-page-title">Gemini Prompt 版本與 A/B</h1>
+        <p class="notion-hint" style="margin-top:0;">文字叫貨與圖像 vision 使用<strong>不同 slot</strong>；均不含子客戶／歷史品項小抄（執行時會自動附加）。儲存或設為線上後會清除快取。配合辨識成效儀表之 <code>gemini_usage_log.prompt_version_id</code> 可比對不同版本。</p>
+        ${msg}${err}
+        <div class="notion-card">
+          <h2 style="margin-top:0;">A/B 分流（可選）</h2>
+          <p class="notion-hint">將<strong>對照版本（B）</strong>依百分比隨機套用。設 B 為空或 0% 則永遠使用線上版。</p>
+          <form method="post" action="/admin/gemini-prompts/ab-settings">
+            <fieldset style="border:1px solid var(--notion-border);border-radius:8px;padding:12px;margin-bottom:12px;">
+              <legend><strong>純文字（text）</strong></legend>
+              <label>B 版本（對照）
+                <select name="text_ab_id" style="display:block;margin-top:6px;max-width:100%;">
+                  <option value="">— 未啟用 B —</option>
+                  ${textRows.map((r) => `<option value="${escapeAttr(r.id)}" ${r.id === abTextId ? "selected" : ""}>${escapeHtml(r.label)} (${escapeHtml(r.id)})</option>`).join("")}
+                </select>
+              </label>
+              <label style="display:block;margin-top:10px;">B 分流百分比（0–100）<input type="number" name="text_ab_pct" min="0" max="100" value="${escapeAttr(abTextPct)}" style="width:100px;"></label>
+            </fieldset>
+            <fieldset style="border:1px solid var(--notion-border);border-radius:8px;padding:12px;margin-bottom:12px;">
+              <legend><strong>圖像／視覺（vision）</strong></legend>
+              <label>B 版本（對照）
+                <select name="vision_ab_id" style="display:block;margin-top:6px;max-width:100%;">
+                  <option value="">— 未啟用 B —</option>
+                  ${visionRows.map((r) => `<option value="${escapeAttr(r.id)}" ${r.id === abVisId ? "selected" : ""}>${escapeHtml(r.label)} (${escapeHtml(r.id)})</option>`).join("")}
+                </select>
+              </label>
+              <label style="display:block;margin-top:10px;">B 分流百分比（0–100）<input type="number" name="vision_ab_pct" min="0" max="100" value="${escapeAttr(abVisPct)}" style="width:100px;"></label>
+            </fieldset>
+            <button type="submit" class="btn btn-primary">儲存 A/B 設定</button>
+          </form>
+        </div>
+        <div class="notion-card">
+          <h2 style="margin-top:0;">文字 Prompt 版本</h2>
+          <p class="notion-hint">線上：<code>${escapeHtml(liveText || "—")}</code></p>
+          <div class="table-scroll-mobile"><table style="font-size:13px;width:100%;"><thead><tr><th>ID</th><th>標籤</th><th>更新</th><th>狀態</th><th>操作</th></tr></thead><tbody>${rowHtml(textRows, liveText, "text") || "<tr><td colspan=\"5\">尚無資料</td></tr>"}</tbody></table></div>
+        </div>
+        <div class="notion-card">
+          <h2 style="margin-top:0;">圖像 Prompt 版本</h2>
+          <p class="notion-hint">線上：<code>${escapeHtml(liveVision || "—")}</code></p>
+          <div class="table-scroll-mobile"><table style="font-size:13px;width:100%;"><thead><tr><th>ID</th><th>標籤</th><th>更新</th><th>狀態</th><th>操作</th></tr></thead><tbody>${rowHtml(visionRows, liveVision, "vision") || "<tr><td colspan=\"5\">尚無資料</td></tr>"}</tbody></table></div>
+        </div>
+        ${editForm}
+      `;
+        res.type("text/html").send(notionPage("Gemini Prompt 版本", body, "gemini-prompts", res));
+    });
+    router.post("/gemini-prompts/set-live", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const slot = String(req.body.slot || "").trim();
+            const vid = String(req.body.version_id || "").trim();
+            if ((slot !== "text" && slot !== "vision") || !vid) {
+                res.redirect("/admin/gemini-prompts?err=1");
+                return;
+            }
+            const row = await db.prepare("SELECT id, slot FROM prompt_versions WHERE id = ?").get(vid);
+            if (!row || row.slot !== slot) {
+                res.redirect("/admin/gemini-prompts?err=1");
+                return;
+            }
+            const SK = gemini_prompt_resolve_js_1.SETTINGS_KEYS;
+            const key = slot === "vision" ? SK.KEY_VISION_LIVE : SK.KEY_TEXT_LIVE;
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(key, vid);
+            gemini_prompt_resolve_js_1.invalidatePromptCache();
+            res.redirect("/admin/gemini-prompts?ok=live");
+        }
+        catch (_e) {
+            res.redirect("/admin/gemini-prompts?err=1");
+        }
+    });
+    router.post("/gemini-prompts/save-version", express_1.default.urlencoded({ extended: true, limit: "4mb" }), async (req, res) => {
+        try {
+            const id = String(req.body.id || "").trim();
+            const label = String(req.body.label || "").trim() || "未命名";
+            const notes = String(req.body.notes || "").trim() || null;
+            const body = String(req.body.body ?? "");
+            if (!id) {
+                res.redirect("/admin/gemini-prompts?err=1");
+                return;
+            }
+            const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+            await db.prepare(`UPDATE prompt_versions SET label = ?, notes = ?, body = ?, updated_at = ${nowSql} WHERE id = ?`).run(label, notes, body, id);
+            gemini_prompt_resolve_js_1.invalidatePromptCache();
+            res.redirect("/admin/gemini-prompts?edit=" + encodeURIComponent(id) + "&ok=1");
+        }
+        catch (_e) {
+            res.redirect("/admin/gemini-prompts?err=1");
+        }
+    });
+    router.post("/gemini-prompts/duplicate", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const slot = String(req.body.slot || "").trim();
+            const fromId = String(req.body.from_id || "").trim();
+            if ((slot !== "text" && slot !== "vision") || !fromId) {
+                res.redirect("/admin/gemini-prompts?err=1");
+                return;
+            }
+            const src = await db.prepare("SELECT body, label FROM prompt_versions WHERE id = ? AND slot = ?").get(fromId, slot);
+            if (!src) {
+                res.redirect("/admin/gemini-prompts?err=1");
+                return;
+            }
+            const newId = (0, id_js_1.newId)("pvp");
+            const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+            const newLabel = (src.label || "") + "（複製）";
+            await db.prepare(`INSERT INTO prompt_versions (id, slot, label, body, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ${nowSql}, ${nowSql})`).run(newId, slot, newLabel, src.body, "由複製建立");
+            gemini_prompt_resolve_js_1.invalidatePromptCache();
+            res.redirect("/admin/gemini-prompts?edit=" + encodeURIComponent(newId) + "&ok=dup");
+        }
+        catch (_e) {
+            res.redirect("/admin/gemini-prompts?err=1");
+        }
+    });
+    router.post("/gemini-prompts/ab-settings", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const SK = gemini_prompt_resolve_js_1.SETTINGS_KEYS;
+            const ta = String(req.body.text_ab_id || "").trim();
+            const tp = String(Math.min(100, Math.max(0, parseInt(String(req.body.text_ab_pct || "0"), 10) || 0)));
+            const va = String(req.body.vision_ab_id || "").trim();
+            const vp = String(Math.min(100, Math.max(0, parseInt(String(req.body.vision_ab_pct || "0"), 10) || 0)));
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(SK.KEY_TEXT_AB, ta);
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(SK.KEY_TEXT_AB_PCT, tp);
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(SK.KEY_VISION_AB, va);
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(SK.KEY_VISION_AB_PCT, vp);
+            gemini_prompt_resolve_js_1.invalidatePromptCache();
+            res.redirect("/admin/gemini-prompts?ok=ab");
+        }
+        catch (_e) {
+            res.redirect("/admin/gemini-prompts?err=1");
+        }
+    });
+
     /** AI Few-Shot 範例庫：列表（僅 is_active = 1） */
     router.get("/ai-examples", async (req, res) => {
         const okMsg = req.query.ok === "deleted" ? "<p class=\"notion-msg ok\">已停用該筆學習範本。</p>" : "";
@@ -4965,21 +6058,70 @@ function createAdminRouter() {
             res.status(404).send("訂單不存在");
             return;
         }
-        const products = await db.prepare("SELECT id, name, erp_code, unit FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all();
-        const productOptions = products.map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)} ${escapeHtml(p.erp_code ?? "")}</option>`).join("");
         const units = [...ORDER_LINE_UNITS, "個"];
         const unitOpts = units.map((u) => `<option value="${escapeAttr(u)}">${escapeHtml(u)}</option>`).join("");
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品項</div>
         <h1 class="notion-page-title">增加品項</h1>
         <div class="notion-card">
-          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add">
-            <label>品項 <select name="product_id" required style="width:100%;">${productOptions}</select></label>
+          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add" id="addItemForm">
+            <div class="review-product-picker" style="position:relative;max-width:520px;margin-bottom:14px;">
+              <label style="display:block;margin-bottom:6px;font-weight:500;">品項（打字搜尋，支援模糊比對）</label>
+              <input type="text" class="review-product-search" autocomplete="off" placeholder="輸入品名、料號或條碼…" style="width:100%;box-sizing:border-box;padding:8px 12px;" />
+              <input type="hidden" name="product_id" class="review-product-id" value="" />
+              <div class="review-product-label notion-hint" style="margin-top:6px;min-height:1.2em;color:var(--notion-text-muted);"></div>
+              <div class="review-product-dropdown" style="display:none;position:absolute;left:0;right:0;top:100%;max-height:280px;overflow-y:auto;background:var(--notion-card);border:1px solid var(--notion-border);border-radius:8px;z-index:20;box-shadow:0 4px 12px rgba(0,0,0,.08);margin-top:4px;"></div>
+            </div>
             <label>數量 <input type="number" name="quantity" step="any" min="0" value="0" required style="width:8rem;"></label>
             <label>單位 <select name="unit" style="width:8rem;">${unitOpts}</select></label>
             <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">新增</button> <a href="/admin/orders/${encodeURIComponent(orderId)}#items" class="btn">取消</a></p>
           </form>
         </div>
+        <script>
+        (function(){
+          var searchTimeout;
+          var wrap = document.querySelector("#addItemForm .review-product-picker");
+          if (!wrap) return;
+          var inp = wrap.querySelector(".review-product-search");
+          var hidden = wrap.querySelector(".review-product-id");
+          var label = wrap.querySelector(".review-product-label");
+          var dropdown = wrap.querySelector(".review-product-dropdown");
+          var form = document.getElementById("addItemForm");
+          function showList(arr){
+            dropdown.innerHTML = (arr && arr.length) ? arr.map(function(p){
+              return '<div class="review-product-opt" data-id="' + (p.id || "") + '" data-name="' + String(p.name || "").replace(/"/g, "&quot;") + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--notion-border);font-size:13px;">' +
+                (p.name || "") + (p.erp_code ? " \uFF08" + p.erp_code + "\uFF09" : "") + (p.teraoka_barcode ? " " + p.teraoka_barcode : "") + "</div>";
+            }).join("") : '<div class="notion-hint" style="padding:8px 12px;margin:0;">無符合品項，請換關鍵字或簡稱</div>';
+            dropdown.style.display = "block";
+          }
+          function hideList(){ dropdown.style.display = "none"; }
+          function selectProduct(id, name){
+            hidden.value = id || "";
+            label.textContent = name ? "\u5DF2\u9078\uff1a" + name : "";
+            inp.value = name || "";
+            hideList();
+          }
+          inp.addEventListener("input", function(){
+            var q = (this.value || "").trim();
+            clearTimeout(searchTimeout);
+            if (!q) { hideList(); label.textContent = ""; hidden.value = ""; return; }
+            searchTimeout = setTimeout(function(){
+              fetch("/admin/api/products-search?q=" + encodeURIComponent(q) + "&active=1").then(function(r){ return r.json(); }).then(function(arr){ showList(arr); }).catch(function(){ hideList(); });
+            }, 200);
+          });
+          dropdown.addEventListener("click", function(e){
+            var opt = e.target.closest(".review-product-opt");
+            if (opt && opt.dataset.id) selectProduct(opt.dataset.id, opt.dataset.name);
+          });
+          document.addEventListener("click", function(e){ if (wrap && !wrap.contains(e.target)) hideList(); });
+          if (form) form.addEventListener("submit", function(e){
+            if (!hidden || !String(hidden.value || "").trim()) {
+              e.preventDefault();
+              alert("\u8acb\u5148\u8f38\u5165\u95dc\u9375\u5b57\u4e26\u5f9e\u4e0b\u62c9\u9078\u64c7\u54c1\u9805\u3002");
+            }
+          });
+        })();
+        </script>
       `;
         res.type("text/html").send(notionPage("增加品項", body, "", res));
     });
@@ -5226,6 +6368,43 @@ function createAdminRouter() {
             const aliasRows = custAliases
             .map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td><td><form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/alias/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td></tr>`)
             .join("");
+            let profileSection = "";
+            try {
+                const profile = await customer_profile_js_1.computeCustomerProfile(db, customer.id);
+                const sheetText = await customer_profile_js_1.buildCustomerCheatSheetText(db, customer.id);
+                if (profile) {
+                    const unitsLine = profile.topUnits.length
+                        ? profile.topUnits.map((x) => `${escapeHtml(x.unit)}（${x.count}）`).join("、")
+                        : "—";
+                    const itemsLine = profile.topItems.length
+                        ? profile.topItems.slice(0, 18).map((x) => escapeHtml(x.name)).join("、") + (profile.topItems.length > 18 ? "…" : "")
+                        : "—";
+                    const hotspots = profile.errorHotspots.length
+                        ? profile.errorHotspots.slice(0, 12).map((x) => `${escapeHtml(x.name)}（${x.fixCount}）`).join("、")
+                        : "—";
+                    const imgPct = profile.imageOrderRatio != null && profile.ordersSampledForImageRatio > 0
+                        ? `${Math.round(profile.imageOrderRatio * 100)}%（樣本訂單 ${profile.ordersSampledForImageRatio} 筆）`
+                        : "—";
+                    profileSection = `
+        <div class="notion-card">
+          <h2 style="margin-top:0;">客戶畫像（自動生成）</h2>
+          <p class="notion-hint">由歷史叫貨、別名與後台改正紀錄彙總；Gemini 解析時會附於提示前方。下列「改正熱區」來自後台將明細對應到不同品項之次數。</p>
+          <table class="notion-table-like" style="width:100%;font-size:14px;border-collapse:collapse;"><tbody>
+            <tr><td style="padding:6px 8px;border-bottom:1px solid var(--notion-border);vertical-align:top;width:140px;"><strong>常用單位 Top5</strong></td><td style="padding:6px 8px;border-bottom:1px solid var(--notion-border);">${unitsLine}</td></tr>
+            <tr><td style="padding:6px 8px;border-bottom:1px solid var(--notion-border);vertical-align:top;"><strong>常用品項 Top（節錄）</strong></td><td style="padding:6px 8px;border-bottom:1px solid var(--notion-border);">${itemsLine}</td></tr>
+            <tr><td style="padding:6px 8px;border-bottom:1px solid var(--notion-border);vertical-align:top;"><strong>有附圖之訂單占比</strong></td><td style="padding:6px 8px;border-bottom:1px solid var(--notion-border);">${escapeHtml(imgPct)}（高者可能常拍照手寫／雙欄表）</td></tr>
+            <tr><td style="padding:6px 8px;border-bottom:1px solid var(--notion-border);vertical-align:top;"><strong>多子客戶／分店</strong></td><td style="padding:6px 8px;border-bottom:1px solid var(--notion-border);">${profile.multiSubCustomer ? `是（曾見 ${profile.distinctSubCount} 種不同標籤）` : "否"}</td></tr>
+            <tr><td style="padding:6px 8px;vertical-align:top;"><strong>改正熱區</strong></td><td style="padding:6px 8px;">${hotspots}</td></tr>
+          </tbody></table>
+          <details style="margin-top:12px;"><summary style="cursor:pointer;color:var(--notion-accent);">給模型的完整 cheat sheet 文字</summary>
+          <pre style="white-space:pre-wrap;font-size:12px;background:var(--notion-sidebar);padding:12px;border-radius:var(--notion-radius);margin-top:8px;">${escapeHtml(sheetText || "")}</pre>
+          </details>
+        </div>`;
+                }
+            }
+            catch (pe) {
+                console.error("[admin] customer profile section", pe?.message || pe);
+            }
         const editBody = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / 編輯客戶</div>
         <h1 class="notion-page-title">編輯客戶</h1>
@@ -5262,6 +6441,7 @@ function createAdminRouter() {
             <button type="submit" class="btn">新增</button>
           </form>
         </div>
+        ${profileSection}
         <p>${req.query.from === "orders" ? `<a href="/admin/orders">← 回訂單查詢</a>` : `<a href="/admin/customers">← 回客戶列表</a>`}</p>
       `;
             res.type("text/html").send(notionPage("編輯客戶", editBody, "", res));

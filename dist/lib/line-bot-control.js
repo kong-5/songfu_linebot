@@ -6,6 +6,7 @@ exports.isLineSuppressCustomerReply = isLineSuppressCustomerReply;
 exports.classifyTextAsOrderIntent = classifyTextAsOrderIntent;
 exports.appendLineBotLog = appendLineBotLog;
 
+const gemini_model_name_js_1 = require("./gemini-model-name.js");
 const DEFAULT_MODE = "always_on";
 const DEFAULT_START = "18:00";
 const DEFAULT_END = "03:00";
@@ -96,7 +97,8 @@ async function classifyTextAsOrderIntent(text) {
         return null;
     const prompt = `你是蔬果批發叫貨助理。判斷下列訊息是否與「叫貨、訂單、品項數量、收單、送貨」有關（含口語如幫我送、明天要菜）。閒聊、問候、與叫貨無關則為否。只回一個 JSON：{"is_order_related":true} 或 {"is_order_related":false}，不要其他文字。\n\n訊息：\n${String(text).slice(0, 800)}`;
     try {
-        const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey.trim())}`, {
+        const base = (0, gemini_model_name_js_1.getGeminiRestGenerateContentUrl)();
+        const resp = await fetch(`${base}?key=${encodeURIComponent(apiKey.trim())}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

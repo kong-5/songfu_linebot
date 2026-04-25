@@ -4,9 +4,9 @@ exports.chatWithGemini = chatWithGemini;
 /**
  * 用 Google Gemini 做單輪或簡易多輪問答，供 LINE Webhook 在符合條件時使用。
  * 環境變數：GOOGLE_GEMINI_API_KEY 或 GEMINI_API_KEY
- * 與後台「AI 分析」同一支 API，只是 prompt 改為請假／表單／SOP 助理。
+ * 與訂單／閒聊分流同一 Flash 模型（見 gemini-model-name.js），只是 prompt 不同。
  */
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+const gemini_model_name_js_1 = require("./gemini-model-name.js");
 const DEFAULT_SYSTEM = "你是公司內部助理，負責回答請假流程、表單填寫、SOP 與常見問題。請用簡短、友善的繁體中文回覆，可附上處理步驟或表單連結（若你知道）。若無法從已知資訊回答，請建議聯絡負責人員。";
 async function chatWithGemini(userMessage, systemPrompt) {
   const apiKey = process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
@@ -14,7 +14,8 @@ async function chatWithGemini(userMessage, systemPrompt) {
   const system = (systemPrompt && systemPrompt.trim()) || DEFAULT_SYSTEM;
   const fullPrompt = system + "\n\n---\n\n使用者：" + (userMessage || "").trim().slice(0, 2000);
   try {
-    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(apiKey.trim())}`, {
+    const base = (0, gemini_model_name_js_1.getGeminiRestGenerateContentUrl)();
+    const res = await fetch(`${base}?key=${encodeURIComponent(apiKey.trim())}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

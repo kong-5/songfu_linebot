@@ -28,6 +28,10 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     const app = (0, express_1.default)();
     let dbReady = false;
     let dbError = null;
+    /** 輕量存活探測：供 Cloud Scheduler 保溫用，不查 DB、不呼叫外部服務（僅回 200 + OK） */
+    app.get("/ping", (_req, res) => {
+        res.status(200).type("text/plain").send("OK");
+    });
     app.get("/health", (_req, res) => {
         if (!dbReady) {
             res.status(503).json({
@@ -83,6 +87,30 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     }, lineWebhookRouter);
     app.use(express_1.default.json());
     app.use(express_1.default.urlencoded({ extended: true }));
+    /** Cloud Tasks Worker：同步處理單一 LINE event（需 LINE_USE_CLOUD_TASKS=1 時由佇列呼叫） */
+    app.post("/api/worker/process-line-event", async (req, res) => {
+        try {
+            const secret = process.env.LINE_WORKER_SECRET && String(process.env.LINE_WORKER_SECRET).trim();
+            if (secret) {
+                const got = String(req.headers["x-line-worker-secret"] || "").trim();
+                if (got !== secret) {
+                    res.status(401).type("text/plain").send("Unauthorized");
+                    return;
+                }
+            }
+            const ev = req.body?.event;
+            if (!ev || typeof ev !== "object") {
+                res.status(400).type("text/plain").send("missing event");
+                return;
+            }
+            await (0, line_js_1.processLineWebhookEvents)([ev]);
+            res.status(200).type("text/plain").send("Task Completed");
+        }
+        catch (e) {
+            console.error("[worker] process-line-event", e?.message || e, e?.stack);
+            res.status(500).type("text/plain").send(String(e?.message || e).slice(0, 500));
+        }
+    });
     let adminRouter;
     try {
         adminRouter = (0, index_js_2.createAdminRouter)();
@@ -93,6 +121,30 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         adminRouter.use((_req, res) => res.status(503).type("html").send(dbDownHtml));
     }
     app.use("/admin", adminRouter);
+    const rhythm_analysis_js_1 = require("./lib/rhythm-analysis.js");
+    app.post("/api/jobs/rhythm-daily", async (_req, res) => {
+        try {
+            if (!dbReady) {
+                res.status(503).json({ ok: false, error: "db not ready" });
+                return;
+            }
+            const secret = (process.env.RHYTHM_JOB_SECRET || process.env.LINE_WORKER_SECRET || "").trim();
+            if (secret) {
+                const got = String(_req.headers["x-rhythm-job-secret"] || "").trim();
+                if (got !== secret) {
+                    res.status(401).type("text/plain").send("Unauthorized");
+                    return;
+                }
+            }
+            const db = (0, index_js_1.getDb)(dbPath);
+            const out = await rhythm_analysis_js_1.runRhythmDailyJob(db);
+            res.json({ ok: true, ...out });
+        }
+        catch (e) {
+            console.error("[rhythm-daily]", e?.message || e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 400) });
+        }
+    });
     app.get("/", (_req, res) => {
         res.redirect(302, "/admin");
     });
@@ -113,7 +165,8 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         <li><a href="/admin">後台</a></li>
         <li><a href="/admin/line-binding">LINE 綁定檢查</a></li>
         <li><a href="/admin/customers">客戶管理</a></li>
-        <li><a href="/health">健康檢查</a></li>
+        <li><a href="/ping">輕量探測 /ping</a>（保溫用）</li>
+        <li><a href="/health">健康檢查（含 DB 就緒狀態）</a></li>
       </ul>
     </body></html>`);
     });
@@ -123,6 +176,34 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     });
     console.log(`[startup] listening on 0.0.0.0:${PORT}（路由已掛載，LINE webhook 可收訊）`);
     console.log(`[startup] LINE webhook: POST ${webhookPath}`);
+    let rhythmScheduleMark = null;
+    function taipeiHourNow() {
+        const parts = new Intl.DateTimeFormat("en-US", {
+            timeZone: "Asia/Taipei",
+            hour: "numeric",
+            hourCycle: "h23",
+        }).formatToParts(new Date());
+        const hp = parts.find((p) => p.type === "hour");
+        return hp ? parseInt(hp.value, 10) : 0;
+    }
+    setInterval(async () => {
+        if (!dbReady || process.env.RHYTHM_AUTO_SCHEDULE !== "1")
+            return;
+        try {
+            if (taipeiHourNow() !== 8)
+                return;
+            const todayMark = rhythm_analysis_js_1.taipeiTodayIso();
+            if (rhythmScheduleMark === todayMark)
+                return;
+            const db = (0, index_js_1.getDb)(dbPath);
+            const out = await rhythm_analysis_js_1.runRhythmDailyJob(db);
+            rhythmScheduleMark = todayMark;
+            console.log("[rhythm] auto schedule ok", out);
+        }
+        catch (e) {
+            console.error("[rhythm] auto schedule", e?.message || e);
+        }
+    }, 60000);
 })().catch((e) => {
     console.error("[startup] 無法啟動:", e);
     process.exit(1);
