@@ -25,8 +25,8 @@ const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
 const hasLineConfig = Boolean(channelAccessToken && channelSecret);
-/** 收單模式：群組 ID -> { orderId, customerId, lastActivity }；逾時 30 秒自動結單 */
-const COLLECT_TIMEOUT_MS = 30 * 1000;
+/** 收單模式：群組 ID -> { orderId, customerId, lastActivity }；可設 LINE_COLLECT_TIMEOUT_SEC 覆蓋，預設 30 秒 */
+const COLLECT_TIMEOUT_MS = (parseInt(process.env.LINE_COLLECT_TIMEOUT_SEC || "30", 10) || 30) * 1000;
 const collectingByGroup = new Map();
 const autoFinalizeTimers = new Map();
 /** LINE webhook 偶發重送同一 message.id，避免重複寫入品項／raw_message */
@@ -904,18 +904,18 @@ function createLineWebhook() {
         // 先回 200 給 LINE，避免逾時重送；實際處理在背景執行
         const useCloudTasks = (0, cloud_tasks_line_js_1.isLineCloudTasksEnabled)();
         if (useCloudTasks) {
+            // 先回 200 給 LINE，避免 LINE 逾時後重送並觸發更多重複處理
+            res.status(200).send("OK");
             (async () => {
                 try {
                     for (const ev of events) {
                         await (0, cloud_tasks_line_js_1.enqueueLineEventTask)(ev);
                     }
-                    res.status(200).send("OK");
                 }
                 catch (e) {
-                    console.error("[LINE] Cloud Tasks enqueue 失敗:", e?.message || e);
-                    if (!res.headersSent) {
-                        res.status(500).type("text/plain").send("enqueue failed");
-                    }
+                    console.error("[LINE] Cloud Tasks enqueue 失敗，改直接處理（fallback）:", e?.message || e);
+                    // 回退直接處理：dedup 機制（記憶體 Set + DB line_message_id）防止重複下單
+                    processLineWebhookEvents(events).catch((e2) => console.error("[LINE] Cloud Tasks fallback 直接處理失敗:", e2?.message || e2));
                 }
             })();
             return;

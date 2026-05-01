@@ -103,12 +103,13 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
                 subCustomer: p.subCustomer != null && String(p.subCustomer).trim() !== "" ? String(p.subCustomer).trim() : null,
             }));
             visionParsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(visionParsed);
-            if (visionParsed.length > parsed.length) {
-                console.log("[parse-order-from-image] 採用 Gemini 視覺（規則/OCR 筆數=%s 視覺筆數=%s）", parsed.length, visionParsed.length);
-                parsed = visionParsed;
-            }
-            else if (!parsed.length && visionParsed.length) {
-                console.log("[parse-order-from-image] Gemini 視覺解析 筆數=%s", visionParsed.length);
+            if (visionParsed.length > 0 && visionParsed.length >= parsed.length) {
+                if (visionParsed.length > parsed.length) {
+                    console.log("[parse-order-from-image] 採用 Gemini 視覺（規則/OCR 筆數=%s 視覺筆數=%s）", parsed.length, visionParsed.length);
+                }
+                else {
+                    console.log("[parse-order-from-image] Gemini 視覺與 OCR 同筆數（%s 筆），視覺結果優先（手寫辨識較可靠）", visionParsed.length);
+                }
                 parsed = visionParsed;
             }
         }
