@@ -417,6 +417,7 @@ async function generateStructuredJson(apiKey, modelName, systemInstruction, cont
 async function tryModelsStructured(apiKey, systemInstruction, buildParts, kind = "text", usageCtx) {
     const models = geminiModelCandidatesFor(kind);
     let lastErr = "";
+    let hitQuota = false;
     for (const modelName of models) {
         try {
             const parts = await buildParts();
@@ -426,13 +427,19 @@ async function tryModelsStructured(apiKey, systemInstruction, buildParts, kind =
         }
         catch (e) {
             lastErr = e?.message || String(e);
-            console.warn("[gemini-order] model %s failed: %s", modelName, lastErr);
+            const isQuota = /spending cap|429|RESOURCE_EXHAUSTED|Too Many Requests|quota/i.test(lastErr || "");
+            if (isQuota) {
+                hitQuota = true;
+                console.warn("[gemini-order] model %s 配額限制，等候 5 秒後嘗試下一個模型: %s", modelName, lastErr.slice(0, 200));
+                await new Promise(r => setTimeout(r, 5000));
+            }
+            else {
+                console.warn("[gemini-order] model %s failed: %s", modelName, lastErr);
+            }
         }
     }
     console.warn("[gemini-order] all models failed: %s", lastErr);
-    const quotaOrCap =
-        /spending cap|429|RESOURCE_EXHAUSTED|Too Many Requests|quota/i.test(lastErr || "");
-    if (quotaOrCap) {
+    if (hitQuota) {
         console.error("[gemini-order] Gemini 被拒絕（429／額度或每月支出上限）：請至 https://ai.google.dev/gemini-api/docs/rate-limits 查看限制，並至 https://ai.studio/spend 調高 AI Studio 專案的 Monthly spending cap；若使用 Cloud 帳單請一併檢查 Generative Language API 配額與付款帳戶。");
     }
     return null;
