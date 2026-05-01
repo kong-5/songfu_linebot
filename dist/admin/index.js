@@ -627,6 +627,12 @@ const NOTION_SIDEBAR = (active) => `
         <a href="/admin/freezer-fridge" class="${active === "env" ? "active" : ""}">冷凍庫冷藏庫檢查表</a>
       </div>
     </details>
+    <details class="sidebar-group" ${active === "broadcast" ? "open" : ""}>
+      <summary class="sidebar-group-title">群發訊息</summary>
+      <div class="sidebar-links">
+        <a href="/admin/broadcast" class="${active === "broadcast" ? "active" : ""}">傳送訊息</a>
+      </div>
+    </details>
   </nav>
 `;
 function parseAdminCookies(header) {
@@ -7806,6 +7812,233 @@ YY小吃, C5678...,</pre>
         }
         res.redirect("/admin/import-teraoka?ok=1&matched=" + matched + "&unmatched=" + unmatchedCount);
     });
+    // ── Broadcast ──────────────────────────────────────────────────────────────
+    router.get("/broadcast", async (req, res) => {
+        const customers = await db.prepare("SELECT id, name FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != '' ORDER BY name ASC").all();
+        const successCount = req.query.sent ? parseInt(req.query.sent, 10) : null;
+        const errMsg = req.query.err ? decodeURIComponent(String(req.query.err)) : null;
+        const extraStyle = `
+<style>
+.bc-card{background:#fff;border-radius:10px;border:1px solid var(--notion-border);padding:24px 28px;max-width:720px;}
+.bc-section{margin-top:20px;}
+.bc-label{font-size:13px;color:#666;margin-bottom:4px;display:block;}
+.bc-input,.bc-textarea,.bc-select{width:100%;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:6px;font-size:14px;box-sizing:border-box;background:#fafafa;}
+.bc-textarea{min-height:90px;resize:vertical;}
+.item-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
+.item-row input{flex:1;padding:7px 9px;border:1px solid var(--notion-border-strong);border-radius:6px;font-size:13px;box-sizing:border-box;}
+.item-row .w-price{flex:0 0 90px;}
+.item-row .w-unit{flex:0 0 60px;}
+.item-row .w-market{flex:0 0 90px;}
+.item-row .btn-rm{background:none;border:none;font-size:18px;cursor:pointer;color:#bbb;padding:0 2px;line-height:1;}
+.btn-add-item{background:none;border:1px dashed #bbb;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;color:#777;margin-top:4px;}
+.btn-add-item:hover{border-color:#1a7c6e;color:#1a7c6e;}
+.tmpl-tabs{display:flex;gap:0;border-radius:8px;overflow:hidden;border:1px solid var(--notion-border-strong);width:fit-content;margin-bottom:20px;}
+.tmpl-tab{padding:8px 22px;cursor:pointer;font-size:14px;background:#f5f5f5;border:none;transition:background .15s,color .15s;font-family:inherit;}
+.tmpl-tab.active{background:#1a7c6e;color:#fff;font-weight:600;}
+#preview-wrap{margin-top:24px;background:#f2f2f2;border-radius:8px;padding:14px;}
+#preview-wrap pre{font-size:11px;max-height:320px;overflow:auto;background:#fff;border-radius:6px;padding:12px;border:1px solid #ddd;margin:0;}
+.bc-submit-row{display:flex;gap:12px;margin-top:24px;align-items:center;flex-wrap:wrap;}
+.bc-btn{padding:9px 22px;border-radius:7px;border:none;cursor:pointer;font-size:14px;font-weight:600;font-family:inherit;}
+.bc-btn-primary{background:#1a7c6e;color:#fff;}
+.bc-btn-primary:hover{background:#15695d;}
+.bc-btn-outline{background:#fff;color:#1a7c6e;border:1.5px solid #1a7c6e;}
+.bc-btn-outline:hover{background:#e8f5f2;}
+.msg-ok{color:#1a7c6e;font-weight:600;font-size:14px;margin-bottom:12px;}
+.msg-err{color:#c0392b;font-size:14px;margin-bottom:12px;}
+.items-col-header{display:flex;gap:8px;margin-bottom:4px;}
+.items-col-header span{font-size:11px;color:#aaa;flex:1;}
+.items-col-header .ch-price{flex:0 0 90px;}
+.items-col-header .ch-unit{flex:0 0 60px;}
+.items-col-header .ch-market{flex:0 0 90px;}
+.items-col-header .ch-rm{flex:0 0 26px;}
+</style>`;
+        const body = `${extraStyle}
+<div class="notion-page-content">
+<h1 class="notion-h1" style="margin-bottom:8px;">群發訊息</h1>
+<p style="color:#888;font-size:14px;margin-bottom:20px;">選擇模板後填入內容，可預覽 Flex Message JSON 後傳送至 LINE 群組。</p>
+${successCount != null ? `<p class="msg-ok">✅ 已成功傳送至 ${successCount} 個群組</p>` : ""}
+${errMsg ? `<p class="msg-err">❌ ${escapeHtml(errMsg)}</p>` : ""}
+<div class="bc-card">
+  <div class="tmpl-tabs">
+    <button class="tmpl-tab active" onclick="switchTab('promo',this)" type="button">⚡ 限時優惠</button>
+    <button class="tmpl-tab" onclick="switchTab('notice',this)" type="button">📢 公告</button>
+  </div>
+  <input type="hidden" id="tmpl-type" value="promo">
+
+  <div id="tab-promo">
+    <div class="bc-section">
+      <label class="bc-label">優惠時間</label>
+      <input class="bc-input" id="promo_date" type="text" placeholder="例：5/3（六）早上 6 點前" style="max-width:340px;">
+    </div>
+    <div class="bc-section">
+      <label class="bc-label">副標題（選填）</label>
+      <input class="bc-input" id="promo_subtitle" type="text" placeholder="例：當日限量，先搶先贏">
+    </div>
+    <div class="bc-section">
+      <label class="bc-label">品項</label>
+      <div class="items-col-header">
+        <span>品名</span><span class="ch-price">優惠單價</span><span class="ch-unit">單位</span><span class="ch-market">行情上價</span><span class="ch-rm"></span>
+      </div>
+      <div id="item-rows">
+        <div class="item-row">
+          <input type="text" placeholder="品名" class="item-name">
+          <input type="text" placeholder="180" class="w-price item-price">
+          <input type="text" placeholder="斤" class="w-unit item-unit">
+          <input type="text" placeholder="220" class="w-market item-market">
+          <button class="btn-rm" type="button" onclick="removeRow(this)" title="刪除">✕</button>
+        </div>
+      </div>
+      <button class="btn-add-item" type="button" onclick="addItemRow()">＋ 新增品項</button>
+    </div>
+    <div class="bc-section">
+      <label class="bc-label">備註（選填）</label>
+      <input class="bc-input" id="promo_note" type="text" placeholder="例：需提前告知數量">
+    </div>
+  </div>
+
+  <div id="tab-notice" style="display:none;">
+    <div class="bc-section">
+      <label class="bc-label">公告標題</label>
+      <input class="bc-input" id="notice_title" type="text" placeholder="例：5/1 勞動節休假公告">
+    </div>
+    <div class="bc-section">
+      <label class="bc-label">公告內容</label>
+      <textarea class="bc-textarea" id="notice_content" placeholder="例：本司於 5/1（四）勞動節休假一天，5/2（五）正常上班。造成不便敬請見諒，謝謝！"></textarea>
+    </div>
+  </div>
+
+  <div class="bc-section">
+    <label class="bc-label">傳送對象</label>
+    <select class="bc-select" id="recipients-select" style="max-width:340px;">
+      <option value="all">全部客戶（已設定 LINE 群組，共 ${customers.length} 個）</option>
+      ${customers.map(c => `<option value="${escapeAttr(String(c.id))}">${escapeHtml(c.name)}</option>`).join("")}
+    </select>
+  </div>
+
+  <div class="bc-submit-row">
+    <button class="bc-btn bc-btn-outline" type="button" onclick="previewMsg()">預覽 JSON</button>
+    <button class="bc-btn bc-btn-primary" type="button" onclick="sendMsg()">傳送至 LINE</button>
+  </div>
+  <div id="preview-wrap" style="display:none;">
+    <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:8px;">Flex Message 預覽（JSON）</div>
+    <pre id="preview-json"></pre>
+  </div>
+</div>
+</div>
+<script>
+function switchTab(tab,btn){
+  document.getElementById('tab-promo').style.display=tab==='promo'?'':'none';
+  document.getElementById('tab-notice').style.display=tab==='notice'?'':'none';
+  document.getElementById('tmpl-type').value=tab;
+  document.querySelectorAll('.tmpl-tab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+}
+function addItemRow(){
+  const wrap=document.getElementById('item-rows');
+  const div=document.createElement('div');
+  div.className='item-row';
+  div.innerHTML='<input type="text" placeholder="品名" class="item-name"><input type="text" placeholder="180" class="w-price item-price"><input type="text" placeholder="斤" class="w-unit item-unit"><input type="text" placeholder="220" class="w-market item-market"><button class="btn-rm" type="button" onclick="removeRow(this)" title="刪除">✕</button>';
+  wrap.appendChild(div);
+}
+function removeRow(btn){
+  if(document.querySelectorAll('#item-rows .item-row').length<=1)return;
+  btn.parentElement.remove();
+}
+function collectFormData(){
+  const type=document.getElementById('tmpl-type').value;
+  if(type==='promo'){
+    const items=[];
+    document.querySelectorAll('#item-rows .item-row').forEach(row=>{
+      const name=row.querySelector('.item-name')?.value?.trim();
+      const price=row.querySelector('.item-price')?.value?.trim();
+      const unit=row.querySelector('.item-unit')?.value?.trim();
+      const market=row.querySelector('.item-market')?.value?.trim();
+      if(name)items.push({name,price:price||'',unit:unit||'斤',market:market||''});
+    });
+    return{type,promo_date:document.getElementById('promo_date')?.value?.trim()||'',promo_subtitle:document.getElementById('promo_subtitle')?.value?.trim()||'',promo_note:document.getElementById('promo_note')?.value?.trim()||'',items,recipients:document.getElementById('recipients-select')?.value||'all'};
+  }
+  return{type,notice_title:document.getElementById('notice_title')?.value?.trim()||'',notice_content:document.getElementById('notice_content')?.value?.trim()||'',recipients:document.getElementById('recipients-select')?.value||'all'};
+}
+async function previewMsg(){
+  const data=collectFormData();
+  const r=await fetch('/admin/broadcast/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  const json=await r.json();
+  document.getElementById('preview-json').textContent=JSON.stringify(json,null,2);
+  document.getElementById('preview-wrap').style.display='';
+}
+async function sendMsg(){
+  const data=collectFormData();
+  if(!confirm('確定要傳送訊息至 LINE 群組嗎？'))return;
+  const r=await fetch('/admin/broadcast/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  const json=await r.json();
+  if(json.ok){location.href='/admin/broadcast?sent='+(json.sent||0);}
+  else{location.href='/admin/broadcast?err='+encodeURIComponent(json.error||'傳送失敗');}
+}
+</script>`;
+        res.send(notionPage("群發訊息", body, "broadcast", res));
+    });
+    router.post("/broadcast/preview", async (req, res) => {
+        const data = req.body || {};
+        try {
+            const msg = data.type === "notice"
+                ? buildNoticeFlexMessage(data)
+                : buildPromoFlexMessage(data);
+            res.json(msg);
+        }
+        catch (e) {
+            res.status(400).json({ error: e?.message || "建立預覽失敗" });
+        }
+    });
+    router.post("/broadcast/send", async (req, res) => {
+        const data = req.body || {};
+        const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+        if (!token) {
+            res.json({ ok: false, error: "未設定 LINE_CHANNEL_ACCESS_TOKEN" });
+            return;
+        }
+        let msg;
+        try {
+            msg = data.type === "notice"
+                ? buildNoticeFlexMessage(data)
+                : buildPromoFlexMessage(data);
+        }
+        catch (e) {
+            res.json({ ok: false, error: e?.message || "訊息建立失敗" });
+            return;
+        }
+        const lineMsg = { type: "flex", altText: data.type === "notice" ? (data.notice_title || "松富物流公告") : "松富物流限時優惠", contents: msg };
+        let targets = [];
+        if (data.recipients && data.recipients !== "all") {
+            const cust = await db.prepare("SELECT line_group_id, name FROM customers WHERE id = ? AND line_group_id IS NOT NULL AND line_group_id != ''").get(data.recipients);
+            if (cust) targets = [cust];
+        }
+        else {
+            targets = await db.prepare("SELECT line_group_id, name FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != '' ORDER BY name ASC").all();
+        }
+        let sent = 0;
+        const errors = [];
+        for (const t of targets) {
+            try {
+                const resp = await fetch("https://api.line.me/v2/bot/message/push", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ to: t.line_group_id, messages: [lineMsg] }),
+                });
+                if (resp.ok) {
+                    sent++;
+                }
+                else {
+                    const errTxt = await resp.text().catch(() => "");
+                    errors.push(`${t.name}: ${resp.status} ${errTxt.slice(0, 100)}`);
+                }
+            }
+            catch (e) {
+                errors.push(`${t.name}: ${e?.message || e}`);
+            }
+        }
+        if (errors.length) console.warn("[broadcast] 部分傳送失敗:", errors.join(" | "));
+        res.json({ ok: true, sent, errors });
+    });
     return router;
 }
 function parseCsvLine(line) {
@@ -7851,6 +8084,101 @@ function parseRequestToSheet(req) {
     const header = lines[0].split(",").map((c) => c.replace(/\ufeff/g, "").trim().toLowerCase().replace(/\s+/g, "_"));
     const rows = lines.slice(1).map((line) => parseCsvLine(line));
     return { header, rows };
+}
+function buildPromoFlexMessage(data) {
+    const items = Array.isArray(data.items) ? data.items : [];
+    const dateText = (data.promo_date || "").trim();
+    const subtitle = (data.promo_subtitle || "").trim();
+    const note = (data.promo_note || "").trim();
+    const itemBoxes = items.filter(it => it.name).map(it => ({
+        type: "box",
+        layout: "horizontal",
+        paddingTop: "8px",
+        paddingBottom: "8px",
+        contents: [
+            { type: "text", text: String(it.name), size: "sm", color: "#222222", flex: 3, wrap: true },
+            {
+                type: "box", layout: "vertical", flex: 2, alignItems: "flex-end",
+                contents: [
+                    { type: "text", text: it.price ? `$${it.price}/${it.unit || "斤"}` : "—", size: "sm", color: "#e05000", weight: "bold", align: "end" },
+                ]
+            },
+            {
+                type: "box", layout: "vertical", flex: 2, alignItems: "flex-end",
+                contents: [
+                    { type: "text", text: it.market ? `$${it.market}` : "—", size: "sm", color: "#888888", align: "end" },
+                ]
+            },
+        ],
+    }));
+    const separators = [];
+    for (let i = 0; i < itemBoxes.length; i++) {
+        separators.push(itemBoxes[i]);
+        if (i < itemBoxes.length - 1) separators.push({ type: "separator", color: "#eeeeee" });
+    }
+    const headerContents = [
+        { type: "text", text: "⚡ 限時優惠", color: "#ffffff", size: "xl", weight: "bold" },
+    ];
+    if (subtitle) headerContents.push({ type: "text", text: subtitle, color: "#b2dfdb", size: "sm", margin: "sm" });
+    const columnHeader = {
+        type: "box", layout: "horizontal", paddingBottom: "6px",
+        contents: [
+            { type: "text", text: "品名", size: "xs", color: "#aaaaaa", flex: 3 },
+            { type: "text", text: "優惠單價", size: "xs", color: "#aaaaaa", flex: 2, align: "end" },
+            { type: "text", text: "行情上價", size: "xs", color: "#aaaaaa", flex: 2, align: "end" },
+        ],
+    };
+    const footerContents = [];
+    if (dateText) footerContents.push({ type: "text", text: `🕐 訂購時間：${dateText}`, size: "xs", color: "#666666", wrap: true });
+    if (note) footerContents.push({ type: "text", text: `📝 ${note}`, size: "xs", color: "#888888", margin: "sm", wrap: true });
+    return {
+        type: "bubble",
+        size: "kilo",
+        header: {
+            type: "box", layout: "vertical", backgroundColor: "#1a7c6e", paddingAll: "16px",
+            contents: headerContents,
+        },
+        body: {
+            type: "box", layout: "vertical", backgroundColor: "#f9f9f9", paddingAll: "16px", spacing: "none",
+            contents: [
+                columnHeader,
+                { type: "separator", color: "#cccccc" },
+                ...separators,
+            ],
+        },
+        ...(footerContents.length ? {
+            footer: {
+                type: "box", layout: "vertical", backgroundColor: "#ffffff", paddingAll: "12px",
+                contents: footerContents,
+            }
+        } : {}),
+    };
+}
+function buildNoticeFlexMessage(data) {
+    const title = (data.notice_title || "公告").trim();
+    const content = (data.notice_content || "").trim();
+    return {
+        type: "bubble",
+        size: "kilo",
+        header: {
+            type: "box", layout: "vertical", backgroundColor: "#2c3e50", paddingAll: "16px",
+            contents: [
+                { type: "text", text: "📢 " + title, color: "#ffffff", size: "lg", weight: "bold", wrap: true },
+            ],
+        },
+        body: {
+            type: "box", layout: "vertical", paddingAll: "16px",
+            contents: [
+                { type: "text", text: content || "（無內容）", size: "sm", color: "#333333", wrap: true, lineSpacing: "6px" },
+            ],
+        },
+        footer: {
+            type: "box", layout: "vertical", backgroundColor: "#f5f5f5", paddingAll: "10px",
+            contents: [
+                { type: "text", text: "松富生鮮物流", size: "xs", color: "#999999", align: "center" },
+            ],
+        },
+    };
 }
 function escapeHtml(s) {
     if (s == null)
