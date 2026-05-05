@@ -66,6 +66,7 @@ const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
 const announcement_templates_js_1 = require("../lib/announcement-templates.js");
 const announcement_image_js_1 = require("../lib/announcement-image.js");
 const calendar_holidays_js_1 = require("../lib/calendar-holidays.js");
+const route_war_room_js_1 = require("../lib/route-war-room.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
@@ -1721,20 +1722,130 @@ function createAdminRouter() {
             res.redirect("/admin/line-bot/unit-conversion?err=1");
         }
     });
-    router.get("/", (_req, res) => {
+    router.get("/", async (req, res) => {
+        const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+        const qDate = String(req.query.date || "").trim();
+        const today = dateRe.test(qDate) ? qDate : getTaipeiCalendarDateYYYYMMDD();
+        let warRoom;
+        try {
+            warRoom = await route_war_room_js_1.getRouteWarRoomData(db, today);
+        } catch (e) {
+            console.error("[dashboard] war room", e?.message || e);
+            warRoom = { today, todayIsHoliday: false, routes: [], unrouted: [], totals: { ordered: 0, missing: 0, abnormal: 0, total: 0 } };
+        }
         const tapmc = wholesale_price_js_1.TAPMC_PRICE_URL;
-        const body = `
-        <div class="notion-breadcrumb">儀表板</div>
-        <h1 class="notion-page-title">儀表板</h1>
-        <div class="notion-card" style="border-left:4px solid var(--notion-accent);">
-          <h2 style="margin-top:0;">北農單日交易行情</h2>
-          <p class="notion-hint" style="margin-top:0;">即時行情請至臺北農產官網查詢（場內拍賣／全場交易、上／中／下價說明與 Excel／PDF 下載皆在該站）。本頁不載入資料以加快儀表板開啟速度。</p>
-          <p style="margin-top:12px;"><a href="${tapmc}" target="_blank" rel="noopener" class="btn btn-primary">開啟臺北農產「單日交易行情查詢」</a></p>
-          <p class="notion-hint" style="margin-top:12px;">若需本系統內依農業部開放資料整理的北農行情，請至 <a href="/admin/logistics/market">物流工具 → 北農行情</a>。</p>
-        </div>
-        <p class="notion-hint">更多儀表板項目將陸續新增。</p>
-      `;
-        res.type("text/html").send(notionPage("儀表板", body, "dashboard", res));
+        const sevColor = (s) => s === "danger" ? "background:#fef2f2;color:#b91c1c;border-color:#fecaca;" :
+            s === "warn" ? "background:#fffbeb;color:#b45309;border-color:#fde68a;" :
+            "background:#eff6ff;color:#1e40af;border-color:#bfdbfe;";
+        const renderCard = (c) => {
+            const status = c.hasOrderedToday
+                ? `<span class="wr-status wr-status-ok">✓ 已叫貨</span>`
+                : (c.anomalies.some((a) => a.severity === "danger")
+                    ? `<span class="wr-status wr-status-danger">⚠ 注意</span>`
+                    : c.anomalies.length
+                        ? `<span class="wr-status wr-status-warn">⚠</span>`
+                        : `<span class="wr-status wr-status-muted">— 未叫</span>`);
+            const orderInfo = c.hasOrderedToday
+                ? `<div class="wr-meta">${c.totalItems} 項 · 量 ${Math.round(c.totalQtyToday)}</div>`
+                : (c.lastOrderDate ? `<div class="wr-meta wr-muted">上次 ${c.lastOrderDate}（${c.daysSinceLast} 天前）</div>` : `<div class="wr-meta wr-muted">— 無歷史 —</div>`);
+            const tags = c.anomalies.map((a) => `<span class="wr-tag" style="${sevColor(a.severity)}" title="${escapeAttr(a.label)}">${escapeHtml(a.label)}</span>`).join("");
+            const linkTarget = c.hasOrderedToday && c.todayOrders[0]
+                ? `/admin/orders/${encodeURIComponent(c.todayOrders[0].orderId)}`
+                : `/admin/customers/${encodeURIComponent(c.id)}/quick-view`;
+            const cardClass = c.hasOrderedToday
+                ? (c.totalNeedReview > 0 ? "wr-card wr-card-review" : "wr-card wr-card-ok")
+                : (c.anomalies.some((a) => a.severity === "danger") ? "wr-card wr-card-danger" : (c.anomalies.length ? "wr-card wr-card-warn" : "wr-card wr-card-muted"));
+            return `<a href="${linkTarget}" class="${cardClass}">
+<div class="wr-card-head">
+  <div class="wr-name">${escapeHtml(c.name || "—")}</div>
+  ${status}
+</div>
+${orderInfo}
+${tags ? `<div class="wr-tags">${tags}</div>` : ""}
+</a>`;
+        };
+        const renderRouteBlock = (route) => {
+            const cards = route.customers.map(renderCard).join("");
+            const summary = `<span class="wr-route-summary">${route.stats.ordered}/${route.stats.total} 已叫${route.stats.abnormal ? ` · ${route.stats.abnormal} 異常` : ""}</span>`;
+            return `<section class="wr-route">
+<header class="wr-route-head">
+  <h2 class="wr-route-title">${escapeHtml(route.routeLabel)}</h2>
+  ${summary}
+</header>
+<div class="wr-cards">${cards}</div>
+</section>`;
+        };
+        const routesHtml = warRoom.routes.map(renderRouteBlock).join("");
+        const unroutedHtml = warRoom.unrouted.length
+            ? renderRouteBlock({ routeLabel: "未分線客戶", customers: warRoom.unrouted, stats: { total: warRoom.unrouted.length, ordered: warRoom.unrouted.filter(c => c.hasOrderedToday).length, missing: warRoom.unrouted.filter(c => !c.hasOrderedToday).length, abnormal: warRoom.unrouted.filter(c => c.anomalies.length).length } })
+            : "";
+        const dateLabel = (() => {
+            const d = new Date(warRoom.today + "T12:00:00");
+            return Number.isNaN(d.getTime()) ? warRoom.today : d.toLocaleDateString("zh-TW", { month: "2-digit", day: "2-digit", weekday: "long" });
+        })();
+        const body = `<style>
+.wr-toolbar { display:flex; align-items:center; gap:14px; margin-bottom:14px; flex-wrap:wrap; }
+.wr-toolbar form { display:inline-flex; gap:6px; align-items:center; margin:0; }
+.wr-summary { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
+.wr-stat-card { flex:1; min-width:140px; padding:14px 18px; background:#fff; border:1px solid var(--notion-border); border-radius:10px; }
+.wr-stat-num { font-size:28px; font-weight:700; line-height:1; }
+.wr-stat-label { font-size:12px; color:var(--notion-text-muted); margin-top:4px; }
+.wr-stat-card.wr-stat-ok .wr-stat-num { color:#047857; }
+.wr-stat-card.wr-stat-missing .wr-stat-num { color:#787774; }
+.wr-stat-card.wr-stat-abnormal .wr-stat-num { color:#b91c1c; }
+.wr-route { margin-bottom:20px; }
+.wr-route-head { display:flex; align-items:center; gap:12px; margin-bottom:10px; padding-bottom:6px; border-bottom:1px solid var(--notion-border); }
+.wr-route-title { font-size:16px; font-weight:600; margin:0; color:var(--notion-text); }
+.wr-route-summary { font-size:12px; color:var(--notion-text-muted); }
+.wr-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; }
+.wr-card { display:block; padding:10px 12px; background:#fff; border:1.5px solid var(--notion-border); border-radius:8px; text-decoration:none; color:var(--notion-text); transition:transform .15s,border-color .15s,box-shadow .15s; }
+.wr-card:hover { transform:translateY(-2px); border-color:#3b82c4; box-shadow:0 4px 12px rgba(59,130,196,0.1); text-decoration:none; }
+.wr-card-ok { border-color:#a7f3d0; background:#f0fdf4; }
+.wr-card-review { border-color:#fde68a; background:#fffbeb; }
+.wr-card-warn { border-color:#fde68a; background:#fffbeb; }
+.wr-card-danger { border-color:#fecaca; background:#fef2f2; }
+.wr-card-muted { background:#fafafa; }
+.wr-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px; }
+.wr-name { font-weight:600; font-size:14px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wr-status { font-size:11px; padding:2px 6px; border-radius:8px; flex-shrink:0; }
+.wr-status-ok { background:#dcfce7; color:#047857; }
+.wr-status-warn { background:#fef3c7; color:#b45309; }
+.wr-status-danger { background:#fee2e2; color:#b91c1c; }
+.wr-status-muted { background:#f4f4f0; color:#787774; }
+.wr-meta { font-size:12px; color:#37352f; margin:2px 0; }
+.wr-meta.wr-muted { color:var(--notion-text-muted); }
+.wr-tags { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+.wr-tag { font-size:11px; padding:2px 6px; border-radius:4px; border:1px solid; line-height:1.4; }
+.wr-empty { color:var(--notion-text-muted); padding:30px; text-align:center; font-size:14px; background:#fafafa; border-radius:8px; }
+.wr-secondary { margin-top:30px; padding-top:18px; border-top:1px solid var(--notion-border); }
+</style>
+<div class="notion-page-content">
+<div class="wr-toolbar">
+  <h1 class="notion-page-title" style="margin:0;">路線戰情室</h1>
+  <span style="color:var(--notion-text-muted);font-size:13px;">${escapeHtml(dateLabel)}${warRoom.todayIsHoliday ? " · 公休日（不判斷未叫貨異常）" : ""}</span>
+  <form method="get" action="/admin">
+    <input type="date" name="date" value="${escapeAttr(warRoom.today)}">
+    <button type="submit" class="btn">看其他日期</button>
+  </form>
+  <a href="/admin?date=${escapeAttr(getTaipeiCalendarDateYYYYMMDD())}" class="btn">回今日</a>
+</div>
+
+<div class="wr-summary">
+  <div class="wr-stat-card wr-stat-ok"><div class="wr-stat-num">${warRoom.totals.ordered}</div><div class="wr-stat-label">已叫貨 / 全 ${warRoom.totals.total}</div></div>
+  <div class="wr-stat-card wr-stat-missing"><div class="wr-stat-num">${warRoom.totals.missing}</div><div class="wr-stat-label">未叫貨</div></div>
+  <div class="wr-stat-card wr-stat-abnormal"><div class="wr-stat-num">${warRoom.totals.abnormal}</div><div class="wr-stat-label">異常需關注</div></div>
+</div>
+
+${routesHtml || (unroutedHtml ? "" : `<div class="wr-empty">尚無啟用客戶。請先到「客戶管理」新增。</div>`)}
+${unroutedHtml}
+
+<div class="wr-secondary">
+  <h3 style="margin:0 0 10px;font-size:14px;color:var(--notion-text-muted);font-weight:500;">外部行情參考</h3>
+  <a href="${tapmc}" target="_blank" rel="noopener" class="btn">臺北農產 — 單日交易行情</a>
+  <a href="/admin/logistics/market" class="btn">系統內 北農行情</a>
+</div>
+</div>`;
+        res.type("text/html").send(notionPage("路線戰情室", body, "dashboard", res));
     });
     router.get("/recognition-stats", async (req, res) => {
         const isPg = Boolean(process.env.DATABASE_URL);
