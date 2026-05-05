@@ -9,14 +9,18 @@
 #  導致 LINE webhook 簽章驗證直接失敗、Vision OCR 無法呼叫，整個 bot 崩潰。）
 
 steps:
+  # 先把上次 build 的映像當 layer 快取拉下來；首次或拉不到都不阻擋（|| true）
   - name: "gcr.io/cloud-builders/docker"
+    entrypoint: "bash"
     args:
-      - "build"
-      - "--platform"
-      - "linux/amd64"
-      - "-t"
-      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest"
-      - "."
+      - "-c"
+      - |
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest || true
+        docker build \
+          --platform linux/amd64 \
+          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest \
+          .
   - name: "gcr.io/cloud-builders/docker"
     args:
       - "push"
