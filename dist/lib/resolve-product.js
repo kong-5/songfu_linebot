@@ -65,12 +65,15 @@ async function tryResolve(db, customerId, candidates) {
             .filter((k) => k && k.length >= 2)));
         if (hintKeys.length) {
             const ph = hintKeys.map(() => "?").join(",");
+            // 自動解析路徑：只有「正面分數」高於「反向訊號」才採用，避免歷史已被改掉的 hint 仍自動套上
             const hintRow = await db
-                .prepare(`SELECT p.id, p.name, p.erp_code, p.teraoka_barcode, p.unit
+                .prepare(`SELECT p.id, p.name, p.erp_code, p.teraoka_barcode, p.unit,
+                (h.hit_count - COALESCE(h.wrong_count, 0) * 3) AS net_score
          FROM customer_handwriting_hints h
          JOIN products p ON p.id = h.product_id AND (p.active IS NULL OR p.active = 1)
          WHERE h.customer_id = ? AND h.raw_key IN (${ph})
-         ORDER BY h.hit_count DESC, h.updated_at DESC
+           AND (h.hit_count - COALESCE(h.wrong_count, 0) * 3) > 0
+         ORDER BY (h.hit_count - COALESCE(h.wrong_count, 0) * 3) DESC, h.updated_at DESC
          LIMIT 1`)
                 .get(customerId, ...hintKeys);
             if (hintRow)

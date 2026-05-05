@@ -53,7 +53,8 @@
     display_order INTEGER,
     need_review INTEGER NOT NULL DEFAULT 0,
     include_export INTEGER,
-    sub_customer TEXT
+    sub_customer TEXT,
+    confidence_score INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS order_attachments (
@@ -150,6 +151,8 @@
     raw_name_last TEXT,
     product_id TEXT NOT NULL REFERENCES products(id),
     hit_count INTEGER NOT NULL DEFAULT 1,
+    wrong_count INTEGER NOT NULL DEFAULT 0,
+    last_hit_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL,
     UNIQUE(customer_id, raw_key)
   );

@@ -378,6 +378,13 @@ const NOTION_STYLE = `
   tr.order-row-excluded input, tr.order-row-excluded select { opacity: 0.85; }
   /* 訂單明細：待確認列上色（桌面表格式） */
   table.order-detail-table tbody tr.order-item-need-review > td { background: #fff7ed; }
+  /* 辨識信心分數小徽章（顯示在品項旁） */
+  .conf-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; border: 1px solid transparent; }
+  .conf-pill.conf-high { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+  .conf-pill.conf-mid { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+  .conf-pill.conf-low { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+  .conf-pill.conf-none { background: var(--notion-sidebar); color: var(--notion-text-muted); border-color: var(--notion-border); }
+  table.order-detail-table tbody tr.order-item-low-conf > td { background: #fef2f2; }
   .order-detail-layout { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: stretch; gap: 16px; margin-top: 4px; }
   /* 左欄寬度維持原本比例，避免擠壓右側辨識明細；內文區可較高、長行橫向捲動。整塊 sticky 捲動時仍跟著視窗 */
   .order-detail-raw-col { flex: 0 0 min(200px, 24vw); min-width: 160px; max-width: 220px; position: relative; }
@@ -490,6 +497,7 @@ const NOTION_STYLE = `
     table.order-detail-table { border: none; background: transparent; min-width: 0; }
     table.order-detail-table thead { display: none; }
     table.order-detail-table tbody tr.order-item-need-review { background: #fff7ed; }
+    table.order-detail-table tbody tr.order-item-low-conf { background: #fef2f2; }
     .order-detail-layout { flex-direction: column; flex-wrap: wrap; }
     .order-detail-raw-col { flex: none; width: 100%; min-width: 0; }
     .order-detail-raw-inner { position: static; max-height: 220px; }
@@ -4526,7 +4534,7 @@ function createAdminRouter() {
             return;
         }
         const item = await db.prepare("SELECT raw_name, product_id AS prev_product_id FROM order_items WHERE id = ? AND order_id = ?").get(itemId, orderId);
-        await db.prepare("UPDATE order_items SET product_id = ?, need_review = 0 WHERE id = ? AND order_id = ?").run(productId, itemId, orderId);
+        await db.prepare("UPDATE order_items SET product_id = ?, need_review = 0, confidence_score = 100 WHERE id = ? AND order_id = ?").run(productId, itemId, orderId);
         await logDataChange(req, {
             entityType: "order_item_product",
             entityId: itemId,
@@ -4559,6 +4567,8 @@ function createAdminRouter() {
                 catch (_) { /* 可能重複 */ }
             }
             try {
+                // recordHandwritingHint 內部會偵測 product 是否變更：相同 → hit_count++；
+                // 不同 → 重置為 1 並 wrong_count++，分數透過 prev_product_id 比較自動降權。
                 await customer_handwriting_hints_js_1.recordHandwritingHint(db, order.customer_id, rawNameTrim, productId);
             }
             catch (_) { /* 筆跡對照表寫入失敗不阻擋 */ }
@@ -4966,7 +4976,7 @@ function createAdminRouter() {
             return;
         }
         const items = await db.prepare(`
-      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.display_order, oi.need_review, oi.sub_customer,
+      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.display_order, oi.need_review, oi.sub_customer, oi.confidence_score,
         p.id AS product_id, p.erp_code, p.name AS product_name
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = ?
@@ -4974,8 +4984,18 @@ function createAdminRouter() {
     `).all(orderId);
         const attachments = await db.prepare("SELECT id, line_message_id FROM order_attachments WHERE order_id = ?").all(orderId);
         const needReviewCount = items.filter((i) => i.need_review === 1).length;
+        const lowConfThreshold = Number(process.env.ADMIN_CONFIDENCE_REVIEW_THRESHOLD || 70);
+        const lowConfCount = items.filter((i) => {
+            if (i.need_review === 1)
+                return false;
+            const c = i.confidence_score;
+            return c != null && Number(c) < lowConfThreshold;
+        }).length;
         const needReviewNote = needReviewCount > 0
             ? `<p class="notion-msg err" style="margin:8px 0;"><strong>${needReviewCount}</strong> 項待確認 · <a href="/admin/review">待確認清單</a></p>`
+            : "";
+        const lowConfNote = lowConfCount > 0
+            ? `<p class="notion-msg" style="margin:8px 0;background:#fef2f2;color:#b91c1c;border-color:#fecaca;"><strong>${lowConfCount}</strong> 項辨識信心 &lt; ${lowConfThreshold} 分，建議人工複核（紅色徽章）。</p>`
             : "";
         const prevOrder = await db.prepare(`
       SELECT id FROM orders
@@ -5005,12 +5025,32 @@ function createAdminRouter() {
             const nameEditLink = pid && pname
                 ? `<a href="#" class="product-name-edit" data-product-id="${escapeAttr(pid)}" title="編輯此品項（俗名、單位等）">${pname}</a>`
                 : pname;
+            const confRaw = i.confidence_score;
+            const conf = confRaw != null && Number.isFinite(Number(confRaw)) ? Number(confRaw) : null;
+            let confPill = "";
+            if (i.need_review !== 1) {
+                if (conf == null) {
+                    confPill = `<span class="conf-pill conf-none" title="未提供信心分數">—</span>`;
+                }
+                else if (conf >= 80) {
+                    confPill = `<span class="conf-pill conf-high" title="辨識信心高（${conf}/100）">${conf}</span>`;
+                }
+                else if (conf >= lowConfThreshold) {
+                    confPill = `<span class="conf-pill conf-mid" title="辨識信心中（${conf}/100）">${conf}</span>`;
+                }
+                else {
+                    confPill = `<span class="conf-pill conf-low" title="辨識信心低（${conf}/100），建議核對">${conf}</span>`;
+                }
+            }
             const productCell = i.need_review === 1
                 ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
-                : `<span class="order-final-product">${nameEditLink}</span> <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
+                : `<span class="order-final-product">${nameEditLink}</span>${confPill} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
             const subCustomerVal = (i.sub_customer && String(i.sub_customer).trim()) ? escapeAttr(String(i.sub_customer).trim()) : "";
-            const rowClasses = i.need_review === 1 ? "order-item-need-review" : "";
+            const isLowConf = i.need_review !== 1 && conf != null && conf < lowConfThreshold;
+            const rowClasses = i.need_review === 1
+                ? "order-item-need-review"
+                : (isLowConf ? "order-item-low-conf" : "");
             const rawCard = `${idx + 1}. 原始：${String(i.raw_name ?? "").trim() || "—"} ${String(q)}${(i.unit && i.unit.trim()) || ""}`;
             return `<tr data-item-id="${escapeAttr(i.item_id)}" data-raw-name="${escapeAttr(i.raw_name ?? "")}" data-line-unit="${escapeAttr((i.unit && i.unit.trim()) || "")}" data-raw-card="${escapeAttr(rawCard)}" class="${escapeAttr(rowClasses)}">
             <td class="order-detail-col-cb"><input type="checkbox" class="item-select-cb" name="selected_items" value="${escapeAttr(i.item_id)}"></td>
@@ -5058,6 +5098,7 @@ function createAdminRouter() {
         <h1 class="notion-page-title" style="margin-bottom:6px;">訂單明細</h1>
         <p style="margin:0 0 10px;color:var(--notion-text-secondary, #555);font-size:14px;">${escapeHtml(order.order_no ?? "—")} · ${escapeHtml(order.order_date)} · <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a> · ${orderStatusDisplay}</p>
         ${needReviewNote}
+        ${lowConfNote}
         ${req.query.ok === "product" ? "<p class=\"notion-msg ok\">已更新。</p>" : ""}
         ${req.query.ok === "prod_edit" ? "<p class=\"notion-msg ok\">已儲存品項。</p>" : ""}
         ${req.query.ok === "approved" ? "<p class=\"notion-msg ok\">已標記為已確認。</p>" : ""}
@@ -6151,7 +6192,7 @@ function createAdminRouter() {
             return;
         }
         const itemId = (0, id_js_1.newId)("item");
-        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, ?, ?, 0, 1, NULL)").run(itemId, orderId, productId, product.name, qty, unit);
+        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer, confidence_score) VALUES (?, ?, ?, ?, ?, ?, 0, 1, NULL, 100)").run(itemId, orderId, productId, product.name, qty, unit);
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=add_item#items");
     });
     router.get("/barcode", async (req, res) => {

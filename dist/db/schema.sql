@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   need_review INTEGER NOT NULL DEFAULT 0,
   include_export INTEGER,
   sub_customer TEXT,
+  confidence_score INTEGER,
   FOREIGN KEY (order_id) REFERENCES orders(id),
   FOREIGN KEY (product_id) REFERENCES products(id)
 );
@@ -162,6 +163,8 @@ CREATE TABLE IF NOT EXISTS customer_handwriting_hints (
   raw_name_last TEXT,
   product_id TEXT NOT NULL,
   hit_count INTEGER NOT NULL DEFAULT 1,
+  wrong_count INTEGER NOT NULL DEFAULT 0,
+  last_hit_at TEXT,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (customer_id) REFERENCES customers(id),
   FOREIGN KEY (product_id) REFERENCES products(id),

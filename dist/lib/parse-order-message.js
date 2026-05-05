@@ -133,6 +133,7 @@ async function parseOrderMessage(text, fallbackUnit, options) {
             unit: u,
             remark: remarkRaw !== "" ? remarkRaw : null,
             subCustomer: subRaw !== "" ? subRaw : null,
+            confidenceScore: p.confidenceScore != null ? p.confidenceScore : null,
         };
     });
     return dedupeParsedOrderRows(mapped);

@@ -147,8 +147,11 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
         itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
         const needReviewFlag = resolved ? 0 : 1;
         const subC = item.subCustomer != null && String(item.subCustomer).trim() !== "" ? String(item.subCustomer).trim() : null;
-        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, sub_customer)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, needReviewFlag, itemRemark, subC);
+        const confidence = item.confidenceScore != null && Number.isFinite(Number(item.confidenceScore))
+            ? Math.max(0, Math.min(100, Math.round(Number(item.confidenceScore))))
+            : null;
+        await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, sub_customer, confidence_score)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, needReviewFlag, itemRemark, subC, confidence);
     }
 }
 async function appendRawLineToOrders(db, orderIds, lineText, nowSql) {

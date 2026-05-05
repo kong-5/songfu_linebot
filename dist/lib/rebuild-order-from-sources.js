@@ -46,7 +46,10 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
         }
         itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, p.quantity, inputUnit, unit);
         const subCust = p.subCustomer != null && String(p.subCustomer).trim() !== "" ? String(p.subCustomer).trim() : null;
-        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, include_export, sub_customer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)").run(itemId, orderId, resolved?.productId ?? null, p.rawName || "", qty, unit, needReview, itemRemark, subCust);
+        const confidence = p.confidenceScore != null && Number.isFinite(Number(p.confidenceScore))
+            ? Math.max(0, Math.min(100, Math.round(Number(p.confidenceScore))))
+            : null;
+        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, include_export, sub_customer, confidence_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)").run(itemId, orderId, resolved?.productId ?? null, p.rawName || "", qty, unit, needReview, itemRemark, subCust, confidence);
     }
 }
 /**

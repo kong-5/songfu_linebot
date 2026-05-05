@@ -88,6 +88,9 @@ function initSqlite(dbPath) {
         "ALTER TABLE orders ADD COLUMN remark TEXT",
         "ALTER TABLE orders ADD COLUMN order_sub_split_key TEXT",
         "ALTER TABLE orders ADD COLUMN line_message_id TEXT",
+        "ALTER TABLE order_items ADD COLUMN confidence_score INTEGER",
+        "ALTER TABLE customer_handwriting_hints ADD COLUMN wrong_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE customer_handwriting_hints ADD COLUMN last_hit_at TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -315,6 +318,33 @@ async function initPg() {
                 await client.query("ALTER TABLE order_items ADD COLUMN display_order INTEGER");
             }
             catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS confidence_score INTEGER");
+            }
+            catch (_) {
+                try {
+                    await client.query("ALTER TABLE order_items ADD COLUMN confidence_score INTEGER");
+                }
+                catch (_e) { /* column may exist */ }
+            }
+            try {
+                await client.query("ALTER TABLE customer_handwriting_hints ADD COLUMN IF NOT EXISTS wrong_count INTEGER NOT NULL DEFAULT 0");
+            }
+            catch (_) {
+                try {
+                    await client.query("ALTER TABLE customer_handwriting_hints ADD COLUMN wrong_count INTEGER NOT NULL DEFAULT 0");
+                }
+                catch (_e) { /* column may exist */ }
+            }
+            try {
+                await client.query("ALTER TABLE customer_handwriting_hints ADD COLUMN IF NOT EXISTS last_hit_at TIMESTAMPTZ");
+            }
+            catch (_) {
+                try {
+                    await client.query("ALTER TABLE customer_handwriting_hints ADD COLUMN last_hit_at TIMESTAMPTZ");
+                }
+                catch (_e) { /* column may exist */ }
+            }
             try {
                 await client.query("ALTER TABLE customers ADD COLUMN known_sub_customers TEXT");
             }

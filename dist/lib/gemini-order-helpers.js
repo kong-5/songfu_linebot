@@ -25,6 +25,7 @@ exports.geminiModelCandidates = geminiModelCandidates;
 exports.geminiModelCandidatesFor = geminiModelCandidatesFor;
 exports.coerceQuantityFromGemini = coerceQuantityFromGemini;
 exports.coerceUnitFromGemini = coerceUnitFromGemini;
+exports.coerceConfidenceScore = coerceConfidenceScore;
 exports.buildHistoryItemsOptionBlock = buildHistoryItemsOptionBlock;
 exports.parseOrderVisionForEval = parseOrderVisionForEval;
 /**
@@ -234,6 +235,22 @@ function coerceUnitFromGemini(u) {
         return "";
     return String(u).trim();
 }
+/** confidence_score：Gemini 可能輸出 0-1、0-100、字串或缺欄；統一為 0-100 整數，無效則 null。 */
+function coerceConfidenceScore(c) {
+    if (c == null || c === "")
+        return null;
+    let n = typeof c === "number" ? c : parseFloat(String(c).trim());
+    if (!Number.isFinite(n))
+        return null;
+    if (n > 0 && n <= 1)
+        n = n * 100;
+    n = Math.round(n);
+    if (n < 0)
+        n = 0;
+    if (n > 100)
+        n = 100;
+    return n;
+}
 function coerceSubCustomerFromRow(row) {
     const v = row.sub_customer ?? row.Sub_customer ?? row.subCustomer;
     if (v == null)
@@ -297,7 +314,7 @@ function mapRowsToOrderItems(arr) {
         amount: row.金額 != null && String(row.金額).trim() !== "" ? String(row.金額).trim() : null,
         remark: (row.備註 ?? row.remark ?? row.Remark ?? "").toString().trim() || null,
         subCustomer: coerceSubCustomerFromRow(row),
-        confidenceScore: row.confidence_score != null ? Number(row.confidence_score) : undefined,
+        confidenceScore: coerceConfidenceScore(row.confidence_score ?? row.confidenceScore),
     }))
         .filter((x) => x.rawName)
         .filter((x) => !isLikelyBlankPreprintBasketRow(x.rawName, x.quantity))
