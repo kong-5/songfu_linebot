@@ -8398,7 +8398,7 @@ async function sendMsg(){
         res.type("text/html").send(notionPage("公告管理", body, "announcements", res));
     });
 
-    router.get("/announcements/new", (req, res) => {
+    router.get("/announcements/new", async (req, res) => {
         const templateId = String(req.query.template || "").trim();
         if (!templateId) {
             const cards = announcement_templates_js_1.listTemplates().map((t) =>
@@ -8419,7 +8419,68 @@ async function sendMsg(){
         }
         const tpl = announcement_templates_js_1.getTemplate(templateId);
         if (!tpl) { res.redirect("/admin/announcements/new"); return; }
-        const fieldsHtml = renderAnnouncementFormFields(tpl, {});
+
+        // 從行事曆帶資料：?from_calendar=YYYY-MM-DD → 自動填入 holiday_red 表單
+        let initialData = {};
+        const fromCal = String(req.query.from_calendar || "").trim();
+        if (templateId === "holiday_red" && /^\d{4}-\d{2}-\d{2}$/.test(fromCal)) {
+            try {
+                // 找該日的 calendar event（取假日／公休的 label 當標題）
+                const event = await db.prepare(
+                    "SELECT date, kind, label FROM company_calendar WHERE date = ? AND kind IN ('national_holiday', 'company_off') ORDER BY kind LIMIT 1"
+                ).get(fromCal);
+                // 算當週週一（公告週曆從週一開始）
+                const d = new Date(fromCal + "T12:00:00");
+                if (!Number.isNaN(d.getTime())) {
+                    const dow = d.getDay(); // 0=Sun..6=Sat
+                    const daysToMon = dow === 0 ? 6 : dow - 1;
+                    const monday = new Date(d.getTime() - daysToMon * 86400000);
+                    const weekStart = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, "0")}-${String(monday.getDate()).padStart(2, "0")}`;
+                    const sunday = new Date(monday.getTime() + 6 * 86400000);
+                    const weekEnd = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, "0")}-${String(sunday.getDate()).padStart(2, "0")}`;
+                    // 撈該週所有公休／假日
+                    const weekEvents = await db.prepare(
+                        "SELECT date, kind, label FROM company_calendar WHERE date >= ? AND date <= ? AND kind IN ('national_holiday', 'company_off') ORDER BY date"
+                    ).all(weekStart, weekEnd);
+                    // 撈該週所有加班日（覆蓋預設）
+                    const onDays = await db.prepare(
+                        "SELECT date FROM company_calendar WHERE date >= ? AND date <= ? AND kind = 'company_on' ORDER BY date"
+                    ).all(weekStart, weekEnd);
+                    const offDates = weekEvents.map((e) => e.date);
+                    const workDates = onDays.map((e) => e.date);
+                    const titleBase = event?.label || "節日";
+                    const lines = [];
+                    if (offDates.length) {
+                        const offFmt = offDates.map((iso) => {
+                            const dd = new Date(iso + "T12:00:00");
+                            const wd = ["日", "一", "二", "三", "四", "五", "六"][dd.getDay()];
+                            return `${iso.slice(0, 4)}/${iso.slice(5, 7)}/${iso.slice(8, 10)}（${wd}）`;
+                        }).join("、");
+                        lines.push(`${offFmt} 為本公司休假日，請預估使用量提前叫貨喔～`);
+                    }
+                    if (workDates.length) {
+                        const onFmt = workDates.map((iso) => {
+                            const dd = new Date(iso + "T12:00:00");
+                            const wd = ["日", "一", "二", "三", "四", "五", "六"][dd.getDay()];
+                            return `${iso.slice(0, 4)}/${iso.slice(5, 7)}/${iso.slice(8, 10)}（${wd}）`;
+                        }).join("、");
+                        lines.push(`${onFmt} 公司正常上班。`);
+                    }
+                    initialData = {
+                        title: `${titleBase}休假公告`,
+                        week_start: weekStart,
+                        off_dates: offDates.join(","),
+                        work_dates: workDates.join(","),
+                        lines: lines.join("\n"),
+                        footer: "祝 佳節愉快",
+                    };
+                }
+            } catch (e) {
+                console.warn("[announcements/new from_calendar]", e?.message || e);
+            }
+        }
+
+        const fieldsHtml = renderAnnouncementFormFields(tpl, initialData);
         const body = `${ANN_CSS}
 <div class="notion-page-content">
 <p style="margin:0 0 6px;"><a href="/admin/announcements/new">← 重選模板</a></p>
@@ -8622,30 +8683,52 @@ ${sentInfo}
                 const isToday = c.iso === today;
                 const isWeekend = c.dow === 5 || c.dow === 6;
                 const evs = c.events || [];
-                const evHtml = evs.map((e) => `<div class="cal-event" style="${kindColor(e.kind)}" title="${escapeAttr(e.note || e.label)}"><span>${escapeHtml(e.label)}</span> <a href="javascript:void(0)" onclick="if(confirm('刪除此事件？'))document.getElementById('del-${e.id}').submit()" style="float:right;color:inherit;opacity:0.6;">×</a><form id="del-${e.id}" method="post" action="/admin/calendar/${encodeURIComponent(e.id)}/delete?back=${encodeURIComponent(`/admin/calendar?y=${year}&m=${month}`)}" style="display:none;"></form></div>`).join("");
+                const hasHoliday = evs.some((e) => e.kind === "national_holiday" || e.kind === "company_off");
+                const evHtml = evs.map((e) => `<div class="cal-event" style="${kindColor(e.kind)}" title="${escapeAttr(e.note || e.label)}">
+<span>${escapeHtml(e.label)}</span>
+<a href="javascript:void(0)" class="cal-event-del" onclick="if(confirm('刪除此事件？'))document.getElementById('del-${e.id}').submit()">×</a>
+<form id="del-${e.id}" method="post" action="/admin/calendar/${encodeURIComponent(e.id)}/delete?back=${encodeURIComponent(`/admin/calendar?y=${year}&m=${month}`)}" style="display:none;"></form>
+</div>`).join("");
+                const quickAnnLink = hasHoliday
+                    ? `<a href="/admin/announcements/new?template=holiday_red&from_calendar=${encodeURIComponent(c.iso)}" class="cal-make-ann" title="一鍵建立節日休假公告">📢 公告</a>`
+                    : "";
                 return `<td class="cal-cell${isToday ? " cal-today" : ""}${isWeekend ? " cal-weekend" : ""}">
 <div class="cal-day">${c.day}</div>
 ${evHtml}
-<a href="javascript:void(0)" onclick="annAddCalEvent('${c.iso}')" class="cal-add" title="新增事件">＋</a>
+${quickAnnLink}
+<a href="javascript:void(0)" onclick="openCalEventModal('${c.iso}')" class="cal-add" title="新增事件">＋</a>
 </td>`;
             }).join("")}</tr>`).join("");
 
         const body = `<style>
 .cal-table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--notion-border); border-radius:8px; overflow:hidden; }
 .cal-table th { padding:8px; font-size:12px; font-weight:500; color:#666; background:#f7f6f3; border-bottom:1px solid var(--notion-border); }
-.cal-cell { vertical-align:top; padding:6px 6px 24px; height:96px; width:14.28%; border:1px solid var(--notion-border); position:relative; }
+.cal-cell { vertical-align:top; padding:6px 6px 28px; height:96px; width:14.28%; border:1px solid var(--notion-border); position:relative; }
 .cal-cell.cal-filler { background:#fbfbfa; }
 .cal-cell.cal-today { background:#eff6ff; }
 .cal-cell.cal-weekend .cal-day { color:#c0392b; }
 .cal-day { font-size:14px; font-weight:600; color:#37352f; margin-bottom:4px; }
-.cal-event { font-size:11px; padding:2px 6px; border-radius:4px; margin-bottom:3px; line-height:1.4; }
+.cal-event { display:flex; align-items:center; gap:4px; font-size:11px; padding:2px 6px; border-radius:4px; margin-bottom:3px; line-height:1.4; }
+.cal-event > span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cal-event-del { color:inherit; opacity:0.5; text-decoration:none; padding:0 2px; cursor:pointer; }
+.cal-event-del:hover { opacity:1; }
 .cal-add { position:absolute; right:4px; bottom:4px; font-size:11px; color:#bbb; padding:2px 6px; text-decoration:none; opacity:0; transition:opacity .15s; }
 .cal-cell:hover .cal-add { opacity:1; }
 .cal-add:hover { background:#f0f0f0; color:#3b82c4; }
+.cal-make-ann { position:absolute; left:4px; bottom:4px; font-size:11px; padding:2px 6px; background:#fef3c7; color:#92400e; border-radius:4px; text-decoration:none; }
+.cal-make-ann:hover { background:#fde68a; text-decoration:none; }
 .cal-toolbar { display:flex; align-items:center; gap:14px; margin-bottom:14px; flex-wrap:wrap; }
 .cal-month-title { font-size:22px; font-weight:700; }
 .cal-legend { display:flex; gap:10px; font-size:12px; color:#666; flex-wrap:wrap; }
 .cal-legend span { padding:2px 8px; border-radius:10px; }
+.cal-modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.4); z-index:1000; align-items:center; justify-content:center; padding:20px; }
+.cal-modal-overlay.is-open { display:flex; }
+.cal-modal { background:#fff; border-radius:10px; padding:24px; max-width:440px; width:100%; box-shadow:0 8px 32px rgba(0,0,0,0.2); }
+.cal-modal h2 { margin:0 0 6px; font-size:18px; }
+.cal-modal .cal-modal-date { color:var(--notion-text-muted); font-size:13px; margin-bottom:14px; }
+.cal-modal label { display:block; font-size:13px; color:#444; margin:10px 0 4px; }
+.cal-modal input, .cal-modal select { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
+.cal-modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:18px; }
 </style>
 <div class="notion-page-content">
 <h1 class="notion-h1" style="margin:0 0 8px;">行事曆</h1>
@@ -8660,6 +8743,7 @@ ${okMsg ? `<p style="background:#ecfdf5;color:#047857;padding:8px 12px;border-ra
     <input type="hidden" name="year" value="${year}">
     <button type="submit" class="btn">匯入 ${year} 年國定假日</button>
   </form>
+  <a href="/admin/calendar/export.csv?year=${year}" class="btn">下載 ${year} 年 CSV</a>
   <div class="cal-legend">
     <span style="background:#fee2e2;color:#b91c1c;">國定假日</span>
     <span style="background:#fed7aa;color:#9a3412;">公司公休</span>
@@ -8671,24 +8755,50 @@ ${okMsg ? `<p style="background:#ecfdf5;color:#047857;padding:8px 12px;border-ra
   <thead><tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr></thead>
   <tbody>${cellsHtml}</tbody>
 </table>
-<form id="addEventForm" method="post" action="/admin/calendar" style="display:none;">
-  <input type="hidden" name="date" id="addEventDate">
-  <input type="hidden" name="back" value="/admin/calendar?y=${year}&m=${month}">
-</form>
+<div id="calEventModal" class="cal-modal-overlay" role="dialog" aria-modal="true">
+  <div class="cal-modal">
+    <h2>新增事件</h2>
+    <div class="cal-modal-date" id="calModalDateLabel">—</div>
+    <form method="post" action="/admin/calendar" id="calEventForm">
+      <input type="hidden" name="date" id="calModalDate">
+      <input type="hidden" name="back" value="/admin/calendar?y=${year}&m=${month}">
+      <label for="calModalLabel">事件標題 *</label>
+      <input type="text" id="calModalLabel" name="label" placeholder="例：勞動節休假" required autofocus>
+      <label for="calModalKind">類型</label>
+      <select id="calModalKind" name="kind">
+        <option value="company_off">公司公休</option>
+        <option value="company_on">公司加班</option>
+        <option value="event" selected>事件 / 提醒</option>
+        <option value="national_holiday">國定假日</option>
+      </select>
+      <label for="calModalNote">備註（選填）</label>
+      <input type="text" id="calModalNote" name="note" placeholder="例：客戶端提前告知">
+      <div class="cal-modal-actions">
+        <button type="button" class="btn" onclick="closeCalEventModal()">取消</button>
+        <button type="submit" class="btn btn-primary">新增</button>
+      </div>
+    </form>
+  </div>
+</div>
 <script>
-function annAddCalEvent(iso){
-  const label=prompt('事件標題（如：勞動節休假）：');
-  if(!label||!label.trim())return;
-  const kind=prompt('類型（national_holiday/company_off/company_on/event，預設 event）：','company_off');
-  const note=prompt('備註（選填）：','');
-  const f=document.getElementById('addEventForm');
-  document.getElementById('addEventDate').value=iso;
-  // build dynamic inputs
-  const labelI=document.createElement('input');labelI.name='label';labelI.value=label.trim();f.appendChild(labelI);
-  const kindI=document.createElement('input');kindI.name='kind';kindI.value=(kind||'event').trim()||'event';f.appendChild(kindI);
-  if(note&&note.trim()){const nI=document.createElement('input');nI.name='note';nI.value=note.trim();f.appendChild(nI);}
-  f.submit();
+function openCalEventModal(iso){
+  document.getElementById('calModalDate').value=iso;
+  document.getElementById('calModalDateLabel').textContent=iso;
+  document.getElementById('calModalLabel').value='';
+  document.getElementById('calModalKind').value='event';
+  document.getElementById('calModalNote').value='';
+  document.getElementById('calEventModal').classList.add('is-open');
+  setTimeout(()=>document.getElementById('calModalLabel').focus(),50);
 }
+function closeCalEventModal(){
+  document.getElementById('calEventModal').classList.remove('is-open');
+}
+document.getElementById('calEventModal').addEventListener('click',function(e){
+  if(e.target===this) closeCalEventModal();
+});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape') closeCalEventModal();
+});
 </script>
 </div>`;
         res.type("text/html").send(notionPage("行事曆", body, "calendar", res));
@@ -8710,6 +8820,32 @@ function annAddCalEvent(iso){
         const back = String(req.body.back || req.query.back || "/admin/calendar").trim();
         await db.prepare("DELETE FROM company_calendar WHERE id = ?").run(req.params.id);
         res.redirect(back + (back.includes("?") ? "&" : "?") + "ok=deleted");
+    });
+
+    router.get("/calendar/export.csv", async (req, res) => {
+        const yearParam = parseInt(String(req.query.year || ""), 10);
+        let rows;
+        if (Number.isFinite(yearParam) && yearParam >= 2020 && yearParam <= 2100) {
+            const start = `${yearParam}-01-01`;
+            const end = `${yearParam}-12-31`;
+            rows = await db.prepare("SELECT date, kind, label, note FROM company_calendar WHERE date >= ? AND date <= ? ORDER BY date").all(start, end);
+        } else {
+            rows = await db.prepare("SELECT date, kind, label, note FROM company_calendar ORDER BY date").all();
+        }
+        const kindLabel = (k) => k === "national_holiday" ? "國定假日" : k === "company_off" ? "公司公休" : k === "company_on" ? "公司加班" : "事件";
+        const csvLines = ["日期,類型,標題,備註"];
+        for (const r of (rows || [])) {
+            const cells = [r.date, kindLabel(r.kind), r.label || "", r.note || ""].map((v) => {
+                const s = String(v ?? "");
+                return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+            });
+            csvLines.push(cells.join(","));
+        }
+        const filename = `calendar_${yearParam || "all"}.csv`;
+        res.set("Content-Type", "text/csv; charset=utf-8");
+        res.set("Content-Disposition", `attachment; filename="${filename}"`);
+        // 加上 UTF-8 BOM 讓 Excel 開啟中文正常
+        res.send("﻿" + csvLines.join("\n"));
     });
 
     router.post("/calendar/import-holidays", express_1.default.urlencoded({ extended: true }), async (req, res) => {
