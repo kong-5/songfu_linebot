@@ -1,7 +1,12 @@
 # 推送到 Git 後由 Cloud Build 建置映像並部署到 Cloud Run
-# DATABASE_URL 請在 Cloud Run 服務「變數與密碼」設一次，部署時會保留（不會覆寫）
 #
-# 若儲存庫根目錄就是本專案內容（沒有外層 songfu_linebot 資料夾），請刪除下面 build 步驟的 `dir: songfu_linebot` 兩行。
+# 環境變數（DATABASE_URL、LINE_CHANNEL_ACCESS_TOKEN、LINE_CHANNEL_SECRET、
+# GOOGLE_CLOUD_VISION_API_KEY、GOOGLE_GEMINI_API_KEY 等）一律在 Cloud Run 服務的
+# 「變數與密碼」分頁設定一次；本檔案不傳任何 --update-env-vars / --set-env-vars，
+# 部署時 Cloud Run 會自動保留現有環境變數。
+#
+# （歷史教訓：之前用空字串替換變數覆寫 LINE_CHANNEL_ACCESS_TOKEN 等三個值，
+#  導致 LINE webhook 簽章驗證直接失敗、Vision OCR 無法呼叫，整個 bot 崩潰。）
 
 steps:
   - name: "gcr.io/cloud-builders/docker"
@@ -16,7 +21,6 @@ steps:
     args:
       - "push"
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest"
-  # 只更新這三個變數，不傳 DATABASE_URL，讓 Cloud Run 保留主控台已設的 DATABASE_URL
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
@@ -32,12 +36,6 @@ steps:
       - "--allow-unauthenticated"
       - "--add-cloudsql-instances"
       - "${_INSTANCE}"
-      - "--update-env-vars"
-      - "LINE_CHANNEL_ACCESS_TOKEN=${_LINE_TOKEN}"
-      - "--update-env-vars"
-      - "LINE_CHANNEL_SECRET=${_LINE_SECRET}"
-      - "--update-env-vars"
-      - "GOOGLE_CLOUD_VISION_API_KEY=${_VISION_KEY}"
 options:
   logging: CLOUD_LOGGING_ONLY
 
@@ -47,6 +45,3 @@ substitutions:
   _IMAGE: linebot
   _SERVICE: songfu-line-bot
   _INSTANCE: handy-implement-457807-u0:asia-east1:songfu-line-bot
-  _LINE_TOKEN: ""
-  _LINE_SECRET: ""
-  _VISION_KEY: ""
