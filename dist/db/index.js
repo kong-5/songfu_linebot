@@ -240,6 +240,37 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS announcements (
+          id TEXT PRIMARY KEY,
+          template_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          rendered_image_path TEXT,
+          status TEXT NOT NULL DEFAULT 'draft',
+          created_at TEXT,
+          updated_at TEXT,
+          sent_at TEXT,
+          sent_to_groups_json TEXT,
+          created_by TEXT
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_announcements_status ON announcements(status)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS company_calendar (
+          id TEXT PRIMARY KEY,
+          date TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          label TEXT NOT NULL,
+          note TEXT,
+          created_at TEXT
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_company_calendar_date ON company_calendar(date)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_company_calendar_kind ON company_calendar(kind)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
         sqlite.exec(`CREATE TABLE IF NOT EXISTS product_packaging_ratios (
           id TEXT PRIMARY KEY,
           product_id TEXT NOT NULL,
@@ -534,6 +565,37 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_rhythm_sig_date ON rhythm_daily_signals(signal_date)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_rhythm_sig_cust ON rhythm_daily_signals(customer_id)");
                 await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_rhythm_sig_unique ON rhythm_daily_signals(signal_date, customer_id, product_id, signal_type)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS announcements (
+            id TEXT PRIMARY KEY,
+            template_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            rendered_image_path TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ,
+            sent_at TIMESTAMPTZ,
+            sent_to_groups_json TEXT,
+            created_by TEXT
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_announcements_status ON announcements(status)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS company_calendar (
+            id TEXT PRIMARY KEY,
+            date TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            label TEXT NOT NULL,
+            note TEXT,
+            created_at TIMESTAMPTZ
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_company_calendar_date ON company_calendar(date)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_company_calendar_kind ON company_calendar(kind)");
             }
             catch (_) { /* table may already exist */ }
         }

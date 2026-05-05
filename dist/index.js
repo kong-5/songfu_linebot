@@ -120,6 +120,11 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         adminRouter = express_1.default.Router();
         adminRouter.use((_req, res) => res.status(503).type("html").send(dbDownHtml));
     }
+    // 後台靜態檔（logo、模板背景、icon sprite 等）— 必須在 /admin 路由前掛載
+    app.use("/admin/assets", express_1.default.static((0, path_1.join)(__dirname, "admin", "assets"), {
+        maxAge: "1d",
+        fallthrough: true,
+    }));
     app.use("/admin", adminRouter);
     const rhythm_analysis_js_1 = require("./lib/rhythm-analysis.js");
     app.post("/api/jobs/rhythm-daily", async (_req, res) => {

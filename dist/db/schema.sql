@@ -300,6 +300,35 @@ CREATE TABLE IF NOT EXISTS freezer_fridge_daily (
   resolve_note TEXT
 );
 
+-- 公告管理：模板化群發訊息（取代/擴充原 broadcast 即時填表）。可存草稿、重發、PNG 渲染快照
+CREATE TABLE IF NOT EXISTS announcements (
+  id TEXT PRIMARY KEY,
+  template_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  rendered_image_path TEXT,
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT,
+  updated_at TEXT,
+  sent_at TEXT,
+  sent_to_groups_json TEXT,
+  created_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_announcements_status ON announcements(status);
+CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at);
+
+-- 公司行事曆：國定假日／公司公休／加班／自訂事件，供公告模板與戰情室異常判斷共用
+CREATE TABLE IF NOT EXISTS company_calendar (
+  id TEXT PRIMARY KEY,
+  date TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_company_calendar_date ON company_calendar(date);
+CREATE INDEX IF NOT EXISTS idx_company_calendar_kind ON company_calendar(kind);
+
 -- 週期分析：客戶×品項訂單節律（純 SQL 排程產生，零 AI）
 CREATE TABLE IF NOT EXISTS rhythm_daily_signals (
   id TEXT PRIMARY KEY,

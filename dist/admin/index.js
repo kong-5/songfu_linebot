@@ -63,6 +63,9 @@ const gemini_eval_harness_js_1 = require("../lib/gemini-eval-harness.js");
 const unit_spec_learn_js_1 = require("../lib/unit-spec-learn.js");
 const customer_profile_js_1 = require("../lib/customer-profile.js");
 const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
+const announcement_templates_js_1 = require("../lib/announcement-templates.js");
+const announcement_image_js_1 = require("../lib/announcement-image.js");
+const calendar_holidays_js_1 = require("../lib/calendar-holidays.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
@@ -159,16 +162,24 @@ const NOTION_STYLE = `
     cursor: pointer;
   }
   .notion-app-logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     font-size: 15px;
     font-weight: 600;
     letter-spacing: -0.02em;
     color: var(--notion-text);
     text-decoration: none;
-    padding: 6px 8px;
+    padding: 4px 8px;
     margin-left: -8px;
     border-radius: var(--notion-radius);
   }
   .notion-app-logo:hover { background: var(--notion-hover); color: var(--notion-text); text-decoration: none; }
+  .notion-app-logo img { height: 26px; width: 26px; display: block; }
+  @media (max-width: 480px) {
+    .notion-app-logo img { height: 22px; width: 22px; }
+    .notion-app-logo .logo-text { display: none; }
+  }
   .notion-app-header-sep { color: var(--notion-border-strong); font-weight: 300; user-select: none; }
   .notion-app-header-title {
     font-size: 14px;
@@ -635,10 +646,12 @@ const NOTION_SIDEBAR = (active) => `
         <a href="/admin/freezer-fridge" class="${active === "env" ? "active" : ""}">冷凍庫冷藏庫檢查表</a>
       </div>
     </details>
-    <details class="sidebar-group" ${active === "broadcast" ? "open" : ""}>
-      <summary class="sidebar-group-title">群發訊息</summary>
+    <details class="sidebar-group" ${active === "broadcast" || active === "announcements" || active === "calendar" ? "open" : ""}>
+      <summary class="sidebar-group-title">公告與訊息</summary>
       <div class="sidebar-links">
-        <a href="/admin/broadcast" class="${active === "broadcast" ? "active" : ""}">傳送訊息</a>
+        <a href="/admin/announcements" class="${active === "announcements" ? "active" : ""}">公告管理</a>
+        <a href="/admin/calendar" class="${active === "calendar" ? "active" : ""}">行事曆</a>
+        <a href="/admin/broadcast" class="${active === "broadcast" ? "active" : ""}">即時群發</a>
       </div>
     </details>
   </nav>
@@ -767,7 +780,10 @@ function renderNotionAppHeader(username, pageTitle, opts = {}) {
     <header class="notion-app-header no-print">
       <div class="notion-app-header-left">
         ${showSidebarToggle ? `<button type="button" class="sidebar-toggle" id="sidebarToggleBtn" aria-label="切換側邊欄">☰</button>` : ""}
-        <a href="/admin" class="notion-app-logo">松富物流</a>
+        <a href="/admin" class="notion-app-logo" title="松富物流">
+          <img src="/admin/assets/logo.svg" alt="松富物流 logo">
+          <span class="logo-text">松富物流</span>
+        </a>
         <span class="notion-app-header-sep">/</span>
         <span class="notion-app-header-title">${t}</span>
       </div>
@@ -8080,6 +8096,526 @@ async function sendMsg(){
         if (errors.length) console.warn("[broadcast] 部分傳送失敗:", errors.join(" | "));
         res.json({ ok: true, sent, errors });
     });
+
+    // ============================================================
+    // 公告管理：模板化群發系統（取代/擴充 broadcast 即時填表）
+    // ============================================================
+    const ANN_CSS = `<style>
+.ann-tpl-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:14px; margin-top:14px; }
+.ann-tpl-card { display:block; padding:18px 20px; background:#fff; border:1px solid var(--notion-border); border-radius:10px; text-decoration:none; color:var(--notion-text); transition:border-color .15s,transform .15s,box-shadow .15s; }
+.ann-tpl-card:hover { border-color:#3b82c4; transform:translateY(-2px); box-shadow:0 4px 16px rgba(59,130,196,0.12); text-decoration:none; }
+.ann-tpl-icon { font-size:32px; line-height:1; margin-bottom:8px; }
+.ann-tpl-name { font-size:16px; font-weight:600; margin-bottom:4px; }
+.ann-tpl-desc { font-size:12px; color:var(--notion-text-muted); line-height:1.45; }
+.ann-form { max-width:760px; }
+.ann-form .field { margin-bottom:18px; }
+.ann-form label.fl { display:block; font-size:13px; font-weight:500; color:#444; margin-bottom:5px; }
+.ann-form .hint { font-size:12px; color:var(--notion-text-muted); margin-top:3px; }
+.ann-form input[type=text], .ann-form input[type=date], .ann-form textarea { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
+.ann-form textarea { min-height:96px; resize:vertical; }
+.ann-item-rows .row { display:flex; gap:6px; margin-bottom:6px; }
+.ann-item-rows .row input { flex:1; padding:6px 8px; border:1px solid var(--notion-border-strong); border-radius:5px; font-size:13px; }
+.ann-item-rows .row .col-price { flex:0 0 80px; }
+.ann-item-rows .row .col-unit { flex:0 0 60px; }
+.ann-item-rows .row .col-market { flex:0 0 80px; }
+.ann-item-rows .row .col-rm { flex:0 0 26px; background:none; border:none; cursor:pointer; color:#bbb; }
+.ann-add-row { background:none; border:1px dashed #bbb; border-radius:6px; padding:5px 12px; cursor:pointer; font-size:12px; color:#777; }
+.ann-add-row:hover { border-color:#3b82c4; color:#3b82c4; }
+.ann-list-table { width:100%; border-collapse:collapse; }
+.ann-list-table th { text-align:left; padding:10px 12px; font-size:12px; color:#666; border-bottom:1px solid var(--notion-border); font-weight:500; }
+.ann-list-table td { padding:12px; border-bottom:1px solid var(--notion-border); font-size:13px; }
+.ann-list-table tr:hover td { background:#fafafa; }
+.ann-status { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+.ann-status.draft { background:#f4f4f0; color:#666; }
+.ann-status.sent { background:#ecfdf5; color:#047857; }
+
+/* === 公告卡片：節日紅底 === */
+.ann-card { padding:24px; border-radius:14px; max-width:540px; font-family:'Noto Serif TC','PingFang TC','Microsoft JhengHei',serif; }
+.ann-holiday-red { background:linear-gradient(180deg,#a82323,#7a1717); color:#fff; }
+.ann-holiday-red .ann-title { font-size:32px; font-weight:800; text-align:center; margin-bottom:18px; }
+.ann-week-strip { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin:16px 0; }
+.ann-week-cell { padding:8px 4px; border-radius:6px; border:1.5px solid; text-align:center; font-size:13px; }
+.ann-week-day { font-weight:700; }
+.ann-week-date { font-size:18px; font-weight:700; margin-top:2px; }
+.ann-week-tag { font-size:10px; margin-top:2px; }
+.ann-body { margin-top:14px; }
+.ann-line { font-size:15px; line-height:1.7; margin-bottom:6px; color:#fff8e1; }
+.ann-line-no { font-weight:700; color:#ffd6c4; margin-right:4px; }
+.ann-footer { font-size:20px; text-align:center; margin-top:18px; font-weight:700; color:#fff; }
+.ann-brand { font-size:11px; text-align:center; margin-top:14px; opacity:0.7; letter-spacing:2px; }
+.ann-brand-light { color:#787774; opacity:1; }
+
+/* 限時優惠黃 */
+.ann-promo-yellow { background:#fffaeb; border:2px solid #f5b800; color:#3d2c00; }
+.ann-promo-header { display:flex; gap:10px; align-items:flex-start; margin-bottom:10px; }
+.ann-promo-bolt { font-size:32px; }
+.ann-promo-titles { flex:1; }
+.ann-promo-yellow .ann-title { font-size:24px; font-weight:800; color:#3d2c00; }
+.ann-promo-sub { font-size:13px; color:#5c4400; margin-top:2px; }
+.ann-promo-date { font-size:14px; font-weight:700; color:#a8540a; margin-bottom:12px; }
+.ann-promo-items { display:flex; flex-direction:column; gap:6px; }
+.ann-promo-item { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:#fff; border:1px solid #f5d97e; border-radius:6px; }
+.ann-promo-item-name { font-weight:700; flex:1; }
+.ann-promo-price-now { font-size:20px; font-weight:800; color:#a8540a; }
+.ann-promo-unit { font-size:12px; color:#9a7b3a; margin-left:2px; }
+.ann-promo-item-market { font-size:11px; color:#9a7b3a; margin-left:8px; }
+.ann-promo-note { margin-top:10px; font-size:12px; color:#5c4400; padding:8px; background:#fff5d6; border-radius:6px; }
+
+/* 通知深色 */
+.ann-notice-dark { background:#fafafa; border:1px solid var(--notion-border); }
+.ann-notice-header { background:#2c3e50; padding:14px 18px; margin:-24px -24px 14px; border-radius:12px 12px 0 0; }
+.ann-notice-icon { color:#90b8d8; font-size:13px; }
+.ann-notice-title { display:block; color:#fff; font-size:20px; font-weight:700; margin-top:4px; }
+.ann-notice-body p { font-size:14px; line-height:1.7; margin:0 0 10px; color:#37352f; }
+
+/* 新品綠 */
+.ann-new-arrival-green { background:#f4faf6; border:2px solid #1e7a5e; color:#37352f; }
+.ann-new-tag { display:inline-block; padding:2px 10px; background:#1e7a5e; color:#cdebd9; font-size:11px; font-weight:600; border-radius:10px; margin-bottom:10px; }
+.ann-new-arrival-green .ann-title { font-size:24px; font-weight:800; color:#1e7a5e; }
+.ann-new-tagline { font-size:14px; color:#5c7a6e; margin-top:4px; margin-bottom:14px; }
+.ann-new-highlights { display:flex; flex-direction:column; gap:6px; margin:14px 0; }
+.ann-new-bullet { font-size:14px; color:#37352f; }
+.ann-new-price { font-size:18px; font-weight:700; color:#1e7a5e; margin:10px 0; }
+.ann-new-cta { font-size:14px; font-weight:600; color:#fff; background:#1e7a5e; padding:8px 16px; border-radius:6px; display:inline-block; margin-top:8px; }
+
+.ann-empty { color:#999; text-align:center; padding:24px; font-size:13px; }
+.ann-preview-pane { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:18px; }
+@media (max-width:880px) { .ann-preview-pane { grid-template-columns:1fr; } }
+.ann-preview-col h3 { font-size:13px; color:#666; margin:0 0 8px; font-weight:500; }
+.ann-preview-col img { max-width:100%; border:1px solid var(--notion-border); border-radius:8px; }
+</style>`;
+
+    function nowSqlExpr() {
+        return process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+    }
+
+    function statusBadge(status) {
+        const s = String(status || "draft").toLowerCase();
+        const label = s === "sent" ? "已送" : "草稿";
+        return `<span class="ann-status ${s}">${label}</span>`;
+    }
+
+    function renderAnnouncementFormFields(template, data) {
+        const out = [];
+        for (const f of template.fields) {
+            const v = data && Object.prototype.hasOwnProperty.call(data, f.name) ? data[f.name] : "";
+            const id = `f_${f.name}`;
+            if (f.type === "textarea") {
+                out.push(`<div class="field"><label class="fl" for="${id}">${escapeHtml(f.label)}${f.required ? " *" : ""}</label><textarea id="${id}" name="${f.name}" placeholder="${escapeAttr(f.placeholder || "")}"${f.required ? " required" : ""}>${escapeHtml(String(v || ""))}</textarea>${f.hint ? `<div class="hint">${escapeHtml(f.hint)}</div>` : ""}</div>`);
+            } else if (f.type === "items") {
+                const items = Array.isArray(v) ? v : [{ name: "", price: "", unit: "斤", market: "" }];
+                const rowsHtml = items.map((it) => `<div class="row">
+<input type="text" placeholder="品名" name="item_name" value="${escapeAttr(it?.name || "")}">
+<input type="text" placeholder="價格" class="col-price" name="item_price" value="${escapeAttr(it?.price || "")}">
+<input type="text" placeholder="單位" class="col-unit" name="item_unit" value="${escapeAttr(it?.unit || "斤")}">
+<input type="text" placeholder="行情" class="col-market" name="item_market" value="${escapeAttr(it?.market || "")}">
+<button type="button" class="col-rm" onclick="this.parentElement.remove()" title="刪除">×</button>
+</div>`).join("");
+                out.push(`<div class="field"><label class="fl">${escapeHtml(f.label)}</label><div id="${id}" class="ann-item-rows">${rowsHtml}</div><button type="button" class="ann-add-row" onclick="annAddItemRow('${id}')">＋ 新增品項</button></div>`);
+            } else {
+                const t = f.type === "date" ? "date" : "text";
+                out.push(`<div class="field"><label class="fl" for="${id}">${escapeHtml(f.label)}${f.required ? " *" : ""}</label><input type="${t}" id="${id}" name="${f.name}" value="${escapeAttr(String(v || ""))}" placeholder="${escapeAttr(f.placeholder || "")}"${f.required ? " required" : ""}>${f.hint ? `<div class="hint">${escapeHtml(f.hint)}</div>` : ""}</div>`);
+            }
+        }
+        return out.join("\n");
+    }
+
+    function parseFormBody(template, body) {
+        const out = {};
+        for (const f of template.fields) {
+            if (f.type === "items") {
+                const names = [].concat(body.item_name || []);
+                const prices = [].concat(body.item_price || []);
+                const units = [].concat(body.item_unit || []);
+                const markets = [].concat(body.item_market || []);
+                const arr = [];
+                for (let i = 0; i < names.length; i++) {
+                    const n = String(names[i] || "").trim();
+                    if (!n) continue;
+                    arr.push({ name: n, price: String(prices[i] || "").trim(), unit: String(units[i] || "").trim() || "斤", market: String(markets[i] || "").trim() });
+                }
+                out[f.name] = arr;
+            } else {
+                out[f.name] = String(body[f.name] || "").trim();
+            }
+        }
+        return out;
+    }
+
+    router.get("/announcements", async (req, res) => {
+        const filterStatus = String(req.query.status || "").trim().toLowerCase();
+        let sql = "SELECT id, template_id, title, status, created_at, sent_at FROM announcements";
+        const params = [];
+        if (filterStatus === "draft" || filterStatus === "sent") {
+            sql += " WHERE status = ?";
+            params.push(filterStatus);
+        }
+        sql += " ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 200";
+        const rows = await db.prepare(sql).all(...params);
+        const tmplMap = Object.fromEntries(announcement_templates_js_1.listTemplates().map((t) => [t.id, t]));
+        const tableRows = rows.length
+            ? rows.map((r) => {
+                const t = tmplMap[r.template_id];
+                const tplLabel = t ? `${t.icon} ${t.label}` : r.template_id;
+                const created = r.created_at ? String(r.created_at).slice(0, 16).replace("T", " ") : "—";
+                const sent = r.sent_at ? String(r.sent_at).slice(0, 16).replace("T", " ") : "—";
+                return `<tr>
+<td><a href="/admin/announcements/${encodeURIComponent(r.id)}">${escapeHtml(r.title || "(未命名)")}</a></td>
+<td>${escapeHtml(tplLabel)}</td>
+<td>${statusBadge(r.status)}</td>
+<td style="color:#787774;font-size:12px;">${created}</td>
+<td style="color:#787774;font-size:12px;">${sent}</td>
+</tr>`;
+            }).join("")
+            : `<tr><td colspan="5" style="text-align:center;padding:24px;color:#999;">尚無公告，點右上「＋ 新增公告」開始</td></tr>`;
+        const filterLink = (s, label) => `<a href="/admin/announcements${s ? `?status=${s}` : ""}" style="margin-right:8px;padding:4px 10px;border-radius:6px;${filterStatus === s ? "background:#3b82c4;color:#fff;" : "color:#666;"}">${escapeHtml(label)}</a>`;
+        const body = `${ANN_CSS}
+<div class="notion-page-content">
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+  <h1 class="notion-h1" style="margin:0;">公告管理</h1>
+  <a href="/admin/announcements/new" class="btn btn-primary">＋ 新增公告</a>
+</div>
+<p style="color:#888;font-size:13px;margin-bottom:14px;">挑選模板、填寫內容、預覽 → 傳送到 LINE 或下載 PNG。可重複發送與保留歷史紀錄。</p>
+<div style="margin-bottom:12px;">${filterLink("", "全部")}${filterLink("draft", "草稿")}${filterLink("sent", "已送")}</div>
+<div class="notion-card" style="padding:0;">
+  <table class="ann-list-table">
+    <thead><tr><th>標題</th><th>模板</th><th>狀態</th><th>建立時間</th><th>送出時間</th></tr></thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</div>
+</div>`;
+        res.type("text/html").send(notionPage("公告管理", body, "announcements", res));
+    });
+
+    router.get("/announcements/new", (req, res) => {
+        const templateId = String(req.query.template || "").trim();
+        if (!templateId) {
+            const cards = announcement_templates_js_1.listTemplates().map((t) =>
+                `<a href="/admin/announcements/new?template=${encodeURIComponent(t.id)}" class="ann-tpl-card">
+<div class="ann-tpl-icon">${t.icon}</div>
+<div class="ann-tpl-name">${escapeHtml(t.label)}</div>
+<div class="ann-tpl-desc">${escapeHtml(t.description)}</div>
+</a>`).join("");
+            const body = `${ANN_CSS}
+<div class="notion-page-content">
+<p style="margin:0 0 6px;"><a href="/admin/announcements">← 公告管理</a></p>
+<h1 class="notion-h1" style="margin:0 0 8px;">挑選模板</h1>
+<p style="color:#888;font-size:13px;">每個模板都會生成 LINE Flex Message + 可下載的 PNG 圖片，挑一個開始。</p>
+<div class="ann-tpl-grid">${cards}</div>
+</div>`;
+            res.type("text/html").send(notionPage("挑選模板", body, "announcements", res));
+            return;
+        }
+        const tpl = announcement_templates_js_1.getTemplate(templateId);
+        if (!tpl) { res.redirect("/admin/announcements/new"); return; }
+        const fieldsHtml = renderAnnouncementFormFields(tpl, {});
+        const body = `${ANN_CSS}
+<div class="notion-page-content">
+<p style="margin:0 0 6px;"><a href="/admin/announcements/new">← 重選模板</a></p>
+<h1 class="notion-h1" style="margin:0 0 4px;">${tpl.icon} ${escapeHtml(tpl.label)}</h1>
+<p style="color:#888;font-size:13px;margin-bottom:14px;">${escapeHtml(tpl.description)}</p>
+<form method="post" action="/admin/announcements" class="ann-form notion-card" style="padding:20px;">
+<input type="hidden" name="template_id" value="${escapeAttr(tpl.id)}">
+${fieldsHtml}
+<div style="display:flex;gap:10px;margin-top:18px;">
+  <button type="submit" class="btn btn-primary">儲存草稿</button>
+  <a href="/admin/announcements" class="btn">取消</a>
+</div>
+</form>
+</div>
+<script>
+function annAddItemRow(id){
+  const wrap=document.getElementById(id);
+  const div=document.createElement('div');
+  div.className='row';
+  div.innerHTML='<input type="text" placeholder="品名" name="item_name"><input type="text" placeholder="價格" class="col-price" name="item_price"><input type="text" placeholder="單位" class="col-unit" name="item_unit" value="斤"><input type="text" placeholder="行情" class="col-market" name="item_market"><button type="button" class="col-rm" onclick="this.parentElement.remove()" title="刪除">×</button>';
+  wrap.appendChild(div);
+}
+</script>`;
+        res.type("text/html").send(notionPage("新增公告", body, "announcements", res));
+    });
+
+    router.post("/announcements", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const templateId = String(req.body.template_id || "").trim();
+        const tpl = announcement_templates_js_1.getTemplate(templateId);
+        if (!tpl) { res.status(400).send("未知的模板"); return; }
+        const payload = parseFormBody(tpl, req.body);
+        const title = String(payload.title || "(未命名)").trim() || "(未命名)";
+        const id = (0, id_js_1.newId)("ann");
+        await db.prepare(`INSERT INTO announcements (id, template_id, title, payload_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', ${nowSqlExpr()}, ${nowSqlExpr()})`)
+            .run(id, templateId, title, JSON.stringify(payload));
+        res.redirect(`/admin/announcements/${encodeURIComponent(id)}?ok=created`);
+    });
+
+    router.get("/announcements/:id", async (req, res) => {
+        const id = req.params.id;
+        const row = await db.prepare("SELECT id, template_id, title, payload_json, status, created_at, sent_at, sent_to_groups_json FROM announcements WHERE id = ?").get(id);
+        if (!row) { res.status(404).send("公告不存在"); return; }
+        const tpl = announcement_templates_js_1.getTemplate(row.template_id);
+        if (!tpl) { res.status(500).send("模板不存在：" + row.template_id); return; }
+        const data = JSON.parse(row.payload_json || "{}");
+        const previewHtml = announcement_templates_js_1.renderHtmlPreview(row.template_id, data);
+        const customers = await db.prepare("SELECT id, name FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != '' ORDER BY name ASC").all();
+        const okMsg = req.query.ok === "created" ? "已建立草稿" : (req.query.ok === "sent" ? `已成功送出至 ${req.query.n || "?"} 個群組` : "");
+        const errMsg = req.query.err ? decodeURIComponent(String(req.query.err)) : "";
+        const sentGroups = row.sent_to_groups_json ? JSON.parse(row.sent_to_groups_json) : null;
+        const sentInfo = sentGroups && Array.isArray(sentGroups) && sentGroups.length
+            ? `<p style="color:#047857;font-size:13px;margin:8px 0 0;">✓ 已送至 ${sentGroups.length} 個群組（最後送出：${row.sent_at ? String(row.sent_at).slice(0, 16).replace("T", " ") : "—"}）</p>` : "";
+        const body = `${ANN_CSS}
+<div class="notion-page-content">
+<p style="margin:0 0 6px;"><a href="/admin/announcements">← 公告管理</a></p>
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+  <h1 class="notion-h1" style="margin:0;">${escapeHtml(row.title)} ${statusBadge(row.status)}</h1>
+  <div style="display:flex;gap:8px;">
+    <a href="/admin/announcements/${encodeURIComponent(id)}/image.png" download="${escapeAttr(row.title || "announcement")}.png" class="btn">下載 PNG</a>
+    <form method="post" action="/admin/announcements/${encodeURIComponent(id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除？');"><button type="submit" class="btn">刪除</button></form>
+  </div>
+</div>
+<p style="color:#888;font-size:13px;">模板：${tpl.icon} ${escapeHtml(tpl.label)} · 建立：${row.created_at ? String(row.created_at).slice(0, 16).replace("T", " ") : "—"}</p>
+${okMsg ? `<p class="notion-msg ok" style="background:#ecfdf5;color:#047857;padding:8px 12px;border-radius:6px;border:1px solid #a7f3d0;">✓ ${escapeHtml(okMsg)}</p>` : ""}
+${errMsg ? `<p class="notion-msg err" style="background:#fef2f2;color:#b91c1c;padding:8px 12px;border-radius:6px;border:1px solid #fecaca;">✗ ${escapeHtml(errMsg)}</p>` : ""}
+${sentInfo}
+
+<div class="ann-preview-pane">
+  <div class="ann-preview-col">
+    <h3>HTML 預覽（送 LINE 用）</h3>
+    ${previewHtml}
+  </div>
+  <div class="ann-preview-col">
+    <h3>PNG 圖片預覽（下載分享用）</h3>
+    <img src="/admin/announcements/${encodeURIComponent(id)}/image.png" alt="PNG 預覽">
+  </div>
+</div>
+
+<div class="notion-card" style="margin-top:24px;padding:20px;max-width:760px;">
+  <h3 style="margin:0 0 12px;font-size:15px;">傳送至 LINE 群組</h3>
+  <form method="post" action="/admin/announcements/${encodeURIComponent(id)}/send" onsubmit="return confirm('確定傳送至選定的 LINE 群組？');">
+    <div class="field" style="margin-bottom:14px;">
+      <label class="fl">傳送對象</label>
+      <select name="recipients" style="width:100%;max-width:340px;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:6px;background:#fafafa;">
+        <option value="all">全部客戶（${customers.length} 個 LINE 群組）</option>
+        ${customers.map((c) => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join("")}
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary">傳送</button>
+  </form>
+</div>
+</div>`;
+        res.type("text/html").send(notionPage(row.title, body, "announcements", res));
+    });
+
+    router.post("/announcements/:id/delete", async (req, res) => {
+        await db.prepare("DELETE FROM announcements WHERE id = ?").run(req.params.id);
+        res.redirect("/admin/announcements");
+    });
+
+    router.get("/announcements/:id/image.png", async (req, res) => {
+        const row = await db.prepare("SELECT template_id, payload_json FROM announcements WHERE id = ?").get(req.params.id);
+        if (!row) { res.status(404).send("not found"); return; }
+        try {
+            const data = JSON.parse(row.payload_json || "{}");
+            const buf = await announcement_image_js_1.renderAnnouncementPng(row.template_id, data);
+            if (!buf) { res.status(404).send("此模板不支援 PNG 渲染"); return; }
+            res.set("Content-Type", "image/png");
+            res.set("Cache-Control", "private, max-age=60");
+            res.send(buf);
+        } catch (e) {
+            console.error("[announcement-image]", e?.message || e);
+            res.status(500).send("PNG 渲染失敗：" + (e?.message || "unknown"));
+        }
+    });
+
+    router.post("/announcements/:id/send", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const id = req.params.id;
+        const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+        const row = await db.prepare("SELECT template_id, title, payload_json FROM announcements WHERE id = ?").get(id);
+        if (!row) { res.status(404).send("公告不存在"); return; }
+        if (!token) { res.redirect(`/admin/announcements/${encodeURIComponent(id)}?err=${encodeURIComponent("未設定 LINE_CHANNEL_ACCESS_TOKEN")}`); return; }
+        let lineMsg;
+        try {
+            const data = JSON.parse(row.payload_json || "{}");
+            lineMsg = announcement_templates_js_1.buildFlexMessage(row.template_id, data);
+        } catch (e) {
+            res.redirect(`/admin/announcements/${encodeURIComponent(id)}?err=${encodeURIComponent("Flex Message 建立失敗：" + (e?.message || ""))}`);
+            return;
+        }
+        const recipients = String(req.body.recipients || "all");
+        let targets = [];
+        if (recipients !== "all") {
+            const cust = await db.prepare("SELECT id, line_group_id, name FROM customers WHERE id = ? AND line_group_id IS NOT NULL AND line_group_id != ''").get(recipients);
+            if (cust) targets = [cust];
+        } else {
+            targets = await db.prepare("SELECT id, line_group_id, name FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != '' ORDER BY name ASC").all();
+        }
+        let sent = 0;
+        const errors = [];
+        const sentGroupIds = [];
+        for (const t of targets) {
+            try {
+                const resp = await fetch("https://api.line.me/v2/bot/message/push", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ to: t.line_group_id, messages: [lineMsg] }),
+                });
+                if (resp.ok) { sent++; sentGroupIds.push(t.id); }
+                else { errors.push(`${t.name}: ${resp.status} ${(await resp.text().catch(() => "")).slice(0, 100)}`); }
+            } catch (e) {
+                errors.push(`${t.name}: ${e?.message || e}`);
+            }
+        }
+        if (errors.length) console.warn("[announcement-send]", errors.join(" | "));
+        await db.prepare(`UPDATE announcements SET status = 'sent', sent_at = ${nowSqlExpr()}, sent_to_groups_json = ?, updated_at = ${nowSqlExpr()} WHERE id = ?`)
+            .run(JSON.stringify(sentGroupIds), id);
+        if (sent === 0 && errors.length) {
+            res.redirect(`/admin/announcements/${encodeURIComponent(id)}?err=${encodeURIComponent("全部失敗：" + errors[0])}`);
+            return;
+        }
+        res.redirect(`/admin/announcements/${encodeURIComponent(id)}?ok=sent&n=${sent}`);
+    });
+
+    // ============================================================
+    // 行事曆：國定假日、公司公休、加班、自訂事件
+    // ============================================================
+    router.get("/calendar", async (req, res) => {
+        const today = getTaipeiCalendarDateYYYYMMDD();
+        const yParam = parseInt(String(req.query.y || ""), 10);
+        const mParam = parseInt(String(req.query.m || ""), 10);
+        const year = Number.isFinite(yParam) && yParam >= 2020 && yParam <= 2100 ? yParam : Number(today.slice(0, 4));
+        const month = Number.isFinite(mParam) && mParam >= 1 && mParam <= 12 ? mParam : Number(today.slice(5, 7));
+        const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
+        const nextM = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, "0")}-01`;
+        const events = await db.prepare("SELECT id, date, kind, label, note FROM company_calendar WHERE date >= ? AND date < ? ORDER BY date ASC").all(monthStart, nextM);
+        const eventsByDate = {};
+        for (const e of events) {
+            if (!eventsByDate[e.date]) eventsByDate[e.date] = [];
+            eventsByDate[e.date].push(e);
+        }
+        const grid = calendar_holidays_js_1.buildMonthGrid(year, month, eventsByDate);
+        const prevY = month === 1 ? year - 1 : year;
+        const prevM = month === 1 ? 12 : month - 1;
+        const nextY = month === 12 ? year + 1 : year;
+        const nextMM = month === 12 ? 1 : month + 1;
+        const okMsg = req.query.ok === "imported" ? `已匯入 ${req.query.n || "?"} 筆 ${req.query.y || ""} 年國定假日` : (req.query.ok === "added" ? "已新增" : (req.query.ok === "deleted" ? "已刪除" : ""));
+
+        const kindColor = (k) => {
+            if (k === "national_holiday") return "background:#fee2e2;color:#b91c1c;";
+            if (k === "company_off") return "background:#fed7aa;color:#9a3412;";
+            if (k === "company_on") return "background:#bbf7d0;color:#166534;";
+            return "background:#dbeafe;color:#1e40af;";
+        };
+        const kindLabel = (k) => k === "national_holiday" ? "國定假日" : k === "company_off" ? "公司公休" : k === "company_on" ? "公司加班" : "事件";
+
+        const cellsHtml = grid.map((row) =>
+            `<tr>${row.map((c) => {
+                if (c.filler) return `<td class="cal-cell cal-filler"></td>`;
+                const isToday = c.iso === today;
+                const isWeekend = c.dow === 5 || c.dow === 6;
+                const evs = c.events || [];
+                const evHtml = evs.map((e) => `<div class="cal-event" style="${kindColor(e.kind)}" title="${escapeAttr(e.note || e.label)}"><span>${escapeHtml(e.label)}</span> <a href="javascript:void(0)" onclick="if(confirm('刪除此事件？'))document.getElementById('del-${e.id}').submit()" style="float:right;color:inherit;opacity:0.6;">×</a><form id="del-${e.id}" method="post" action="/admin/calendar/${encodeURIComponent(e.id)}/delete?back=${encodeURIComponent(`/admin/calendar?y=${year}&m=${month}`)}" style="display:none;"></form></div>`).join("");
+                return `<td class="cal-cell${isToday ? " cal-today" : ""}${isWeekend ? " cal-weekend" : ""}">
+<div class="cal-day">${c.day}</div>
+${evHtml}
+<a href="javascript:void(0)" onclick="annAddCalEvent('${c.iso}')" class="cal-add" title="新增事件">＋</a>
+</td>`;
+            }).join("")}</tr>`).join("");
+
+        const body = `<style>
+.cal-table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--notion-border); border-radius:8px; overflow:hidden; }
+.cal-table th { padding:8px; font-size:12px; font-weight:500; color:#666; background:#f7f6f3; border-bottom:1px solid var(--notion-border); }
+.cal-cell { vertical-align:top; padding:6px 6px 24px; height:96px; width:14.28%; border:1px solid var(--notion-border); position:relative; }
+.cal-cell.cal-filler { background:#fbfbfa; }
+.cal-cell.cal-today { background:#eff6ff; }
+.cal-cell.cal-weekend .cal-day { color:#c0392b; }
+.cal-day { font-size:14px; font-weight:600; color:#37352f; margin-bottom:4px; }
+.cal-event { font-size:11px; padding:2px 6px; border-radius:4px; margin-bottom:3px; line-height:1.4; }
+.cal-add { position:absolute; right:4px; bottom:4px; font-size:11px; color:#bbb; padding:2px 6px; text-decoration:none; opacity:0; transition:opacity .15s; }
+.cal-cell:hover .cal-add { opacity:1; }
+.cal-add:hover { background:#f0f0f0; color:#3b82c4; }
+.cal-toolbar { display:flex; align-items:center; gap:14px; margin-bottom:14px; flex-wrap:wrap; }
+.cal-month-title { font-size:22px; font-weight:700; }
+.cal-legend { display:flex; gap:10px; font-size:12px; color:#666; flex-wrap:wrap; }
+.cal-legend span { padding:2px 8px; border-radius:10px; }
+</style>
+<div class="notion-page-content">
+<h1 class="notion-h1" style="margin:0 0 8px;">行事曆</h1>
+<p style="color:#888;font-size:13px;">國定假日／公司公休／加班／事件。公告模板的日期選擇器會讀此資料來源。</p>
+${okMsg ? `<p style="background:#ecfdf5;color:#047857;padding:8px 12px;border-radius:6px;border:1px solid #a7f3d0;font-size:13px;">✓ ${escapeHtml(okMsg)}</p>` : ""}
+<div class="cal-toolbar">
+  <a href="/admin/calendar?y=${prevY}&m=${prevM}" class="btn">← 上月</a>
+  <div class="cal-month-title">${year} 年 ${month} 月</div>
+  <a href="/admin/calendar?y=${nextY}&m=${nextMM}" class="btn">下月 →</a>
+  <a href="/admin/calendar" class="btn">本月</a>
+  <form method="post" action="/admin/calendar/import-holidays" style="display:inline;" onsubmit="return confirm('匯入 ${year} 年國定假日？已存在的不會重複加入');">
+    <input type="hidden" name="year" value="${year}">
+    <button type="submit" class="btn">匯入 ${year} 年國定假日</button>
+  </form>
+  <div class="cal-legend">
+    <span style="background:#fee2e2;color:#b91c1c;">國定假日</span>
+    <span style="background:#fed7aa;color:#9a3412;">公司公休</span>
+    <span style="background:#bbf7d0;color:#166534;">公司加班</span>
+    <span style="background:#dbeafe;color:#1e40af;">事件</span>
+  </div>
+</div>
+<table class="cal-table">
+  <thead><tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr></thead>
+  <tbody>${cellsHtml}</tbody>
+</table>
+<form id="addEventForm" method="post" action="/admin/calendar" style="display:none;">
+  <input type="hidden" name="date" id="addEventDate">
+  <input type="hidden" name="back" value="/admin/calendar?y=${year}&m=${month}">
+</form>
+<script>
+function annAddCalEvent(iso){
+  const label=prompt('事件標題（如：勞動節休假）：');
+  if(!label||!label.trim())return;
+  const kind=prompt('類型（national_holiday/company_off/company_on/event，預設 event）：','company_off');
+  const note=prompt('備註（選填）：','');
+  const f=document.getElementById('addEventForm');
+  document.getElementById('addEventDate').value=iso;
+  // build dynamic inputs
+  const labelI=document.createElement('input');labelI.name='label';labelI.value=label.trim();f.appendChild(labelI);
+  const kindI=document.createElement('input');kindI.name='kind';kindI.value=(kind||'event').trim()||'event';f.appendChild(kindI);
+  if(note&&note.trim()){const nI=document.createElement('input');nI.name='note';nI.value=note.trim();f.appendChild(nI);}
+  f.submit();
+}
+</script>
+</div>`;
+        res.type("text/html").send(notionPage("行事曆", body, "calendar", res));
+    });
+
+    router.post("/calendar", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const date = String(req.body.date || "").trim();
+        const kind = String(req.body.kind || "event").trim();
+        const label = String(req.body.label || "").trim();
+        const note = String(req.body.note || "").trim() || null;
+        const back = String(req.body.back || "/admin/calendar").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !label) { res.redirect(back); return; }
+        const id = (0, id_js_1.newId)("cal");
+        await db.prepare(`INSERT INTO company_calendar (id, date, kind, label, note, created_at) VALUES (?, ?, ?, ?, ?, ${nowSqlExpr()})`).run(id, date, kind, label, note);
+        res.redirect(back + (back.includes("?") ? "&" : "?") + "ok=added");
+    });
+
+    router.post("/calendar/:id/delete", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const back = String(req.body.back || req.query.back || "/admin/calendar").trim();
+        await db.prepare("DELETE FROM company_calendar WHERE id = ?").run(req.params.id);
+        res.redirect(back + (back.includes("?") ? "&" : "?") + "ok=deleted");
+    });
+
+    router.post("/calendar/import-holidays", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const year = parseInt(String(req.body.year || ""), 10);
+        if (!Number.isFinite(year)) { res.redirect("/admin/calendar"); return; }
+        const list = calendar_holidays_js_1.getHolidaysForYear(year);
+        let added = 0;
+        for (const h of list) {
+            const exists = await db.prepare("SELECT id FROM company_calendar WHERE date = ? AND kind = ? AND label = ?").get(h.date, "national_holiday", h.label);
+            if (exists) continue;
+            const id = (0, id_js_1.newId)("cal");
+            await db.prepare(`INSERT INTO company_calendar (id, date, kind, label, note, created_at) VALUES (?, ?, 'national_holiday', ?, NULL, ${nowSqlExpr()})`).run(id, h.date, h.label);
+            added++;
+        }
+        res.redirect(`/admin/calendar?y=${year}&m=1&ok=imported&n=${added}&y=${year}`);
+    });
+
     return router;
 }
 function parseCsvLine(line) {

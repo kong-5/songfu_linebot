@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="松富物流">
+  <!-- 占位 logo：藍色 G 圓圈，使用者可用真實 logo.png/.svg 覆寫此檔 -->
+  <circle cx="50" cy="50" r="42" fill="none" stroke="#1f6db5" stroke-width="9"/>
+  <path d="M 70 50 L 50 50 L 50 60 L 64 60" fill="none" stroke="#1f6db5" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="64" cy="60" r="10" fill="#3a8fd1"/>
+  <circle cx="68" cy="58" r="2" fill="#fff"/>
+</svg>
