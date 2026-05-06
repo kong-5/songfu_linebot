@@ -118,12 +118,67 @@ const NOTION_STYLE = `
     --notion-border-strong: rgba(55, 53, 47, 0.16);
     --notion-text: #37352f;
     --notion-text-muted: #787774;
-    --notion-accent: #2383e2;
-    --notion-hover: rgba(55, 53, 47, 0.08);
+    --notion-accent: #3b82c4;
+    --notion-accent-warm: #c4783b;
+    --notion-hover: rgba(55, 53, 47, 0.06);
     --notion-radius: 4px;
-    --notion-radius-lg: 6px;
-    --notion-shadow: 0 1px 3px rgba(15, 15, 15, 0.06);
+    --notion-radius-lg: 8px;
+    --notion-shadow: 0 1px 3px rgba(15, 15, 15, 0.05);
+    --notion-shadow-soft: 0 2px 12px rgba(55, 53, 47, 0.06);
     --notion-header-h: 48px;
+  }
+  /* === Lucide-style 行內 icon utility === */
+  .lc-icon {
+    display: inline-block;
+    width: 1em; height: 1em;
+    vertical-align: -0.15em;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    fill: none;
+  }
+  .lc-icon-lg { width: 1.25em; height: 1.25em; }
+  /* === 通用 info popover：hover 標題旁的 (i) icon 顯示說明 === */
+  .info-pop {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px; height: 16px;
+    margin-left: 4px;
+    border-radius: 50%;
+    background: rgba(55,53,47,0.08);
+    color: #787774;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: help;
+    user-select: none;
+    transition: background .12s, color .12s;
+    vertical-align: middle;
+  }
+  .info-pop:hover { background: rgba(59,130,196,0.15); color: #3b82c4; }
+  .info-pop[data-tip]:hover::after,
+  .info-pop[data-tip]:focus::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 6px);
+    transform: translateX(-50%);
+    padding: 8px 10px;
+    background: #1f2937;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.5;
+    white-space: pre-line;
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    z-index: 100;
+    min-width: 200px;
+    max-width: 320px;
+    pointer-events: none;
+    text-align: left;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; width: 100%; max-width: 100vw; min-height: 100vh; }
@@ -1735,10 +1790,37 @@ function createAdminRouter() {
             warRoom = { today, todayIsHoliday: false, routes: [], unrouted: [], totals: { ordered: 0, missing: 0, abnormal: 0, total: 0 } };
         }
         const tapmc = wholesale_price_js_1.TAPMC_PRICE_URL;
+        const view = String(req.query.view || "compact").trim() === "detailed" ? "detailed" : "compact";
         const sevColor = (s) => s === "danger" ? "background:#fef2f2;color:#b91c1c;border-color:#fecaca;" :
             s === "warn" ? "background:#fffbeb;color:#b45309;border-color:#fde68a;" :
             "background:#eff6ff;color:#1e40af;border-color:#bfdbfe;";
-        const renderCard = (c) => {
+
+        // 客戶分類（決定卡片底色／點點顏色）
+        const classifyCustomer = (c) => {
+            if (c.hasOrderedToday) return c.totalNeedReview > 0 ? "review" : "ok";
+            if (c.anomalies.some((a) => a.severity === "danger")) return "danger";
+            if (c.anomalies.length) return "warn";
+            return "muted";
+        };
+
+        const linkTargetFor = (c) => c.hasOrderedToday && c.todayOrders[0]
+            ? `/admin/orders/${encodeURIComponent(c.todayOrders[0].orderId)}`
+            : `/admin/customers/${encodeURIComponent(c.id)}/quick-view`;
+
+        const buildTipText = (c) => {
+            const parts = [c.name || "—"];
+            if (c.hasOrderedToday) {
+                parts.push(`✓ 已叫 ${c.totalItems} 項 · 量 ${Math.round(c.totalQtyToday)}`);
+                if (c.totalNeedReview > 0) parts.push(`⚠ 待確認 ${c.totalNeedReview} 項`);
+            } else {
+                if (c.lastOrderDate) parts.push(`上次叫貨：${c.lastOrderDate}（${c.daysSinceLast} 天前）`);
+                else parts.push(`— 無歷史 —`);
+            }
+            for (const a of c.anomalies) parts.push(`• ${a.label}`);
+            return parts.join("\n");
+        };
+
+        const renderCardDetailed = (c) => {
             const status = c.hasOrderedToday
                 ? `<span class="wr-status wr-status-ok">✓ 已叫貨</span>`
                 : (c.anomalies.some((a) => a.severity === "danger")
@@ -1750,13 +1832,7 @@ function createAdminRouter() {
                 ? `<div class="wr-meta">${c.totalItems} 項 · 量 ${Math.round(c.totalQtyToday)}</div>`
                 : (c.lastOrderDate ? `<div class="wr-meta wr-muted">上次 ${c.lastOrderDate}（${c.daysSinceLast} 天前）</div>` : `<div class="wr-meta wr-muted">— 無歷史 —</div>`);
             const tags = c.anomalies.map((a) => `<span class="wr-tag" style="${sevColor(a.severity)}" title="${escapeAttr(a.label)}">${escapeHtml(a.label)}</span>`).join("");
-            const linkTarget = c.hasOrderedToday && c.todayOrders[0]
-                ? `/admin/orders/${encodeURIComponent(c.todayOrders[0].orderId)}`
-                : `/admin/customers/${encodeURIComponent(c.id)}/quick-view`;
-            const cardClass = c.hasOrderedToday
-                ? (c.totalNeedReview > 0 ? "wr-card wr-card-review" : "wr-card wr-card-ok")
-                : (c.anomalies.some((a) => a.severity === "danger") ? "wr-card wr-card-danger" : (c.anomalies.length ? "wr-card wr-card-warn" : "wr-card wr-card-muted"));
-            return `<a href="${linkTarget}" class="${cardClass}">
+            return `<a href="${linkTargetFor(c)}" class="wr-card wr-card-${classifyCustomer(c)}">
 <div class="wr-card-head">
   <div class="wr-name">${escapeHtml(c.name || "—")}</div>
   ${status}
@@ -1765,15 +1841,32 @@ ${orderInfo}
 ${tags ? `<div class="wr-tags">${tags}</div>` : ""}
 </a>`;
         };
+
+        const renderTileCompact = (c) => {
+            const klass = classifyCustomer(c);
+            const dotIcon = c.hasOrderedToday
+                ? (c.totalNeedReview > 0 ? "⚠" : "✓")
+                : (c.anomalies.some((a) => a.severity === "danger") ? "!" : (c.anomalies.length ? "⚠" : "·"));
+            const badge = c.anomalies.length ? `<span class="wr-tile-badge">${c.anomalies.length}</span>` : "";
+            return `<a href="${linkTargetFor(c)}" class="wr-tile wr-tile-${klass}" data-tip="${escapeAttr(buildTipText(c))}">
+<span class="wr-tile-dot">${dotIcon}</span>
+<span class="wr-tile-name">${escapeHtml(c.name || "—")}</span>
+${badge}
+</a>`;
+        };
+
+        const renderCard = view === "detailed" ? renderCardDetailed : renderTileCompact;
+
         const renderRouteBlock = (route) => {
             const cards = route.customers.map(renderCard).join("");
             const summary = `<span class="wr-route-summary">${route.stats.ordered}/${route.stats.total} 已叫${route.stats.abnormal ? ` · ${route.stats.abnormal} 異常` : ""}</span>`;
+            const containerClass = view === "detailed" ? "wr-cards" : "wr-tiles";
             return `<section class="wr-route">
 <header class="wr-route-head">
   <h2 class="wr-route-title">${escapeHtml(route.routeLabel)}</h2>
   ${summary}
 </header>
-<div class="wr-cards">${cards}</div>
+<div class="${containerClass}">${cards}</div>
 </section>`;
         };
         const routesHtml = warRoom.routes.map(renderRouteBlock).join("");
@@ -1819,6 +1912,84 @@ ${tags ? `<div class="wr-tags">${tags}</div>` : ""}
 .wr-tag { font-size:11px; padding:2px 6px; border-radius:4px; border:1px solid; line-height:1.4; }
 .wr-empty { color:var(--notion-text-muted); padding:30px; text-align:center; font-size:14px; background:#fafafa; border-radius:8px; }
 .wr-secondary { margin-top:30px; padding-top:18px; border-top:1px solid var(--notion-border); }
+
+/* === 緊湊瓦片模式：~10 個/行，hover 看詳細 === */
+.wr-tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(108px,1fr)); gap:5px; }
+@media (min-width:1280px) { .wr-tiles { grid-template-columns:repeat(auto-fill,minmax(100px,1fr)); } }
+@media (max-width:760px) { .wr-tiles { grid-template-columns:repeat(auto-fill,minmax(95px,1fr)); } }
+.wr-tile {
+  position:relative;
+  display:flex; align-items:center; gap:5px;
+  padding:5px 8px;
+  background:#fff;
+  border:1px solid var(--notion-border);
+  border-left:3px solid var(--notion-border-strong);
+  border-radius:4px;
+  text-decoration:none; color:var(--notion-text);
+  font-size:12px; line-height:1.3;
+  transition:transform .12s, border-color .12s, box-shadow .12s;
+  min-height:28px;
+  cursor:pointer;
+}
+.wr-tile:hover {
+  transform:translateY(-1px);
+  border-color:#3b82c4;
+  box-shadow:0 2px 8px rgba(59,130,196,0.18);
+  text-decoration:none;
+  z-index:5;
+}
+.wr-tile-dot {
+  flex:0 0 auto;
+  display:inline-flex; align-items:center; justify-content:center;
+  width:14px; height:14px;
+  border-radius:50%;
+  font-size:9px; font-weight:700; line-height:1;
+}
+.wr-tile-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+.wr-tile-badge {
+  flex:0 0 auto;
+  background:#b91c1c; color:#fff;
+  font-size:9px; font-weight:700;
+  padding:1px 5px;
+  border-radius:8px;
+  min-width:14px;
+  text-align:center;
+  line-height:1.3;
+}
+.wr-tile-ok      { border-left-color:#10b981; }
+.wr-tile-ok      .wr-tile-dot { background:#dcfce7; color:#047857; }
+.wr-tile-review  { border-left-color:#f59e0b; background:#fffbeb; }
+.wr-tile-review  .wr-tile-dot { background:#fef3c7; color:#b45309; }
+.wr-tile-warn    { border-left-color:#f59e0b; background:#fffbeb; }
+.wr-tile-warn    .wr-tile-dot { background:#fef3c7; color:#b45309; }
+.wr-tile-danger  { border-left-color:#dc2626; background:#fef2f2; }
+.wr-tile-danger  .wr-tile-dot { background:#fee2e2; color:#b91c1c; }
+.wr-tile-muted   { border-left-color:#d1d5db; background:#fafafa; }
+.wr-tile-muted   .wr-tile-dot { background:#f4f4f0; color:#787774; }
+
+/* CSS-only tooltip：hover 顯示完整資訊（多行） */
+.wr-tile[data-tip]:hover::after {
+  content: attr(data-tip);
+  position:absolute;
+  left:0; top:100%;
+  margin-top:4px;
+  padding:8px 10px;
+  background:#1f2937;
+  color:#fff;
+  font-size:12px; line-height:1.5;
+  white-space:pre-line;
+  border-radius:6px;
+  box-shadow:0 4px 16px rgba(0,0,0,0.25);
+  z-index:50;
+  min-width:180px; max-width:260px;
+  pointer-events:none;
+}
+
+.wr-view-switch { display:inline-flex; gap:0; border:1px solid var(--notion-border-strong); border-radius:6px; overflow:hidden; }
+.wr-view-switch a { padding:6px 12px; font-size:12px; text-decoration:none; color:#666; background:#fff; border-right:1px solid var(--notion-border); }
+.wr-view-switch a:last-child { border-right:none; }
+.wr-view-switch a.active { background:#3b82c4; color:#fff; }
+.wr-view-switch a:hover:not(.active) { background:#f4f4f0; }
 </style>
 <div class="notion-page-content">
 <div class="wr-toolbar">
@@ -1826,15 +1997,20 @@ ${tags ? `<div class="wr-tags">${tags}</div>` : ""}
   <span style="color:var(--notion-text-muted);font-size:13px;">${escapeHtml(dateLabel)}${warRoom.todayIsHoliday ? " · 公休日（不判斷未叫貨異常）" : ""}</span>
   <form method="get" action="/admin">
     <input type="date" name="date" value="${escapeAttr(warRoom.today)}">
+    <input type="hidden" name="view" value="${escapeAttr(view)}">
     <button type="submit" class="btn">看其他日期</button>
   </form>
-  <a href="/admin?date=${escapeAttr(getTaipeiCalendarDateYYYYMMDD())}" class="btn">回今日</a>
+  <a href="/admin?date=${escapeAttr(getTaipeiCalendarDateYYYYMMDD())}&view=${escapeAttr(view)}" class="btn">回今日</a>
+  <span class="wr-view-switch" title="切換顯示密度">
+    <a href="/admin?date=${escapeAttr(warRoom.today)}&view=compact" class="${view === "compact" ? "active" : ""}">緊湊</a>
+    <a href="/admin?date=${escapeAttr(warRoom.today)}&view=detailed" class="${view === "detailed" ? "active" : ""}">詳細</a>
+  </span>
 </div>
 
 <div class="wr-summary">
   <div class="wr-stat-card wr-stat-ok"><div class="wr-stat-num">${warRoom.totals.ordered}</div><div class="wr-stat-label">已叫貨 / 全 ${warRoom.totals.total}</div></div>
-  <div class="wr-stat-card wr-stat-missing"><div class="wr-stat-num">${warRoom.totals.missing}</div><div class="wr-stat-label">未叫貨</div></div>
-  <div class="wr-stat-card wr-stat-abnormal"><div class="wr-stat-num">${warRoom.totals.abnormal}</div><div class="wr-stat-label">異常需關注</div></div>
+  <div class="wr-stat-card wr-stat-missing"><div class="wr-stat-num">${warRoom.totals.missing}</div><div class="wr-stat-label">未叫貨${warRoom.todayIsHoliday ? "（公休日不視為異常）" : ""}</div></div>
+  <div class="wr-stat-card wr-stat-abnormal"><div class="wr-stat-num">${warRoom.totals.abnormal}</div><div class="wr-stat-label">異常需關注 <span class="info-pop" tabindex="0" data-tip="異常包含 4 種訊號：&#10;• 待確認：今天有訂單但有 OCR 待人工核對品項&#10;• 預期應叫：依過去節律應該叫貨但還沒叫&#10;• 已超期：上次叫貨距今 > 平均週期 × 2 倍&#10;• 量異常：今天總量偏離 30 日均量 > 50%">i</span></div></div>
 </div>
 
 ${routesHtml || (unroutedHtml ? "" : `<div class="wr-empty">尚無啟用客戶。請先到「客戶管理」新增。</div>`)}
@@ -8953,6 +9129,7 @@ ${okMsg ? `<p style="background:#ecfdf5;color:#047857;padding:8px 12px;border-ra
     <span style="background:#fed7aa;color:#9a3412;">公司公休</span>
     <span style="background:#bbf7d0;color:#166534;">公司加班</span>
     <span style="background:#dbeafe;color:#1e40af;">事件</span>
+    <span class="info-pop" tabindex="0" data-tip="• 國定假日：政府公告假日（一鍵匯入內建表）&#10;• 公司公休：公司自訂休息日（戰情室不算未叫貨異常）&#10;• 公司加班：原本休假但公司決定上班的日子&#10;• 事件：自訂提醒（盤點、會議等）&#10;&#10;公告模板選日期時會自動讀此資料源，假日列出在週曆中。">i</span>
   </div>
 </div>
 <table class="cal-table">
