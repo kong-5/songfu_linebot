@@ -634,11 +634,12 @@ const NOTION_SIDEBAR = (active) => `
         <a href="/admin/inventory/manager" class="${active === "inv-manager" ? "active" : ""}">管理人設定</a>
       </div>
     </details>
-    <details class="sidebar-group" ${active === "logistics" || active === "logistics-procurement" || active === "logistics-market" ? "open" : ""}>
+    <details class="sidebar-group" ${active === "logistics" || active === "logistics-procurement" || active === "logistics-market" || active === "logistics-commodities" ? "open" : ""}>
       <summary class="sidebar-group-title">物流工具</summary>
       <div class="sidebar-links">
         <a href="/admin/logistics/procurement" class="${active === "logistics-procurement" ? "active" : ""}">採購分析</a>
         <a href="/admin/logistics/market" class="${active === "logistics-market" ? "active" : ""}">北農行情</a>
+        <a href="/admin/logistics/commodities" class="${active === "logistics-commodities" ? "active" : ""}">原物料行情</a>
       </div>
     </details>
     <details class="sidebar-group" ${active === "env" ? "open" : ""}>
@@ -3169,19 +3170,25 @@ ${unroutedHtml}
         let msg = "";
         let snapHint = "";
         let snapSource = "";
+        let statusCode = "";
+        let apiErrors = [];
         if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
             try {
                 const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
                 prices = snap.prices || [];
                 snapHint = snap.hint || "";
                 snapSource = snap.source || "";
-                if (!prices.length)
-                    msg = snapSource === "empty"
-                        ? "該日尚無台北果菜市場行情，且本地無快照。"
-                        : "該日無符合「青菜／葉菜」篩選之資料。";
+                statusCode = snap.status || "";
+                apiErrors = Array.isArray(snap.apiErrors) ? snap.apiErrors : [];
+                if (!prices.length) {
+                    if (statusCode === "network_error") msg = `❌ 連不上農業部 API（無本地快照可用）。${apiErrors.length ? "詳細：" + apiErrors.join(" / ") : ""}`;
+                    else if (statusCode === "filter_empty") msg = `📭 API 回 ${snap.rawCount || 0} 筆但全不在「青菜／葉菜／包葉」分類；可能 API 種類欄位異動。`;
+                    else if (statusCode === "empty") msg = "📭 該日 API 0 筆 — 多為休市或資料尚未更新。";
+                    else msg = "❌ 讀取行情失敗（不明原因）。";
+                }
             }
             catch (e) {
-                msg = "讀取行情失敗，請稍後再試。";
+                msg = "❌ 讀取行情例外：" + (e?.message || String(e)).slice(0, 200);
             }
         }
         else {
@@ -3190,21 +3197,26 @@ ${unroutedHtml}
         const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_price_prefix_rules");
         const rulesText = row?.value || JSON.stringify({ "*": 2, LM: 10 }, null, 2);
         const rows = prices.slice(0, 300).map((p) => `<tr><td>${escapeHtml(p.marketName || "")}</td><td>${escapeHtml(p.category || "")}</td><td>${escapeHtml(p.cropName || "")}</td><td>${p.highPrice ?? "—"}</td><td>${p.midPrice ?? "—"}</td><td>${p.lowPrice ?? "—"}</td></tr>`).join("");
+        const sourceTag = snapSource === "api" ? `<span style="background:#dcfce7;color:#047857;padding:2px 8px;border-radius:10px;font-size:11px;">即時 API</span>`
+            : snapSource === "snapshot" ? `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:10px;font-size:11px;">本地快照</span>`
+            : "";
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 北農行情</div>
         <h1 class="notion-page-title">北農行情（台北一、台北二）— 青菜／葉菜</h1>
-        <p class="notion-hint">僅顯示作物種類為青菜／葉菜／包葉等；欄位為<strong>上／中／下價</strong>（元／公斤）。API 有資料時會自動寫入本地每日快照。與<a href="${wholesale_price_js_1.TAPMC_PRICE_URL}" target="_blank" rel="noopener">臺北農產運銷「單日交易行情查詢」</a>為同一市場；若需與官網逐筆核對請至該頁下載檔案。</p>
-        ${snapSource === "snapshot" && prices.length ? `<p class="notion-msg warn">本日資料來自<strong>本地快照</strong>（農業部 API 暫無該日資料）。</p>` : ""}
+        <p class="notion-hint">僅顯示作物種類為青菜／葉菜／包葉等；欄位為<strong>上／中／下價</strong>（元／公斤）。API 有資料時會自動寫入本地每日快照。與<a href="${wholesale_price_js_1.TAPMC_PRICE_URL}" target="_blank" rel="noopener">臺北農產運銷「單日交易行情查詢」</a>為同一市場。</p>
+        ${snapSource === "snapshot" && prices.length ? `<p class="notion-msg warn">本日資料來自<strong>本地快照</strong>（農業部 API 此刻無該日資料）。</p>` : ""}
         ${snapHint ? `<p class="notion-hint">${escapeHtml(snapHint)}</p>` : ""}
         ${req.query.ok === "1" ? '<p class="notion-msg ok">已儲存加價規則。</p>' : ""}
         ${req.query.err === "rules" ? '<p class="notion-msg err">規則格式錯誤，請輸入 JSON 物件。</p>' : ""}
-        <form method="get" action="/admin/logistics/market" style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+        <form method="get" action="/admin/logistics/market" style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
           <label>日期 <input type="date" name="date" value="${escapeAttr(dateStr)}"></label>
           <button type="submit" class="btn">查詢</button>
+          ${prices.length ? `<a href="/admin/logistics/market/export.csv?date=${escapeAttr(dateStr)}" class="btn">下載 CSV</a><a href="/admin/logistics/market/export.xlsx?date=${escapeAttr(dateStr)}" class="btn">下載 Excel</a>` : ""}
+          ${sourceTag}
         </form>
-        ${msg ? `<p class="notion-msg warn">${escapeHtml(msg)}</p>` : ""}
+        ${msg ? `<p class="notion-msg warn" style="margin:8px 0;padding:8px 12px;border-radius:6px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;">${escapeHtml(msg)}</p>` : ""}
         <div class="notion-card">
-          <table><thead><tr><th>市場</th><th>種類</th><th>作物</th><th>上價</th><th>中價</th><th>下價</th></tr></thead><tbody>${rows || "<tr><td colspan='6'>無資料</td></tr>"}</tbody></table>
+          <table><thead><tr><th>市場</th><th>種類</th><th>作物</th><th>上價</th><th>中價</th><th>下價</th></tr></thead><tbody>${rows || "<tr><td colspan='6' style='color:#999;text-align:center;padding:24px;'>無資料</td></tr>"}</tbody></table>
         </div>
         <div class="notion-card" style="margin-top:16px;">
           <h2 style="margin-top:0;">LINE 報價加價規則</h2>
@@ -3216,6 +3228,198 @@ ${unroutedHtml}
         </div>
       `;
         res.type("text/html").send(notionPage("北農行情", body, "logistics-market", res));
+    });
+
+    router.get("/logistics/market/export.csv", async (req, res) => {
+        const dateStr = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).send("date 格式錯誤"); return; }
+        const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
+        const lines = ["日期,市場,種類,作物,上價,中價,下價"];
+        for (const p of (snap.prices || [])) {
+            const cells = [dateStr, p.marketName || "", p.category || "", p.cropName || "", p.highPrice ?? "", p.midPrice ?? "", p.lowPrice ?? ""].map((v) => {
+                const s = String(v ?? "");
+                return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+            });
+            lines.push(cells.join(","));
+        }
+        res.set("Content-Type", "text/csv; charset=utf-8");
+        res.set("Content-Disposition", `attachment; filename="wholesale_${dateStr}.csv"`);
+        res.send("﻿" + lines.join("\n"));
+    });
+
+    router.get("/logistics/market/export.xlsx", async (req, res) => {
+        const dateStr = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).send("date 格式錯誤"); return; }
+        const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
+        const data = [["日期", "市場", "種類", "作物", "上價", "中價", "下價"]];
+        for (const p of (snap.prices || [])) {
+            data.push([dateStr, p.marketName || "", p.category || "", p.cropName || "", p.highPrice ?? null, p.midPrice ?? null, p.lowPrice ?? null]);
+        }
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        XLSX.utils.book_append_sheet(wb, ws, "北農行情");
+        const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+        res.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.set("Content-Disposition", `attachment; filename="wholesale_${dateStr}.xlsx"`);
+        res.send(buf);
+    });
+
+    // ============================================================
+    // 原物料行情：豬肉、雞肉、雞蛋等（手動輸入；無公開 API）
+    // ============================================================
+    const COMMODITY_CATEGORIES = [
+        { value: "egg", label: "🥚 雞蛋", source: "中央畜產會 NAIF / 自查" },
+        { value: "pork", label: "🐖 豬肉", source: "台灣區肉品市場 / 自查" },
+        { value: "chicken", label: "🐓 雞肉", source: "屠宰場 / 自查" },
+        { value: "beef", label: "🐄 牛肉", source: "自查" },
+        { value: "fish", label: "🐟 海鮮水產", source: "自查" },
+        { value: "other", label: "其他", source: "自查" },
+    ];
+
+    router.get("/logistics/commodities", async (req, res) => {
+        const filterCat = String(req.query.category || "").trim();
+        const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+        const today = getTaipeiCalendarDateYYYYMMDD();
+        const fromQ = String(req.query.from || "").trim();
+        const toQ = String(req.query.to || "").trim();
+        const dateFrom = dateRe.test(fromQ) ? fromQ : (() => { const d = new Date(today + "T12:00:00"); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
+        const dateTo = dateRe.test(toQ) ? toQ : today;
+        let sql = "SELECT id, category, source, record_date, unit, spec, price, high_price, mid_price, low_price, note, updated_at FROM commodity_prices WHERE record_date >= ? AND record_date <= ?";
+        const params = [dateFrom, dateTo];
+        if (filterCat) { sql += " AND category = ?"; params.push(filterCat); }
+        sql += " ORDER BY record_date DESC, category, spec LIMIT 500";
+        const rows = await db.prepare(sql).all(...params);
+        const catMap = Object.fromEntries(COMMODITY_CATEGORIES.map((c) => [c.value, c]));
+        const tableRows = rows.length
+            ? rows.map((r) => {
+                const cat = catMap[r.category] || { label: r.category };
+                const priceCell = r.price != null ? Number(r.price).toFixed(2) :
+                    (r.mid_price != null ? Number(r.mid_price).toFixed(2) : (r.high_price != null ? `${r.high_price} / ${r.low_price ?? "—"}` : "—"));
+                return `<tr>
+<td style="font-size:12px;color:#787774;">${escapeHtml(r.record_date)}</td>
+<td>${escapeHtml(cat.label)}</td>
+<td>${escapeHtml(r.spec || "—")}</td>
+<td style="text-align:right;font-weight:600;">${priceCell}</td>
+<td style="text-align:right;font-size:12px;color:#787774;">${r.high_price ?? "—"} / ${r.mid_price ?? "—"} / ${r.low_price ?? "—"}</td>
+<td>${escapeHtml(r.unit || "—")}</td>
+<td style="font-size:12px;color:#787774;">${escapeHtml(r.source || "—")}</td>
+<td style="font-size:12px;color:#787774;">${escapeHtml(r.note || "")}</td>
+<td><form method="post" action="/admin/logistics/commodities/${encodeURIComponent(r.id)}/delete" style="display:inline;" onsubmit="return confirm('刪除此筆？');"><button type="submit" class="btn" style="padding:2px 8px;font-size:11px;">刪除</button></form></td>
+</tr>`;
+            }).join("")
+            : `<tr><td colspan="9" style="text-align:center;color:#999;padding:24px;">區間內尚無資料。在下方表單新增第一筆。</td></tr>`;
+        const okMsg = req.query.ok === "added" ? "已新增" : (req.query.ok === "deleted" ? "已刪除" : "");
+        const catFilterLinks = [
+            { v: "", l: "全部" },
+            ...COMMODITY_CATEGORIES.map((c) => ({ v: c.value, l: c.label })),
+        ].map((x) => `<a href="/admin/logistics/commodities?category=${encodeURIComponent(x.v)}&from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}" style="margin-right:6px;padding:4px 10px;border-radius:6px;${filterCat === x.v ? "background:#3b82c4;color:#fff;" : "color:#666;background:#f4f4f0;"}">${escapeHtml(x.l)}</a>`).join("");
+        const body = `<style>
+.cm-table { width:100%; border-collapse:collapse; }
+.cm-table th { padding:8px 10px; font-size:12px; color:#666; font-weight:500; text-align:left; border-bottom:1px solid var(--notion-border); background:#f7f6f3; }
+.cm-table td { padding:8px 10px; border-bottom:1px solid var(--notion-border); font-size:13px; }
+.cm-form { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }
+.cm-form label { font-size:12px; color:#666; }
+.cm-form input, .cm-form select, .cm-form textarea { width:100%; padding:6px 8px; border:1px solid var(--notion-border-strong); border-radius:5px; font-size:13px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
+</style>
+<div class="notion-page-content">
+<div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 原物料行情</div>
+<h1 class="notion-page-title" style="margin-bottom:6px;">大宗原物料行情</h1>
+<p class="notion-hint" style="margin:0 0 14px;">豬肉 / 雞肉 / 雞蛋 等。目前無穩定公開 API，先以手動每日輸入為主，留歷史紀錄供比價判斷。</p>
+${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding:8px 12px;border-radius:6px;border:1px solid #a7f3d0;font-size:13px;">✓ ${escapeHtml(okMsg)}</p>` : ""}
+
+<div class="notion-card" style="padding:18px;margin-bottom:14px;">
+  <h3 style="margin:0 0 12px;font-size:14px;">新增一筆行情</h3>
+  <form method="post" action="/admin/logistics/commodities" class="cm-form">
+    <div><label>日期 *</label><input type="date" name="record_date" value="${escapeAttr(today)}" required></div>
+    <div><label>類別 *</label><select name="category" required>${COMMODITY_CATEGORIES.map((c) => `<option value="${escapeAttr(c.value)}">${escapeHtml(c.label)}</option>`).join("")}</select></div>
+    <div><label>品項規格</label><input type="text" name="spec" placeholder="例：紅羽土雞 / 帶骨梅花"></div>
+    <div><label>單位</label><input type="text" name="unit" placeholder="元/公斤" value="元/公斤"></div>
+    <div><label>主價（單一）</label><input type="number" step="0.01" name="price" placeholder="如：85"></div>
+    <div><label>上價</label><input type="number" step="0.01" name="high_price" placeholder=""></div>
+    <div><label>中價</label><input type="number" step="0.01" name="mid_price" placeholder=""></div>
+    <div><label>下價</label><input type="number" step="0.01" name="low_price" placeholder=""></div>
+    <div><label>來源</label><input type="text" name="source" placeholder="NAIF / 業者報價 / 媒體"></div>
+    <div style="grid-column:span 2;"><label>備註</label><input type="text" name="note" placeholder="例：颱風後價格上揚"></div>
+    <div style="grid-column:1/-1;"><button type="submit" class="btn btn-primary">＋ 新增</button></div>
+  </form>
+</div>
+
+<div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+  <form method="get" action="/admin/logistics/commodities" style="display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <input type="hidden" name="category" value="${escapeAttr(filterCat)}">
+    <label style="font-size:12px;color:#666;">區間：</label>
+    <input type="date" name="from" value="${escapeAttr(dateFrom)}">
+    <span>~</span>
+    <input type="date" name="to" value="${escapeAttr(dateTo)}">
+    <button type="submit" class="btn">查詢</button>
+    <a href="/admin/logistics/commodities/export.csv?category=${encodeURIComponent(filterCat)}&from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}" class="btn">下載 CSV</a>
+  </form>
+</div>
+<div style="margin-bottom:10px;">${catFilterLinks}</div>
+
+<div class="notion-card" style="padding:0;">
+  <table class="cm-table">
+    <thead><tr><th>日期</th><th>類別</th><th>規格</th><th style="text-align:right;">主價</th><th style="text-align:right;">上/中/下</th><th>單位</th><th>來源</th><th>備註</th><th></th></tr></thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</div>
+</div>`;
+        res.type("text/html").send(notionPage("原物料行情", body, "logistics-commodities", res));
+    });
+
+    router.post("/logistics/commodities", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const recordDate = String(req.body.record_date || "").trim();
+        const category = String(req.body.category || "").trim();
+        const spec = String(req.body.spec || "").trim() || null;
+        const unit = String(req.body.unit || "").trim() || null;
+        const source = String(req.body.source || "").trim() || null;
+        const note = String(req.body.note || "").trim() || null;
+        const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+        const price = num(req.body.price);
+        const hi = num(req.body.high_price);
+        const mid = num(req.body.mid_price);
+        const lo = num(req.body.low_price);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(recordDate) || !category) {
+            res.redirect("/admin/logistics/commodities?err=bad_input");
+            return;
+        }
+        const id = (0, id_js_1.newId)("cmd");
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        await db.prepare(`INSERT INTO commodity_prices (id, category, source, record_date, unit, spec, price, high_price, mid_price, low_price, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${nowSql}, ${nowSql})`)
+            .run(id, category, source, recordDate, unit, spec, price, hi, mid, lo, note);
+        res.redirect("/admin/logistics/commodities?ok=added");
+    });
+
+    router.post("/logistics/commodities/:id/delete", async (req, res) => {
+        await db.prepare("DELETE FROM commodity_prices WHERE id = ?").run(req.params.id);
+        res.redirect("/admin/logistics/commodities?ok=deleted");
+    });
+
+    router.get("/logistics/commodities/export.csv", async (req, res) => {
+        const cat = String(req.query.category || "").trim();
+        const from = String(req.query.from || "").trim();
+        const to = String(req.query.to || "").trim();
+        const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+        let sql = "SELECT record_date, category, spec, unit, price, high_price, mid_price, low_price, source, note FROM commodity_prices WHERE 1=1";
+        const params = [];
+        if (dateRe.test(from)) { sql += " AND record_date >= ?"; params.push(from); }
+        if (dateRe.test(to)) { sql += " AND record_date <= ?"; params.push(to); }
+        if (cat) { sql += " AND category = ?"; params.push(cat); }
+        sql += " ORDER BY record_date DESC, category, spec";
+        const rows = await db.prepare(sql).all(...params);
+        const catLabel = Object.fromEntries(COMMODITY_CATEGORIES.map((c) => [c.value, c.label.replace(/^[\u{1F300}-\u{1FAFF}☀-➿]\s*/u, "")]));
+        const lines = ["日期,類別,規格,單位,主價,上價,中價,下價,來源,備註"];
+        for (const r of rows) {
+            const cells = [r.record_date, catLabel[r.category] || r.category, r.spec || "", r.unit || "", r.price ?? "", r.high_price ?? "", r.mid_price ?? "", r.low_price ?? "", r.source || "", r.note || ""].map((v) => {
+                const s = String(v ?? "");
+                return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+            });
+            lines.push(cells.join(","));
+        }
+        const fname = `commodities_${from || "all"}_${to || "all"}.csv`;
+        res.set("Content-Type", "text/csv; charset=utf-8");
+        res.set("Content-Disposition", `attachment; filename="${fname}"`);
+        res.send("﻿" + lines.join("\n"));
     });
     router.post("/logistics/market/rules", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const txt = String(req.body?.rules_json || "").trim();

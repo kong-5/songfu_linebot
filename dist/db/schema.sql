@@ -317,6 +317,25 @@ CREATE TABLE IF NOT EXISTS announcements (
 CREATE INDEX IF NOT EXISTS idx_announcements_status ON announcements(status);
 CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at);
 
+-- 大宗原物料行情：豬肉、雞肉、雞蛋等。手動輸入為主（無公開 API）；保留 source / spec 以便未來爬蟲擴充
+CREATE TABLE IF NOT EXISTS commodity_prices (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  source TEXT,
+  record_date TEXT NOT NULL,
+  unit TEXT,
+  spec TEXT,
+  price REAL,
+  high_price REAL,
+  mid_price REAL,
+  low_price REAL,
+  note TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_commodity_prices_date ON commodity_prices(record_date);
+CREATE INDEX IF NOT EXISTS idx_commodity_prices_cat ON commodity_prices(category);
+
 -- 公司行事曆：國定假日／公司公休／加班／自訂事件，供公告模板與戰情室異常判斷共用
 CREATE TABLE IF NOT EXISTS company_calendar (
   id TEXT PRIMARY KEY,
