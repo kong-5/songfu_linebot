@@ -4601,8 +4601,17 @@ function createAdminRouter() {
         }
         for (const oid of ids.slice(0, 200)) {
             try {
+                const before = await db.prepare("SELECT id, order_no, customer_id, order_date, status, raw_message FROM orders WHERE id = ?").get(oid);
+                const itemsSnap = await db.prepare("SELECT id, raw_name, quantity, unit, product_id, remark, sub_customer FROM order_items WHERE order_id = ?").all(oid);
                 const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
                 await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("deleted", oid);
+                await logDataChange(req, {
+                    entityType: "order",
+                    entityId: oid,
+                    action: "soft_delete",
+                    summary: `批次作廢訂單 ${before?.order_no || oid}（共 ${itemsSnap.length} 個品項）`,
+                    meta: { before, items: itemsSnap, source: "batch-delete" },
+                });
             }
             catch (e) {
                 console.error("[admin] batch-delete order", oid, e?.message || e);
@@ -4623,7 +4632,15 @@ function createAdminRouter() {
         }
         for (const oid of ids.slice(0, 200)) {
             try {
+                const before = await db.prepare("SELECT order_no, status FROM orders WHERE id = ?").get(oid);
                 await db.prepare("UPDATE orders SET status = ? WHERE id = ?").run("approved", oid);
+                await logDataChange(req, {
+                    entityType: "order",
+                    entityId: oid,
+                    action: "approve",
+                    summary: `批次確認訂單 ${before?.order_no || oid}（前狀態：${before?.status || "－"}）`,
+                    meta: { before, source: "batch-approve" },
+                });
             }
             catch (e) {
                 console.error("[admin] batch-approve order", oid, e?.message || e);
@@ -5461,7 +5478,29 @@ function createAdminRouter() {
         })();
         </script>
       `;
-        res.type("text/html").send(notionPage("訂單明細", body, "", res));
+        // 內稽稽核軌跡：列出本訂單與其品項的所有變更紀錄
+        let auditRows = [];
+        try {
+            auditRows = await db.prepare(
+                "SELECT created_at, actor_username, action, summary, meta_json, entity_type, entity_id " +
+                "FROM data_change_log WHERE (entity_type = 'order' AND entity_id = ?) " +
+                "OR (entity_type = 'order_item' AND meta_json LIKE ?) " +
+                "ORDER BY created_at DESC LIMIT 100"
+            ).all(req.params.orderId, `%"order_id":"${req.params.orderId}"%`);
+        }
+        catch (e) {
+            console.warn("[admin] audit fetch failed:", e?.message || e);
+        }
+        const auditRowsHtml = auditRows.length
+            ? auditRows.map(r => `<tr><td style="white-space:nowrap;font-size:12px;">${escapeHtml(r.created_at || "")}</td><td style="font-size:12px;">${escapeHtml(r.actor_username || "－")}</td><td style="font-size:12px;"><span style="display:inline-block;padding:1px 6px;border-radius:4px;background:#f0f0f0;">${escapeHtml(r.action || "")}</span></td><td style="font-size:12px;">${escapeHtml(r.summary || "")}</td></tr>`).join("")
+            : "<tr><td colspan='4' style='color:#999;text-align:center;'>尚無稽核紀錄</td></tr>";
+        const auditCard = `
+        <div class="notion-card" style="margin-top:20px;">
+          <h2 style="margin-top:0;font-size:16px;">稽核軌跡（內稽用）</h2>
+          <p class="notion-hint" style="margin:6px 0 12px 0;">列出本訂單與其品項所有的變更／作廢／確認紀錄。任何「刪除」會保留品項快照於日誌中，可透過 metadata 還原。</p>
+          <table style="width:100%;border-collapse:collapse;"><thead><tr><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">時間</th><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">操作者</th><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">動作</th><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">說明</th></tr></thead><tbody>${auditRowsHtml}</tbody></table>
+        </div>`;
+        res.type("text/html").send(notionPage("訂單明細", body + auditCard, "", res));
     });
     router.get("/orders/:orderId/attachment/:messageId", async (req, res) => {
         const { orderId, messageId } = req.params;
@@ -6067,12 +6106,24 @@ function createAdminRouter() {
     });
     router.post("/orders/:orderId/items/:itemId/delete", async (req, res) => {
         const { orderId, itemId } = req.params;
-        const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
+        const order = await db.prepare("SELECT id, order_no FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
             return;
         }
+        // 內稽：先取明細快照，刪除後寫入 data_change_log，必要時可由日誌還原
+        const snap = await db.prepare("SELECT id, raw_name, quantity, unit, product_id, remark, sub_customer, need_review FROM order_items WHERE id = ? AND order_id = ?").get(itemId, orderId);
         await db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(itemId, orderId);
+        if (snap) {
+            await logDataChange(req, {
+                entityType: "order_item",
+                entityId: itemId,
+                productId: snap.product_id ?? null,
+                action: "delete",
+                summary: `刪除訂單 ${order.order_no || orderId} 的品項：${snap.raw_name || "(無品名)"} ${snap.quantity ?? ""}${snap.unit ?? ""}`,
+                meta: { order_id: orderId, snapshot: snap },
+            });
+        }
         const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest";
         if (wantsJson) {
             res.json({ ok: true });
@@ -6085,12 +6136,19 @@ function createAdminRouter() {
         const backTo = (typeof req.query.back === "string" && req.query.back.startsWith("/admin/orders"))
             ? req.query.back
             : "";
-        const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
+        const order = await db.prepare("SELECT id, order_no, status FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
             return;
         }
         await db.prepare("UPDATE orders SET status = ? WHERE id = ?").run("approved", orderId);
+        await logDataChange(req, {
+            entityType: "order",
+            entityId: orderId,
+            action: "approve",
+            summary: `確認訂單 ${order.order_no || orderId}（前狀態：${order.status || "－"}）`,
+            meta: { before: order },
+        });
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=approved" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
     });
     router.post("/orders/:orderId/unapprove", async (req, res) => {
@@ -6098,12 +6156,19 @@ function createAdminRouter() {
         const backTo = (typeof req.query.back === "string" && req.query.back.startsWith("/admin/orders"))
             ? req.query.back
             : "";
-        const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
+        const order = await db.prepare("SELECT id, order_no, status FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
             return;
         }
         await db.prepare("UPDATE orders SET status = ? WHERE id = ?").run("pending", orderId);
+        await logDataChange(req, {
+            entityType: "order",
+            entityId: orderId,
+            action: "unapprove",
+            summary: `取消確認訂單 ${order.order_no || orderId}（前狀態：${order.status || "－"}）`,
+            meta: { before: order },
+        });
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=unconfirmed" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
     });
     router.get("/orders/:orderId/items/add", async (req, res) => {
