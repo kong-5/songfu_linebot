@@ -1433,6 +1433,9 @@ function createAdminRouter() {
             <p class="notion-hint" style="margin-top:16px;"><label style="margin:0;font-weight:400;"><input type="checkbox" name="line_bot_ai_gate" value="1" ${s.aiGate ? "checked" : ""}> 啟用 AI 過濾（僅對「非收單關鍵字」的閒聊不回覆；需設定 GOOGLE_GEMINI_API_KEY）</label></p>
             <p class="notion-hint" style="margin-top:12px;"><label style="margin:0;font-weight:400;"><input type="checkbox" name="line_bot_suppress_reply" value="1" ${s.suppressCustomerReply ? "checked" : ""}> <strong>對客戶訊息靜音</strong>：仍照常收單並寫入訂單；僅不向群組發送一般回覆與 30 秒結單推播。群組內傳「取得群組ID」或「群組ID」仍會回覆（供綁定）。</label></p>
             <p class="notion-hint">若從未在此儲存過本項，可沿用伺服器環境變數 <code>LINE_SUPPRESS_LINE_REPLIES</code>；儲存後以本頁勾選為準。</p>
+            <hr style="margin:16px 0;border:none;border-top:1px solid var(--notion-border);">
+            <p class="notion-hint" style="margin-top:6px;"><label style="margin:0;font-weight:400;"><input type="checkbox" name="line_order_confirm_reply_enabled" value="1" ${s.orderConfirmReplyEnabled ? "checked" : ""}> <strong>啟用「訂單編號確認回覆」</strong>：客戶最後一則訊息後，若 N 秒內無新訊息，自動回覆「感謝您的下訂，訂單已成立，訂單編號：XXX」。預設關閉。</label></p>
+            <p class="notion-hint" style="margin-top:4px;">延遲秒數 <input type="number" name="line_order_confirm_reply_delay_sec" min="30" max="3600" step="10" value="${escapeAttr(String(s.orderConfirmReplyDelaySec || 600))}" style="width:90px;">（範圍 30 ~ 3600 秒；預設 600 秒 = 10 分鐘。建議拉長以避免客戶還在補品項時就誤發回覆。）</p>
             <p class="notion-hint">測試階段建議選「一律開啟」，確認無誤後再改「依時段」。AI 過濾建議先關閉，避免誤擋。</p>
             <p><button type="submit" class="btn btn-primary">儲存設定</button></p>
           </form>
@@ -1457,7 +1460,12 @@ function createAdminRouter() {
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_bot_window_end", wEnd);
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_bot_ai_gate", aiGate);
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_suppress_customer_reply", suppressReply);
-        await (0, line_bot_control_js_1.appendLineBotLog)(db, "settings_saved", { mode: m, windowStart: wStart, windowEnd: wEnd, aiGate: aiGate === "1", suppressCustomerReply: suppressReply === "1" });
+        const confirmEnabled = req.body.line_order_confirm_reply_enabled === "1" ? "1" : "0";
+        const confirmDelayRaw = parseInt(String(req.body.line_order_confirm_reply_delay_sec || "600"), 10);
+        const confirmDelay = Number.isFinite(confirmDelayRaw) ? Math.max(30, Math.min(3600, confirmDelayRaw)) : 600;
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_order_confirm_reply_enabled", confirmEnabled);
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_order_confirm_reply_delay_sec", String(confirmDelay));
+        await (0, line_bot_control_js_1.appendLineBotLog)(db, "settings_saved", { mode: m, windowStart: wStart, windowEnd: wEnd, aiGate: aiGate === "1", suppressCustomerReply: suppressReply === "1", orderConfirmReplyEnabled: confirmEnabled === "1", orderConfirmReplyDelaySec: confirmDelay });
         res.redirect("/admin/line-bot?ok=1");
     });
     /** DB 尚無 line_unit_conversion_rules 時的範例；胡蘿蔔／小黃瓜等請改用品項 2-2 或自行在換算頁新增，避免與品項設定衝突 */

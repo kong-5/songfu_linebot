@@ -3,6 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getLineBotSettings = getLineBotSettings;
 exports.isBotAcceptingOrders = isBotAcceptingOrders;
 exports.isLineSuppressCustomerReply = isLineSuppressCustomerReply;
+exports.isOrderConfirmReplyEnabled = isOrderConfirmReplyEnabled;
+exports.getOrderConfirmReplyDelaySec = getOrderConfirmReplyDelaySec;
 exports.classifyTextAsOrderIntent = classifyTextAsOrderIntent;
 exports.appendLineBotLog = appendLineBotLog;
 
@@ -11,6 +13,9 @@ const DEFAULT_MODE = "always_on";
 const DEFAULT_START = "18:00";
 const DEFAULT_END = "03:00";
 const KEY_SUPPRESS_REPLY = "line_suppress_customer_reply";
+const KEY_ORDER_CONFIRM_REPLY_ENABLED = "line_order_confirm_reply_enabled";
+const KEY_ORDER_CONFIRM_REPLY_DELAY_SEC = "line_order_confirm_reply_delay_sec";
+const DEFAULT_ORDER_CONFIRM_DELAY_SEC = 600;
 function parseBoolSetting(v) {
     const s = String(v ?? "").trim();
     return s === "1" || s.toLowerCase() === "true" || s.toLowerCase() === "yes";
@@ -35,6 +40,8 @@ async function getLineBotSettings(db) {
         windowEnd: DEFAULT_END,
         aiGate: false,
         suppressCustomerReply: false,
+        orderConfirmReplyEnabled: false,
+        orderConfirmReplyDelaySec: DEFAULT_ORDER_CONFIRM_DELAY_SEC,
     };
     for (const k of keys) {
         const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(k);
@@ -49,7 +56,32 @@ async function getLineBotSettings(db) {
             out.aiGate = v === "1" || v === "true";
     }
     out.suppressCustomerReply = await isLineSuppressCustomerReply(db);
+    out.orderConfirmReplyEnabled = await isOrderConfirmReplyEnabled(db);
+    out.orderConfirmReplyDelaySec = await getOrderConfirmReplyDelaySec(db);
     return out;
+}
+
+/** 10 分鐘無新訊息後，自動回客戶「感謝下訂，訂單編號：…」；預設關閉 */
+async function isOrderConfirmReplyEnabled(db) {
+    if (!db) return false;
+    try {
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(KEY_ORDER_CONFIRM_REPLY_ENABLED);
+        if (row && row.value !== undefined && row.value !== null && String(row.value).trim() !== "") {
+            return parseBoolSetting(row.value);
+        }
+    } catch (_) { /* ignore */ }
+    return false;
+}
+
+/** 回覆延遲秒數；預設 600 秒（10 分鐘） */
+async function getOrderConfirmReplyDelaySec(db) {
+    if (!db) return DEFAULT_ORDER_CONFIRM_DELAY_SEC;
+    try {
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(KEY_ORDER_CONFIRM_REPLY_DELAY_SEC);
+        const n = row && row.value ? parseInt(String(row.value), 10) : NaN;
+        if (Number.isFinite(n) && n >= 30 && n <= 3600) return n;
+    } catch (_) { /* ignore */ }
+    return DEFAULT_ORDER_CONFIRM_DELAY_SEC;
 }
 
 /**

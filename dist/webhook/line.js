@@ -29,6 +29,8 @@ const hasLineConfig = Boolean(channelAccessToken && channelSecret);
 const COLLECT_TIMEOUT_MS = (parseInt(process.env.LINE_COLLECT_TIMEOUT_SEC || "30", 10) || 30) * 1000;
 const collectingByGroup = new Map();
 const autoFinalizeTimers = new Map();
+/** 10 分鐘訂單確認回覆計時器：groupId -> Timeout（與 30 秒結單獨立） */
+const orderConfirmReplyTimers = new Map();
 /** LINE webhook 偶發重送同一 message.id，避免重複寫入品項／raw_message */
 const recentLineMessageIdQueue = [];
 const recentLineMessageIdSet = new Set();
@@ -268,6 +270,49 @@ function createLineWebhook() {
         }, COLLECT_TIMEOUT_MS);
         autoFinalizeTimers.set(groupId, t);
     };
+    /**
+     * 10 分鐘訂單確認回覆：群組內最後一則訊息後 N 秒（預設 600）沒有再有新訊息，
+     * 對該群組回覆「感謝您的下訂，訂單已成立，訂單編號：XXX」。
+     * 預設關閉，由後台 line_order_confirm_reply_enabled 切換。
+     */
+    const scheduleOrderConfirmReply = async (groupId, session) => {
+        if (!groupId || !lineClient) return;
+        const old = orderConfirmReplyTimers.get(groupId);
+        if (old) clearTimeout(old);
+        let enabled = false;
+        let delayMs = 600 * 1000;
+        try {
+            enabled = await (0, line_bot_control_js_1.isOrderConfirmReplyEnabled)(db);
+            if (!enabled) return;
+            const sec = await (0, line_bot_control_js_1.getOrderConfirmReplyDelaySec)(db);
+            delayMs = Math.max(30, Math.min(3600, sec)) * 1000;
+        } catch (_) { /* ignore */ }
+        const t = setTimeout(async () => {
+            try {
+                orderConfirmReplyTimers.delete(groupId);
+                // 二次確認啟用狀態（避免被關掉後仍送）
+                if (!(await (0, line_bot_control_js_1.isOrderConfirmReplyEnabled)(db))) return;
+                if (await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(db)) return;
+                const orderIds = (session.allOrderIds && session.allOrderIds.length)
+                    ? [...new Set(session.allOrderIds)]
+                    : [session.orderId];
+                const orderNos = [];
+                for (const oid of orderIds) {
+                    const r = await db.prepare("SELECT order_no FROM orders WHERE id = ?").get(oid);
+                    if (r?.order_no) orderNos.push(String(r.order_no));
+                }
+                if (!orderNos.length) return;
+                const text = orderNos.length > 1
+                    ? `感謝您的下訂，訂單已成立，訂單編號：\n${orderNos.join("、")}`
+                    : `感謝您的下訂，訂單已成立，訂單編號：${orderNos[0]}`;
+                await lineClient.pushMessage(groupId, { type: "text", text });
+                console.log("[LINE] 已送出 10 分鐘訂單確認回覆 group=%s orders=%s", groupId, orderNos.join(","));
+            } catch (e) {
+                console.error("[LINE] 10 分鐘訂單確認回覆失敗:", e?.message || e);
+            }
+        }, delayMs);
+        orderConfirmReplyTimers.set(groupId, t);
+    };
     async function processLineWebhookEvents(events) {
         for (const event of events) {
             try {
@@ -295,6 +340,10 @@ function createLineWebhook() {
                                     if (oldT)
                                         clearTimeout(oldT);
                                     autoFinalizeTimers.delete(gid);
+                                    const oldC = orderConfirmReplyTimers.get(gid);
+                                    if (oldC)
+                                        clearTimeout(oldC);
+                                    orderConfirmReplyTimers.delete(gid);
                                 }
                             }
                             console.log(`[LINE] 使用者收回訊息，已自動刪除關聯訂單，MessageId: ${mid}`);
@@ -479,6 +528,7 @@ function createLineWebhook() {
                                 const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId: customer.id, lastActivity: Date.now() };
                                 collectingByGroup.set(groupId, session);
                                 scheduleAutoFinalize(groupId, session);
+                                scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                             }
                             if (lineClient && newOrderIds.length > 1) {
                                 await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
@@ -504,6 +554,7 @@ function createLineWebhook() {
                                 const session = { orderId, allOrderIds: [orderId], customerId: customer.id, lastActivity: Date.now() };
                                 collectingByGroup.set(groupId, session);
                                 scheduleAutoFinalize(groupId, session);
+                                scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                             }
                             await duplicateAttachmentToOrders(db, messageId, [orderId], nowSql);
                             const newRawImg = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + ocrLine;
@@ -568,6 +619,7 @@ function createLineWebhook() {
                             const session = { orderId, allOrderIds: [orderId], customerId, lastActivity: Date.now() };
                             collectingByGroup.set(groupId, session);
                             scheduleAutoFinalize(groupId, session);
+                                scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         }
                         if (lineForRaw) {
                             const orderRowRaw = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
@@ -607,6 +659,7 @@ function createLineWebhook() {
                             const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId, lastActivity: Date.now() };
                             collectingByGroup.set(groupId, session);
                             scheduleAutoFinalize(groupId, session);
+                                scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         }
                         if (lineClient && newOrderIds.length > 1) {
                             await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
@@ -633,6 +686,7 @@ function createLineWebhook() {
                         const session = { orderId, allOrderIds: [orderId], customerId, lastActivity: Date.now() };
                         collectingByGroup.set(groupId, session);
                         scheduleAutoFinalize(groupId, session);
+                                scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                     }
                     await insertParsedItemsForOrder(db, orderId, customerId, parsed, fallbackUnit);
                     const orderRowRaw = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
@@ -736,6 +790,8 @@ function createLineWebhook() {
                         if (oldTimer)
                             clearTimeout(oldTimer);
                         autoFinalizeTimers.delete(groupId);
+                        // 「以上 X 收單」屬於主動結單，10 分鐘訂單編號回覆仍要照常排程，
+                        // 因為使用者結束輸入後 10 分鐘確認回覆才有意義；不在此清除 orderConfirmReplyTimers。
                         const doneOrderIds = (session.allOrderIds && session.allOrderIds.length) ? [...new Set(session.allOrderIds)] : [session.orderId];
                         if (process.env.LINE_SKIP_FINALIZE_FULL_REBUILD !== "1") {
                             for (const oid of doneOrderIds) {
@@ -790,6 +846,7 @@ function createLineWebhook() {
                     const session = collectingByGroup.get(groupId);
                     session.lastActivity = Date.now();
                     scheduleAutoFinalize(groupId, session);
+                                scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                 }
                 // 不再要求先輸入「收單」；若尚未有 session，收到文字即自動開單
                 if (groupId && !collectingByGroup.has(groupId)) {
@@ -813,6 +870,7 @@ function createLineWebhook() {
                     const autoSession = { orderId: autoOrderId, allOrderIds: [autoOrderId], customerId, lastActivity: Date.now() };
                     collectingByGroup.set(groupId, autoSession);
                     scheduleAutoFinalize(groupId, autoSession);
+                    scheduleOrderConfirmReply(groupId, autoSession).catch(()=>{});
                 }
                 if (!groupId || !collectingByGroup.has(groupId)) {
                     continue;
