@@ -2599,9 +2599,9 @@ function createAdminRouter() {
             ${statCard("重大變更", criticalCount, "bad")}
           </div>
           <div class="sf-card" style="flex:1;min-height:0;display:flex;flex-direction:column;">
-            <div style="overflow:auto;flex:1;max-height:calc(100vh - 360px);">
+            <div>
               <table class="sf-table">
-                <thead style="position:sticky;top:0;z-index:1;">
+                <thead>
                   <tr>
                     <th style="width:160px;">時間</th>
                     <th style="width:24px;"></th>
@@ -5019,7 +5019,15 @@ function createAdminRouter() {
             // 統計
             const totalShown = orders.length;
             const approvedCount = orders.filter(o => String(o.status||"").toLowerCase() === "approved").length;
-            const needReviewSum = orders.reduce((s, o) => s + (o.need_review_count||0), 0);
+            // 品項待對應：與 /admin/review 一致，全庫 need_review=1 的訂單明細數（排除已作廢訂單）
+            let needReviewSum = 0;
+            try {
+                const r = await db.prepare(
+                    "SELECT COUNT(*) AS c FROM order_items oi JOIN orders o ON o.id = oi.order_id " +
+                    "WHERE oi.need_review = 1 AND COALESCE(LOWER(TRIM(o.status)),'') <> 'deleted'"
+                ).get();
+                needReviewSum = Number(r?.c) || 0;
+            } catch (_) { /* fallback 為 0 */ }
             const pendingCount = totalShown - approvedCount;
             const statCard = (label, num, status, href) => `
               <a href="${href || "#"}" style="text-decoration:none;color:inherit;padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;min-width:140px;">
@@ -5109,9 +5117,9 @@ function createAdminRouter() {
               <button type="submit" class="sf-btn sm danger" onclick="return confirm('確定要刪除勾選的訂單？');">${SF_ICONS.x}<span>刪除</span></button>
             </form>
           </div>
-          <div class="sf-table-wrap" style="overflow:auto;max-height:calc(100vh - 460px);">
+          <div class="sf-table-wrap">
             <table class="sf-table">
-              <thead style="position:sticky;top:0;z-index:1;">
+              <thead>
                 <tr>
                   <th style="width:36px;"><input type="checkbox" id="orderSelectAllCb" title="全選"></th>
                   <th style="width:24px;"></th>
@@ -7861,9 +7869,9 @@ function createAdminRouter() {
             <button type="button" class="sf-tab" id="tab-btn-inactive" data-tab="customers-inactive">停用 <span class="tab-count">${inactiveN}</span></button>
           </div>
           <div style="flex:1;min-height:0;display:flex;flex-direction:column;">
-            <div id="customers-bound-panel" class="tab-panel sf-table-wrap" style="overflow:auto;max-height:calc(100vh - 380px);">
+            <div id="customers-bound-panel" class="tab-panel sf-table-wrap">
               <table class="sf-table">
-                <thead style="position:sticky;top:0;z-index:1;">
+                <thead>
                   <tr>
                     <th style="width:24px;"></th>
                     <th>客戶名稱</th>
@@ -7877,9 +7885,9 @@ function createAdminRouter() {
                 <tbody id="customers-bound-tbody">${tbodyBound}</tbody>
               </table>
             </div>
-            <div id="customers-unbound-panel" class="tab-panel sf-table-wrap" style="display:none;overflow:auto;max-height:calc(100vh - 380px);">
+            <div id="customers-unbound-panel" class="tab-panel sf-table-wrap" style="display:none;">
               <table class="sf-table">
-                <thead style="position:sticky;top:0;z-index:1;">
+                <thead>
                   <tr>
                     <th style="width:24px;"></th>
                     <th>客戶名稱</th>
@@ -7893,9 +7901,9 @@ function createAdminRouter() {
                 <tbody id="customers-unbound-tbody">${tbodyUnbound}</tbody>
               </table>
             </div>
-            <div id="customers-inactive-panel" class="tab-panel sf-table-wrap" style="display:none;overflow:auto;max-height:calc(100vh - 380px);">
+            <div id="customers-inactive-panel" class="tab-panel sf-table-wrap" style="display:none;">
               <table class="sf-table">
-                <thead style="position:sticky;top:0;z-index:1;">
+                <thead>
                   <tr>
                     <th style="width:24px;"></th>
                     <th>客戶名稱</th>
