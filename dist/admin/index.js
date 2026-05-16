@@ -877,6 +877,56 @@ const SF_TOKENS = `
     transition: left .2s; box-shadow: 0 0 20px rgba(0,0,0,0.2);
   }
   .notion-app.sidebar-open .sf-sidebar { left: 0; }
+
+  /* SF 頁面 padding 縮小，給內容更多橫向空間 */
+  .sf-root { padding: 14px !important; }
+  .sf-root > *[style*="padding:24px 32px"] { padding: 14px !important; }
+
+  /* 標題與按鈕在手機應該換行 */
+  .sf-root h1 { font-size: 18px !important; }
+
+  /* KPI/統計卡：垂直堆疊或 2 欄而非橫向溢出 */
+  .sf-root [style*="display:flex"][style*="gap:12px"][style*="flex-wrap:wrap"] > a,
+  .sf-root [style*="display:flex"][style*="gap:12px"][style*="flex-wrap:wrap"] > div {
+    min-width: calc(50% - 6px) !important;
+    flex: 1 1 calc(50% - 6px) !important;
+  }
+
+  /* 主要 grid 佈局（1.4fr 1fr、1fr 360px、1fr 1fr 1fr 等）改單欄 */
+  .sf-root [style*="grid-template-columns:1.4fr 1fr"],
+  .sf-root [style*="grid-template-columns:1fr 360px"],
+  .sf-root [style*="grid-template-columns:1fr 1fr 1fr"],
+  .sf-root [style*="grid-template-columns:1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* 行事曆 cells 縮小 */
+  .sf-root [style*="min-height:90px"] { min-height: 56px !important; padding: 4px !important; }
+
+  /* 表格容器允許橫向捲動，避免被擠爆 */
+  .sf-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .sf-table { min-width: 560px; font-size: 12px; }
+  .sf-table thead th { padding: 8px 10px; font-size: 10px; }
+  .sf-table tbody td { padding: 10px; }
+
+  /* sticky 原始訂單欄改非 sticky（會擠到滾動列） */
+  .order-detail-raw-col {
+    position: static !important; flex: none !important; max-width: 100% !important; width: 100% !important;
+  }
+  .order-detail-raw-col .sf-card[id="rawOrderBlock"] {
+    position: static !important; max-height: none !important;
+  }
+  .order-detail-layout { flex-direction: column !important; }
+
+  /* 模態縮 padding */
+  .sf-root .sf-card,
+  [id$="Modal"] .sf-card { max-width: calc(100vw - 24px); }
+
+  /* 大型 KPI 數字縮 */
+  .sf-kpi-num { font-size: 22px !important; }
+
+  /* 行內按鈕擠在一起時自動換行 */
+  .sf-root .sf-btn { white-space: nowrap; }
 }
 
 /* scrollbars (thin) */
@@ -1862,24 +1912,38 @@ function createAdminRouter() {
                 : "<span class=\"notion-hint\">僅負責人可核准</span>";
             return `<tr><td>${escapeHtml(u.name || u.username)}</td><td><code>${escapeHtml(u.username)}</code></td><td>${escapeHtml(u.title)}</td><td>${approveBtn}</td></tr>`;
         }).join("");
+        const userDataAttrs = (u) => `data-username="${escapeAttr(u.username)}" data-name="${escapeAttr(u.name || "")}" data-title="${escapeAttr(u.title || "")}" data-owner="${isAdminOwnerUsername(u.username) ? "1" : "0"}"`;
         const activeRows = activeList.map((u) => {
-            const ownerMark = isAdminOwnerUsername(u.username) ? " <span class=\"notion-hint\">(負責人)</span>" : "";
-            const delForm = (!isAdminOwnerUsername(u.username) && users.length > 1)
-                ? `<form method="post" action="/admin/users/delete" style="display:inline;margin-left:8px;" onsubmit="return confirm('確定刪除？');"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="btn">刪除</button></form>`
-                : "";
-            const disForm = !isAdminOwnerUsername(u.username)
-                ? `<form method="post" action="/admin/users/set-status" style="display:inline;margin-left:8px;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><input type="hidden" name="status" value="disabled"><button type="submit" class="btn">停用</button></form>`
-                : "";
-            const titleForm = !isAdminOwnerUsername(u.username)
-                ? `<form method="post" action="/admin/users/set-title" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;flex-wrap:wrap;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><input type="text" name="name" value="${escapeAttr(u.name || "")}" placeholder="姓名" style="width:110px;"><select name="title">${ADMIN_TITLES.map((t) => `<option value="${escapeAttr(t)}" ${u.title === t ? "selected" : ""}>${escapeHtml(t)}</option>`).join("")}</select><button type="submit" class="btn">更新</button></form>`
-                : escapeHtml(u.title);
-            return `<tr><td>${escapeHtml(u.name || u.username)}${ownerMark}</td><td><code>${escapeHtml(u.username)}</code></td><td>${isAdminOwnerUsername(u.username) ? escapeHtml(u.title) : titleForm}</td><td>啟用 ${disForm} ${delForm}</td></tr>`;
+            const ownerMark = isAdminOwnerUsername(u.username) ? ` <span class="sf-pill accent" style="font-size:10px;">負責人</span>` : "";
+            const ops = [];
+            ops.push(`<button type="button" class="sf-btn sm" onclick='openUserEdit(${JSON.stringify({u:u.username,n:u.name||"",t:u.title||"",owner:isAdminOwnerUsername(u.username)})})'>${SF_ICONS.edit}<span>編輯</span></button>`);
+            if (!isAdminOwnerUsername(u.username)) {
+                ops.push(`<form method="post" action="/admin/users/set-status" style="display:inline;margin:0;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><input type="hidden" name="status" value="disabled"><button type="submit" class="sf-btn sm" onclick="return confirm('確定停用此帳號？');">停用</button></form>`);
+            }
+            if (!isAdminOwnerUsername(u.username) && users.length > 1) {
+                ops.push(`<form method="post" action="/admin/users/delete" style="display:inline;margin:0;" onsubmit="return confirm('確定刪除？此動作無法復原。');"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="sf-btn sm danger">${SF_ICONS.x}</button></form>`);
+            }
+            return `<tr ${userDataAttrs(u)}>
+              <td><strong>${escapeHtml(u.name || u.username)}</strong>${ownerMark}</td>
+              <td><code class="mono" style="font-size:11px;color:var(--txt-2);">${escapeHtml(u.username)}</code></td>
+              <td><span class="sf-pill">${escapeHtml(u.title)}</span></td>
+              <td><span class="sf-pill ok">啟用</span></td>
+              <td style="white-space:nowrap;">${ops.join(" ")}</td>
+            </tr>`;
         }).join("");
         const disabledRows = disabledList.map((u) => {
-            const enForm = `<form method="post" action="/admin/users/set-status" style="display:inline;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><input type="hidden" name="status" value="active"><button type="submit" class="btn">重新啟用</button></form>`;
-            const delForm = `<form method="post" action="/admin/users/delete" style="display:inline;margin-left:8px;" onsubmit="return confirm('確定刪除此帳號？');"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="btn">刪除</button></form>`;
-            return `<tr><td>${escapeHtml(u.name || u.username)}</td><td><code>${escapeHtml(u.username)}</code></td><td>${escapeHtml(u.title)}</td><td>停用 ${enForm} ${!isAdminOwnerUsername(u.username) ? delForm : ""}</td></tr>`;
+            const enForm = `<form method="post" action="/admin/users/set-status" style="display:inline;margin:0;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><input type="hidden" name="status" value="active"><button type="submit" class="sf-btn sm">重新啟用</button></form>`;
+            const delForm = `<form method="post" action="/admin/users/delete" style="display:inline;margin:0;" onsubmit="return confirm('確定刪除此帳號？');"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="sf-btn sm danger">${SF_ICONS.x}</button></form>`;
+            return `<tr>
+              <td><strong>${escapeHtml(u.name || u.username)}</strong></td>
+              <td><code class="mono" style="font-size:11px;color:var(--txt-2);">${escapeHtml(u.username)}</code></td>
+              <td><span class="sf-pill">${escapeHtml(u.title)}</span></td>
+              <td><span class="sf-pill">停用</span></td>
+              <td style="white-space:nowrap;">${enForm} ${!isAdminOwnerUsername(u.username) ? delForm : ""}</td>
+            </tr>`;
         }).join("");
+        // 全站可用職稱
+        const titleOptsAll = ADMIN_TITLES.map(t => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join("");
         const bindOkCode = typeof req.query.bind_code === "string" ? req.query.bind_code.trim() : "";
         const bindOkUser = typeof req.query.bind_user === "string" ? req.query.bind_user.trim() : "";
         const bindMsg = bindOkCode && bindOkUser
@@ -1909,40 +1973,149 @@ function createAdminRouter() {
             </tr>`;
         }).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 人員管理</div>
-        <h1 class="notion-page-title">人員管理</h1>
-        <p class="notion-hint">僅<strong>經理</strong>可進入本頁。負責人信箱：<code>${escapeHtml(ADMIN_OWNER_EMAIL)}</code>（可環境變數 <code>ADMIN_OWNER_EMAIL</code> 覆寫）。新帳號須由負責人<strong>核准</strong>後才可登入。<strong>移工</strong>無法刪除任何資料。</p>
-        ${msg}
-        ${bindMsg}
-        <div class="notion-card">
-          <h2 style="margin-top:0;">員工 LINE 綁定（內稽用）</h2>
-          <p class="notion-hint" style="margin:0 0 12px;">員工綁定後，其在客戶群組內傳的訊息將<strong>跳過 AI 解析</strong>（不計訂單、不耗 Gemini 額度），僅記錄到稽核軌跡。便於員工在群組內與客戶確認時不誤觸發收單。</p>
-          <table><thead><tr><th>姓名</th><th>帳號</th><th>綁定狀態</th><th>LINE userId</th><th>綁定時間</th><th>操作</th></tr></thead>
-            <tbody>${bindingRows || "<tr><td colspan='6'>尚無啟用帳號</td></tr>"}</tbody></table>
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">設定 / 人員管理</div>
+              <h1 style="margin:0;font-size:22px;font-weight:600;">人員管理</h1>
+              <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">僅<strong>經理</strong>可進入本頁。負責人：<code class="mono" style="font-size:11px;">${escapeHtml(ADMIN_OWNER_EMAIL)}</code>。新帳號須由負責人核准後才可登入。</p>
+            </div>
+            <button type="button" class="sf-btn primary" onclick="document.getElementById('addUserModal').style.display='flex'">${SF_ICONS.plus}<span>新增帳號</span></button>
+          </div>
+          ${msg.replace(/<p class="notion-msg ok">/g, '<div class="sf-pill ok" style="align-self:flex-start;">').replace(/<p class="notion-msg err">/g, '<div class="sf-pill bad" style="align-self:flex-start;">').replace(/<\/p>/g, "</div>")}
+          ${bindMsg}
+
+          ${pending.length ? `<div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.warn} 待審核（${pending.length}）</div>
+              <span class="sf-card-sub">新帳號須由負責人核准</span>
+            </div>
+            <div class="sf-table-wrap" style="border:0;border-radius:0;">
+              <table class="sf-table">
+                <thead><tr><th>姓名</th><th>帳號</th><th>職稱</th><th style="width:120px;">操作</th></tr></thead>
+                <tbody>${pendingRows}</tbody>
+              </table>
+            </div>
+          </div>` : ""}
+
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.users} 啟用中（${activeList.length}）</div>
+            </div>
+            <div class="sf-table-wrap" style="border:0;border-radius:0;">
+              <table class="sf-table">
+                <thead><tr><th>姓名</th><th>帳號</th><th style="width:90px;">職稱</th><th style="width:80px;">狀態</th><th style="width:220px;">操作</th></tr></thead>
+                <tbody>${activeRows || `<tr><td colspan='5' style='padding:24px;text-align:center;color:var(--txt-3);'>尚無啟用帳號</td></tr>`}</tbody>
+              </table>
+            </div>
+          </div>
+
+          ${disabledList.length ? `<details class="sf-card">
+            <summary style="padding:12px 16px;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;">
+              <span style="font-size:11px;color:var(--txt-3);">▸</span>
+              <span style="font-size:13px;font-weight:600;">停用（${disabledList.length}）</span>
+            </summary>
+            <div class="sf-table-wrap" style="border:0;border-radius:0;border-top:var(--hairline);">
+              <table class="sf-table">
+                <thead><tr><th>姓名</th><th>帳號</th><th style="width:90px;">職稱</th><th style="width:80px;">狀態</th><th style="width:220px;">操作</th></tr></thead>
+                <tbody>${disabledRows}</tbody>
+              </table>
+            </div>
+          </details>` : ""}
+
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.link} 員工 LINE 綁定（內稽用）</div>
+              <span class="sf-card-sub">綁定後，員工在客戶群組內傳訊息不會觸發 AI 解析</span>
+            </div>
+            <div class="sf-table-wrap" style="border:0;border-radius:0;">
+              <table class="sf-table">
+                <thead><tr><th>姓名</th><th>帳號</th><th style="width:90px;">綁定狀態</th><th>LINE userId</th><th style="width:160px;">綁定時間</th><th style="width:140px;">操作</th></tr></thead>
+                <tbody>${bindingRows || `<tr><td colspan='6' style='padding:24px;text-align:center;color:var(--txt-3);'>尚無啟用帳號</td></tr>`}</tbody>
+              </table>
+            </div>
+          </div>
         </div>
-        <div class="notion-card">
-          <h2 style="margin-top:0;">待審核</h2>
-          <table><thead><tr><th>姓名</th><th>帳號</th><th>職稱</th><th>操作</th></tr></thead><tbody>${pendingRows || "<tr><td colspan=\"4\">尚無待審核帳號</td></tr>"}</tbody></table>
+
+        <!-- 編輯使用者 Modal -->
+        <div id="userEditModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center;padding:24px;">
+          <div class="sf-card" style="max-width:480px;width:100%;background:var(--bg-1);">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.edit} 編輯員工資料</div>
+              <button type="button" class="sf-btn sm ghost" onclick="document.getElementById('userEditModal').style.display='none'">✕</button>
+            </div>
+            <form method="post" action="/admin/users/set-title" style="padding:16px 18px;display:flex;flex-direction:column;gap:14px;">
+              <input type="hidden" name="username" id="ue-username">
+              <div>
+                <label class="sf-label">帳號（不可修改）</label>
+                <input class="sf-input" id="ue-username-display" disabled style="background:var(--bg-3);color:var(--txt-3);">
+              </div>
+              <div>
+                <label class="sf-label">姓名</label>
+                <input class="sf-input" name="name" id="ue-name" required>
+              </div>
+              <div id="ue-title-row">
+                <label class="sf-label">職稱</label>
+                <select class="sf-select" name="title" id="ue-title">${titleOptsAll}</select>
+                <p style="margin-top:6px;font-size:11px;color:var(--txt-3);">負責人帳號無法變更職稱。<strong>移工</strong>無法刪除任何資料（系統限制）。</p>
+              </div>
+              <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:6px;border-top:var(--hairline);">
+                <button type="button" class="sf-btn ghost" onclick="document.getElementById('userEditModal').style.display='none'">取消</button>
+                <button type="submit" class="sf-btn primary">${SF_ICONS.check}<span>儲存</span></button>
+              </div>
+            </form>
+            <div style="padding:14px 18px;border-top:var(--hairline);background:var(--bg-2);">
+              <div style="font-size:12px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">重設密碼</div>
+              <form method="post" action="/admin/users/reset-password" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;" onsubmit="return confirm('確定要重設此帳號密碼？');">
+                <input type="hidden" name="username" id="ue-pwd-username">
+                <input class="sf-input" name="new_password" type="password" placeholder="新密碼（至少 4 字元）" minlength="4" required style="flex:1;min-width:160px;">
+                <button type="submit" class="sf-btn danger">${SF_ICONS.refresh}<span>重設</span></button>
+              </form>
+            </div>
+          </div>
         </div>
-        <div class="notion-card">
-          <h2 style="margin-top:0;">啟用中</h2>
-          <table><thead><tr><th>姓名</th><th>帳號</th><th>職稱</th><th>操作</th></tr></thead><tbody>${activeRows || "<tr><td colspan=\"4\">—</td></tr>"}</tbody></table>
+
+        <!-- 新增帳號 Modal -->
+        <div id="addUserModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center;padding:24px;">
+          <div class="sf-card" style="max-width:480px;width:100%;background:var(--bg-1);">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.plus} 新增帳號（待審核）</div>
+              <button type="button" class="sf-btn sm ghost" onclick="document.getElementById('addUserModal').style.display='none'">✕</button>
+            </div>
+            <form method="post" action="/admin/users/add" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px;">
+              <div><label class="sf-label">姓名</label><input class="sf-input" type="text" name="name" required minlength="1" autocomplete="off"></div>
+              <div><label class="sf-label">帳號（建議用信箱）</label><input class="sf-input" type="text" name="username" required minlength="2" autocomplete="off"></div>
+              <div><label class="sf-label">密碼（至少 4 字元）</label><input class="sf-input" type="password" name="password" required minlength="4" autocomplete="new-password"></div>
+              <div><label class="sf-label">職稱</label><select class="sf-select" name="title">${titleOpts}</select></div>
+              <p style="margin:0;font-size:11px;color:var(--txt-3);">送出後須由負責人（<code class="mono">${escapeHtml(ADMIN_OWNER_EMAIL)}</code>）核准才可登入。</p>
+              <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:6px;border-top:var(--hairline);">
+                <button type="button" class="sf-btn ghost" onclick="document.getElementById('addUserModal').style.display='none'">取消</button>
+                <button type="submit" class="sf-btn primary">${SF_ICONS.check}<span>建立</span></button>
+              </div>
+            </form>
+          </div>
         </div>
-        <div class="notion-card">
-          <h2 style="margin-top:0;">停用</h2>
-          <table><thead><tr><th>姓名</th><th>帳號</th><th>職稱</th><th>操作</th></tr></thead><tbody>${disabledRows || "<tr><td colspan=\"4\">尚無停用帳號</td></tr>"}</tbody></table>
-        </div>
-        <div class="notion-card">
-          <h2 style="margin-top:0;">新增帳號（待審核）</h2>
-          <form method="post" action="/admin/users/add">
-            <label>姓名 <input type="text" name="name" required minlength="1" autocomplete="off"></label>
-            <label>帳號（建議信箱） <input type="text" name="username" required minlength="2" autocomplete="off"></label>
-            <label>密碼 <input type="password" name="password" required minlength="4" autocomplete="new-password"></label>
-            <label>職稱 <select name="title">${titleOpts}</select></label>
-            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">新增（送出後須負責人核准）</button></p>
-          </form>
-        </div>
-      `;
+
+        <script>
+        function openUserEdit(info){
+          document.getElementById('ue-username').value = info.u;
+          document.getElementById('ue-username-display').value = info.u;
+          document.getElementById('ue-name').value = info.n || '';
+          document.getElementById('ue-pwd-username').value = info.u;
+          const titleRow = document.getElementById('ue-title-row');
+          const titleSel = document.getElementById('ue-title');
+          if (info.owner) {
+            titleRow.style.opacity = '0.5';
+            titleSel.disabled = true;
+            titleSel.value = info.t || '經理';
+          } else {
+            titleRow.style.opacity = '1';
+            titleSel.disabled = false;
+            titleSel.value = info.t || '行政';
+          }
+          document.getElementById('userEditModal').style.display = 'flex';
+        }
+        </script>`;
         res.type("text/html").send(notionPage("人員管理", body, "users", res));
     });
     router.post("/users/add", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
@@ -2008,9 +2181,17 @@ function createAdminRouter() {
     });
     router.post("/users/set-title", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
         const target = (req.body.username || "").trim();
+        const name = String(req.body.name || "").trim();
         let title = String(req.body.title || "").trim();
         if (isAdminOwnerUsername(target)) {
-            res.redirect("/admin/users?err=owner");
+            // 負責人帳號允許更新姓名，但不變更職稱
+            const users = await loadAdminUsers();
+            const ix = users.findIndex((x) => x.username === target);
+            if (ix >= 0 && name) {
+                users[ix].name = name;
+                await saveAdminUsers(users);
+            }
+            res.redirect("/admin/users?ok=status");
             return;
         }
         if (!ADMIN_TITLES.includes(title))
@@ -2022,10 +2203,34 @@ function createAdminRouter() {
             return;
         }
         users[ix].title = title;
-        if (name)
-            users[ix].name = name;
+        if (name) users[ix].name = name;
         await saveAdminUsers(users);
         res.redirect("/admin/users?ok=status");
+    });
+    router.post("/users/reset-password", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
+        const target = (req.body.username || "").trim();
+        const newPwd = String(req.body.new_password || "");
+        if (!target || newPwd.length < 4) {
+            res.redirect("/admin/users?err=weak");
+            return;
+        }
+        const users = await loadAdminUsers();
+        const ix = users.findIndex((x) => x.username === target);
+        if (ix < 0) {
+            res.redirect("/admin/users?err=" + encodeURIComponent("找不到帳號"));
+            return;
+        }
+        users[ix].passwordHash = hashAdminPassword(newPwd);
+        await saveAdminUsers(users);
+        try {
+            await logDataChange(req, {
+                entityType: "admin_user",
+                entityId: target,
+                action: "reset_password",
+                summary: `重設帳號 ${target} 的密碼`,
+            });
+        } catch (_) {}
+        res.redirect("/admin/users?ok=" + encodeURIComponent("已重設密碼"));
     });
     router.post("/users/delete", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
         const delName = (req.body.username || "").trim();
