@@ -1658,7 +1658,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("人員管理", body, "", res));
+        res.type("text/html").send(notionPage("人員管理", body, "users", res));
     });
     router.post("/users/add", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
         const name = (req.body.name || "").trim();
@@ -4496,7 +4496,7 @@ function createAdminRouter() {
         </div>
         <p><a href="/admin">← 回儀表板</a></p>
       `;
-        res.type("text/html").send(notionPage("LINE 綁定檢查", body, "", res));
+        res.type("text/html").send(notionPage("LINE 綁定檢查", body, "line-bind", res));
     });
     // 待確認品名：列出 need_review=1 的明細，可選擇對應品項並加入俗名
     router.get("/review", async (req, res) => {
@@ -5055,7 +5055,7 @@ function createAdminRouter() {
           </script>
         </div>
       `;
-            res.type("text/html").send(notionPage("訂單查詢", body, "", res));
+            res.type("text/html").send(notionPage("訂單查詢", body, "orders", res));
         }
         catch (e) {
             const errMsg = (e?.message || String(e)).slice(0, 500);
@@ -5121,7 +5121,7 @@ function createAdminRouter() {
           ${orders.length ? `<p style="margin-top:12px;"><a href="/admin/export/download?date=${encodeURIComponent(date)}${customerId ? "&customer_id=" + encodeURIComponent(customerId) : ""}" class="btn">匯出 CSV</a></p>` : ""}
         </div>
       `;
-        res.type("text/html").send(notionPage("資料匯出", body, "", res));
+        res.type("text/html").send(notionPage("資料匯出", body, "export", res));
     });
     router.get("/export/download", async (req, res) => {
         const date = req.query.date?.trim();
@@ -5866,10 +5866,33 @@ function createAdminRouter() {
         const confirmOrderFormHtml = orderStatusLc === "approved"
             ? `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/unapprove?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve" title="再按一次可撤銷確認" onclick="return confirm('確定要撤銷確認？訂單將恢復為待確認。');">已確認</button></form>`
             : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve">確認</button></form>`;
+        const statusPillCls = orderStatusLc === "approved" ? "ok" : orderStatusLc === "deleted" ? "bad" : "warn";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / 訂單明細</div>
-        <h1 class="notion-page-title" style="margin-bottom:6px;">訂單明細</h1>
-        <p style="margin:0 0 10px;color:var(--notion-text-secondary, #555);font-size:14px;">${escapeHtml(order.order_no ?? "—")} · ${escapeHtml(order.order_date)} · <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a> · ${orderStatusDisplay}</p>
+        <div style="padding:20px 24px 0;">
+          <div class="sf-breadcrumb" style="margin-bottom:6px;">訂單 · ${escapeHtml(order.order_date)}</div>
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+            <div>
+              <h2 style="margin:0;font-size:20px;font-weight:600;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders" style="color:inherit;">${escapeHtml(order.customer_name)}</a>
+                <span class="sf-pill ${statusPillCls}">${escapeHtml(orderStatusDisplay)}</span>
+                ${needReviewCount > 0 ? `<span class="sf-pill warn">${SF_ICONS.warn}<span>${needReviewCount} 待確認</span></span>` : ""}
+                ${lowConfCount > 0 ? `<span class="sf-pill bad">${SF_ICONS.warn}<span>${lowConfCount} 低信心</span></span>` : ""}
+              </h2>
+              <div style="margin-top:6px;font-size:12px;color:var(--txt-3);display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+                <span class="mono">${escapeHtml(order.order_no ?? "—")}</span>
+                <span>· ${escapeHtml(items.length+"")} 項</span>
+                ${attachments.length ? `<span>· 圖 ${attachments.length}</span>` : "<span>· 純文字</span>"}
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <a class="sf-btn ghost" href="${escapeAttr(backTo)}">← 回列表</a>
+              ${prevOrder ? `<a class="sf-btn ghost" href="/admin/orders/${encodeURIComponent(prevOrder.id)}?back=${encodeURIComponent(backTo)}">上一筆</a>` : ""}
+              ${nextOrder ? `<a class="sf-btn ghost" href="/admin/orders/${encodeURIComponent(nextOrder.id)}?back=${encodeURIComponent(backTo)}">下一筆</a>` : ""}
+            </div>
+          </div>
+        </div>
+        <div class="notion-breadcrumb" style="display:none;"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / 訂單明細</div>
+        <p style="margin:0 0 10px;color:var(--notion-text-secondary, #555);font-size:14px;display:none;">${escapeHtml(order.order_no ?? "—")} · ${escapeHtml(order.order_date)} · <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a> · ${orderStatusDisplay}</p>
         ${needReviewNote}
         ${lowConfNote}
         ${req.query.ok === "product" ? "<p class=\"notion-msg ok\">已更新。</p>" : ""}
@@ -6248,7 +6271,7 @@ function createAdminRouter() {
           <p class="notion-hint" style="margin:6px 0 12px 0;">列出本訂單與其品項所有的變更／作廢／確認紀錄。任何「刪除」會保留品項快照於日誌中，可透過 metadata 還原。</p>
           <table style="width:100%;border-collapse:collapse;"><thead><tr><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">時間</th><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">操作者</th><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">動作</th><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">說明</th></tr></thead><tbody>${auditRowsHtml}</tbody></table>
         </div>`;
-        res.type("text/html").send(notionPage("訂單明細", body + auditCard, "", res));
+        res.type("text/html").send(notionPage("訂單明細", body + auditCard, "orders", res));
     });
     router.get("/orders/:orderId/attachment/:messageId", async (req, res) => {
         const { orderId, messageId } = req.params;
@@ -7802,7 +7825,7 @@ function createAdminRouter() {
           </div>
         </div>
       `;
-        res.type("text/html").send(notionPage("品項與俗名", body, "", res));
+        res.type("text/html").send(notionPage("品項與俗名", body, "products", res));
     });
     router.post("/products/quick-add", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const name = String(req.body.name || "").trim();
