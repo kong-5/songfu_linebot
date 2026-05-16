@@ -592,10 +592,11 @@ const SF_TOKENS = `
   --txt-2: #4a5060;
   --txt-3: #6c7280;
   --txt-4: #9aa1ae;
-  --accent: oklch(0.58 0.14 60);
-  --accent-strong: oklch(0.48 0.14 55);
-  --accent-soft: oklch(0.58 0.14 60 / 0.10);
-  --accent-line: oklch(0.58 0.14 60 / 0.30);
+  /* 松富企業藍 */
+  --accent: oklch(0.55 0.17 252);
+  --accent-strong: oklch(0.46 0.18 252);
+  --accent-soft: oklch(0.55 0.17 252 / 0.10);
+  --accent-line: oklch(0.55 0.17 252 / 0.30);
   --ok: oklch(0.50 0.16 150);
   --ok-soft: oklch(0.50 0.16 150 / 0.12);
   --warn: oklch(0.65 0.18 75);
@@ -625,10 +626,11 @@ const SF_TOKENS = `
   --txt-2: #9aa1ae;
   --txt-3: #6c7280;
   --txt-4: #4a5060;
-  --accent: oklch(0.78 0.13 75);
-  --accent-strong: oklch(0.86 0.14 75);
-  --accent-soft: oklch(0.78 0.13 75 / 0.14);
-  --accent-line: oklch(0.78 0.13 75 / 0.35);
+  /* 松富企業藍（深色版） */
+  --accent: oklch(0.70 0.16 252);
+  --accent-strong: oklch(0.78 0.17 252);
+  --accent-soft: oklch(0.70 0.16 252 / 0.14);
+  --accent-line: oklch(0.70 0.16 252 / 0.35);
   --ok: oklch(0.76 0.16 150);
   --ok-soft: oklch(0.76 0.16 150 / 0.14);
   --warn: oklch(0.80 0.16 75);
@@ -691,7 +693,7 @@ const SF_TOKENS = `
 }
 .sf-btn:hover { background: var(--bg-3); border-color: var(--line-3); text-decoration: none; }
 .sf-btn:active { transform: translateY(1px); }
-.sf-btn.primary { background: var(--accent); border-color: var(--accent); color: #1a1208; }
+.sf-btn.primary { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .sf-btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
 .sf-btn.ghost { background: transparent; }
 .sf-btn.danger { color: var(--bad); border-color: var(--bad-soft); }
@@ -775,7 +777,7 @@ const SF_TOKENS = `
 .sf-sidebar-brand { padding: 14px 16px; border-bottom: var(--hairline); display: flex; align-items: center; gap: 10px; }
 .sf-sidebar-logo {
   width: 28px; height: 28px; border-radius: 6px;
-  background: var(--accent); color: #1a1208; font-weight: 700; font-size: 14px;
+  background: var(--accent); color: #ffffff; font-weight: 700; font-size: 14px;
   font-family: var(--font-mono);
   display: flex; align-items: center; justify-content: center;
 }
@@ -808,7 +810,7 @@ const SF_TOKENS = `
 }
 .sf-avatar {
   width: 28px; height: 28px; border-radius: 50%;
-  background: var(--accent); color: #1a1208;
+  background: var(--accent); color: #ffffff;
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 13px; font-weight: 600; flex-shrink: 0;
 }
@@ -848,6 +850,15 @@ const SF_TOKENS = `
 .sf-root *::-webkit-scrollbar, .sf-app *::-webkit-scrollbar { width: 6px; height: 6px; }
 .sf-root *::-webkit-scrollbar-thumb, .sf-app *::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
 .sf-root *::-webkit-scrollbar-track, .sf-app *::-webkit-scrollbar-track { background: transparent; }
+
+/* 撐滿主內容區：含 .sf-root 的頁面不要被 .notion-main 的 max-width:1100px 卡住 */
+.notion-main:has(> .sf-root),
+.notion-main:has(> div > .sf-root) {
+  max-width: none;
+  padding: 0;
+}
+/* fallback for browsers without :has() — 透過 body class */
+body.sf-fullwidth .notion-main { max-width: none; padding: 0; }
 
 /* legacy notion-card / notion-page-title 同步進 dark 主題（避免穿色） */
 [data-theme="dark"] .notion-page-title { color: var(--txt-1); }
@@ -913,7 +924,7 @@ function sfSidebar(active) {
       </div>
       <div class="sf-nav-group">
         <div class="sf-nav-group-title">主檔管理</div>
-        ${item("/admin/customers", "customers", "users", "客戶與品項")}
+        ${item("/admin/customers", "customers", "users", "客戶管理")}
         ${item("/admin/products", "products", "box", "貨品管理")}
         ${item("/admin/line-binding", "line-bind", "link", "LINE 綁定")}
         ${item("/admin/ai-examples", "ai-examples", "spark", "AI 學習庫")}
@@ -2305,8 +2316,8 @@ function createAdminRouter() {
             freezerRows = await db.prepare("SELECT name, freezer_type FROM freezer_fridge_warehouses ORDER BY name LIMIT 8").all();
         } catch (_) {}
         const tapmc = wholesale_price_js_1.TAPMC_PRICE_URL;
-        const kpiCard = (label, num, unit, sub, status, delta) => `
-          <div class="sf-kpi ${status?"status-"+status:""}">
+        const kpiCard = (label, num, unit, sub, status, delta, href) => `
+          <a href="${href || "#"}" class="sf-kpi ${status?"status-"+status:""}" style="text-decoration:none;color:inherit;display:block;transition:transform .12s,box-shadow .12s;cursor:pointer;">
             <div class="sf-kpi-head">
               <span class="sf-kpi-label">${label}</span>
               ${status?`<span class="sf-dot ${status}"></span>`:""}
@@ -2319,7 +2330,7 @@ function createAdminRouter() {
               ${delta?`<span class="mono">${delta}</span>`:""}
               ${sub?`<span>${sub}</span>`:""}
             </div>
-          </div>`;
+          </a>`;
         const alertsRows = alerts.length
             ? alerts.map(a => {
                 const s = alertStatusFor(a);
@@ -2336,11 +2347,11 @@ function createAdminRouter() {
                 </div>`;
               }).join("")
             : `<div style="padding:24px;text-align:center;color:var(--txt-3);font-size:13px;">尚無稽核事件</div>`;
-        const checklistCard = (title, head, items) => `
-          <div class="sf-card">
+        const checklistCard = (title, head, items, href) => `
+          <a href="${href || "#"}" class="sf-card" style="text-decoration:none;color:inherit;display:block;transition:transform .12s,border-color .12s;">
             <div class="sf-card-head">
               <div class="sf-card-title">${title}</div>
-              <span class="mono" style="font-size:11px;color:var(--txt-3);">${head}</span>
+              <span class="mono" style="font-size:11px;color:var(--txt-3);">${head} ›</span>
             </div>
             <div style="padding:12px 16px;display:flex;flex-direction:column;gap:6px;">
               ${items.map((it, idx) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:12px;border-bottom:${idx<items.length-1?"1px dashed var(--line)":"none"};">
@@ -2349,10 +2360,10 @@ function createAdminRouter() {
                 <span class="mono" style="color:${it.status==="bad"?"var(--bad)":it.status==="warn"?"var(--warn)":"var(--txt-1)"};">${escapeHtml(it.val||"")}</span>
               </div>`).join("")}
             </div>
-          </div>`;
+          </a>`;
         const body = `
-        <div class="sf-root" style="padding:24px;display:flex;flex-direction:column;gap:20px;background:var(--bg-0);min-height:100%;">
-          <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:20px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
             <div>
               <div class="sf-breadcrumb" style="margin-bottom:6px;">儀表板 / 今日營運</div>
               <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em;">松富物流 · HACCP 監控中心</h1>
@@ -2369,39 +2380,44 @@ function createAdminRouter() {
               <a class="sf-btn primary" href="/admin/orders?need_review=1">${SF_ICONS.check}<span>批次簽核 (${pendingOrders})</span></a>
             </div>
           </div>
-          <div style="display:flex;gap:12px;">
-            ${kpiCard("今日訂單", totalOrders, "單", deltaOrders>=0?`vs 昨日 ${yesterdayOrders}`:"", "ok", deltaOrders>0?`↑ +${deltaOrders}`:deltaOrders<0?`↓ ${deltaOrders}`:"· 持平")}
-            ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"", pendingOrders>5?"warn":"ok")}
-            ${kpiCard("已確認", approvedOrders, "單", totalOrders?`完成 ${Math.round(approvedOrders*100/totalOrders)}%`:"", "ok")}
-            ${kpiCard("LINE 綁定", custBound, "/" + custTotal + " 戶", "未綁定可至客戶列表處理", custBound===custTotal?"ok":"warn")}
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${kpiCard("今日訂單", totalOrders, "單", deltaOrders>=0?`vs 昨日 ${yesterdayOrders}`:"", "ok", deltaOrders>0?`↑ +${deltaOrders}`:deltaOrders<0?`↓ ${deltaOrders}`:"· 持平", "/admin/orders")}
+            ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"", pendingOrders>5?"warn":"ok", null, "/admin/orders?need_review=1")}
+            ${kpiCard("已確認", approvedOrders, "單", totalOrders?`完成 ${Math.round(approvedOrders*100/totalOrders)}%`:"", "ok", null, "/admin/orders")}
+            ${kpiCard("LINE 綁定", custBound, "/" + custTotal + " 戶", "未綁定可至客戶列表處理", custBound===custTotal?"ok":"warn", null, "/admin/customers")}
           </div>
           <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;">
             <div class="sf-card">
               <div class="sf-card-head">
                 <div class="sf-card-title">${SF_ICONS.list} 今日叫貨流量 · 06:00–21:00</div>
-                <span class="sf-card-sub">尖峰 ${peakH}:00</span>
+                <span class="sf-card-sub">${totalOrders>0?`尖峰 ${peakH}:00`:"本日尚無訂單"}</span>
               </div>
               <div style="padding:16px;">
-                <div style="display:flex;align-items:flex-end;gap:4px;height:140px;">${flowBarsHtml}</div>
+                ${totalOrders>0
+                  ? `<div style="display:flex;align-items:flex-end;gap:4px;height:140px;">${flowBarsHtml}</div>`
+                  : `<div style="height:140px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;border:1px dashed var(--line);border-radius:var(--radius);background:var(--bg-2);">📊 本日尚無訂單資料</div>`}
                 <div style="margin-top:16px;padding-top:14px;border-top:var(--hairline);display:flex;gap:24px;font-size:12px;color:var(--txt-2);flex-wrap:wrap;">
-                  <span>尖峰 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${peakH}:00</strong></span>
+                  ${totalOrders>0?`<span>尖峰 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${peakH}:00</strong></span>`:""}
                   <span>今日訂單 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${totalOrders}</strong></span>
                   <span>待確認比例 <strong class="mono" style="color:${needReviewCnt?"var(--warn)":"var(--ok)"};margin-left:6px;">${needReviewCnt}/${totalOrders||"-"}</strong></span>
+                  <a href="/admin/orders" style="margin-left:auto;font-size:12px;">前往訂單管理 →</a>
                 </div>
               </div>
             </div>
             <div class="sf-card" style="display:flex;flex-direction:column;">
               <div class="sf-card-head">
-                <div class="sf-card-title">${SF_ICONS.bell} 即時稽核事件</div>
-                <span class="sf-pill ${alerts.filter(a=>alertStatusFor(a)==="bad").length?"bad":"info"}">${alerts.length} 筆</span>
+                <a href="/admin/audit" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
+                  <div class="sf-card-title">${SF_ICONS.bell} 即時稽核事件</div>
+                </a>
+                <a href="/admin/audit" style="text-decoration:none;"><span class="sf-pill ${alerts.filter(a=>alertStatusFor(a)==="bad").length?"bad":"info"}">${alerts.length} 筆 ›</span></a>
               </div>
               <div style="flex:1;overflow:auto;max-height:380px;">${alertsRows}</div>
             </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
-            ${checklistCard("冷凍／冷藏庫", `${freezerRows.length} 個庫房`, freezerRows.slice(0,4).map(r => ({ name: r.name, val: r.freezer_type || "—", status: "info" })))}
-            ${checklistCard("每日盤點", `${today}`, [{ name: "前往盤點作業", val: "→", status: "info" }, { name: "盤差報表", val: "→", status: "info" }, { name: "庫房管理", val: "→", status: "info" }, { name: "ERP 匯入", val: "→", status: "info" }])}
-            ${checklistCard("LINE 綁定", `${custBound} / ${custTotal} 戶`, [{ name: "已綁定客戶", val: custBound + " 戶", status: "ok" }, { name: "未綁定客戶", val: (custTotal-custBound) + " 戶", status: custBound===custTotal?"ok":"warn" }, { name: "群發訊息", val: "→", status: "info" }, { name: "綁定檢查", val: "→", status: "info" }])}
+            ${checklistCard("冷凍／冷藏庫", `${freezerRows.length} 個庫房`, freezerRows.slice(0,4).map(r => ({ name: r.name, val: r.freezer_type || "—", status: "info" })), "/admin/freezer-fridge")}
+            ${checklistCard("每日盤點", `${today}`, [{ name: "前往盤點作業", val: "→", status: "info" }, { name: "盤差報表", val: "→", status: "info" }, { name: "庫房管理", val: "→", status: "info" }, { name: "ERP 匯入", val: "→", status: "info" }], "/admin/inventory")}
+            ${checklistCard("LINE 綁定", `${custBound} / ${custTotal} 戶`, [{ name: "已綁定客戶", val: custBound + " 戶", status: "ok" }, { name: "未綁定客戶", val: (custTotal-custBound) + " 戶", status: custBound===custTotal?"ok":"warn" }, { name: "群發訊息", val: "→", status: "info" }, { name: "綁定檢查", val: "→", status: "info" }], "/admin/customers")}
           </div>
           <div class="sf-card">
             <div class="sf-card-head">
@@ -2515,7 +2531,7 @@ function createAdminRouter() {
             </div>
           </div>`;
         const body = `
-        <div class="sf-root" style="padding:24px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;">
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div>
             <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核軌跡 / DATA CHANGE LOG</div>
             <h1 style="margin:0;font-size:22px;font-weight:600;">稽核軌跡</h1>
@@ -7531,34 +7547,38 @@ function createAdminRouter() {
           </tr>`;
         };
         const isCustomerActive = (r) => r.active === 1 || r.active === "1" || r.active === undefined || r.active === null;
-        const activeList = rows.filter(isCustomerActive);
-        const inactiveList = rows.filter((r) => !isCustomerActive(r));
-        const tbodyActive = activeList.map(makeRow).join("") || "<tr class=\"customers-placeholder\"><td colspan='7' style='padding:24px;text-align:center;color:var(--txt-3);'>無啟用客戶</td></tr>";
+        const isBound = (r) => !!(r.line_group_id && String(r.line_group_id).trim());
+        // 三組：已綁定（active+bound）、未綁定（active+unbound）、停用（!active）
+        const boundList = rows.filter(r => isCustomerActive(r) && isBound(r));
+        const unboundList = rows.filter(r => isCustomerActive(r) && !isBound(r));
+        const inactiveList = rows.filter(r => !isCustomerActive(r));
+        const tbodyBound = boundList.map(makeRow).join("") || "<tr class=\"customers-placeholder\"><td colspan='7' style='padding:24px;text-align:center;color:var(--txt-3);'>無已綁定客戶</td></tr>";
+        const tbodyUnbound = unboundList.map(makeRow).join("") || "<tr class=\"customers-placeholder\"><td colspan='7' style='padding:24px;text-align:center;color:var(--txt-3);'>所有啟用中客戶皆已綁定 LINE</td></tr>";
         const tbodyInactive = inactiveList.map(makeRow).join("") || "<tr class=\"customers-placeholder\"><td colspan='7' style='padding:24px;text-align:center;color:var(--txt-3);'>無停用客戶</td></tr>";
         const searchVal = escapeAttr(q);
         // 統計
         const totalN = rows.length;
-        const boundN = rows.filter(r => !!r.line_group_id).length;
-        const activeN = activeList.length;
+        const boundN = boundList.length;
+        const unboundN = unboundList.length;
         const inactiveN = inactiveList.length;
         const okMsg = req.query.ok === "1" ? "客戶已建立。"
             : req.query.ok === "edit" ? "已儲存。"
             : req.query.ok === "del" ? "已刪除。" : "";
         const errMsg = req.query.err ? String(req.query.err) : "";
-        const statCard = (label, num, status) => `
-          <div style="padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;">
+        const statCard = (label, num, status, href) => `
+          <a href="${href || "#"}" style="text-decoration:none;color:inherit;padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;min-width:160px;">
             <span class="sf-dot ${status}"></span>
             <div>
               <div style="font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">${label}</div>
               <div class="mono" style="font-size:18px;font-weight:600;">${num}</div>
             </div>
-          </div>`;
+          </a>`;
         const body = `
-        <div class="sf-root" style="padding:24px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;">
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
             <div>
               <div class="sf-breadcrumb" style="margin-bottom:6px;">管理 / 客戶</div>
-              <h1 style="margin:0;font-size:22px;font-weight:600;">客戶與品項管理</h1>
+              <h1 style="margin:0;font-size:22px;font-weight:600;">客戶管理</h1>
             </div>
             <div style="display:flex;gap:8px;">
               <a class="sf-btn" href="/admin/import-customers">${SF_ICONS.dl}<span>匯入 CSV</span></a>
@@ -7569,10 +7589,10 @@ function createAdminRouter() {
           ${okMsg ? `<div class="sf-pill ok" style="align-self:flex-start;">${escapeHtml(okMsg)}</div>` : ""}
           ${errMsg ? `<div class="sf-pill bad" style="align-self:flex-start;">${escapeHtml(errMsg)}</div>` : ""}
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
-            ${statCard("客戶總數", totalN, "ok")}
-            ${statCard("已綁定 LINE", `${boundN} / ${totalN}`, boundN===totalN?"ok":"warn")}
-            ${statCard("啟用客戶", activeN, "info")}
-            ${statCard("停用客戶", inactiveN, "accent")}
+            ${statCard("客戶總數", totalN, "ok", "#")}
+            ${statCard("已綁定 LINE", boundN, "ok", "#")}
+            ${statCard("未綁定", unboundN, unboundN>0?"warn":"ok", "#")}
+            ${statCard("停用客戶", inactiveN, "accent", "#")}
           </div>
           <form method="get" action="/admin/customers" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <div style="position:relative;flex:0 0 280px;">
@@ -7582,11 +7602,12 @@ function createAdminRouter() {
             <button class="sf-btn" type="submit">${SF_ICONS.search}<span>搜尋</span></button>
             ${q ? `<a class="sf-btn ghost" href="/admin/customers">清除</a>` : ""}
             <div style="flex:1;"></div>
-            <button type="button" class="sf-btn ${"active"===""?"primary":""}" id="tab-btn-active" data-tab="customers-active">啟用 (${activeN})</button>
+            <button type="button" class="sf-btn primary" id="tab-btn-bound" data-tab="customers-bound">已綁定 (${boundN})</button>
+            <button type="button" class="sf-btn" id="tab-btn-unbound" data-tab="customers-unbound">未綁定 (${unboundN})</button>
             <button type="button" class="sf-btn" id="tab-btn-inactive" data-tab="customers-inactive">停用 (${inactiveN})</button>
           </form>
           <div class="sf-card" style="flex:1;min-height:0;display:flex;flex-direction:column;">
-            <div id="customers-active-panel" class="tab-panel" style="overflow:auto;max-height:calc(100vh - 360px);">
+            <div id="customers-bound-panel" class="tab-panel" style="overflow:auto;max-height:calc(100vh - 360px);">
               <table class="sf-table">
                 <thead style="position:sticky;top:0;z-index:1;">
                   <tr>
@@ -7596,10 +7617,26 @@ function createAdminRouter() {
                     <th>寺岡 / 凌越</th>
                     <th>聯絡</th>
                     <th style="text-align:right;width:90px;">狀態</th>
-                    <th style="width:140px;">操作</th>
+                    <th style="width:160px;">操作</th>
                   </tr>
                 </thead>
-                <tbody id="customers-active-tbody">${tbodyActive}</tbody>
+                <tbody id="customers-bound-tbody">${tbodyBound}</tbody>
+              </table>
+            </div>
+            <div id="customers-unbound-panel" class="tab-panel" style="display:none;overflow:auto;max-height:calc(100vh - 360px);">
+              <table class="sf-table">
+                <thead style="position:sticky;top:0;z-index:1;">
+                  <tr>
+                    <th style="width:24px;"></th>
+                    <th>客戶名稱</th>
+                    <th>LINE 群組</th>
+                    <th>寺岡 / 凌越</th>
+                    <th>聯絡</th>
+                    <th style="text-align:right;width:90px;">狀態</th>
+                    <th style="width:160px;">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="customers-unbound-tbody">${tbodyUnbound}</tbody>
               </table>
             </div>
             <div id="customers-inactive-panel" class="tab-panel" style="display:none;overflow:auto;max-height:calc(100vh - 360px);">
@@ -7612,7 +7649,7 @@ function createAdminRouter() {
                     <th>寺岡 / 凌越</th>
                     <th>聯絡</th>
                     <th style="text-align:right;width:90px;">狀態</th>
-                    <th style="width:140px;">操作</th>
+                    <th style="width:160px;">操作</th>
                   </tr>
                 </thead>
                 <tbody id="customers-inactive-tbody">${tbodyInactive}</tbody>
@@ -7622,11 +7659,17 @@ function createAdminRouter() {
         </div>
         <script>
         (function(){
-          var activeTbody = document.getElementById("customers-active-tbody");
+          var boundTbody = document.getElementById("customers-bound-tbody");
+          var unboundTbody = document.getElementById("customers-unbound-tbody");
           var inactiveTbody = document.getElementById("customers-inactive-tbody");
           function removePlaceholder(tbody){
             var first = tbody && tbody.firstElementChild;
             if (first && first.classList && first.classList.contains("customers-placeholder")) tbody.removeChild(first);
+          }
+          function placeholderHtml(tbodyId){
+            if (tbodyId === "customers-bound-tbody") return '<tr class="customers-placeholder"><td colspan="7" style="padding:24px;text-align:center;color:var(--txt-3);">無已綁定客戶</td></tr>';
+            if (tbodyId === "customers-unbound-tbody") return '<tr class="customers-placeholder"><td colspan="7" style="padding:24px;text-align:center;color:var(--txt-3);">所有啟用中客戶皆已綁定 LINE</td></tr>';
+            return '<tr class="customers-placeholder"><td colspan="7" style="padding:24px;text-align:center;color:var(--txt-3);">無停用客戶</td></tr>';
           }
           function moveRow(row, toActive){
             var statusCell = row.querySelector(".customer-status-cell");
@@ -7636,12 +7679,14 @@ function createAdminRouter() {
             if (dot) dot.className = "sf-dot" + (toActive ? " ok" : "");
             if (btn){ btn.dataset.active = toActive ? "1" : "0"; btn.textContent = toActive ? "停用" : "啟用"; }
             var fromTbody = row.parentNode;
-            var toTbody = toActive ? activeTbody : inactiveTbody;
+            // 啟用 → 依綁定狀態進 bound/unbound；停用 → inactive
+            var hasGroup = !!row.querySelector(".sf-pill.warn") ? false : true;
+            var toTbody = toActive ? (hasGroup ? boundTbody : unboundTbody) : inactiveTbody;
+            if (toTbody === fromTbody) return;
             removePlaceholder(toTbody);
             fromTbody.removeChild(row);
             toTbody.appendChild(row);
-            if (fromTbody.children.length === 0)
-              fromTbody.innerHTML = '<tr class="customers-placeholder"><td colspan="7" style="padding:24px;text-align:center;color:var(--txt-3);">' + (fromTbody.id === "customers-active-tbody" ? "無啟用客戶" : "無停用客戶") + '</td></tr>';
+            if (fromTbody.children.length === 0) fromTbody.innerHTML = placeholderHtml(fromTbody.id);
           }
           document.querySelectorAll("[data-tab]").forEach(function(btn){
             btn.addEventListener("click", function(e){
@@ -7654,9 +7699,9 @@ function createAdminRouter() {
               if (panel) panel.style.display = "block";
             });
           });
-          // 預設啟用 tab 高亮
-          var tba = document.getElementById("tab-btn-active");
-          if (tba) tba.classList.add("primary");
+          // 預設已綁定 tab 高亮
+          var tbb = document.getElementById("tab-btn-bound");
+          if (tbb) tbb.classList.add("primary");
           document.querySelectorAll(".customer-toggle-btn").forEach(function(btn){
             btn.addEventListener("click", function(){
               var el = this, id = el.dataset.id;
@@ -7677,7 +7722,7 @@ function createAdminRouter() {
         })();
         </script>
       `;
-        res.type("text/html").send(notionPage("客戶與品項管理", body, "customers", res));
+        res.type("text/html").send(notionPage("客戶管理", body, "customers", res));
     });
     router.post("/api/customers/:id/toggle", async (req, res) => {
         const id = req.params.id;
