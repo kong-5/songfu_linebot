@@ -884,6 +884,61 @@ const SF_TOKENS = `
 .sf-root *::-webkit-scrollbar-thumb, .sf-app *::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
 .sf-root *::-webkit-scrollbar-track, .sf-app *::-webkit-scrollbar-track { background: transparent; }
 
+/* 全站搜尋 */
+.sf-global-search {
+  position: relative; flex: 0 1 480px; max-width: 480px;
+  min-width: 240px; margin: 0 12px;
+}
+.sf-global-search-icon {
+  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  color: var(--txt-3); display: inline-flex; pointer-events: none;
+}
+.sf-global-search-input {
+  width: 100%; height: 34px; padding: 0 56px 0 32px;
+  background: var(--bg-2); border: 1px solid var(--line-2);
+  border-radius: var(--radius); color: var(--txt-1);
+  font-size: 13px; outline: none; font-family: inherit;
+  transition: border-color .12s, box-shadow .12s;
+}
+.sf-global-search-input::placeholder { color: var(--txt-4); }
+.sf-global-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.sf-global-search-kbd {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  font-family: var(--font-mono); font-size: 11px; padding: 2px 6px;
+  background: var(--bg-3); color: var(--txt-3); border: 1px solid var(--line);
+  border-radius: 4px; pointer-events: none;
+}
+.sf-global-search-dropdown {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+  background: var(--bg-1); border: var(--hairline); border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0,0,0,.1); max-height: 70vh; overflow: auto;
+  display: none; z-index: 200;
+}
+.sf-global-search-dropdown.open { display: block; }
+.sf-search-group { padding: 6px 0; border-bottom: var(--hairline); }
+.sf-search-group:last-child { border-bottom: none; }
+.sf-search-group-title {
+  padding: 6px 14px 4px; font-size: 10px; color: var(--txt-3);
+  text-transform: uppercase; letter-spacing: .08em; font-weight: 500;
+}
+.sf-search-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  text-decoration: none; color: var(--txt-1); cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.sf-search-item:hover, .sf-search-item.active {
+  background: var(--bg-3); border-left-color: var(--accent); text-decoration: none;
+}
+.sf-search-item-icon { color: var(--txt-3); display: inline-flex; flex-shrink: 0; }
+.sf-search-item-main { flex: 1; min-width: 0; }
+.sf-search-item-title { font-size: 13px; color: var(--txt-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sf-search-item-sub { font-size: 11px; color: var(--txt-3); font-family: var(--font-mono); }
+.sf-search-empty { padding: 16px 14px; color: var(--txt-3); font-size: 12px; text-align: center; }
+
+@media (max-width: 760px) {
+  .sf-global-search { display: none; }
+}
+
 /* 撐滿主內容區：含 .sf-root 的頁面不要被 .notion-main 的 max-width:1100px 卡住 */
 .notion-main:has(> .sf-root),
 .notion-main:has(> div > .sf-root) {
@@ -1181,6 +1236,12 @@ function renderNotionAppHeader(username, pageTitle, opts = {}) {
         <span class="notion-app-header-sep">/</span>
         <span class="notion-app-header-title">${t}</span>
       </div>
+      <div class="sf-global-search" id="sfGlobalSearchWrap">
+        <span class="sf-global-search-icon">${SF_ICONS.search}</span>
+        <input type="search" id="sfGlobalSearchInput" class="sf-global-search-input" placeholder="搜尋訂單號、客戶、品項、頁面…（Ctrl/Cmd+K）" autocomplete="off" spellcheck="false">
+        <kbd class="sf-global-search-kbd">⌘K</kbd>
+        <div class="sf-global-search-dropdown" id="sfGlobalSearchDropdown"></div>
+      </div>
       <div class="notion-app-header-right">
         <button type="button" class="sf-theme-toggle" onclick="window.sfToggleTheme&&window.sfToggleTheme()" aria-label="切換深淺主題" title="切換深淺／淺色"><span id="sfThemeIcon">${SF_ICONS.moon}</span></button>
         <button type="button" class="btn-header header-back-btn" onclick="history.back()">上一頁</button>
@@ -1294,6 +1355,87 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
           });
         });
       }
+      // 全站搜尋
+      (function(){
+        var input = document.getElementById('sfGlobalSearchInput');
+        var wrap = document.getElementById('sfGlobalSearchWrap');
+        var dd = document.getElementById('sfGlobalSearchDropdown');
+        if (!input || !dd) return;
+        var timer = null;
+        var activeIdx = -1;
+        var currentItems = [];
+        function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+        function close(){ dd.classList.remove('open'); activeIdx = -1; }
+        function open(){ dd.classList.add('open'); }
+        function renderEmpty(msg){ dd.innerHTML = '<div class="sf-search-empty">'+esc(msg)+'</div>'; open(); }
+        function render(payload){
+          var groups = [];
+          currentItems = [];
+          function addGroup(title, arr, makeItem){
+            if (!arr || !arr.length) return;
+            var rows = arr.map(function(x){
+              var item = makeItem(x);
+              currentItems.push(item);
+              return '<a class="sf-search-item" href="'+esc(item.href)+'" data-href="'+esc(item.href)+'">'
+                + '<span class="sf-search-item-icon">'+(item.icon||'')+'</span>'
+                + '<span class="sf-search-item-main"><span class="sf-search-item-title">'+esc(item.title)+'</span>'
+                + (item.sub?'<span class="sf-search-item-sub">'+esc(item.sub)+'</span>':'')
+                + '</span></a>';
+            }).join('');
+            groups.push('<div class="sf-search-group"><div class="sf-search-group-title">'+esc(title)+'</div>'+rows+'</div>');
+          }
+          addGroup('訂單', payload.orders, function(o){
+            return { href: '/admin/orders/'+encodeURIComponent(o.id), title: (o.order_no||o.id) + ' · ' + (o.customer_name||'—'), sub: o.order_date + (o.status?' · '+o.status:''), icon: \`${SF_ICONS.list.replace(/`/g, "\\`")}\` };
+          });
+          addGroup('客戶', payload.customers, function(c){
+            return { href: '/admin/customers/'+encodeURIComponent(c.id)+'/quick-view', title: c.name, sub: c.line_group_id ? ('LINE 已綁定 · '+c.line_group_id.slice(0,8)+'…') : 'LINE 未綁定', icon: \`${SF_ICONS.users.replace(/`/g, "\\`")}\` };
+          });
+          addGroup('品項', payload.products, function(p){
+            return { href: '/admin/products/'+encodeURIComponent(p.id)+'/edit', title: p.name, sub: (p.erp_code||'') + (p.teraoka_barcode?' · '+p.teraoka_barcode:''), icon: \`${SF_ICONS.box.replace(/`/g, "\\`")}\` };
+          });
+          addGroup('頁面', payload.pages, function(p){
+            return { href: p.href, title: p.title, sub: p.href, icon: \`${SF_ICONS.spark.replace(/`/g, "\\`")}\` };
+          });
+          if (!groups.length) { renderEmpty('找不到符合的結果'); return; }
+          dd.innerHTML = groups.join('');
+          activeIdx = -1;
+          open();
+        }
+        function doSearch(q){
+          if (!q || q.trim().length < 1) { close(); return; }
+          fetch('/admin/api/search?q='+encodeURIComponent(q.trim()), { credentials: 'same-origin' })
+            .then(function(r){ return r.json(); })
+            .then(render)
+            .catch(function(){ renderEmpty('搜尋失敗，請稍後再試'); });
+        }
+        input.addEventListener('input', function(){
+          clearTimeout(timer);
+          var q = this.value;
+          timer = setTimeout(function(){ doSearch(q); }, 180);
+        });
+        input.addEventListener('focus', function(){ if (this.value.trim()) doSearch(this.value); });
+        input.addEventListener('keydown', function(e){
+          var items = dd.querySelectorAll('.sf-search-item');
+          if (e.key === 'Escape') { close(); this.blur(); return; }
+          if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx = Math.min(items.length-1, activeIdx+1); items.forEach(function(el,i){ el.classList.toggle('active', i===activeIdx); }); items[activeIdx]?.scrollIntoView({block:'nearest'}); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx = Math.max(0, activeIdx-1); items.forEach(function(el,i){ el.classList.toggle('active', i===activeIdx); }); items[activeIdx]?.scrollIntoView({block:'nearest'}); }
+          else if (e.key === 'Enter') {
+            if (activeIdx >= 0 && items[activeIdx]) { e.preventDefault(); location.href = items[activeIdx].getAttribute('data-href'); }
+            else if (items.length) { e.preventDefault(); location.href = items[0].getAttribute('data-href'); }
+          }
+        });
+        document.addEventListener('click', function(e){
+          if (wrap && !wrap.contains(e.target)) close();
+        });
+        // 全域 ⌘K / Ctrl+K
+        document.addEventListener('keydown', function(e){
+          if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+            e.preventDefault();
+            input.focus();
+            input.select();
+          }
+        });
+      })();
     })();</script>`;
     const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">`;
     return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}${uiScript}</body></html>`;
@@ -1607,6 +1749,63 @@ function createAdminRouter() {
         const t = req.body?.theme === "dark" ? "dark" : "light";
         res.setHeader("Set-Cookie", `sf_theme=${t}; Path=/admin; Max-Age=${60*60*24*365}; SameSite=Lax`);
         res.json({ ok: true, theme: t });
+    });
+    // 全站搜尋：訂單號／客戶／品項／頁面
+    const SF_PAGES_INDEX = [
+        { title: "儀表板", href: "/admin", keywords: ["dashboard", "首頁", "戰情"] },
+        { title: "訂單審核", href: "/admin/orders", keywords: ["orders", "訂單", "查詢"] },
+        { title: "待確認品名", href: "/admin/review", keywords: ["review", "待對應"] },
+        { title: "客戶管理", href: "/admin/customers", keywords: ["customers", "客戶"] },
+        { title: "貨品管理", href: "/admin/products", keywords: ["products", "品項", "俗名"] },
+        { title: "AI 學習庫", href: "/admin/ai-examples", keywords: ["ai", "few-shot", "範例"] },
+        { title: "稽核軌跡", href: "/admin/audit", keywords: ["audit", "稽核", "log"] },
+        { title: "辨識成效", href: "/admin/recognition-stats", keywords: ["stats", "gemini", "辨識"] },
+        { title: "群發訊息", href: "/admin/broadcast", keywords: ["broadcast", "公告", "優惠"] },
+        { title: "LINE 機器人", href: "/admin/line-bot", keywords: ["line", "bot", "排程"] },
+        { title: "人員管理", href: "/admin/users", keywords: ["users", "帳號", "員工"] },
+        { title: "冷凍／冷藏庫", href: "/admin/freezer-fridge", keywords: ["freezer", "fridge", "冰箱"] },
+        { title: "每日盤點", href: "/admin/inventory", keywords: ["inventory", "盤點"] },
+        { title: "物流叫貨", href: "/admin/logistics/procurement", keywords: ["procurement", "採購"] },
+        { title: "北農行情", href: "/admin/logistics/market", keywords: ["market", "北農", "價格"] },
+        { title: "資料匯出", href: "/admin/export", keywords: ["export", "csv", "匯出"] },
+        { title: "LINE 綁定檢查", href: "/admin/line-binding", keywords: ["binding", "綁定"] },
+        { title: "Gemini Prompt", href: "/admin/gemini-prompts", keywords: ["prompt", "gemini", "ab"] },
+    ];
+    router.get("/api/search", async (req, res) => {
+        const q = String(req.query.q || "").trim();
+        if (!q) { res.json({ orders: [], customers: [], products: [], pages: [] }); return; }
+        const like = "%" + q + "%";
+        const out = { orders: [], customers: [], products: [], pages: [] };
+        // 訂單：order_no 精準/前綴/模糊
+        try {
+            out.orders = await db.prepare(
+                "SELECT o.id, o.order_no, o.order_date, o.status, c.name AS customer_name " +
+                "FROM orders o LEFT JOIN customers c ON c.id = o.customer_id " +
+                "WHERE (o.order_no LIKE ? OR o.id LIKE ?) AND COALESCE(LOWER(TRIM(o.status)),'') <> 'deleted' " +
+                "ORDER BY o.order_date DESC, o.id DESC LIMIT 8"
+            ).all(like, like);
+        } catch (_) {}
+        // 客戶
+        try {
+            out.customers = await db.prepare(
+                "SELECT id, name, line_group_id FROM customers WHERE name LIKE ? OR teraoka_code LIKE ? OR hq_cust_code LIKE ? ORDER BY name LIMIT 8"
+            ).all(like, like, like);
+        } catch (_) {}
+        // 品項
+        try {
+            out.products = await db.prepare(
+                "SELECT id, name, erp_code, teraoka_barcode FROM products WHERE name LIKE ? OR erp_code LIKE ? OR teraoka_barcode LIKE ? ORDER BY name LIMIT 8"
+            ).all(like, like, like);
+        } catch (_) {}
+        // 頁面（記憶體 fuzzy）
+        const qLower = q.toLowerCase();
+        out.pages = SF_PAGES_INDEX.filter(p => {
+            if (p.title.includes(q) || p.title.toLowerCase().includes(qLower)) return true;
+            if (p.href.toLowerCase().includes(qLower)) return true;
+            if ((p.keywords || []).some(k => k.toLowerCase().includes(qLower) || k.includes(q))) return true;
+            return false;
+        }).slice(0, 6);
+        res.json(out);
     });
     router.use((req, res, next) => {
         if (!pathLooksLikeDelete(req))
@@ -2420,6 +2619,55 @@ function createAdminRouter() {
             const r2 = await db.prepare("SELECT COUNT(*) AS n FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != ''").get();
             custBound = Number(r2?.n) || 0;
         } catch (_) {}
+        // ── 月曆：以本月為基底；每天統計訂單數 ────────────────────
+        const calYear = todayDate.getFullYear();
+        const calMonth = todayDate.getMonth() + 1; // 1-12
+        const monthStart = `${calYear}-${String(calMonth).padStart(2, "0")}-01`;
+        const monthEnd = (() => {
+            const nextM = calMonth === 12 ? `${calYear + 1}-01-01` : `${calYear}-${String(calMonth + 1).padStart(2, "0")}-01`;
+            return nextM;
+        })();
+        let dayCounts = {};
+        try {
+            const rows = await db.prepare(
+                "SELECT order_date, COUNT(*) AS n FROM orders WHERE order_date >= ? AND order_date < ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' GROUP BY order_date"
+            ).all(monthStart, monthEnd);
+            for (const r of rows || []) dayCounts[String(r.order_date)] = Number(r.n) || 0;
+        } catch (_) {}
+        // 建立月曆格子（週一為首）
+        const monthFirstDay = new Date(calYear, calMonth - 1, 1);
+        const daysInMonth = new Date(calYear, calMonth, 0).getDate();
+        const startWeekday = (monthFirstDay.getDay() + 6) % 7;
+        const calCells = [];
+        for (let i = 0; i < startWeekday; i++) calCells.push(null);
+        for (let d = 1; d <= daysInMonth; d++) calCells.push(d);
+        while (calCells.length % 7 !== 0) calCells.push(null);
+        const calRows = [];
+        for (let i = 0; i < calCells.length; i += 7) calRows.push(calCells.slice(i, i + 7));
+        const maxDayOrders = Math.max(1, ...Object.values(dayCounts));
+        const calCellHtml = (cell) => {
+            if (cell == null) return `<div style="flex:1;min-height:64px;"></div>`;
+            const ymd = `${calYear}-${String(calMonth).padStart(2, "0")}-${String(cell).padStart(2, "0")}`;
+            const cnt = dayCounts[ymd] || 0;
+            const isToday = ymd === today;
+            const heat = cnt / maxDayOrders; // 0~1
+            const heatBg = cnt > 0 ? `background:rgba(34,128,237,${0.08 + heat * 0.22});` : "";
+            const border = isToday ? "border:2px solid var(--accent);" : "border:1px solid var(--line);";
+            return `<a href="/admin/orders?date_from=${ymd}&date_to=${ymd}" style="flex:1;min-height:64px;${border}${heatBg}border-radius:6px;padding:6px;text-decoration:none;color:var(--txt-1);display:flex;flex-direction:column;gap:2px;transition:transform .12s;">
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <span class="mono" style="font-size:12px;font-weight:${isToday?"700":"500"};color:${isToday?"var(--accent)":"var(--txt-1)"};">${cell}</span>
+                ${isToday?`<span style="font-size:9px;color:var(--accent);font-weight:600;">今天</span>`:""}
+              </div>
+              ${cnt>0?`<div style="font-size:11px;color:var(--txt-2);margin-top:auto;"><span class="mono" style="font-weight:600;color:var(--txt-1);">${cnt}</span> 單</div>`:""}
+            </a>`;
+        };
+        const weekdayLabels = ["一","二","三","四","五","六","日"];
+        const calendarHtml = `
+          <div style="display:flex;gap:4px;margin-bottom:4px;">
+            ${weekdayLabels.map((w,i)=>`<div style="flex:1;text-align:center;font-size:10px;color:${i>=5?"var(--bad)":"var(--txt-3)"};text-transform:uppercase;letter-spacing:.06em;padding:4px 0;font-weight:600;">${w}</div>`).join("")}
+          </div>
+          ${calRows.map(row => `<div style="display:flex;gap:4px;margin-bottom:4px;">${row.map(calCellHtml).join("")}</div>`).join("")}
+        `;
         // ── 冷凍冷藏 / 盤點 ──────────────────────────────────────
         let freezerRows = [];
         try {
@@ -2523,6 +2771,21 @@ function createAdminRouter() {
                 <a href="/admin/audit" style="text-decoration:none;"><span class="sf-pill ${alerts.filter(a=>alertStatusFor(a)==="bad").length?"bad":"info"}">${alerts.length} 筆 ›</span></a>
               </div>
               <div style="flex:1;overflow:auto;max-height:380px;">${alertsRows}</div>
+            </div>
+          </div>
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.spark} ${calYear} 年 ${calMonth} 月 · 訂單行事曆</div>
+              <span class="sf-card-sub">點任一日 → 該日訂單列表</span>
+            </div>
+            <div style="padding:14px;">
+              ${calendarHtml}
+              <div style="margin-top:10px;padding-top:10px;border-top:var(--hairline);display:flex;gap:18px;font-size:11px;color:var(--txt-3);flex-wrap:wrap;align-items:center;">
+                <span style="display:inline-flex;align-items:center;gap:6px;"><span style="display:inline-block;width:12px;height:12px;border:2px solid var(--accent);border-radius:3px;"></span>今天</span>
+                <span style="display:inline-flex;align-items:center;gap:6px;"><span style="display:inline-block;width:12px;height:12px;background:rgba(34,128,237,0.10);border:1px solid var(--line);border-radius:3px;"></span>少量</span>
+                <span style="display:inline-flex;align-items:center;gap:6px;"><span style="display:inline-block;width:12px;height:12px;background:rgba(34,128,237,0.30);border:1px solid var(--line);border-radius:3px;"></span>大量</span>
+                <span style="margin-left:auto;">本月共 <strong class="mono" style="color:var(--txt-1);">${Object.values(dayCounts).reduce((s,n)=>s+n,0)}</strong> 單</span>
+              </div>
             </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
