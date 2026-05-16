@@ -140,6 +140,32 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS broadcast_messages (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          title TEXT,
+          payload_json TEXT NOT NULL,
+          recipients_json TEXT,
+          status TEXT NOT NULL DEFAULT 'draft',
+          sent_at TEXT,
+          sent_count INTEGER,
+          created_by TEXT,
+          created_at TEXT,
+          updated_at TEXT
+        )`);
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS broadcast_images (
+          id TEXT PRIMARY KEY,
+          token TEXT NOT NULL,
+          filename TEXT,
+          mime_type TEXT,
+          size_bytes INTEGER,
+          data_b64 TEXT NOT NULL,
+          created_by TEXT,
+          created_at TEXT
+        )`);
+    }
+    catch (_) { /* tables may already exist */ }
+    try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS wholesale_market_snapshots (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, market_name TEXT NOT NULL, crop_name TEXT NOT NULL, category TEXT, high_price REAL, mid_price REAL, low_price REAL, created_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_wholesale_snap_date ON wholesale_market_snapshots(record_date)");
     }
@@ -422,6 +448,32 @@ async function initPg() {
           )`);
             }
             catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS broadcast_messages (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            title TEXT,
+            payload_json TEXT NOT NULL,
+            recipients_json TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            sent_at TIMESTAMPTZ,
+            sent_count INTEGER,
+            created_by TEXT,
+            created_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ
+          )`);
+                await client.query(`CREATE TABLE IF NOT EXISTS broadcast_images (
+            id TEXT PRIMARY KEY,
+            token TEXT NOT NULL,
+            filename TEXT,
+            mime_type TEXT,
+            size_bytes INTEGER,
+            data_b64 TEXT NOT NULL,
+            created_by TEXT,
+            created_at TIMESTAMPTZ
+          )`);
+            }
+            catch (_) { /* tables may already exist */ }
             try {
                 await client.query(`CREATE TABLE IF NOT EXISTS wholesale_market_snapshots (
             id TEXT PRIMARY KEY,

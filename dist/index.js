@@ -121,6 +121,28 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         adminRouter.use((_req, res) => res.status(503).type("html").send(dbDownHtml));
     }
     app.use("/admin", adminRouter);
+    // 公開圖片端點：給 LINE 抓取群發圖片（無需 cookie）
+    app.get("/broadcast-img/:id/:token", async (req, res) => {
+        try {
+            if (!dbReady) { res.status(503).type("text/plain").send("db not ready"); return; }
+            const db = (0, index_js_1.getDb)(dbPath);
+            const id = String(req.params.id || "").trim();
+            const token = String(req.params.token || "").trim();
+            if (!id || !token) { res.status(400).type("text/plain").send("bad request"); return; }
+            const row = await db.prepare("SELECT mime_type, data_b64, token FROM broadcast_images WHERE id = ?").get(id);
+            if (!row || String(row.token).trim() !== token) {
+                res.status(404).type("text/plain").send("not found");
+                return;
+            }
+            const buf = Buffer.from(String(row.data_b64), "base64");
+            res.setHeader("Content-Type", row.mime_type || "image/jpeg");
+            res.setHeader("Cache-Control", "public, max-age=86400");
+            res.send(buf);
+        } catch (e) {
+            console.error("[broadcast-img] error:", e?.message || e);
+            res.status(500).type("text/plain").send("internal error");
+        }
+    });
     const rhythm_analysis_js_1 = require("./lib/rhythm-analysis.js");
     app.post("/api/jobs/rhythm-daily", async (_req, res) => {
         try {
