@@ -9503,8 +9503,21 @@ YY小吃, C5678...,</pre>
                 <div class="sf-tabs" style="margin-bottom:16px;">
                   <button type="button" class="sf-tab active" onclick="switchTab('promo',this)">⚡ 限時優惠</button>
                   <button type="button" class="sf-tab" onclick="switchTab('notice',this)">📢 公告</button>
+                  <button type="button" class="sf-tab" onclick="switchTab('calendar',this)">📅 行事曆公告</button>
                 </div>
                 <input type="hidden" id="tmpl-type" value="promo">
+
+                <!-- 共用：標題列顏色 -->
+                <div style="margin-bottom:14px;padding:12px 14px;background:var(--bg-2);border-radius:var(--radius);border:var(--hairline);">
+                  <label class="sf-label">標題列顏色</label>
+                  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <div id="color-swatches" style="display:flex;gap:6px;flex-wrap:wrap;">
+                      <!-- preset swatches injected by JS -->
+                    </div>
+                    <input type="color" id="header_color" value="#1a7c6e" onchange="onColorChange()" oninput="onColorChange()" style="width:48px;height:32px;padding:0;border:1px solid var(--line-2);border-radius:var(--radius);cursor:pointer;background:transparent;">
+                    <input type="text" id="header_color_text" value="#1a7c6e" onchange="onColorTextChange()" maxlength="7" style="width:90px;height:32px;padding:0 8px;border:1px solid var(--line-2);border-radius:var(--radius);font-family:var(--font-mono);font-size:12px;">
+                  </div>
+                </div>
                 <div id="tab-promo">
                   <div style="margin-bottom:14px;">
                     <label class="sf-label">優惠時間</label>
@@ -9542,11 +9555,57 @@ YY小吃, C5678...,</pre>
                 <div id="tab-notice" style="display:none;">
                   <div style="margin-bottom:14px;">
                     <label class="sf-label">公告標題</label>
-                    <input class="sf-input" id="notice_title" type="text" placeholder="例：5/1 勞動節休假公告" oninput="updatePreview()">
+                    <input class="sf-input" id="notice_title" type="text" placeholder="例：勞動節休假公告" oninput="updatePreview()">
+                  </div>
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">副標題（選填）</label>
+                    <input class="sf-input" id="notice_subtitle" type="text" placeholder="例：2026 年 5 月" oninput="updatePreview()">
                   </div>
                   <div style="margin-bottom:14px;">
                     <label class="sf-label">公告內容</label>
-                    <textarea class="sf-textarea" id="notice_content" placeholder="例：本司於 5/1（四）勞動節休假一天，5/2（五）正常上班。造成不便敬請見諒，謝謝！" oninput="updatePreview()"></textarea>
+                    <textarea class="sf-textarea" id="notice_content" rows="6" placeholder="例：本司於 5/1（四）勞動節休假一天，5/2（五）正常上班。造成不便敬請見諒，謝謝！" oninput="updatePreview()"></textarea>
+                  </div>
+                </div>
+
+                <div id="tab-calendar" style="display:none;">
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">公告標題</label>
+                    <input class="sf-input" id="cal_title" type="text" placeholder="例：勞動節休假公告" oninput="updatePreview()">
+                  </div>
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">副標題（選填）</label>
+                    <input class="sf-input" id="cal_subtitle" type="text" placeholder="例：請預估使用量提前叫貨喔" oninput="updatePreview()">
+                  </div>
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">月份（決定顯示哪個月份的行事曆）</label>
+                    <input class="sf-input" id="cal_year_month" type="month" value="${new Date().toISOString().slice(0,7)}" onchange="updatePreview()" style="max-width:200px;">
+                  </div>
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">標記日期</label>
+                    <p style="margin:0 0 6px;font-size:11px;color:var(--txt-3);">在月曆上標出公休／正常上班／重要日期。點「新增日期」加一列。</p>
+                    <div style="display:flex;gap:8px;margin-bottom:4px;padding:0 4px;">
+                      <span style="flex:0 0 140px;font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">日期</span>
+                      <span style="flex:0 0 120px;font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">標籤</span>
+                      <span style="flex:1;font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">類型</span>
+                      <span style="flex:0 0 30px;"></span>
+                    </div>
+                    <div id="cal-marks">
+                      <div class="cal-mark-row" style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+                        <input type="date" class="sf-input cal-mark-date" style="flex:0 0 140px;" oninput="updatePreview()">
+                        <input type="text" placeholder="公休" class="sf-input cal-mark-label" style="flex:0 0 120px;" oninput="updatePreview()">
+                        <select class="sf-select cal-mark-type" style="flex:1;" onchange="updatePreview()">
+                          <option value="off">紅色（公休）</option>
+                          <option value="work">黃色（正常上班）</option>
+                          <option value="highlight">橘色（強調）</option>
+                        </select>
+                        <button type="button" class="sf-btn sm ghost" onclick="removeMarkRow(this)" title="刪除" style="flex:0 0 30px;padding:0;">✕</button>
+                      </div>
+                    </div>
+                    <button type="button" class="sf-btn sm" onclick="addMarkRow()" style="margin-top:4px;">${SF_ICONS.plus}<span>新增日期</span></button>
+                  </div>
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">說明文字（選填）</label>
+                    <textarea class="sf-textarea" id="cal_note" rows="4" placeholder="例：&#10;一、2026/5/1（五）、5/3（日）為本公司休假日，請預估使用量提前叫貨喔～&#10;二、2026/5/2（六）公司正常上班。&#10;&#10;祝 佳節愉快" oninput="updatePreview()"></textarea>
                   </div>
                 </div>
                 <div style="margin-bottom:14px;padding-top:14px;border-top:var(--hairline);">
@@ -9578,11 +9637,71 @@ YY小吃, C5678...,</pre>
         </div>
         <script>
         function escapeHtmlJs(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+        // 預設顏色色票（依模板自動切換預設）
+        const COLOR_PRESETS = {
+          promo: [
+            {name:'松富綠', value:'#1a7c6e'},
+            {name:'松富藍', value:'#1d5fad'},
+            {name:'喜慶紅', value:'#b91c1c'},
+            {name:'晨光橘', value:'#e07c2a'},
+            {name:'深紫', value:'#6b21a8'},
+            {name:'墨黑', value:'#1f2937'},
+          ],
+          notice: [
+            {name:'喜慶紅', value:'#b91c1c'},
+            {name:'松富藍', value:'#1d5fad'},
+            {name:'松富綠', value:'#1a7c6e'},
+            {name:'墨黑', value:'#1f2937'},
+            {name:'晨光橘', value:'#e07c2a'},
+            {name:'深紫', value:'#6b21a8'},
+          ],
+          calendar: [
+            {name:'喜慶紅', value:'#b91c1c'},
+            {name:'松富藍', value:'#1d5fad'},
+            {name:'深紫', value:'#6b21a8'},
+            {name:'晨光橘', value:'#e07c2a'},
+            {name:'松富綠', value:'#1a7c6e'},
+            {name:'墨黑', value:'#1f2937'},
+          ],
+        };
+        const DEFAULT_HEADER_COLOR = { promo:'#1a7c6e', notice:'#b91c1c', calendar:'#b91c1c' };
+        function renderColorSwatches(){
+          const type = document.getElementById('tmpl-type').value;
+          const presets = COLOR_PRESETS[type] || COLOR_PRESETS.promo;
+          const current = (document.getElementById('header_color').value || '').toLowerCase();
+          const wrap = document.getElementById('color-swatches');
+          if (!wrap) return;
+          wrap.innerHTML = presets.map(p => {
+            const active = p.value.toLowerCase() === current;
+            return '<button type="button" onclick="pickColor(\\''+p.value+'\\')" title="'+p.name+'" style="width:30px;height:30px;border-radius:6px;border:'+(active?'2px solid var(--txt-1)':'1px solid var(--line-2)')+';background:'+p.value+';cursor:pointer;padding:0;"></button>';
+          }).join('');
+        }
+        function pickColor(hex){
+          document.getElementById('header_color').value = hex;
+          document.getElementById('header_color_text').value = hex;
+          renderColorSwatches();
+          updatePreview();
+        }
+        function onColorChange(){
+          const v = document.getElementById('header_color').value;
+          document.getElementById('header_color_text').value = v;
+          renderColorSwatches();
+          updatePreview();
+        }
+        function onColorTextChange(){
+          const v = (document.getElementById('header_color_text').value || '').trim();
+          if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+            document.getElementById('header_color').value = v;
+            renderColorSwatches();
+            updatePreview();
+          }
+        }
         function renderPromo(d){
           const items = (d.items||[]).filter(x=>x.name);
           const subtitle = d.promo_subtitle || '';
           const dateText = d.promo_date || '';
           const note = d.promo_note || '';
+          const headerColor = d.header_color || '#1a7c6e';
           const itemsHtml = items.length ? items.map((it, idx)=>\`
             <div style="display:flex;padding:8px 0;align-items:center;\${idx<items.length-1?'border-bottom:1px solid #eee;':''}">
               <div style="flex:3;font-size:14px;color:#222;word-break:break-word;">\${escapeHtmlJs(it.name)}</div>
@@ -9590,9 +9709,9 @@ YY小吃, C5678...,</pre>
               <div style="flex:2;text-align:right;font-size:14px;color:#888;font-variant-numeric:tabular-nums;">\${it.market?'$'+escapeHtmlJs(it.market):'—'}</div>
             </div>\`).join('') : '<div style="padding:18px 0;text-align:center;color:#bbb;font-size:13px;">尚未新增品項</div>';
           const hasFooter = dateText || note;
-          return \`<div style="background:#1a7c6e;padding:16px;color:#fff;">
+          return \`<div style="background:\${headerColor};padding:16px;color:#fff;">
               <div style="font-size:18px;font-weight:bold;">⚡ 限時優惠</div>
-              \${subtitle?\`<div style="font-size:12px;color:#b2dfdb;margin-top:6px;">\${escapeHtmlJs(subtitle)}</div>\`:''}
+              \${subtitle?\`<div style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:6px;">\${escapeHtmlJs(subtitle)}</div>\`:''}
             </div>
             <div style="background:#f9f9f9;padding:14px 16px;">
               <div style="display:flex;padding-bottom:5px;border-bottom:1px solid #ccc;">
@@ -9608,30 +9727,108 @@ YY小吃, C5678...,</pre>
         }
         function renderNotice(d){
           const title = d.notice_title || '公告';
+          const subtitle = d.notice_subtitle || '';
           const content = d.notice_content || '（無內容）';
-          return \`<div style="background:#2c3e50;padding:16px;color:#fff;">
-              <div style="font-size:16px;font-weight:bold;">📢 \${escapeHtmlJs(title)}</div>
+          const headerColor = d.header_color || '#b91c1c';
+          return \`<div style="background:\${headerColor};padding:22px 18px;color:#fff;text-align:center;">
+              <div style="font-size:22px;font-weight:bold;letter-spacing:0.05em;">📢 \${escapeHtmlJs(title)}</div>
+              \${subtitle?\`<div style="font-size:13px;color:rgba(255,255,255,0.85);margin-top:8px;">\${escapeHtmlJs(subtitle)}</div>\`:''}
             </div>
-            <div style="padding:16px;">
-              <div style="font-size:13px;color:#333;line-height:1.8;white-space:pre-wrap;">\${escapeHtmlJs(content)}</div>
+            <div style="padding:20px;">
+              <div style="font-size:14px;color:#333;line-height:1.9;white-space:pre-wrap;">\${escapeHtmlJs(content)}</div>
+            </div>
+            <div style="background:#f5f5f5;padding:10px;text-align:center;">
+              <div style="font-size:10px;color:#999;">松富生鮮物流</div>
+            </div>\`;
+        }
+        function renderCalendar(d){
+          const title = d.cal_title || '休假公告';
+          const subtitle = d.cal_subtitle || '';
+          const ym = d.cal_year_month || '';
+          const note = d.cal_note || '';
+          const headerColor = d.header_color || '#b91c1c';
+          let year = new Date().getFullYear();
+          let month = new Date().getMonth() + 1;
+          if (/^\\d{4}-\\d{2}$/.test(ym)) {
+            const [y, m] = ym.split('-').map(Number);
+            year = y; month = m;
+          }
+          const marks = {};
+          (d.cal_marks||[]).forEach(m => {
+            if (m && m.date) marks[m.date] = { label: m.label || '', type: m.type || 'off' };
+          });
+          const firstDay = new Date(year, month-1, 1);
+          const daysInMonth = new Date(year, month, 0).getDate();
+          const startWeekday = (firstDay.getDay() + 6) % 7; // 週一 = 0
+          const cells = [];
+          for (let i = 0; i < startWeekday; i++) cells.push(null);
+          for (let d2 = 1; d2 <= daysInMonth; d2++) cells.push(d2);
+          while (cells.length % 7 !== 0) cells.push(null);
+          const rows = [];
+          for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7));
+          const wkHead = ['一','二','三','四','五','六','日'].map((w,i)=>\`<div style="flex:1;text-align:center;font-size:11px;font-weight:bold;color:\${i>=5?'#b91c1c':'#666'};padding:4px 0;">\${w}</div>\`).join('');
+          const rowsHtml = rows.map(row => {
+            const cellsHtml = row.map(cell => {
+              if (cell == null) return '<div style="flex:1;height:42px;"></div>';
+              const ymd = year + '-' + String(month).padStart(2,'0') + '-' + String(cell).padStart(2,'0');
+              const mark = marks[ymd];
+              let bg = '#fff', numColor = '#222', labelColor = '#666', label = '';
+              if (mark) {
+                label = mark.label || (mark.type==='work'?'正常':'公休');
+                if (mark.type==='work') { bg='#fff8e1'; labelColor='#8b6914'; numColor='#5a4500'; }
+                else if (mark.type==='highlight') { bg='#fef3c7'; labelColor='#92400e'; numColor='#5a4500'; }
+                else { bg='#fee2e2'; labelColor='#b91c1c'; numColor='#7f1d1d'; }
+              }
+              return \`<div style="flex:1;background:\${bg};border-radius:4px;padding:4px 2px;margin:1px;min-height:42px;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+                <div style="font-size:14px;font-weight:bold;color:\${numColor};">\${cell}</div>
+                \${label?\`<div style="font-size:9px;color:\${labelColor};margin-top:1px;">\${escapeHtmlJs(label)}</div>\`:''}
+              </div>\`;
+            }).join('');
+            return '<div style="display:flex;">'+cellsHtml+'</div>';
+          }).join('');
+          return \`<div style="background:\${headerColor};padding:22px 18px;color:#fff;text-align:center;">
+              <div style="font-size:22px;font-weight:bold;letter-spacing:0.05em;">\${escapeHtmlJs(title)}</div>
+              \${subtitle?\`<div style="font-size:13px;color:rgba(255,255,255,0.85);margin-top:8px;">\${escapeHtmlJs(subtitle)}</div>\`:''}
+            </div>
+            <div style="padding:14px;">
+              <div style="font-size:13px;color:#888;text-align:center;font-weight:bold;margin-bottom:8px;">\${year} 年 \${month} 月</div>
+              <div>
+                <div style="display:flex;border-bottom:1px solid #e5e5e5;padding-bottom:2px;">\${wkHead}</div>
+                \${rowsHtml}
+              </div>
+              \${note?\`<div style="border-top:1px solid #e5e5e5;margin-top:12px;padding-top:10px;font-size:13px;color:#444;line-height:1.8;white-space:pre-wrap;">\${escapeHtmlJs(note)}</div>\`:''}
             </div>
             <div style="background:#f5f5f5;padding:8px;text-align:center;">
-              <div style="font-size:10px;color:#999;">松富生鮮物流</div>
+              <div style="font-size:10px;color:#999;">松富生鮮物流 · 祝佳節愉快</div>
             </div>\`;
         }
         function updatePreview(){
           const data = collectFormData();
-          const html = data.type==='notice' ? renderNotice(data) : renderPromo(data);
+          let html;
+          if (data.type==='notice') html = renderNotice(data);
+          else if (data.type==='calendar') html = renderCalendar(data);
+          else html = renderPromo(data);
           document.getElementById('line-preview').innerHTML = html;
           const pw = document.getElementById('preview-wrap');
           if (pw && pw.style.display !== 'none') refreshJsonPreview();
         }
         function switchTab(tab,btn){
-          document.getElementById('tab-promo').style.display=tab==='promo'?'':'none';
-          document.getElementById('tab-notice').style.display=tab==='notice'?'':'none';
+          ['tab-promo','tab-notice','tab-calendar'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = id === ('tab-'+tab) ? '' : 'none';
+          });
           document.getElementById('tmpl-type').value=tab;
           document.querySelectorAll('.sf-tab').forEach(b=>b.classList.remove('active'));
           btn.classList.add('active');
+          // 切換到不同模板時，套用該模板的預設標題色（如果使用者已自訂則保留）
+          const defaultC = DEFAULT_HEADER_COLOR[tab];
+          const curC = (document.getElementById('header_color').value || '').toLowerCase();
+          const prevDefaults = Object.values(DEFAULT_HEADER_COLOR).map(c=>c.toLowerCase());
+          if (prevDefaults.includes(curC)) {
+            document.getElementById('header_color').value = defaultC;
+            document.getElementById('header_color_text').value = defaultC;
+          }
+          renderColorSwatches();
           updatePreview();
         }
         function addItemRow(){
@@ -9647,8 +9844,30 @@ YY小吃, C5678...,</pre>
           btn.parentElement.remove();
           updatePreview();
         }
+        function addMarkRow(){
+          const wrap = document.getElementById('cal-marks');
+          const div = document.createElement('div');
+          div.className = 'cal-mark-row';
+          div.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px;';
+          div.innerHTML = '<input type="date" class="sf-input cal-mark-date" style="flex:0 0 140px;" oninput="updatePreview()"><input type="text" placeholder="公休" class="sf-input cal-mark-label" style="flex:0 0 120px;" oninput="updatePreview()"><select class="sf-select cal-mark-type" style="flex:1;" onchange="updatePreview()"><option value="off">紅色（公休）</option><option value="work">黃色（正常上班）</option><option value="highlight">橘色（強調）</option></select><button type="button" class="sf-btn sm ghost" onclick="removeMarkRow(this)" title="刪除" style="flex:0 0 30px;padding:0;">✕</button>';
+          wrap.appendChild(div);
+        }
+        function removeMarkRow(btn){
+          if (document.querySelectorAll('#cal-marks .cal-mark-row').length <= 1) {
+            // 至少留一筆空白
+            const row = btn.parentElement;
+            row.querySelector('.cal-mark-date').value = '';
+            row.querySelector('.cal-mark-label').value = '';
+            row.querySelector('.cal-mark-type').value = 'off';
+          } else {
+            btn.parentElement.remove();
+          }
+          updatePreview();
+        }
         function collectFormData(){
           const type=document.getElementById('tmpl-type').value;
+          const header_color = document.getElementById('header_color')?.value || '';
+          const recipients = document.getElementById('recipients-select')?.value || 'all';
           if(type==='promo'){
             const items=[];
             document.querySelectorAll('#item-rows .item-row').forEach(row=>{
@@ -9658,9 +9877,20 @@ YY小吃, C5678...,</pre>
               const market=row.querySelector('.item-market')?.value?.trim();
               if(name)items.push({name,price:price||'',unit:unit||'斤',market:market||''});
             });
-            return{type,promo_date:document.getElementById('promo_date')?.value?.trim()||'',promo_subtitle:document.getElementById('promo_subtitle')?.value?.trim()||'',promo_note:document.getElementById('promo_note')?.value?.trim()||'',items,recipients:document.getElementById('recipients-select')?.value||'all'};
+            return{type,header_color,promo_date:document.getElementById('promo_date')?.value?.trim()||'',promo_subtitle:document.getElementById('promo_subtitle')?.value?.trim()||'',promo_note:document.getElementById('promo_note')?.value?.trim()||'',items,recipients};
           }
-          return{type,notice_title:document.getElementById('notice_title')?.value?.trim()||'',notice_content:document.getElementById('notice_content')?.value?.trim()||'',recipients:document.getElementById('recipients-select')?.value||'all'};
+          if (type==='calendar'){
+            const marks = [];
+            document.querySelectorAll('#cal-marks .cal-mark-row').forEach(row=>{
+              const date = row.querySelector('.cal-mark-date')?.value?.trim();
+              if (!date) return;
+              const label = row.querySelector('.cal-mark-label')?.value?.trim() || '';
+              const t = row.querySelector('.cal-mark-type')?.value || 'off';
+              marks.push({date, label, type: t});
+            });
+            return{type,header_color,cal_title:document.getElementById('cal_title')?.value?.trim()||'',cal_subtitle:document.getElementById('cal_subtitle')?.value?.trim()||'',cal_year_month:document.getElementById('cal_year_month')?.value?.trim()||'',cal_note:document.getElementById('cal_note')?.value?.trim()||'',cal_marks:marks,recipients};
+          }
+          return{type,header_color,notice_title:document.getElementById('notice_title')?.value?.trim()||'',notice_subtitle:document.getElementById('notice_subtitle')?.value?.trim()||'',notice_content:document.getElementById('notice_content')?.value?.trim()||'',recipients};
         }
         async function refreshJsonPreview(){
           const data=collectFormData();
@@ -9677,22 +9907,32 @@ YY小吃, C5678...,</pre>
           const data=collectFormData();
           if(data.type==='promo' && (!data.items||!data.items.length)){ alert('請至少填入一個品項');return; }
           if(data.type==='notice' && !data.notice_title){ alert('請填入公告標題');return; }
+          if(data.type==='calendar' && !data.cal_title){ alert('請填入公告標題');return; }
           if(!confirm('確定要傳送訊息至 LINE 群組嗎？'))return;
           const r=await fetch('/admin/broadcast/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
           const json=await r.json();
           if(json.ok){location.href='/admin/broadcast?sent='+(json.sent||0);}
           else{location.href='/admin/broadcast?err='+encodeURIComponent(json.error||'傳送失敗');}
         }
+        renderColorSwatches();
         updatePreview();
         </script>`;
         res.send(notionPage("群發訊息", body, "broadcast", res));
     });
+    function buildBroadcastFlex(data) {
+        if (data.type === "notice") return buildNoticeFlexMessage(data);
+        if (data.type === "calendar") return buildCalendarFlexMessage(data);
+        return buildPromoFlexMessage(data);
+    }
+    function broadcastAltText(data) {
+        if (data.type === "notice") return data.notice_title || "松富物流公告";
+        if (data.type === "calendar") return data.cal_title || "松富物流行事曆公告";
+        return "松富物流限時優惠";
+    }
     router.post("/broadcast/preview", requireManager, async (req, res) => {
         const data = req.body || {};
         try {
-            const msg = data.type === "notice"
-                ? buildNoticeFlexMessage(data)
-                : buildPromoFlexMessage(data);
+            const msg = buildBroadcastFlex(data);
             res.json(msg);
         }
         catch (e) {
@@ -9708,15 +9948,13 @@ YY小吃, C5678...,</pre>
         }
         let msg;
         try {
-            msg = data.type === "notice"
-                ? buildNoticeFlexMessage(data)
-                : buildPromoFlexMessage(data);
+            msg = buildBroadcastFlex(data);
         }
         catch (e) {
             res.json({ ok: false, error: e?.message || "訊息建立失敗" });
             return;
         }
-        const lineMsg = { type: "flex", altText: data.type === "notice" ? (data.notice_title || "松富物流公告") : "松富物流限時優惠", contents: msg };
+        const lineMsg = { type: "flex", altText: broadcastAltText(data), contents: msg };
         let targets = [];
         if (data.recipients && data.recipients !== "all") {
             const cust = await db.prepare("SELECT line_group_id, name FROM customers WHERE id = ? AND line_group_id IS NOT NULL AND line_group_id != ''").get(data.recipients);
@@ -9804,11 +10042,21 @@ function parseRequestToSheet(req) {
     const rows = lines.slice(1).map((line) => parseCsvLine(line));
     return { header, rows };
 }
+function sanitizeHexColor(c, fallback) {
+    if (!c) return fallback;
+    const s = String(c).trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(s)) return s;
+    if (/^#[0-9a-fA-F]{3}$/.test(s)) {
+        return "#" + s.slice(1).split("").map(ch => ch + ch).join("");
+    }
+    return fallback;
+}
 function buildPromoFlexMessage(data) {
     const items = Array.isArray(data.items) ? data.items : [];
     const dateText = (data.promo_date || "").trim();
     const subtitle = (data.promo_subtitle || "").trim();
     const note = (data.promo_note || "").trim();
+    const headerColor = sanitizeHexColor(data.header_color, "#1a7c6e");
     const itemBoxes = items.filter(it => it.name).map(it => ({
         type: "box",
         layout: "horizontal",
@@ -9854,7 +10102,7 @@ function buildPromoFlexMessage(data) {
         type: "bubble",
         size: "kilo",
         header: {
-            type: "box", layout: "vertical", backgroundColor: "#1a7c6e", paddingAll: "16px",
+            type: "box", layout: "vertical", backgroundColor: headerColor, paddingAll: "16px",
             contents: headerContents,
         },
         body: {
@@ -9875,26 +10123,129 @@ function buildPromoFlexMessage(data) {
 }
 function buildNoticeFlexMessage(data) {
     const title = (data.notice_title || "公告").trim();
+    const subtitle = (data.notice_subtitle || "").trim();
     const content = (data.notice_content || "").trim();
+    const headerColor = sanitizeHexColor(data.header_color, "#b91c1c");
+    const headerContents = [
+        { type: "text", text: "📢 " + title, color: "#ffffff", size: "xl", weight: "bold", wrap: true, align: "center" },
+    ];
+    if (subtitle) headerContents.push({ type: "text", text: subtitle, color: "#ffffff", size: "sm", margin: "sm", align: "center", wrap: true });
     return {
         type: "bubble",
         size: "kilo",
         header: {
-            type: "box", layout: "vertical", backgroundColor: "#2c3e50", paddingAll: "16px",
-            contents: [
-                { type: "text", text: "📢 " + title, color: "#ffffff", size: "lg", weight: "bold", wrap: true },
-            ],
+            type: "box", layout: "vertical", backgroundColor: headerColor, paddingAll: "22px",
+            contents: headerContents,
         },
         body: {
-            type: "box", layout: "vertical", paddingAll: "16px",
+            type: "box", layout: "vertical", paddingAll: "20px",
             contents: [
-                { type: "text", text: content || "（無內容）", size: "sm", color: "#333333", wrap: true, lineSpacing: "6px" },
+                { type: "text", text: content || "（無內容）", size: "md", color: "#333333", wrap: true, lineSpacing: "8px" },
             ],
         },
         footer: {
             type: "box", layout: "vertical", backgroundColor: "#f5f5f5", paddingAll: "10px",
             contents: [
                 { type: "text", text: "松富生鮮物流", size: "xs", color: "#999999", align: "center" },
+            ],
+        },
+    };
+}
+/** 行事曆公告 Flex Message */
+function buildCalendarFlexMessage(data) {
+    const title = (data.cal_title || "休假公告").trim();
+    const subtitle = (data.cal_subtitle || "").trim();
+    const note = (data.cal_note || "").trim();
+    const headerColor = sanitizeHexColor(data.header_color, "#b91c1c");
+    const ym = (data.cal_year_month || "").trim(); // YYYY-MM
+    let year = new Date().getFullYear();
+    let month = new Date().getMonth() + 1;
+    if (/^\d{4}-\d{2}$/.test(ym)) {
+        const [y, m] = ym.split("-").map(Number);
+        year = y; month = m;
+    }
+    // marks: [{ date: "2026-05-01", label: "公休", type: "off"|"work"|"highlight" }]
+    const marksRaw = Array.isArray(data.cal_marks) ? data.cal_marks : [];
+    const marks = {};
+    for (const m of marksRaw) {
+        if (m && m.date) marks[String(m.date).trim()] = {
+            label: String(m.label || "").trim(),
+            type: m.type || "off",
+        };
+    }
+    // 產生月曆格子：一二三四五六日（週一為首）
+    const firstDay = new Date(year, month - 1, 1);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const startWeekday = (firstDay.getDay() + 6) % 7; // 週一 = 0
+    const cells = [];
+    for (let i = 0; i < startWeekday; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+    while (cells.length % 7 !== 0) cells.push(null);
+    // 切成 row
+    const rows = [];
+    for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7));
+    const weekdayHeader = {
+        type: "box", layout: "horizontal", paddingBottom: "4px",
+        contents: ["一", "二", "三", "四", "五", "六", "日"].map((w, i) => ({
+            type: "text", text: w, flex: 1, align: "center", size: "xs",
+            color: i >= 5 ? "#b91c1c" : "#666666", weight: "bold",
+        })),
+    };
+    const cellBox = (cell) => {
+        if (cell == null) return { type: "filler", flex: 1 };
+        const ymd = `${year}-${String(month).padStart(2, "0")}-${String(cell).padStart(2, "0")}`;
+        const mark = marks[ymd];
+        let bg = "#ffffff";
+        let labelColor = "#666666";
+        let numColor = "#222222";
+        let labelText = "";
+        if (mark) {
+            labelText = mark.label || (mark.type === "work" ? "正常" : "公休");
+            if (mark.type === "work") { bg = "#fff8e1"; labelColor = "#8b6914"; numColor = "#5a4500"; }
+            else if (mark.type === "highlight") { bg = "#fef3c7"; labelColor = "#92400e"; numColor = "#5a4500"; }
+            else { bg = "#fee2e2"; labelColor = "#b91c1c"; numColor = "#7f1d1d"; }
+        }
+        return {
+            type: "box", layout: "vertical", flex: 1, backgroundColor: bg,
+            cornerRadius: "4px", paddingAll: "6px", spacing: "none",
+            contents: [
+                { type: "text", text: String(cell), size: "sm", weight: "bold", color: numColor, align: "center" },
+                ...(labelText ? [{ type: "text", text: labelText, size: "xxs", color: labelColor, align: "center", margin: "xs" }] : [{ type: "text", text: " ", size: "xxs", color: "#ffffff", align: "center", margin: "xs" }]),
+            ],
+        };
+    };
+    const weekRows = rows.map(row => ({
+        type: "box", layout: "horizontal", spacing: "xs", margin: "xs",
+        contents: row.map(cellBox),
+    }));
+    const headerContents = [
+        { type: "text", text: title, color: "#ffffff", size: "xl", weight: "bold", wrap: true, align: "center" },
+    ];
+    if (subtitle) headerContents.push({ type: "text", text: subtitle, color: "#ffffff", size: "sm", margin: "sm", align: "center", wrap: true });
+    const noteBlock = note ? [
+        { type: "separator", margin: "lg", color: "#e5e5e5" },
+        { type: "text", text: note, size: "sm", color: "#444444", wrap: true, margin: "md", lineSpacing: "6px" },
+    ] : [];
+    return {
+        type: "bubble",
+        size: "giga",
+        header: {
+            type: "box", layout: "vertical", backgroundColor: headerColor, paddingAll: "22px",
+            contents: headerContents,
+        },
+        body: {
+            type: "box", layout: "vertical", paddingAll: "16px",
+            contents: [
+                { type: "text", text: `${year} 年 ${month} 月`, size: "md", color: "#888888", align: "center", weight: "bold" },
+                { type: "box", layout: "vertical", margin: "md", spacing: "none",
+                  contents: [weekdayHeader, { type: "separator", color: "#e5e5e5" }, ...weekRows] },
+                ...noteBlock,
+            ],
+        },
+        footer: {
+            type: "box", layout: "vertical", backgroundColor: "#f5f5f5", paddingAll: "10px",
+            contents: [
+                { type: "text", text: "松富生鮮物流 · 祝佳節愉快", size: "xs", color: "#999999", align: "center" },
             ],
         },
     };
