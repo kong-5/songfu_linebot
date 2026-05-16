@@ -572,6 +572,374 @@ const NOTION_STYLE = `
   .pu-derived { font-size: 13px; line-height: 1.65; }
   .pu-derived li { margin: 4px 0; }
 `;
+/* ─────────────────────────────────────────────────────────────────────
+ * SF 設計系統（松富 HACCP refresh）
+ * 與 NOTION_STYLE 並存：既有頁面以 .notion-* 為主，新頁以 .sf-* 為主
+ * Dark 為設計預設，但本系統預設淺色（白天 ERP 看），可由右上角切換
+ * ───────────────────────────────────────────────────────────────────── */
+const SF_TOKENS = `
+:root, [data-theme="light"] {
+  --bg-0: #f4f5f7;
+  --bg-1: #ffffff;
+  --bg-2: #fafbfc;
+  --bg-3: #f0f2f5;
+  --bg-4: #e6e9ef;
+  --line: #e3e6ec;
+  --line-2: #d4d8e0;
+  --line-3: #b8bcc6;
+  --txt-1: #15181f;
+  --txt-2: #4a5060;
+  --txt-3: #6c7280;
+  --txt-4: #9aa1ae;
+  --accent: oklch(0.58 0.14 60);
+  --accent-strong: oklch(0.48 0.14 55);
+  --accent-soft: oklch(0.58 0.14 60 / 0.10);
+  --accent-line: oklch(0.58 0.14 60 / 0.30);
+  --ok: oklch(0.50 0.16 150);
+  --ok-soft: oklch(0.50 0.16 150 / 0.12);
+  --warn: oklch(0.65 0.18 75);
+  --warn-soft: oklch(0.65 0.18 75 / 0.14);
+  --bad: oklch(0.55 0.22 25);
+  --bad-soft: oklch(0.55 0.22 25 / 0.10);
+  --info: oklch(0.50 0.14 230);
+  --info-soft: oklch(0.50 0.14 230 / 0.12);
+  --radius-sm: 3px;
+  --radius: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --font-ui: 'Inter','Noto Sans TC',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  --font-mono: 'JetBrains Mono','SF Mono',ui-monospace,Menlo,monospace;
+  --hairline: 1px solid var(--line);
+}
+[data-theme="dark"] {
+  --bg-0: #0a0c10;
+  --bg-1: #11141a;
+  --bg-2: #181c25;
+  --bg-3: #1f2531;
+  --bg-4: #262d3c;
+  --line: #2a3040;
+  --line-2: #353c4d;
+  --line-3: #475063;
+  --txt-1: #f4f6f8;
+  --txt-2: #9aa1ae;
+  --txt-3: #6c7280;
+  --txt-4: #4a5060;
+  --accent: oklch(0.78 0.13 75);
+  --accent-strong: oklch(0.86 0.14 75);
+  --accent-soft: oklch(0.78 0.13 75 / 0.14);
+  --accent-line: oklch(0.78 0.13 75 / 0.35);
+  --ok: oklch(0.76 0.16 150);
+  --ok-soft: oklch(0.76 0.16 150 / 0.14);
+  --warn: oklch(0.80 0.16 75);
+  --warn-soft: oklch(0.80 0.16 75 / 0.14);
+  --bad: oklch(0.66 0.22 25);
+  --bad-soft: oklch(0.66 0.22 25 / 0.14);
+  --info: oklch(0.74 0.12 230);
+  --info-soft: oklch(0.74 0.12 230 / 0.14);
+}
+/* base */
+.sf-root, .sf-root * { box-sizing: border-box; }
+.sf-root {
+  font-family: var(--font-ui);
+  color: var(--txt-1);
+  background: var(--bg-0);
+  font-feature-settings: 'cv11','ss03','cv02';
+  -webkit-font-smoothing: antialiased;
+}
+.sf-root .mono, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.sf-root .num, .num { font-variant-numeric: tabular-nums; }
+.sf-root a { color: var(--accent-strong); text-decoration: none; }
+.sf-root a:hover { text-decoration: underline; }
+
+/* status dot */
+.sf-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--txt-3); flex-shrink: 0; vertical-align: middle;
+}
+.sf-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.sf-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.sf-dot.bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); animation: sf-pulse 1.6s ease-in-out infinite; }
+.sf-dot.info { background: var(--info); box-shadow: 0 0 0 3px var(--info-soft); }
+.sf-dot.accent { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+@keyframes sf-pulse {
+  0%,100% { box-shadow: 0 0 0 3px var(--bad-soft); }
+  50% { box-shadow: 0 0 0 6px var(--bad-soft); }
+}
+
+/* pill */
+.sf-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line-2); background: var(--bg-2); color: var(--txt-2);
+  line-height: 1.5; white-space: nowrap;
+}
+.sf-pill.ok { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+.sf-pill.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.sf-pill.bad { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
+.sf-pill.info { color: var(--info); border-color: var(--info); background: var(--info-soft); }
+.sf-pill.accent { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+
+/* button */
+.sf-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 32px; padding: 0 12px; border-radius: var(--radius);
+  border: 1px solid var(--line-2); background: var(--bg-2); color: var(--txt-1);
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  transition: background .12s, border-color .12s; white-space: nowrap;
+  font-family: inherit; text-decoration: none;
+}
+.sf-btn:hover { background: var(--bg-3); border-color: var(--line-3); text-decoration: none; }
+.sf-btn:active { transform: translateY(1px); }
+.sf-btn.primary { background: var(--accent); border-color: var(--accent); color: #1a1208; }
+.sf-btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+.sf-btn.ghost { background: transparent; }
+.sf-btn.danger { color: var(--bad); border-color: var(--bad-soft); }
+.sf-btn.danger:hover { background: var(--bad-soft); }
+.sf-btn.lg { height: 40px; padding: 0 16px; font-size: 14px; }
+.sf-btn.sm { height: 26px; padding: 0 8px; font-size: 12px; }
+.sf-btn.icon-only { width: 32px; padding: 0; }
+
+/* card */
+.sf-card {
+  background: var(--bg-1); border: var(--hairline); border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.sf-card-head {
+  padding: 12px 16px; border-bottom: var(--hairline);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: var(--bg-2);
+}
+.sf-card-title { font-size: 13px; font-weight: 600; color: var(--txt-1); display: flex; align-items: center; gap: 8px; }
+.sf-card-sub { font-size: 11px; color: var(--txt-3); font-family: var(--font-mono); }
+.sf-card-body { padding: 16px; }
+
+/* table */
+.sf-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.sf-table th {
+  text-align: left; font-weight: 500; color: var(--txt-3); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 8px 12px; border-bottom: var(--hairline); background: var(--bg-2);
+}
+.sf-table td {
+  padding: 10px 12px; border-bottom: var(--hairline); vertical-align: middle; color: var(--txt-1);
+}
+.sf-table tr:hover td { background: var(--bg-2); }
+.sf-table .num, .sf-table .mono { text-align: right; }
+
+/* form */
+.sf-input, .sf-select, .sf-textarea {
+  width: 100%; height: 36px; padding: 0 10px;
+  background: var(--bg-2); border: 1px solid var(--line-2);
+  border-radius: var(--radius); color: var(--txt-1); font-size: 13px;
+  outline: none; transition: border-color .12s, box-shadow .12s;
+  font-family: inherit;
+}
+.sf-textarea { height: auto; padding: 8px 10px; min-height: 72px; }
+.sf-input:focus, .sf-select:focus, .sf-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.sf-label {
+  display: block; font-size: 11px; font-weight: 500; color: var(--txt-3);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
+}
+
+/* KPI tile */
+.sf-kpi {
+  padding: 14px 16px; background: var(--bg-1); border: var(--hairline);
+  border-radius: var(--radius-md); flex: 1; min-width: 0;
+}
+.sf-kpi.status-ok { border-left: 3px solid var(--ok); padding-left: 14px; }
+.sf-kpi.status-warn { border-left: 3px solid var(--warn); padding-left: 14px; }
+.sf-kpi.status-bad { border-left: 3px solid var(--bad); padding-left: 14px; }
+.sf-kpi.status-info { border-left: 3px solid var(--info); padding-left: 14px; }
+.sf-kpi-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.sf-kpi-label { font-size: 11px; color: var(--txt-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
+.sf-kpi-value { display: flex; align-items: baseline; gap: 4px; }
+.sf-kpi-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 28px; font-weight: 600; letter-spacing: -0.02em; }
+.sf-kpi-unit { font-size: 12px; color: var(--txt-3); }
+.sf-kpi-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--txt-3); }
+
+/* progress bar */
+.sf-prog { height: 6px; background: var(--bg-3); border-radius: 3px; overflow: hidden; }
+.sf-prog > span { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+.sf-prog.ok > span { background: var(--ok); }
+.sf-prog.warn > span { background: var(--warn); }
+.sf-prog.bad > span { background: var(--bad); }
+
+/* app shell */
+.sf-app { display: flex; min-height: 100vh; background: var(--bg-0); color: var(--txt-1); font-family: var(--font-ui); }
+.sf-sidebar {
+  width: 220px; flex-shrink: 0; background: var(--bg-1);
+  border-right: var(--hairline); display: flex; flex-direction: column;
+  position: sticky; top: 0; height: 100vh;
+}
+.sf-sidebar-brand { padding: 14px 16px; border-bottom: var(--hairline); display: flex; align-items: center; gap: 10px; }
+.sf-sidebar-logo {
+  width: 28px; height: 28px; border-radius: 6px;
+  background: var(--accent); color: #1a1208; font-weight: 700; font-size: 14px;
+  font-family: var(--font-mono);
+  display: flex; align-items: center; justify-content: center;
+}
+.sf-sidebar-title { font-size: 13px; font-weight: 600; line-height: 1.2; }
+.sf-sidebar-ver { font-size: 10px; color: var(--txt-3); font-family: var(--font-mono); }
+.sf-nav { padding: 8px; flex: 1; overflow: auto; }
+.sf-nav-group { margin-bottom: 12px; }
+.sf-nav-group-title {
+  padding: 6px 10px; font-size: 10px; color: var(--txt-3);
+  text-transform: uppercase; letter-spacing: .08em; font-weight: 500;
+}
+.sf-nav a {
+  display: flex; align-items: center; gap: 10px; padding: 7px 10px;
+  border-radius: var(--radius); color: var(--txt-2); font-size: 13px;
+  text-decoration: none; margin: 1px 0;
+}
+.sf-nav a:hover { background: var(--bg-3); text-decoration: none; }
+.sf-nav a.active { background: var(--bg-3); color: var(--txt-1); font-weight: 500; }
+.sf-nav a.active .sf-nav-icon { color: var(--accent); }
+.sf-nav-icon { color: var(--txt-3); display: inline-flex; width: 16px; height: 16px; flex-shrink: 0; }
+.sf-nav-label { flex: 1; }
+.sf-nav-badge {
+  font-size: 10px; padding: 0 6px; min-width: 18px; height: 16px;
+  border-radius: 999px; background: var(--bad-soft); color: var(--bad);
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+}
+.sf-sidebar-foot {
+  padding: 10px; border-top: var(--hairline);
+  display: flex; align-items: center; gap: 10px;
+}
+.sf-avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent); color: #1a1208;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600; flex-shrink: 0;
+}
+
+.sf-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.sf-topbar {
+  height: 48px; padding: 0 20px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  border-bottom: var(--hairline); background: var(--bg-1);
+  position: sticky; top: 0; z-index: 10;
+}
+.sf-topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.sf-topbar-right { display: flex; align-items: center; gap: 8px; }
+.sf-breadcrumb { font-size: 11px; color: var(--txt-3); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
+.sf-content { flex: 1; min-width: 0; min-height: 0; }
+
+/* theme toggle button */
+.sf-theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: var(--radius);
+  border: 1px solid var(--line-2); background: var(--bg-2); color: var(--txt-2);
+  cursor: pointer; transition: all .12s;
+}
+.sf-theme-toggle:hover { background: var(--bg-3); color: var(--txt-1); }
+
+/* mobile collapse */
+.sf-sidebar-toggle { display: none; }
+@media (max-width: 760px) {
+  .sf-app { flex-direction: column; }
+  .sf-sidebar { position: fixed; top: 0; left: -240px; z-index: 50; height: 100vh; transition: left .2s; box-shadow: 0 0 20px rgba(0,0,0,0.2); }
+  .sf-app.sidebar-open .sf-sidebar { left: 0; }
+  .sf-sidebar-toggle { display: inline-flex; }
+  .sf-sidebar-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  .sf-app.sidebar-open .sf-sidebar-overlay { opacity: 1; pointer-events: auto; }
+}
+
+/* scrollbars (thin) */
+.sf-root *::-webkit-scrollbar, .sf-app *::-webkit-scrollbar { width: 6px; height: 6px; }
+.sf-root *::-webkit-scrollbar-thumb, .sf-app *::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
+.sf-root *::-webkit-scrollbar-track, .sf-app *::-webkit-scrollbar-track { background: transparent; }
+
+/* legacy notion-card / notion-page-title 同步進 dark 主題（避免穿色） */
+[data-theme="dark"] .notion-page-title { color: var(--txt-1); }
+[data-theme="dark"] .notion-hint, [data-theme="dark"] .notion-breadcrumb { color: var(--txt-3); }
+[data-theme="dark"] .notion-card { background: var(--bg-1); border-color: var(--line); color: var(--txt-1); }
+[data-theme="dark"] .notion-card h2 { color: var(--txt-1); }
+[data-theme="dark"] body { background: var(--bg-0); color: var(--txt-1); }
+`;
+
+/** SF SVG 圖示集（16px、1.4px stroke、line style）。回傳 string 直接內嵌 */
+const SF_ICONS = {
+  bell: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 11h10l-1.5-2V6a3.5 3.5 0 0 0-7 0v3L3 11z"/><path d="M6.5 13a1.5 1.5 0 0 0 3 0"/></svg>',
+  check: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 8.5l3 3 6-6"/></svg>',
+  x: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+  plus: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 3v10M3 8h10"/></svg>',
+  search: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4"/><path d="M10 10l3 3"/></svg>',
+  filter: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M4 8h8M6 12h4"/></svg>',
+  chev_r: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 3l5 5-5 5"/></svg>',
+  chev_d: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6l5 5 5-5"/></svg>',
+  thermo: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v8M8 2a1.5 1.5 0 0 0-1.5 1.5v6a3 3 0 1 0 3 0v-6A1.5 1.5 0 0 0 8 2z"/><circle cx="8" cy="12" r="1.4" fill="currentColor"/></svg>',
+  box: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5l6-3 6 3v6l-6 3-6-3V5z"/><path d="M2 5l6 3 6-3M8 8v6"/></svg>',
+  truck: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="4" width="8" height="7"/><path d="M9 6h3l2 2v3H9"/><circle cx="4" cy="12" r="1.2"/><circle cx="11.5" cy="12" r="1.2"/></svg>',
+  users: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="6" r="2.4"/><path d="M2 13c0-2 2-3.5 4-3.5s4 1.5 4 3.5"/><circle cx="11" cy="6" r="1.8"/><path d="M11 9.5c1.7 0 3 1.2 3 3"/></svg>',
+  list: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5 4h9M5 8h9M5 12h9M2 4h.01M2 8h.01M2 12h.01"/></svg>',
+  history: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8a6 6 0 1 0 6-6 6 6 0 0 0-4.2 1.8L2 5.5"/><path d="M2 2v3.5h3.5M8 5v3l2 2"/></svg>',
+  warn: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2L1.5 13.5h13L8 2z"/><path d="M8 6v3"/><circle cx="8" cy="11.5" r=".7" fill="currentColor"/></svg>',
+  dl: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v9M4 7l4 4 4-4M2.5 13.5h11"/></svg>',
+  refresh: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8a6 6 0 0 1 10.5-4M14 2v3.5h-3.5M14 8a6 6 0 0 1-10.5 4M2 14v-3.5h3.5"/></svg>',
+  spark: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2l1.4 4.6L14 8l-4.6 1.4L8 14l-1.4-4.6L2 8l4.6-1.4L8 2z"/></svg>',
+  edit: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 14l1-3 7-7 3 3-7 7-3 1zM9 5l3 3"/></svg>',
+  dots: '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><circle cx="4" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="12" cy="8" r="1.2"/></svg>',
+  link: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M7 9a2.5 2.5 0 0 0 3.5 0l2-2a2.5 2.5 0 0 0-3.5-3.5L8 4.5"/><path d="M9 7a2.5 2.5 0 0 0-3.5 0l-2 2a2.5 2.5 0 0 0 3.5 3.5L8 11.5"/></svg>',
+  sun: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M15 8h-2M3 8H1M13 3l-1.5 1.5M4.5 11.5L3 13M13 13l-1.5-1.5M4.5 4.5L3 3"/></svg>',
+  moon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 9.5A6 6 0 1 1 6.5 3 5 5 0 0 0 13 9.5z"/></svg>',
+  menu: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M2 8h12M2 12h12"/></svg>',
+};
+
+/** SF 側邊欄（新版視覺，URL 沿用既有路由） */
+function sfSidebar(active) {
+  const item = (href, key, icon, label, badge) => `
+    <a href="${href}" class="${active === key ? "active" : ""}">
+      <span class="sf-nav-icon">${SF_ICONS[icon] || ""}</span>
+      <span class="sf-nav-label">${label}</span>
+      ${badge ? `<span class="sf-nav-badge">${badge}</span>` : ""}
+    </a>`;
+  return `
+  <aside class="sf-sidebar">
+    <div class="sf-sidebar-brand">
+      <div class="sf-sidebar-logo">松</div>
+      <div>
+        <div class="sf-sidebar-title">松富物流</div>
+        <div class="sf-sidebar-ver">HACCP · v2.5</div>
+      </div>
+    </div>
+    <nav class="sf-nav">
+      <div class="sf-nav-group">
+        <div class="sf-nav-group-title">日常作業</div>
+        ${item("/admin", "dashboard", "spark", "儀表板")}
+        ${item("/admin/orders", "orders", "list", "訂單審核")}
+        ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
+        ${item("/admin/inventory", "inventory", "box", "每日盤點")}
+        ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
+      </div>
+      <div class="sf-nav-group">
+        <div class="sf-nav-group-title">主檔管理</div>
+        ${item("/admin/customers", "customers", "users", "客戶與品項")}
+        ${item("/admin/products", "products", "box", "貨品管理")}
+        ${item("/admin/line-binding", "line-bind", "link", "LINE 綁定")}
+        ${item("/admin/ai-examples", "ai-examples", "spark", "AI 學習庫")}
+      </div>
+      <div class="sf-nav-group">
+        <div class="sf-nav-group-title">稽核與報表</div>
+        ${item("/admin/audit", "audit", "history", "稽核軌跡")}
+        ${item("/admin/recognition-stats", "recognition-stats", "spark", "辨識成效")}
+        ${item("/admin/export", "export", "dl", "資料匯出")}
+        ${item("/admin/broadcast", "broadcast", "bell", "群發訊息")}
+      </div>
+      <div class="sf-nav-group">
+        <div class="sf-nav-group-title">設定</div>
+        ${item("/admin/line-bot", "line-bot", "spark", "LINE 機器人")}
+        ${item("/admin/gemini-prompts", "gemini-prompts", "spark", "Gemini Prompt")}
+        ${item("/admin/users", "users", "users", "帳號管理")}
+      </div>
+    </nav>
+    <div class="sf-sidebar-foot" id="sfSidebarFoot"></div>
+  </aside>
+  `;
+}
+
 const NOTION_SIDEBAR = (active) => `
   <nav class="notion-sidebar">
     <a href="/admin" class="notion-sidebar-home ${active === "dashboard" ? "active" : ""}">儀表板</a>
@@ -773,6 +1141,7 @@ function renderNotionAppHeader(username, pageTitle, opts = {}) {
         <span class="notion-app-header-title">${t}</span>
       </div>
       <div class="notion-app-header-right">
+        <button type="button" class="sf-theme-toggle" onclick="window.sfToggleTheme&&window.sfToggleTheme()" aria-label="切換深淺主題" title="切換深淺／淺色"><span id="sfThemeIcon">${SF_ICONS.moon}</span></button>
         <button type="button" class="btn-header header-back-btn" onclick="history.back()">上一頁</button>
         ${showUsers ? `<a href="/admin/users" class="btn-header btn-header-primary header-users-btn">人員管理</a>` : ""}
         ${titleBadge}
@@ -825,10 +1194,16 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
     let topBar = "";
     let loggedInUser = "";
     let headerOpts = {};
+    let sfTheme = "light";
+    let adminUserName = "";
+    let adminTitle = "";
     if (topBarOrRes && typeof topBarOrRes === "object" && topBarOrRes.locals) {
         const res = topBarOrRes;
         topBar = res.locals.topBarHtml || "";
         loggedInUser = res.locals.adminUser || "";
+        sfTheme = res.locals.sfTheme === "dark" ? "dark" : "light";
+        adminUserName = res.locals.adminUser || "";
+        adminTitle = res.locals.adminTitle || "";
         headerOpts = {
             canManageUsers: res.locals.canManageUsers === true,
             adminTitle: res.locals.adminTitle || "",
@@ -854,9 +1229,18 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
       if(btn && app){ btn.addEventListener('click', function(){ app.classList.toggle('sidebar-open'); }); }
       if(overlay){ overlay.addEventListener('click', closeSidebar); }
       document.addEventListener('click', function(e){
-        var a = e.target.closest('.notion-sidebar a');
+        var a = e.target.closest('.notion-sidebar a, .sf-nav a');
         if (a) closeSidebar();
       });
+      // theme toggle (cookie 用 /admin/api/theme 寫入)
+      window.sfToggleTheme = function(){
+        var cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+        var next = cur === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        fetch('/admin/api/theme', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'theme='+next, credentials:'same-origin' }).catch(function(){});
+        var ic = document.getElementById('sfThemeIcon');
+        if (ic) ic.innerHTML = next === 'dark' ? \`${SF_ICONS.sun.replace(/`/g, "\\`")}\` : \`${SF_ICONS.moon.replace(/`/g, "\\`")}\`;
+      };
       if (window.matchMedia && window.matchMedia('(max-width: 760px)').matches) {
         document.querySelectorAll('table').forEach(function(tbl){
           var heads = Array.prototype.map.call(tbl.querySelectorAll('thead th'), function(th){ return (th.textContent || '').trim(); });
@@ -869,7 +1253,8 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
         });
       }
     })();</script>`;
-    return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富物流後台</title><style>${NOTION_STYLE}</style></head><body>${shell}${uiScript}</body></html>`;
+    const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">`;
+    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}${uiScript}</body></html>`;
 }
 /** 僅允許站內 /admin 路徑，供編輯頁儲存後導回（防開放重導向） */
 function safeAdminReturnPath(s) {
@@ -952,7 +1337,9 @@ function notionEmbedPage(title, body, res) {
     const headerHtml = loggedInUser ? renderNotionAppHeader(loggedInUser, title, headerOpts) : "";
     const mainWrap = `<div class="notion-main-wrap"><main class="notion-main notion-main-embed">${body}</main></div>`;
     const shell = headerHtml ? `<div class="notion-app">${headerHtml}${mainWrap}</div>` : `<div class="notion-app">${mainWrap}</div>`;
-    return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富物流後台</title><style>${NOTION_STYLE}</style></head><body>${shell}</body></html>`;
+    const sfTheme = (res && res.locals && res.locals.sfTheme === "dark") ? "dark" : "light";
+    const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">`;
+    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}</body></html>`;
 }
 /** 編輯距離（品名短字串模糊比對） */
 function levenshteinDistance(a, b) {
@@ -1170,7 +1557,14 @@ function createAdminRouter() {
         res.locals.adminTitle = profile.title;
         res.locals.canManageUsers = profile.title === "經理";
         res.locals.isOwner = isAdminOwnerUsername(uname);
+        // SF 主題：從 cookie sf_theme=dark|light 讀取（預設淺色）
+        res.locals.sfTheme = (cookies.sf_theme === "dark") ? "dark" : "light";
         next();
+    });
+    router.post("/api/theme", express_1.default.urlencoded({ extended: true }), (req, res) => {
+        const t = req.body?.theme === "dark" ? "dark" : "light";
+        res.setHeader("Set-Cookie", `sf_theme=${t}; Path=/admin; Max-Age=${60*60*24*365}; SameSite=Lax`);
+        res.json({ ok: true, theme: t });
     });
     router.use((req, res, next) => {
         if (!pathLooksLikeDelete(req))
