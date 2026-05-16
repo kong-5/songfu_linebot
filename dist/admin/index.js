@@ -9270,164 +9270,207 @@ YY小吃, C5678...,</pre>
         const customers = await db.prepare("SELECT id, name FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != '' ORDER BY name ASC").all();
         const successCount = req.query.sent ? parseInt(req.query.sent, 10) : null;
         const errMsg = req.query.err ? decodeURIComponent(String(req.query.err)) : null;
-        const extraStyle = `
-<style>
-.bc-card{background:#fff;border-radius:10px;border:1px solid var(--notion-border);padding:24px 28px;max-width:720px;}
-.bc-section{margin-top:20px;}
-.bc-label{font-size:13px;color:#666;margin-bottom:4px;display:block;}
-.bc-input,.bc-textarea,.bc-select{width:100%;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:6px;font-size:14px;box-sizing:border-box;background:#fafafa;}
-.bc-textarea{min-height:90px;resize:vertical;}
-.item-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
-.item-row input{flex:1;padding:7px 9px;border:1px solid var(--notion-border-strong);border-radius:6px;font-size:13px;box-sizing:border-box;}
-.item-row .w-price{flex:0 0 90px;}
-.item-row .w-unit{flex:0 0 60px;}
-.item-row .w-market{flex:0 0 90px;}
-.item-row .btn-rm{background:none;border:none;font-size:18px;cursor:pointer;color:#bbb;padding:0 2px;line-height:1;}
-.btn-add-item{background:none;border:1px dashed #bbb;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;color:#777;margin-top:4px;}
-.btn-add-item:hover{border-color:#1a7c6e;color:#1a7c6e;}
-.tmpl-tabs{display:flex;gap:0;border-radius:8px;overflow:hidden;border:1px solid var(--notion-border-strong);width:fit-content;margin-bottom:20px;}
-.tmpl-tab{padding:8px 22px;cursor:pointer;font-size:14px;background:#f5f5f5;border:none;transition:background .15s,color .15s;font-family:inherit;}
-.tmpl-tab.active{background:#1a7c6e;color:#fff;font-weight:600;}
-#preview-wrap{margin-top:24px;background:#f2f2f2;border-radius:8px;padding:14px;}
-#preview-wrap pre{font-size:11px;max-height:320px;overflow:auto;background:#fff;border-radius:6px;padding:12px;border:1px solid #ddd;margin:0;}
-.bc-submit-row{display:flex;gap:12px;margin-top:24px;align-items:center;flex-wrap:wrap;}
-.bc-btn{padding:9px 22px;border-radius:7px;border:none;cursor:pointer;font-size:14px;font-weight:600;font-family:inherit;}
-.bc-btn-primary{background:#1a7c6e;color:#fff;}
-.bc-btn-primary:hover{background:#15695d;}
-.bc-btn-outline{background:#fff;color:#1a7c6e;border:1.5px solid #1a7c6e;}
-.bc-btn-outline:hover{background:#e8f5f2;}
-.msg-ok{color:#1a7c6e;font-weight:600;font-size:14px;margin-bottom:12px;}
-.msg-err{color:#c0392b;font-size:14px;margin-bottom:12px;}
-.items-col-header{display:flex;gap:8px;margin-bottom:4px;}
-.items-col-header span{font-size:11px;color:#aaa;flex:1;}
-.items-col-header .ch-price{flex:0 0 90px;}
-.items-col-header .ch-unit{flex:0 0 60px;}
-.items-col-header .ch-market{flex:0 0 90px;}
-.items-col-header .ch-rm{flex:0 0 26px;}
-</style>`;
-        const body = `${extraStyle}
-<div class="notion-page-content">
-<h1 class="notion-h1" style="margin-bottom:8px;">群發訊息</h1>
-<p style="color:#888;font-size:14px;margin-bottom:20px;">選擇模板後填入內容，可預覽 Flex Message JSON 後傳送至 LINE 群組。</p>
-${successCount != null ? `<p class="msg-ok">✅ 已成功傳送至 ${successCount} 個群組</p>` : ""}
-${errMsg ? `<p class="msg-err">❌ ${escapeHtml(errMsg)}</p>` : ""}
-<div class="bc-card">
-  <div class="tmpl-tabs">
-    <button class="tmpl-tab active" onclick="switchTab('promo',this)" type="button">⚡ 限時優惠</button>
-    <button class="tmpl-tab" onclick="switchTab('notice',this)" type="button">📢 公告</button>
-  </div>
-  <input type="hidden" id="tmpl-type" value="promo">
-
-  <div id="tab-promo">
-    <div class="bc-section">
-      <label class="bc-label">優惠時間</label>
-      <input class="bc-input" id="promo_date" type="text" placeholder="例：5/3（六）早上 6 點前" style="max-width:340px;">
-    </div>
-    <div class="bc-section">
-      <label class="bc-label">副標題（選填）</label>
-      <input class="bc-input" id="promo_subtitle" type="text" placeholder="例：當日限量，先搶先贏">
-    </div>
-    <div class="bc-section">
-      <label class="bc-label">品項</label>
-      <div class="items-col-header">
-        <span>品名</span><span class="ch-price">優惠單價</span><span class="ch-unit">單位</span><span class="ch-market">行情上價</span><span class="ch-rm"></span>
-      </div>
-      <div id="item-rows">
-        <div class="item-row">
-          <input type="text" placeholder="品名" class="item-name">
-          <input type="text" placeholder="180" class="w-price item-price">
-          <input type="text" placeholder="斤" class="w-unit item-unit">
-          <input type="text" placeholder="220" class="w-market item-market">
-          <button class="btn-rm" type="button" onclick="removeRow(this)" title="刪除">✕</button>
+        const customerOptions = customers.map(c => `<option value="${escapeAttr(String(c.id))}">${escapeHtml(c.name)}</option>`).join("");
+        const body = `
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+          <div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核與報表 / 群發訊息</div>
+            <h1 style="margin:0;font-size:22px;font-weight:600;">群發訊息</h1>
+            <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">選擇模板、填入內容，右側即時預覽實際 LINE 顯示樣式，確認後傳送到已綁定群組。</p>
+          </div>
+          ${successCount != null ? `<div class="sf-pill ok" style="align-self:flex-start;">✅ 已成功傳送至 ${successCount} 個群組</div>` : ""}
+          ${errMsg ? `<div class="sf-pill bad" style="align-self:flex-start;">❌ ${escapeHtml(errMsg)}</div>` : ""}
+          <div style="display:grid;grid-template-columns:1fr 360px;gap:20px;align-items:flex-start;">
+            <div class="sf-card">
+              <div class="sf-card-head">
+                <div class="sf-card-title">${SF_ICONS.edit} 編輯訊息內容</div>
+              </div>
+              <div style="padding:16px 18px;">
+                <div class="sf-tabs" style="margin-bottom:16px;">
+                  <button type="button" class="sf-tab active" onclick="switchTab('promo',this)">⚡ 限時優惠</button>
+                  <button type="button" class="sf-tab" onclick="switchTab('notice',this)">📢 公告</button>
+                </div>
+                <input type="hidden" id="tmpl-type" value="promo">
+                <div id="tab-promo">
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">優惠時間</label>
+                    <input class="sf-input" id="promo_date" type="text" placeholder="例：5/3（六）早上 6 點前" oninput="updatePreview()">
+                  </div>
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">副標題（選填）</label>
+                    <input class="sf-input" id="promo_subtitle" type="text" placeholder="例：當日限量，先搶先贏" oninput="updatePreview()">
+                  </div>
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">品項</label>
+                    <div style="display:flex;gap:8px;margin-bottom:4px;padding:0 4px;">
+                      <span style="flex:1;font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">品名</span>
+                      <span style="flex:0 0 90px;font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">優惠單價</span>
+                      <span style="flex:0 0 60px;font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">單位</span>
+                      <span style="flex:0 0 90px;font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">行情上價</span>
+                      <span style="flex:0 0 30px;"></span>
+                    </div>
+                    <div id="item-rows">
+                      <div class="item-row" style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+                        <input type="text" placeholder="品名" class="sf-input item-name" style="flex:1;" oninput="updatePreview()">
+                        <input type="text" placeholder="180" class="sf-input item-price" style="flex:0 0 90px;" oninput="updatePreview()">
+                        <input type="text" placeholder="斤" class="sf-input item-unit" style="flex:0 0 60px;" oninput="updatePreview()">
+                        <input type="text" placeholder="220" class="sf-input item-market" style="flex:0 0 90px;" oninput="updatePreview()">
+                        <button type="button" class="sf-btn sm ghost" onclick="removeRow(this)" title="刪除" style="flex:0 0 30px;padding:0;">✕</button>
+                      </div>
+                    </div>
+                    <button type="button" class="sf-btn sm" onclick="addItemRow()" style="margin-top:4px;">${SF_ICONS.plus}<span>新增品項</span></button>
+                  </div>
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">備註（選填）</label>
+                    <input class="sf-input" id="promo_note" type="text" placeholder="例：需提前告知數量" oninput="updatePreview()">
+                  </div>
+                </div>
+                <div id="tab-notice" style="display:none;">
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">公告標題</label>
+                    <input class="sf-input" id="notice_title" type="text" placeholder="例：5/1 勞動節休假公告" oninput="updatePreview()">
+                  </div>
+                  <div style="margin-bottom:14px;">
+                    <label class="sf-label">公告內容</label>
+                    <textarea class="sf-textarea" id="notice_content" placeholder="例：本司於 5/1（四）勞動節休假一天，5/2（五）正常上班。造成不便敬請見諒，謝謝！" oninput="updatePreview()"></textarea>
+                  </div>
+                </div>
+                <div style="margin-bottom:14px;padding-top:14px;border-top:var(--hairline);">
+                  <label class="sf-label">傳送對象</label>
+                  <select class="sf-select" id="recipients-select">
+                    <option value="all">📢 全部客戶（已設定 LINE 群組，共 ${customers.length} 個）</option>
+                    ${customerOptions}
+                  </select>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:6px;">
+                  <button type="button" class="sf-btn primary" onclick="sendMsg()">${SF_ICONS.check}<span>傳送至 LINE</span></button>
+                  <button type="button" class="sf-btn ghost" onclick="toggleJsonPreview()">查看 JSON</button>
+                </div>
+                <div id="preview-wrap" style="display:none;margin-top:14px;padding:12px;background:var(--bg-2);border-radius:var(--radius);">
+                  <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Flex Message JSON</div>
+                  <pre id="preview-json" style="font-size:11px;max-height:280px;overflow:auto;background:var(--bg-1);border-radius:var(--radius);padding:10px;border:var(--hairline);margin:0;color:var(--txt-2);"></pre>
+                </div>
+              </div>
+            </div>
+            <div style="position:sticky;top:12px;">
+              <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">LINE 即時預覽</div>
+              <div style="background:#7494c0;padding:18px 14px;border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,.08);">
+                <div style="font-size:11px;color:#fff;opacity:.85;text-align:center;margin-bottom:10px;">松富物流 · LINE 客戶群組</div>
+                <div id="line-preview" style="background:#fff;border-radius:12px;overflow:hidden;font-family:-apple-system,'Noto Sans TC',sans-serif;"></div>
+              </div>
+              <div style="margin-top:10px;font-size:11px;color:var(--txt-3);line-height:1.5;">這是 Flex Message 在客戶 LINE 上的實際樣子（會即時跟著你打字更新）。</div>
+            </div>
+          </div>
         </div>
-      </div>
-      <button class="btn-add-item" type="button" onclick="addItemRow()">＋ 新增品項</button>
-    </div>
-    <div class="bc-section">
-      <label class="bc-label">備註（選填）</label>
-      <input class="bc-input" id="promo_note" type="text" placeholder="例：需提前告知數量">
-    </div>
-  </div>
-
-  <div id="tab-notice" style="display:none;">
-    <div class="bc-section">
-      <label class="bc-label">公告標題</label>
-      <input class="bc-input" id="notice_title" type="text" placeholder="例：5/1 勞動節休假公告">
-    </div>
-    <div class="bc-section">
-      <label class="bc-label">公告內容</label>
-      <textarea class="bc-textarea" id="notice_content" placeholder="例：本司於 5/1（四）勞動節休假一天，5/2（五）正常上班。造成不便敬請見諒，謝謝！"></textarea>
-    </div>
-  </div>
-
-  <div class="bc-section">
-    <label class="bc-label">傳送對象</label>
-    <select class="bc-select" id="recipients-select" style="max-width:340px;">
-      <option value="all">全部客戶（已設定 LINE 群組，共 ${customers.length} 個）</option>
-      ${customers.map(c => `<option value="${escapeAttr(String(c.id))}">${escapeHtml(c.name)}</option>`).join("")}
-    </select>
-  </div>
-
-  <div class="bc-submit-row">
-    <button class="bc-btn bc-btn-outline" type="button" onclick="previewMsg()">預覽 JSON</button>
-    <button class="bc-btn bc-btn-primary" type="button" onclick="sendMsg()">傳送至 LINE</button>
-  </div>
-  <div id="preview-wrap" style="display:none;">
-    <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:8px;">Flex Message 預覽（JSON）</div>
-    <pre id="preview-json"></pre>
-  </div>
-</div>
-</div>
-<script>
-function switchTab(tab,btn){
-  document.getElementById('tab-promo').style.display=tab==='promo'?'':'none';
-  document.getElementById('tab-notice').style.display=tab==='notice'?'':'none';
-  document.getElementById('tmpl-type').value=tab;
-  document.querySelectorAll('.tmpl-tab').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-}
-function addItemRow(){
-  const wrap=document.getElementById('item-rows');
-  const div=document.createElement('div');
-  div.className='item-row';
-  div.innerHTML='<input type="text" placeholder="品名" class="item-name"><input type="text" placeholder="180" class="w-price item-price"><input type="text" placeholder="斤" class="w-unit item-unit"><input type="text" placeholder="220" class="w-market item-market"><button class="btn-rm" type="button" onclick="removeRow(this)" title="刪除">✕</button>';
-  wrap.appendChild(div);
-}
-function removeRow(btn){
-  if(document.querySelectorAll('#item-rows .item-row').length<=1)return;
-  btn.parentElement.remove();
-}
-function collectFormData(){
-  const type=document.getElementById('tmpl-type').value;
-  if(type==='promo'){
-    const items=[];
-    document.querySelectorAll('#item-rows .item-row').forEach(row=>{
-      const name=row.querySelector('.item-name')?.value?.trim();
-      const price=row.querySelector('.item-price')?.value?.trim();
-      const unit=row.querySelector('.item-unit')?.value?.trim();
-      const market=row.querySelector('.item-market')?.value?.trim();
-      if(name)items.push({name,price:price||'',unit:unit||'斤',market:market||''});
-    });
-    return{type,promo_date:document.getElementById('promo_date')?.value?.trim()||'',promo_subtitle:document.getElementById('promo_subtitle')?.value?.trim()||'',promo_note:document.getElementById('promo_note')?.value?.trim()||'',items,recipients:document.getElementById('recipients-select')?.value||'all'};
-  }
-  return{type,notice_title:document.getElementById('notice_title')?.value?.trim()||'',notice_content:document.getElementById('notice_content')?.value?.trim()||'',recipients:document.getElementById('recipients-select')?.value||'all'};
-}
-async function previewMsg(){
-  const data=collectFormData();
-  const r=await fetch('/admin/broadcast/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  const json=await r.json();
-  document.getElementById('preview-json').textContent=JSON.stringify(json,null,2);
-  document.getElementById('preview-wrap').style.display='';
-}
-async function sendMsg(){
-  const data=collectFormData();
-  if(!confirm('確定要傳送訊息至 LINE 群組嗎？'))return;
-  const r=await fetch('/admin/broadcast/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  const json=await r.json();
-  if(json.ok){location.href='/admin/broadcast?sent='+(json.sent||0);}
-  else{location.href='/admin/broadcast?err='+encodeURIComponent(json.error||'傳送失敗');}
-}
-</script>`;
+        <script>
+        function escapeHtmlJs(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+        function renderPromo(d){
+          const items = (d.items||[]).filter(x=>x.name);
+          const subtitle = d.promo_subtitle || '';
+          const dateText = d.promo_date || '';
+          const note = d.promo_note || '';
+          const itemsHtml = items.length ? items.map((it, idx)=>\`
+            <div style="display:flex;padding:8px 0;align-items:center;\${idx<items.length-1?'border-bottom:1px solid #eee;':''}">
+              <div style="flex:3;font-size:14px;color:#222;word-break:break-word;">\${escapeHtmlJs(it.name)}</div>
+              <div style="flex:2;text-align:right;font-size:14px;color:#e05000;font-weight:bold;font-variant-numeric:tabular-nums;">\${it.price?'$'+escapeHtmlJs(it.price)+'/'+escapeHtmlJs(it.unit||'斤'):'—'}</div>
+              <div style="flex:2;text-align:right;font-size:14px;color:#888;font-variant-numeric:tabular-nums;">\${it.market?'$'+escapeHtmlJs(it.market):'—'}</div>
+            </div>\`).join('') : '<div style="padding:18px 0;text-align:center;color:#bbb;font-size:13px;">尚未新增品項</div>';
+          const hasFooter = dateText || note;
+          return \`<div style="background:#1a7c6e;padding:16px;color:#fff;">
+              <div style="font-size:18px;font-weight:bold;">⚡ 限時優惠</div>
+              \${subtitle?\`<div style="font-size:12px;color:#b2dfdb;margin-top:6px;">\${escapeHtmlJs(subtitle)}</div>\`:''}
+            </div>
+            <div style="background:#f9f9f9;padding:14px 16px;">
+              <div style="display:flex;padding-bottom:5px;border-bottom:1px solid #ccc;">
+                <div style="flex:3;font-size:10px;color:#aaa;">品名</div>
+                <div style="flex:2;text-align:right;font-size:10px;color:#aaa;">優惠單價</div>
+                <div style="flex:2;text-align:right;font-size:10px;color:#aaa;">行情上價</div>
+              </div>\${itemsHtml}
+            </div>
+            \${hasFooter?\`<div style="background:#fff;padding:12px 16px;border-top:1px solid #eee;">
+              \${dateText?\`<div style="font-size:11px;color:#666;">🕐 訂購時間：\${escapeHtmlJs(dateText)}</div>\`:''}
+              \${note?\`<div style="font-size:11px;color:#888;margin-top:6px;">📝 \${escapeHtmlJs(note)}</div>\`:''}
+            </div>\`:''}\`;
+        }
+        function renderNotice(d){
+          const title = d.notice_title || '公告';
+          const content = d.notice_content || '（無內容）';
+          return \`<div style="background:#2c3e50;padding:16px;color:#fff;">
+              <div style="font-size:16px;font-weight:bold;">📢 \${escapeHtmlJs(title)}</div>
+            </div>
+            <div style="padding:16px;">
+              <div style="font-size:13px;color:#333;line-height:1.8;white-space:pre-wrap;">\${escapeHtmlJs(content)}</div>
+            </div>
+            <div style="background:#f5f5f5;padding:8px;text-align:center;">
+              <div style="font-size:10px;color:#999;">松富生鮮物流</div>
+            </div>\`;
+        }
+        function updatePreview(){
+          const data = collectFormData();
+          const html = data.type==='notice' ? renderNotice(data) : renderPromo(data);
+          document.getElementById('line-preview').innerHTML = html;
+          const pw = document.getElementById('preview-wrap');
+          if (pw && pw.style.display !== 'none') refreshJsonPreview();
+        }
+        function switchTab(tab,btn){
+          document.getElementById('tab-promo').style.display=tab==='promo'?'':'none';
+          document.getElementById('tab-notice').style.display=tab==='notice'?'':'none';
+          document.getElementById('tmpl-type').value=tab;
+          document.querySelectorAll('.sf-tab').forEach(b=>b.classList.remove('active'));
+          btn.classList.add('active');
+          updatePreview();
+        }
+        function addItemRow(){
+          const wrap=document.getElementById('item-rows');
+          const div=document.createElement('div');
+          div.className='item-row';
+          div.style.cssText='display:flex;gap:8px;align-items:center;margin-bottom:8px;';
+          div.innerHTML='<input type="text" placeholder="品名" class="sf-input item-name" style="flex:1;" oninput="updatePreview()"><input type="text" placeholder="180" class="sf-input item-price" style="flex:0 0 90px;" oninput="updatePreview()"><input type="text" placeholder="斤" class="sf-input item-unit" style="flex:0 0 60px;" oninput="updatePreview()"><input type="text" placeholder="220" class="sf-input item-market" style="flex:0 0 90px;" oninput="updatePreview()"><button type="button" class="sf-btn sm ghost" onclick="removeRow(this)" title="刪除" style="flex:0 0 30px;padding:0;">✕</button>';
+          wrap.appendChild(div);
+        }
+        function removeRow(btn){
+          if(document.querySelectorAll('#item-rows .item-row').length<=1)return;
+          btn.parentElement.remove();
+          updatePreview();
+        }
+        function collectFormData(){
+          const type=document.getElementById('tmpl-type').value;
+          if(type==='promo'){
+            const items=[];
+            document.querySelectorAll('#item-rows .item-row').forEach(row=>{
+              const name=row.querySelector('.item-name')?.value?.trim();
+              const price=row.querySelector('.item-price')?.value?.trim();
+              const unit=row.querySelector('.item-unit')?.value?.trim();
+              const market=row.querySelector('.item-market')?.value?.trim();
+              if(name)items.push({name,price:price||'',unit:unit||'斤',market:market||''});
+            });
+            return{type,promo_date:document.getElementById('promo_date')?.value?.trim()||'',promo_subtitle:document.getElementById('promo_subtitle')?.value?.trim()||'',promo_note:document.getElementById('promo_note')?.value?.trim()||'',items,recipients:document.getElementById('recipients-select')?.value||'all'};
+          }
+          return{type,notice_title:document.getElementById('notice_title')?.value?.trim()||'',notice_content:document.getElementById('notice_content')?.value?.trim()||'',recipients:document.getElementById('recipients-select')?.value||'all'};
+        }
+        async function refreshJsonPreview(){
+          const data=collectFormData();
+          const r=await fetch('/admin/broadcast/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+          const json=await r.json();
+          document.getElementById('preview-json').textContent=JSON.stringify(json,null,2);
+        }
+        function toggleJsonPreview(){
+          const pw=document.getElementById('preview-wrap');
+          if (pw.style.display==='none'){ pw.style.display=''; refreshJsonPreview(); }
+          else pw.style.display='none';
+        }
+        async function sendMsg(){
+          const data=collectFormData();
+          if(data.type==='promo' && (!data.items||!data.items.length)){ alert('請至少填入一個品項');return; }
+          if(data.type==='notice' && !data.notice_title){ alert('請填入公告標題');return; }
+          if(!confirm('確定要傳送訊息至 LINE 群組嗎？'))return;
+          const r=await fetch('/admin/broadcast/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+          const json=await r.json();
+          if(json.ok){location.href='/admin/broadcast?sent='+(json.sent||0);}
+          else{location.href='/admin/broadcast?err='+encodeURIComponent(json.error||'傳送失敗');}
+        }
+        updatePreview();
+        </script>`;
         res.send(notionPage("群發訊息", body, "broadcast", res));
     });
     router.post("/broadcast/preview", requireManager, async (req, res) => {
