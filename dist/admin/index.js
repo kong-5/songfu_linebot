@@ -959,21 +959,18 @@ function sfSidebar(active) {
         <div class="sf-nav-group-title">主檔管理</div>
         ${item("/admin/customers", "customers", "users", "客戶管理")}
         ${item("/admin/products", "products", "box", "貨品管理")}
-        ${item("/admin/line-binding", "line-bind", "link", "LINE 綁定")}
         ${item("/admin/ai-examples", "ai-examples", "spark", "AI 學習庫")}
       </div>
       <div class="sf-nav-group">
         <div class="sf-nav-group-title">稽核與報表</div>
         ${item("/admin/audit", "audit", "history", "稽核軌跡")}
         ${item("/admin/recognition-stats", "recognition-stats", "spark", "辨識成效")}
-        ${item("/admin/export", "export", "dl", "資料匯出")}
         ${item("/admin/broadcast", "broadcast", "bell", "群發訊息")}
       </div>
       <div class="sf-nav-group">
         <div class="sf-nav-group-title">設定</div>
         ${item("/admin/line-bot", "line-bot", "spark", "LINE 機器人")}
-        ${item("/admin/gemini-prompts", "gemini-prompts", "spark", "Gemini Prompt")}
-        ${item("/admin/users", "users", "users", "帳號管理")}
+        ${item("/admin/users", "users", "users", "人員管理")}
       </div>
     </nav>
     <div class="sf-sidebar-foot" id="sfSidebarFoot"></div>
@@ -6149,7 +6146,7 @@ function createAdminRouter() {
         </div>
         <div class="order-detail-layout">
         <aside class="order-detail-raw-col" aria-label="原始訂單對照" style="flex:0 0 min(320px, 32vw);max-width:360px;">
-          <div class="sf-card raw-message-scroll" id="rawOrderBlock">
+          <div class="sf-card raw-message-scroll" id="rawOrderBlock" style="position:sticky;top:12px;max-height:calc(100vh - 24px);overflow-y:auto;">
             <div class="sf-card-head">
               <div class="sf-card-title">📨 原始訂單</div>
               <button type="button" class="sf-btn sm" id="pasteRawToggleBtn" aria-expanded="false" aria-controls="pasteRaw">補登／修正</button>
