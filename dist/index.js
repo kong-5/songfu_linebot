@@ -121,6 +121,14 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         adminRouter.use((_req, res) => res.status(503).type("html").send(dbDownHtml));
     }
     app.use("/admin", adminRouter);
+    // LIFF 路由（員工綁定等內部 LIFF 頁面 + API）
+    try {
+        const liff_index_js_1 = require("./liff/index.js");
+        app.use("/liff", liff_index_js_1.createLiffRouter());
+        console.log("[startup] LIFF 路由已掛載 /liff");
+    } catch (e) {
+        console.error("[startup] LIFF 路由建立失敗:", e?.message || e);
+    }
     // 公開圖片端點：給 LINE 抓取群發圖片（無需 cookie）
     app.get("/broadcast-img/:id/:token", async (req, res) => {
         try {

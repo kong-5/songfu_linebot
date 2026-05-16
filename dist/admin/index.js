@@ -62,6 +62,7 @@ const gemini_prompt_resolve_js_1 = require("../lib/gemini-prompt-resolve.js");
 const gemini_eval_harness_js_1 = require("../lib/gemini-eval-harness.js");
 const unit_spec_learn_js_1 = require("../lib/unit-spec-learn.js");
 const customer_profile_js_1 = require("../lib/customer-profile.js");
+const liff_bind_token_js_1 = require("../lib/liff-bind-token.js");
 const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
 const daily_summary_push_js_1 = require("../lib/daily-summary-push.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
@@ -1946,23 +1947,38 @@ function createAdminRouter() {
         const titleOptsAll = ADMIN_TITLES.map(t => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join("");
         const bindOkCode = typeof req.query.bind_code === "string" ? req.query.bind_code.trim() : "";
         const bindOkUser = typeof req.query.bind_user === "string" ? req.query.bind_user.trim() : "";
-        const bindMsg = bindOkCode && bindOkUser
+        const bindOkLink = typeof req.query.bind_link === "string" ? req.query.bind_link.trim() : "";
+        const bindMsg = bindOkLink && bindOkUser
+            ? `<div class="sf-card" style="border-left:3px solid var(--accent);margin-bottom:16px;padding:14px 18px;">
+                <div style="font-size:13px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">LIFF 員工綁定連結</div>
+                <div style="font-size:14px;margin-bottom:10px;">已為 <strong>${escapeHtml(bindOkUser)}</strong> 產生綁定連結（30 分鐘內有效）：</div>
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+                  <input id="liff-bind-url" type="text" readonly value="${escapeAttr(bindOkLink)}" style="flex:1;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;">
+                  <button type="button" class="sf-btn sm" onclick="navigator.clipboard.writeText(document.getElementById('liff-bind-url').value).then(()=>{this.textContent='已複製';setTimeout(()=>this.textContent='複製',1500);})">複製</button>
+                </div>
+                <div style="font-size:12px;color:var(--txt-2);line-height:1.6;">請將此連結 LINE 給該員工。員工在 LINE 中點開連結 → 確認身份 → 按「綁定」即完成。一次性使用。</div>
+              </div>`
+            : (bindOkCode && bindOkUser
             ? `<div class="sf-card" style="border-left:3px solid var(--accent);margin-bottom:16px;padding:14px 18px;">
                 <div style="font-size:13px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">員工 LINE 綁定碼</div>
                 <div style="font-size:14px;margin-bottom:10px;">已為 <strong>${escapeHtml(bindOkUser)}</strong> 產生綁定碼（10 分鐘內有效）：</div>
                 <div class="mono" style="font-size:32px;font-weight:700;letter-spacing:6px;color:var(--accent);margin-bottom:10px;">${escapeHtml(bindOkCode)}</div>
                 <div style="font-size:12px;color:var(--txt-2);line-height:1.6;">請該員工在 LINE 私訊本 Bot 傳送：<br><code style="background:var(--bg-3);padding:2px 8px;border-radius:3px;">綁定 ${escapeHtml(bindOkCode)}</code><br>送出後其 LINE userId 會自動綁到此帳號，之後該員工在客戶群內傳訊息將跳過 AI 解析（僅記錄稽核軌跡）。</div>
               </div>`
-            : "";
+            : "");
+        const liffEmployeeBindReady = Boolean((process.env.LIFF_ID_EMPLOYEE_BIND || "").trim() && (process.env.LINE_LOGIN_CHANNEL_ID || "").trim());
         // 員工 LINE 綁定列（僅啟用中帳號）
         const bindingRows = activeList.map(u => {
             const lu = u.lineUserId;
             const bound = !!lu;
             const luShort = lu ? `<code class="mono" style="font-size:11px;color:var(--txt-2);" title="${escapeAttr(lu)}">${escapeHtml(lu.slice(0,6))}…${escapeHtml(lu.slice(-4))}</code>` : "—";
             const boundAt = u.lineBoundAt ? `<span style="font-size:11px;color:var(--txt-3);">${escapeHtml(String(u.lineBoundAt).slice(0,16).replace("T"," "))}</span>` : "";
+            const liffBtn = liffEmployeeBindReady
+                ? `<form method="post" action="/admin/users/line-bind-link" style="display:inline;margin-right:4px;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="sf-btn sm primary" title="產生一次性 LIFF 綁定連結（30 分鐘有效）">LIFF 連結</button></form>`
+                : `<button type="button" class="sf-btn sm" disabled title="尚未設定 LIFF_ID_EMPLOYEE_BIND / LINE_LOGIN_CHANNEL_ID">LIFF 連結</button>`;
             const btn = bound
                 ? `<form method="post" action="/admin/users/line-unbind" style="display:inline;" onsubmit="return confirm('確定解除 ${escapeAttr(u.username)} 的 LINE 綁定？');"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="sf-btn sm danger">解綁</button></form>`
-                : `<form method="post" action="/admin/users/line-bind-code" style="display:inline;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="sf-btn sm">產生綁定碼</button></form>`;
+                : `${liffBtn}<form method="post" action="/admin/users/line-bind-code" style="display:inline;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="sf-btn sm" title="舊式：產生 6 位數綁定碼，員工私訊 Bot 輸入完成綁定">6 位碼</button></form>`;
             return `<tr>
               <td>${escapeHtml(u.name || u.username)} <span class="sf-pill">${escapeHtml(u.title)}</span></td>
               <td><code>${escapeHtml(u.username)}</code></td>
@@ -2250,6 +2266,37 @@ function createAdminRouter() {
         }
         await saveAdminUsers(next);
         res.redirect("/admin/users?ok=del");
+    });
+    router.post("/users/line-bind-link", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
+        const username = String(req.body?.username || "").trim();
+        if (!username) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        const users = await loadAdminUsers();
+        if (!users.find(u => u.username === username)) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        const liffId = (process.env.LIFF_ID_EMPLOYEE_BIND || "").trim();
+        if (!liffId) {
+            res.redirect("/admin/users?err=" + encodeURIComponent("尚未設定 LIFF_ID_EMPLOYEE_BIND"));
+            return;
+        }
+        try {
+            const out = await (0, liff_bind_token_js_1.issueLiffBindToken)(db, username);
+            // LIFF 永久短網址：https://liff.line.me/<liffId>?t=<token>
+            const link = `https://liff.line.me/${encodeURIComponent(liffId)}?t=${encodeURIComponent(out.token)}`;
+            await logDataChange(req, {
+                entityType: "employee_line_binding",
+                entityId: username,
+                action: "generate_liff_link",
+                summary: `為員工 ${username} 產生 LIFF 綁定連結（30 分鐘有效）`,
+            });
+            res.redirect(`/admin/users?bind_link=${encodeURIComponent(link)}&bind_user=${encodeURIComponent(username)}`);
+        } catch (e) {
+            res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "綁定連結產生失敗"));
+        }
     });
     router.post("/users/line-bind-code", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
         const username = String(req.body?.username || "").trim();
@@ -2950,7 +2997,98 @@ function createAdminRouter() {
               <a href="/admin/logistics/market" class="sf-btn sm">系統整理版</a>
             </div>
           </div>
-        </div>`;
+          <div class="sf-card" id="cost-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.spark} 費用概覽</div>
+              <span class="sf-card-sub">
+                <button type="button" id="cost-refresh-btn" class="sf-btn sm" style="margin-right:8px;">重新整理</button>
+                <span class="mono" id="cost-updated" style="font-size:11px;color:var(--txt-3);">載入中…</span>
+              </span>
+            </div>
+            <div style="padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+              <div id="cost-line" style="border:1px solid var(--line);border-radius:var(--radius);padding:14px;background:var(--bg-1);">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+                  <strong style="font-size:13px;">LINE 訊息額度（本月）</strong>
+                  <span class="mono" id="cost-line-status" style="font-size:11px;color:var(--txt-3);">—</span>
+                </div>
+                <div id="cost-line-body" style="min-height:96px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;">載入中…</div>
+                <div style="margin-top:8px;font-size:11px;color:var(--txt-3);">含 broadcast / push / multicast；reply 不計費</div>
+              </div>
+              <div id="cost-gemini" style="border:1px solid var(--line);border-radius:var(--radius);padding:14px;background:var(--bg-1);">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+                  <strong style="font-size:13px;">Gemini 用量（估算）</strong>
+                  <a href="/admin/recognition-stats" class="mono" style="font-size:11px;">辨識成效 →</a>
+                </div>
+                <div id="cost-gemini-body" style="min-height:96px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;">載入中…</div>
+                <div style="margin-top:8px;font-size:11px;color:var(--txt-3);">以 Google 公告單價計算，實際以 GCP 帳單為準</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <script>
+        (function(){
+          const $ = (s) => document.querySelector(s);
+          const fmtInt = (n) => Number(n||0).toLocaleString();
+          const fmtUsd = (n) => "US$" + (Number(n||0)).toFixed(4);
+          function renderLine(line){
+            const box = $("#cost-line-body");
+            const status = $("#cost-line-status");
+            if (!line || !line.ok) {
+              status.textContent = "未連線";
+              box.innerHTML = '<span style="color:var(--warn);">' + (line && line.error ? line.error : "無法取得 LINE 額度") + '</span>';
+              return;
+            }
+            if (line.unlimited) {
+              status.textContent = "無上限方案";
+              box.innerHTML = '<div style="text-align:center;"><div style="font-size:28px;font-weight:600;font-family:var(--mono,monospace);">' + fmtInt(line.used) + '</div><div style="font-size:12px;color:var(--txt-2);">本月已送出（無上限）</div></div>';
+              return;
+            }
+            const pct = Math.min(100, Math.max(0, Number(line.percent)||0));
+            const color = pct > 90 ? "var(--bad)" : pct > 70 ? "var(--warn)" : "var(--ok)";
+            status.textContent = pct + "% 已用";
+            box.innerHTML =
+              '<div style="width:100%;">' +
+                '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px;"><span>已用 <strong class="mono">' + fmtInt(line.used) + '</strong></span><span>剩餘 <strong class="mono" style="color:' + color + ';">' + fmtInt(line.remaining) + '</strong> / ' + fmtInt(line.quota) + '</span></div>' +
+                '<div style="height:10px;background:var(--bg-2);border-radius:5px;overflow:hidden;border:1px solid var(--line);"><div style="height:100%;width:' + pct + '%;background:' + color + ';"></div></div>' +
+              '</div>';
+          }
+          function renderGemini(g){
+            const box = $("#cost-gemini-body");
+            if (!g || !g.ok) {
+              box.innerHTML = '<span style="color:var(--warn);">' + (g && g.error ? g.error : "無法統計 Gemini 用量") + '</span>';
+              return;
+            }
+            const t = g.today || { calls:0, tokens:0, usd:0 };
+            const m = g.month || { calls:0, tokens:0, usd:0, byModel:[] };
+            const modelRows = (m.byModel||[]).map(r =>
+              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--txt-2);padding:2px 0;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;">' + r.model + '</span><span class="mono">' + fmtInt(r.in + r.out) + ' tok · ' + fmtUsd(r.usd) + '</span></div>'
+            ).join("");
+            box.innerHTML =
+              '<div style="width:100%;">' +
+                '<div style="display:flex;gap:12px;justify-content:space-around;text-align:center;margin-bottom:10px;">' +
+                  '<div><div style="font-size:11px;color:var(--txt-3);">今日</div><div class="mono" style="font-size:18px;font-weight:600;">' + fmtUsd(t.usd) + '</div><div style="font-size:11px;color:var(--txt-2);">' + fmtInt(t.tokens) + ' tok · ' + fmtInt(t.calls) + ' 次</div></div>' +
+                  '<div style="border-left:1px solid var(--line);"></div>' +
+                  '<div><div style="font-size:11px;color:var(--txt-3);">本月</div><div class="mono" style="font-size:18px;font-weight:600;">' + fmtUsd(m.usd) + '</div><div style="font-size:11px;color:var(--txt-2);">' + fmtInt(m.tokens) + ' tok · ' + fmtInt(m.calls) + ' 次</div></div>' +
+                '</div>' +
+                (modelRows ? '<div style="border-top:1px dashed var(--line);padding-top:6px;">' + modelRows + '</div>' : '') +
+              '</div>';
+          }
+          async function loadCost(){
+            try {
+              const r = await fetch("/admin/api/cost-summary", { credentials: "same-origin" });
+              const j = await r.json();
+              renderLine(j.line);
+              renderGemini(j.gemini);
+              const t = j.generatedAt ? new Date(j.generatedAt) : new Date();
+              $("#cost-updated").textContent = "更新於 " + t.toLocaleTimeString("zh-TW", { hour12: false });
+            } catch (e) {
+              $("#cost-updated").textContent = "讀取失敗";
+            }
+          }
+          document.getElementById("cost-refresh-btn").addEventListener("click", loadCost);
+          loadCost();
+        })();
+        </script>`;
         res.type("text/html").send(notionPage("儀表板", body, "dashboard", res));
     });
     // === 行事曆事件 API ===
@@ -2994,6 +3132,100 @@ function createAdminRouter() {
             res.json({ ok: true });
         } catch (e) {
             res.status(500).json({ ok: false, error: e?.message || "刪除失敗" });
+        }
+    });
+    // === 費用概覽 API（LINE 訊息額度 + Gemini token 估算） ===
+    // 註：Gemini 單價依 Google 公告（per 1M tokens, USD），與 GCP 帳單可能略有差異；
+    //     LINE quota: -1 / type=none 代表無上限方案。
+    const GEMINI_PRICE_PER_M = {
+        "gemini-2.5-flash":      { in: 0.30,  out: 2.50 },
+        "gemini-2.5-flash-lite": { in: 0.10,  out: 0.40 },
+        "gemini-2.5-pro":        { in: 1.25,  out: 10.00 },
+        "gemini-2.0-flash":      { in: 0.10,  out: 0.40 },
+        "gemini-2.0-flash-lite": { in: 0.075, out: 0.30 },
+        "gemini-1.5-flash":      { in: 0.075, out: 0.30 },
+        "gemini-1.5-pro":        { in: 1.25,  out: 5.00 },
+    };
+    const GEMINI_PRICE_DEFAULT = { in: 0.30, out: 2.50 };
+    function priceForModel(name) {
+        const k = String(name || "").toLowerCase().trim();
+        if (!k) return GEMINI_PRICE_DEFAULT;
+        if (GEMINI_PRICE_PER_M[k]) return GEMINI_PRICE_PER_M[k];
+        // 容錯：含關鍵字就比對最相近的
+        for (const key of Object.keys(GEMINI_PRICE_PER_M)) {
+            if (k.startsWith(key)) return GEMINI_PRICE_PER_M[key];
+        }
+        return GEMINI_PRICE_DEFAULT;
+    }
+    async function fetchLineQuota() {
+        const token = (process.env.LINE_CHANNEL_ACCESS_TOKEN || "").trim();
+        if (!token) return { ok: false, error: "未設定 LINE_CHANNEL_ACCESS_TOKEN" };
+        try {
+            const headers = { Authorization: `Bearer ${token}` };
+            const [qr, cr] = await Promise.all([
+                fetch("https://api.line.me/v2/bot/message/quota", { headers }),
+                fetch("https://api.line.me/v2/bot/message/quota/consumption", { headers }),
+            ]);
+            if (!qr.ok) return { ok: false, error: `quota HTTP ${qr.status}` };
+            if (!cr.ok) return { ok: false, error: `consumption HTTP ${cr.status}` };
+            const q = await qr.json();
+            const c = await cr.json();
+            const type = String(q?.type || "");
+            const value = Number(q?.value ?? -1);
+            const used = Number(c?.totalUsage ?? 0);
+            const unlimited = type === "none" || value < 0;
+            return {
+                ok: true,
+                type,
+                unlimited,
+                quota: unlimited ? null : value,
+                used,
+                remaining: unlimited ? null : Math.max(0, value - used),
+                percent: unlimited ? null : (value > 0 ? Math.round((used / value) * 1000) / 10 : 0),
+            };
+        } catch (e) {
+            return { ok: false, error: String(e?.message || e).slice(0, 200) };
+        }
+    }
+    async function aggregateGeminiUsage() {
+        const isPg = Boolean(process.env.DATABASE_URL);
+        const todaySql = isPg
+            ? "SELECT model_name, SUM(COALESCE(prompt_tokens,0)) AS pin, SUM(COALESCE(candidates_tokens,0)) AS pout, COUNT(*) AS n FROM gemini_usage_log WHERE (created_at AT TIME ZONE 'Asia/Taipei')::date = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date GROUP BY model_name"
+            : "SELECT model_name, SUM(COALESCE(prompt_tokens,0)) AS pin, SUM(COALESCE(candidates_tokens,0)) AS pout, COUNT(*) AS n FROM gemini_usage_log WHERE date(datetime(created_at, '+8 hours')) = date(datetime('now', '+8 hours')) GROUP BY model_name";
+        const monthSql = isPg
+            ? "SELECT model_name, SUM(COALESCE(prompt_tokens,0)) AS pin, SUM(COALESCE(candidates_tokens,0)) AS pout, COUNT(*) AS n FROM gemini_usage_log WHERE to_char((created_at AT TIME ZONE 'Asia/Taipei')::date, 'YYYY-MM') = to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date, 'YYYY-MM') GROUP BY model_name"
+            : "SELECT model_name, SUM(COALESCE(prompt_tokens,0)) AS pin, SUM(COALESCE(candidates_tokens,0)) AS pout, COUNT(*) AS n FROM gemini_usage_log WHERE strftime('%Y-%m', datetime(created_at, '+8 hours')) = strftime('%Y-%m', datetime('now', '+8 hours')) GROUP BY model_name";
+        function summarize(rows) {
+            const byModel = [];
+            let calls = 0, tokens = 0, usd = 0;
+            for (const r of (rows || [])) {
+                const pin = Number(r.pin) || 0;
+                const pout = Number(r.pout) || 0;
+                const p = priceForModel(r.model_name);
+                const cost = (pin / 1_000_000) * p.in + (pout / 1_000_000) * p.out;
+                byModel.push({ model: r.model_name || "(unknown)", calls: Number(r.n) || 0, in: pin, out: pout, usd: Math.round(cost * 10000) / 10000 });
+                calls += Number(r.n) || 0;
+                tokens += pin + pout;
+                usd += cost;
+            }
+            return { calls, tokens, usd: Math.round(usd * 10000) / 10000, byModel };
+        }
+        try {
+            const [todayRows, monthRows] = await Promise.all([
+                db.prepare(todaySql).all(),
+                db.prepare(monthSql).all(),
+            ]);
+            return { ok: true, today: summarize(todayRows), month: summarize(monthRows) };
+        } catch (e) {
+            return { ok: false, error: String(e?.message || e).slice(0, 200) };
+        }
+    }
+    router.get("/api/cost-summary", async (_req, res) => {
+        try {
+            const [line, gemini] = await Promise.all([fetchLineQuota(), aggregateGeminiUsage()]);
+            res.json({ ok: true, line, gemini, generatedAt: new Date().toISOString() });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
         }
     });
     router.get("/audit", async (req, res) => {
