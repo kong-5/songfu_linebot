@@ -1929,51 +1929,123 @@ function createAdminRouter() {
             logs = await db.prepare("SELECT event_type, detail, created_at FROM line_bot_state_log ORDER BY created_at DESC LIMIT 80").all();
         }
         catch (_) { }
-        const statusBadge = accepting
-            ? `<span style="display:inline-block;padding:4px 10px;border-radius:6px;background:#e6f7e6;color:#0a5;font-weight:600;">目前狀態：可收單（機器人會解析叫貨／可跑 AI）</span>`
-            : `<span style="display:inline-block;padding:4px 10px;border-radius:6px;background:#ffeaea;color:#a00;font-weight:600;">目前狀態：休眠（不呼叫 Gemini／不 OCR／不寫訂單；群組內僅「取得群組ID」仍會回覆）</span>`;
-        const suppressBadge = s.suppressCustomerReply
-            ? `<p style="margin-top:10px;"><span style="display:inline-block;padding:4px 10px;border-radius:6px;background:#fff7e6;color:#a60;font-weight:600;">對客戶訊息：靜音中（仍照常收單寫庫；不發一般回覆與 30 秒結單推播；「取得群組ID」「群組ID」仍會回覆）</span></p>`
-            : "";
         const modeOpts = [
             { v: "always_on", l: "一律開啟（測試／全天候）" },
             { v: "always_off", l: "一律關閉（不回覆叫貨）" },
             { v: "scheduled", l: "依下方時段（台北時間）" },
-        ].map((o) => `<label style="display:block;margin:6px 0;"><input type="radio" name="line_bot_mode" value="${escapeAttr(o.v)}" ${s.mode === o.v ? "checked" : ""}> ${escapeHtml(o.l)}</label>`).join("");
+        ].map((o) => `<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:var(--hairline);border-radius:var(--radius);margin-bottom:6px;cursor:pointer;${s.mode === o.v ? "background:var(--accent-soft);border-color:var(--accent-line);" : ""}"><input type="radio" name="line_bot_mode" value="${escapeAttr(o.v)}" ${s.mode === o.v ? "checked" : ""}> <span style="font-size:13px;">${escapeHtml(o.l)}</span></label>`).join("");
         const logRows = logs.length
-            ? logs.map((r) => `<tr><td style="white-space:nowrap;font-size:12px;">${escapeHtml(r.created_at || "")}</td><td>${escapeHtml(r.event_type || "")}</td><td style="font-size:12px;word-break:break-all;">${escapeHtml((r.detail || "").slice(0, 200))}</td></tr>`).join("")
-            : "<tr><td colspan='3'>尚無紀錄</td></tr>";
+            ? logs.map((r) => `<tr><td class="mono" style="white-space:nowrap;font-size:11px;color:var(--txt-3);">${escapeHtml(r.created_at || "")}</td><td><span class="sf-pill">${escapeHtml(r.event_type || "")}</span></td><td style="font-size:12px;color:var(--txt-2);word-break:break-all;">${escapeHtml((r.detail || "").slice(0, 200))}</td></tr>`).join("")
+            : `<tr><td colspan='3' style="padding:24px;text-align:center;color:var(--txt-3);">尚無紀錄</td></tr>`;
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / LINE 機器人</div>
-        <h1 class="notion-page-title">LINE 機器人：啟動與排程</h1>
-        ${_req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存設定。</p>" : ""}
-        <p>${statusBadge}</p>
-        ${suppressBadge}
-        <div class="notion-card">
-          <h2 style="margin-top:0;">運作模式</h2>
-          <form method="post" action="/admin/line-bot">
-            ${modeOpts}
-            <p class="notion-hint" style="margin-top:12px;"><strong>排程時段（台北時間）</strong>　僅在選「依下方時段」時生效：此時段<strong>內</strong>為可收單；<strong>時段外</strong>機器人休眠（不產生 Gemini／圖片 OCR 等費用）。預設範例：18:00～隔日 03:00（日間上班時間休眠）。</p>
-            <label>開始 <input type="time" name="line_bot_window_start" value="${escapeAttr(s.windowStart)}"></label>
-            　<label>結束 <input type="time" name="line_bot_window_end" value="${escapeAttr(s.windowEnd)}"></label>
-            <p class="notion-hint" style="margin-top:16px;"><label style="margin:0;font-weight:400;"><input type="checkbox" name="line_bot_ai_gate" value="1" ${s.aiGate ? "checked" : ""}> 啟用 AI 過濾（僅對「非收單關鍵字」的閒聊不回覆；需設定 GOOGLE_GEMINI_API_KEY）</label></p>
-            <p class="notion-hint" style="margin-top:12px;"><label style="margin:0;font-weight:400;"><input type="checkbox" name="line_bot_suppress_reply" value="1" ${s.suppressCustomerReply ? "checked" : ""}> <strong>對客戶訊息靜音</strong>：仍照常收單並寫入訂單；僅不向群組發送一般回覆與 30 秒結單推播。群組內傳「取得群組ID」或「群組ID」仍會回覆（供綁定）。</label></p>
-            <p class="notion-hint">若從未在此儲存過本項，可沿用伺服器環境變數 <code>LINE_SUPPRESS_LINE_REPLIES</code>；儲存後以本頁勾選為準。</p>
-            <hr style="margin:16px 0;border:none;border-top:1px solid var(--notion-border);">
-            <p class="notion-hint" style="margin-top:6px;"><label style="margin:0;font-weight:400;"><input type="checkbox" name="line_order_confirm_reply_enabled" value="1" ${s.orderConfirmReplyEnabled ? "checked" : ""}> <strong>啟用「訂單編號確認回覆」</strong>：客戶最後一則訊息後，若 N 秒內無新訊息，自動回覆「感謝您的下訂，訂單已成立，訂單編號：XXX」。預設關閉。</label></p>
-            <p class="notion-hint" style="margin-top:4px;">延遲秒數 <input type="number" name="line_order_confirm_reply_delay_sec" min="30" max="3600" step="10" value="${escapeAttr(String(s.orderConfirmReplyDelaySec || 600))}" style="width:90px;">（範圍 30 ~ 3600 秒；預設 600 秒 = 10 分鐘。建議拉長以避免客戶還在補品項時就誤發回覆。）</p>
-            <hr style="margin:16px 0;border:none;border-top:1px solid var(--notion-border);">
-            <p class="notion-hint" style="margin-top:6px;"><label style="margin:0;font-weight:400;"><input type="checkbox" name="daily_summary_push_enabled" value="1" ${dailySummaryEnabled ? "checked" : ""}> <strong>啟用「每日訂單摘要推播」（內稽用）</strong>：每日於指定時刻自動推送 Flex Message 給每個客戶 LINE 群組，列出當日所有訂單品項。客戶有錯誤可立刻回覆。預設關閉。</label></p>
-            <p class="notion-hint" style="margin-top:4px;">推送時刻 <select name="daily_summary_push_hour" style="padding:2px 6px;">${Array.from({length:24},(_,h)=>`<option value="${h}" ${h===dailySummaryHour?"selected":""}>${String(h).padStart(2,"0")}:00</option>`).join("")}</select>（台北時間。預設 22:00；推送會避開已作廢訂單）　<a href="/admin/daily-summary-test" style="font-size:12px;margin-left:8px;">→ 手動測試推播</a></p>
-            <p class="notion-hint">測試階段建議選「一律開啟」，確認無誤後再改「依時段」。AI 過濾建議先關閉，避免誤擋。</p>
-            <p><button type="submit" class="btn btn-primary">儲存設定</button></p>
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+          <div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">設定 / LINE 機器人</div>
+            <h1 style="margin:0;font-size:22px;font-weight:600;">LINE 機器人：啟動與排程</h1>
+          </div>
+          ${_req.query.ok === "1" ? `<div class="sf-pill ok" style="align-self:flex-start;">已儲存設定</div>` : ""}
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <div class="sf-kpi ${accepting ? "status-ok" : "status-bad"}" style="max-width:380px;">
+              <div class="sf-kpi-head">
+                <span class="sf-kpi-label">目前狀態</span>
+                <span class="sf-dot ${accepting ? "ok" : "bad"}"></span>
+              </div>
+              <div style="font-size:14px;color:var(--txt-1);font-weight:500;margin-top:4px;">${accepting ? "可收單" : "休眠中"}</div>
+              <div style="font-size:11px;color:var(--txt-3);margin-top:4px;">${accepting ? "機器人會解析叫貨／可跑 AI" : "不呼叫 Gemini／不 OCR／不寫訂單"}</div>
+            </div>
+            ${s.suppressCustomerReply ? `<div class="sf-kpi status-warn" style="max-width:380px;">
+              <div class="sf-kpi-head"><span class="sf-kpi-label">對客戶回覆</span><span class="sf-dot warn"></span></div>
+              <div style="font-size:14px;color:var(--txt-1);font-weight:500;margin-top:4px;">靜音中</div>
+              <div style="font-size:11px;color:var(--txt-3);margin-top:4px;">仍照常寫庫；只是不向群組發回覆</div>
+            </div>` : ""}
+          </div>
+          <form method="post" action="/admin/line-bot" style="display:flex;flex-direction:column;gap:16px;">
+            <div class="sf-card">
+              <div class="sf-card-head">
+                <div class="sf-card-title">${SF_ICONS.spark} 運作模式</div>
+              </div>
+              <div style="padding:16px 18px;">
+                ${modeOpts}
+                <div style="margin-top:14px;padding-top:14px;border-top:var(--hairline);">
+                  <label class="sf-label">排程時段（台北時間）</label>
+                  <p style="margin:0 0 10px;font-size:12px;color:var(--txt-3);line-height:1.5;">僅在選「依下方時段」時生效。時段內可收單，時段外休眠（不產生 Gemini／OCR 費用）。建議範例：18:00～03:00（日間上班時間休眠）。</p>
+                  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt-2);">開始 <input class="sf-input" type="time" name="line_bot_window_start" value="${escapeAttr(s.windowStart)}" style="width:120px;height:32px;"></label>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt-2);">結束 <input class="sf-input" type="time" name="line_bot_window_end" value="${escapeAttr(s.windowEnd)}" style="width:120px;height:32px;"></label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="sf-card">
+              <div class="sf-card-head">
+                <div class="sf-card-title">${SF_ICONS.bell} 回覆與靜音</div>
+              </div>
+              <div style="padding:16px 18px;display:flex;flex-direction:column;gap:14px;">
+                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+                  <input type="checkbox" name="line_bot_ai_gate" value="1" ${s.aiGate ? "checked" : ""} style="margin-top:3px;">
+                  <span><strong style="color:var(--txt-1);">啟用 AI 過濾</strong><br><span style="font-size:12px;color:var(--txt-3);">僅對「非收單關鍵字」的閒聊不回覆。需設定 GOOGLE_GEMINI_API_KEY。</span></span>
+                </label>
+                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+                  <input type="checkbox" name="line_bot_suppress_reply" value="1" ${s.suppressCustomerReply ? "checked" : ""} style="margin-top:3px;">
+                  <span><strong style="color:var(--txt-1);">對客戶訊息靜音</strong><br><span style="font-size:12px;color:var(--txt-3);">仍照常收單並寫入訂單；僅不向群組發送一般回覆與 30 秒結單推播。「取得群組ID」「群組ID」仍會回覆（供綁定）。</span></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="sf-card">
+              <div class="sf-card-head">
+                <div class="sf-card-title">${SF_ICONS.check} 訂單編號自動確認回覆</div>
+              </div>
+              <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px;">
+                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+                  <input type="checkbox" name="line_order_confirm_reply_enabled" value="1" ${s.orderConfirmReplyEnabled ? "checked" : ""} style="margin-top:3px;">
+                  <span><strong style="color:var(--txt-1);">啟用</strong><br><span style="font-size:12px;color:var(--txt-3);">客戶最後一則訊息後若 N 秒內無新訊息，自動回覆「感謝您的下訂，訂單已成立，訂單編號：XXX」。預設關閉。</span></span>
+                </label>
+                <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt-2);">
+                  延遲秒數 <input class="sf-input" type="number" name="line_order_confirm_reply_delay_sec" min="30" max="3600" step="10" value="${escapeAttr(String(s.orderConfirmReplyDelaySec || 600))}" style="width:110px;height:32px;">
+                  <span style="font-size:11px;color:var(--txt-3);">30 ~ 3600 秒；預設 600 秒（10 分鐘）。建議拉長避免客戶還在補品項時誤觸發。</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="sf-card">
+              <div class="sf-card-head">
+                <div class="sf-card-title">${SF_ICONS.bell} 每日訂單摘要推播（內稽用）</div>
+              </div>
+              <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px;">
+                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+                  <input type="checkbox" name="daily_summary_push_enabled" value="1" ${dailySummaryEnabled ? "checked" : ""} style="margin-top:3px;">
+                  <span><strong style="color:var(--txt-1);">啟用</strong><br><span style="font-size:12px;color:var(--txt-3);">每日於指定時刻自動推送 Flex Message 給每個客戶 LINE 群組，列出當日所有訂單品項。客戶有錯誤可立刻回覆。預設關閉。</span></span>
+                </label>
+                <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt-2);flex-wrap:wrap;">
+                  推送時刻
+                  <select class="sf-select" name="daily_summary_push_hour" style="width:120px;height:32px;">${Array.from({length:24},(_,h)=>`<option value="${h}" ${h===dailySummaryHour?"selected":""}>${String(h).padStart(2,"0")}:00</option>`).join("")}</select>
+                  <span style="font-size:11px;color:var(--txt-3);">台北時間；預設 22:00；推送會避開已作廢訂單。</span>
+                  <a href="/admin/daily-summary-test" class="sf-btn sm ghost" style="margin-left:auto;">→ 手動測試推播</a>
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:10px;align-items:center;">
+              <button type="submit" class="sf-btn primary">${SF_ICONS.check}<span>儲存所有設定</span></button>
+              <span style="font-size:12px;color:var(--txt-3);">測試階段建議選「一律開啟」，確認無誤後再改「依時段」。AI 過濾建議先關閉，避免誤擋。</span>
+            </div>
           </form>
-        </div>
-        <div class="notion-card">
-          <h2 style="margin-top:0;">設定與狀態紀錄</h2>
-          <table><thead><tr><th>時間</th><th>類型</th><th>內容</th></tr></thead><tbody>${logRows}</tbody></table>
-        </div>
-      `;
+
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.history} 設定與狀態紀錄</div>
+              <span class="sf-card-sub">最近 80 筆</span>
+            </div>
+            <div class="sf-table-wrap" style="border:0;border-radius:0;">
+              <table class="sf-table">
+                <thead><tr><th style="width:160px;">時間</th><th style="width:160px;">類型</th><th>內容</th></tr></thead>
+                <tbody>${logRows}</tbody>
+              </table>
+            </div>
+          </div>
+        </div>`;
         res.type("text/html").send(notionPage("LINE 機器人", body, "line-bot", res));
     });
     router.post("/line-bot", express_1.default.urlencoded({ extended: true }), async (req, res) => {
@@ -2793,78 +2865,114 @@ function createAdminRouter() {
             .join("");
         const rangeLabel = `${dateFromStr} ～ ${dateToStr}`;
         const fullRangeUrl = `/admin/recognition-stats?date_from=${encodeURIComponent(orderDateMin)}&date_to=${encodeURIComponent(orderDateMax)}`;
-        const filterForm = `
-        <form method="get" action="/admin/recognition-stats" style="margin:0 0 16px;padding:14px 16px;border:1px solid var(--notion-border);border-radius:var(--notion-radius-lg);background:var(--notion-bg);">
-          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
-            <label style="margin:0;font-size:13px;">起日<br><input type="date" name="date_from" value="${escapeAttr(dateFromStr)}" style="margin-top:4px;"></label>
-            <label style="margin:0;font-size:13px;">迄日<br><input type="date" name="date_to" value="${escapeAttr(dateToStr)}" style="margin-top:4px;"></label>
-            <button type="submit" class="btn btn-primary">套用區間</button>
-            <span style="font-size:13px;color:var(--notion-text-muted);align-self:center;">快捷</span>
-            <a href="/admin/recognition-stats?days=30" class="btn">近30日</a>
-            <a href="/admin/recognition-stats?days=90" class="btn">近90日</a>
-            <a href="/admin/recognition-stats?days=365" class="btn">近一年</a>
-            <a href="${escapeAttr(fullRangeUrl)}" class="btn">訂單全期（庫內最早～最晚）</a>
-          </div>
-        </form>`;
-        const gemSummary = gemTotals
-            ? `<p style="margin:0 0 10px;"><strong>本區間合計（${escapeHtml(rangeLabel)}）</strong>：呼叫 ${fmtNum(gemTotals.n)} 次 · 平均延遲 ${fmtMs(gemTotals.avg_lat)} · prompt tokens 約 ${fmtNum(gemTotals.prompt_sum)} · 輸出 tokens 約 ${fmtNum(gemTotals.cand_sum)} · total 約 ${fmtNum(gemTotals.total_tok_sum)}（若 API 未回傳欄位則為 0）</p>`
-            : "<p class=\"notion-hint\" style=\"margin:0 0 10px;\">尚無 Gemini 呼叫紀錄（上線前或區間內無紀錄；部署新版本後成功解析會寫入 <code>gemini_usage_log</code>）。</p>";
-        const custTable = combined.length
-            ? `<table class="notion-table-like" style="width:100%;border-collapse:collapse;font-size:14px;">
-    <thead><tr>
-      <th style="text-align:left;padding:8px;border-bottom:1px solid var(--notion-border);">客戶</th>
-      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">明細筆數<br><span style="font-weight:400;font-size:12px;color:var(--notion-text-muted);">（區間內）</span></th>
-      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">待確認比例</th>
-      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">後台改品項次數</th>
-      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">改品項／明細</th>
-      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">筆跡對照列數</th>
-      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">累積命中</th>
-      <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">Few-Shot</th>
-    </tr></thead>
-    <tbody>
-      ${combined
-                .map((r) => `<tr>
-      <td style="padding:8px;border-bottom:1px solid var(--notion-border);"><a href="/admin/customers/${encodeURIComponent(r.cid)}/edit">${escapeHtml(r.name)}</a></td>
-      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${fmtNum(r.tot)}</td>
-      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${escapeHtml(r.needPct)} <span style="color:var(--notion-text-muted);font-size:12px;">(${fmtNum(r.need)})</span></td>
-      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${fmtNum(r.man)}</td>
-      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${escapeHtml(r.manPct)}</td>
-      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${fmtNum(r.hintRows)}</td>
-      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${fmtNum(r.hitSum)}</td>
-      <td style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">${fmtNum(r.fs)}</td>
-    </tr>`)
-                .join("")}
-    </tbody>
-  </table>`
-            : `<p class="notion-hint">此區間內尚無訂單明細（可改用上方「訂單全期」或調整起迄日）。</p>`;
+        const gemRowsHtmlSf = (gemAgg || []).map(g => `<tr>
+          <td><code class="mono" style="font-size:12px;">${escapeHtml(String(g.call_kind || ""))}</code></td>
+          <td class="mono" style="text-align:right;">${fmtNum(g.n)}</td>
+          <td class="mono" style="text-align:right;">${fmtMs(g.avg_lat)}</td>
+          <td class="mono" style="text-align:right;">${fmtNum(g.prompt_sum)}</td>
+          <td class="mono" style="text-align:right;">${fmtNum(g.cand_sum)}</td>
+          <td class="mono" style="text-align:right;">${fmtNum(g.total_tok_sum)}</td>
+        </tr>`).join("");
+        const custRowsHtmlSf = combined.map(r => `<tr>
+          <td><a href="/admin/customers/${encodeURIComponent(r.cid)}/edit" style="color:var(--txt-1);font-weight:500;">${escapeHtml(r.name)}</a></td>
+          <td class="mono" style="text-align:right;">${fmtNum(r.tot)}</td>
+          <td class="mono" style="text-align:right;color:${(Number(r.need)/Math.max(1,Number(r.tot)))>0.2?"var(--warn)":"var(--txt-1)"};">${escapeHtml(r.needPct)} <span style="color:var(--txt-3);font-size:11px;">(${fmtNum(r.need)})</span></td>
+          <td class="mono" style="text-align:right;">${fmtNum(r.man)}</td>
+          <td class="mono" style="text-align:right;">${escapeHtml(r.manPct)}</td>
+          <td class="mono" style="text-align:right;">${fmtNum(r.hintRows)}</td>
+          <td class="mono" style="text-align:right;color:${r.hitSum>30?"var(--ok)":r.hitSum>10?"var(--warn)":"var(--txt-3)"};">${fmtNum(r.hitSum)}</td>
+          <td class="mono" style="text-align:right;">${fmtNum(r.fs)}</td>
+        </tr>`).join("");
+        const kpiTotal = gemTotals ? Number(gemTotals.n) || 0 : 0;
+        const kpiAvgLat = gemTotals ? gemTotals.avg_lat : null;
+        const totalTokens = gemTotals ? Number(gemTotals.total_tok_sum) || 0 : 0;
+        const statCard = (label, num, sub, status) => `
+          <div style="padding:14px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);${status?`border-left:3px solid var(--${status});padding-left:14px;`:""}flex:1;min-width:160px;">
+            <div style="font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;">${label}</div>
+            <div class="mono" style="font-size:22px;font-weight:600;letter-spacing:-0.02em;">${num}</div>
+            ${sub?`<div style="font-size:11px;color:var(--txt-3);margin-top:4px;">${sub}</div>`:""}
+          </div>`;
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 辨識成效儀表</div>
-        <h1 class="notion-page-title">辨識成效儀表</h1>
-        ${filterForm}
-        <p class="notion-hint" style="margin-top:0;">目前統計區間：<strong>${escapeHtml(rangeLabel)}</strong>。訂單／待確認：依 <code>order_date</code>；後台改品項：依 <code>data_change_log</code> 紀錄日；Gemini：依 <code>gemini_usage_log</code> 紀錄日——<strong>過去訂單與（有留下的）日誌都會納入</strong>。Gemini 為事後才啟用者，早期區間可能為 0。筆跡對照／Few-Shot 兩欄為<strong>目前資料庫累積</strong>（不按上方日期篩選）。「累積命中」為 <code>hit_count</code> 加總。</p>
-        <div class="notion-card">
-          <h2 style="margin-top:0;">Gemini 呼叫（全站・區間內）</h2>
-          ${gemSummary}
-          <table style="width:100%;border-collapse:collapse;font-size:14px;">
-            <thead><tr>
-              <th style="text-align:left;padding:8px;border-bottom:1px solid var(--notion-border);">類型</th>
-              <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">次數</th>
-              <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">平均延遲</th>
-              <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">prompt tokens</th>
-              <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">輸出 tokens</th>
-              <th style="text-align:right;padding:8px;border-bottom:1px solid var(--notion-border);">total tokens</th>
-            </tr></thead>
-            <tbody>
-              ${gemRowsHtml || "<tr><td colspan=\"6\" class=\"notion-hint\">尚無資料</td></tr>"}
-            </tbody>
-          </table>
-          <p class="notion-hint" style="margin-bottom:0;">類型：<code>text</code> 純文字叫貨 · <code>vision</code> 單圖視覺 · <code>vision_few_shot</code> 多輪 Few-Shot 視覺。每筆紀錄含 <code>prompt_version_id</code>（見 <a href="/admin/gemini-prompts">Gemini Prompt 版本</a>），可比對 A/B。</p>
-        </div>
-        <div class="notion-card">
-          <h2 style="margin-top:0;">依客戶（區間內訂單明細與改品項）</h2>
-          ${custTable}
-        </div>
-      `;
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+          <div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核與報表 / 辨識成效儀表</div>
+            <h1 style="margin:0;font-size:22px;font-weight:600;">辨識成效儀表</h1>
+            <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">統計區間：<strong style="color:var(--txt-1);">${escapeHtml(rangeLabel)}</strong>　訂單／待確認依 <code>order_date</code>；後台改品項依 <code>data_change_log</code> 紀錄日；Gemini 依 <code>gemini_usage_log</code>。筆跡對照／Few-Shot 為目前 DB 累積，不受區間限制。</p>
+          </div>
+
+          <form method="get" action="/admin/recognition-stats" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;padding:14px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);">
+            <div>
+              <label class="sf-label" style="margin-bottom:4px;">起日</label>
+              <input class="sf-input" type="date" name="date_from" value="${escapeAttr(dateFromStr)}" style="width:160px;">
+            </div>
+            <div>
+              <label class="sf-label" style="margin-bottom:4px;">迄日</label>
+              <input class="sf-input" type="date" name="date_to" value="${escapeAttr(dateToStr)}" style="width:160px;">
+            </div>
+            <button type="submit" class="sf-btn primary">${SF_ICONS.search}<span>套用</span></button>
+            <span style="font-size:12px;color:var(--txt-3);align-self:center;margin-left:8px;">快捷</span>
+            <a class="sf-btn sm" href="/admin/recognition-stats?days=30">近 30 日</a>
+            <a class="sf-btn sm" href="/admin/recognition-stats?days=90">近 90 日</a>
+            <a class="sf-btn sm" href="/admin/recognition-stats?days=365">近一年</a>
+            <a class="sf-btn sm" href="${escapeAttr(fullRangeUrl)}">訂單全期</a>
+          </form>
+
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${statCard("Gemini 呼叫", fmtNum(kpiTotal), "區間內全站", "accent")}
+            ${statCard("平均延遲", fmtMs(kpiAvgLat), "API 回應時間", "info")}
+            ${statCard("Total Tokens", fmtNum(totalTokens), "輸入+輸出累計", "ok")}
+            ${statCard("客戶數", combined.length+" 戶", "區間內有叫貨", "info")}
+          </div>
+
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.spark} Gemini 呼叫明細</div>
+              <span class="sf-card-sub">${escapeHtml(rangeLabel)}</span>
+            </div>
+            <div class="sf-table-wrap" style="border:0;border-radius:0;">
+              <table class="sf-table">
+                <thead>
+                  <tr>
+                    <th>類型</th>
+                    <th style="text-align:right;">次數</th>
+                    <th style="text-align:right;">平均延遲</th>
+                    <th style="text-align:right;">Prompt tokens</th>
+                    <th style="text-align:right;">輸出 tokens</th>
+                    <th style="text-align:right;">Total tokens</th>
+                  </tr>
+                </thead>
+                <tbody>${gemRowsHtmlSf || `<tr><td colspan='6' style='padding:24px;text-align:center;color:var(--txt-3);'>本區間無 Gemini 呼叫紀錄</td></tr>`}</tbody>
+              </table>
+            </div>
+            <div style="padding:10px 16px;border-top:var(--hairline);font-size:11px;color:var(--txt-3);">
+              類型：<code>text</code> 純文字叫貨 · <code>vision</code> 單圖視覺 · <code>vision_few_shot</code> 多輪 Few-Shot 視覺。
+            </div>
+          </div>
+
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.users} 依客戶 — 辨識難度與學習資產</div>
+              <span class="sf-card-sub">${combined.length} 戶 · 待確認比例高的排前面</span>
+            </div>
+            <div class="sf-table-wrap" style="border:0;border-radius:0;">
+              <table class="sf-table">
+                <thead>
+                  <tr>
+                    <th>客戶</th>
+                    <th style="text-align:right;">明細筆數</th>
+                    <th style="text-align:right;">待確認比例</th>
+                    <th style="text-align:right;">後台改次數</th>
+                    <th style="text-align:right;">改/明細</th>
+                    <th style="text-align:right;">筆跡列數</th>
+                    <th style="text-align:right;">累積命中</th>
+                    <th style="text-align:right;">Few-Shot</th>
+                  </tr>
+                </thead>
+                <tbody>${custRowsHtmlSf || `<tr><td colspan='8' style='padding:24px;text-align:center;color:var(--txt-3);'>本區間無訂單明細</td></tr>`}</tbody>
+              </table>
+            </div>
+          </div>
+        </div>`;
         res.type("text/html").send(notionPage("辨識成效儀表", body, "recognition-stats", res));
     });
     router.get("/order-eval", requireManager, async (req, res) => {
@@ -6948,39 +7056,78 @@ function createAdminRouter() {
             const max = 320;
             return (one.length > max ? one.slice(0, max) + "…" : one);
         };
+        // 按客戶 group 統計
+        const byCust = new Map();
+        for (const r of rows) {
+            const cn = r.customer_name || "—";
+            if (!byCust.has(cn)) byCust.set(cn, 0);
+            byCust.set(cn, byCust.get(cn) + 1);
+        }
         const tableRows = (rows || [])
             .map((r) => {
             const oid = r.order_id || "";
-            const oidDisp = oid ? `<a href="/admin/orders/${encodeURIComponent(oid)}">${escapeHtml(oid)}</a>` : "—";
-            const created = r.created_at != null ? escapeHtml(String(r.created_at)) : "—";
-            const noteCell = r.note && String(r.note).trim() ? escapeHtml(String(r.note).trim()) : "—";
+            const oidDisp = oid ? `<a href="/admin/orders/${encodeURIComponent(oid)}" class="mono" style="font-size:11px;">${escapeHtml(oid.slice(0,12))}</a>` : `<span style="color:var(--txt-3);">—</span>`;
+            const created = r.created_at != null ? escapeHtml(String(r.created_at).slice(0,16).replace("T"," ")) : "—";
+            const noteCell = r.note && String(r.note).trim() ? escapeHtml(String(r.note).trim()) : `<span style="color:var(--txt-3);">—</span>`;
+            const qs = r.quality_score != null ? Number(r.quality_score) : null;
+            const qsHtml = qs != null
+                ? `<span class="sf-pill ${qs>=80?"ok":qs>=50?"warn":"bad"}" style="font-size:10px;">${qs}</span>`
+                : `<span style="color:var(--txt-3);">—</span>`;
             return `<tr data-example-id="${escapeAttr(r.id)}">
-            <td><code style="font-size:11px;">${escapeHtml(r.id)}</code></td>
-            <td>${escapeHtml(r.customer_name || "—")}</td>
+            <td><code class="mono" style="font-size:11px;color:var(--txt-2);">${escapeHtml(r.id.slice(0,10))}</code></td>
+            <td><span style="font-weight:500;">${escapeHtml(r.customer_name || "—")}</span></td>
             <td>${oidDisp}</td>
-            <td style="white-space:nowrap;font-size:13px;">${created}</td>
-            <td style="text-align:right;">${r.quality_score != null ? escapeHtml(String(r.quality_score)) : "—"}</td>
-            <td style="max-width:min(420px, 50vw);font-size:12px;line-height:1.4;"><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Menlo,monospace;">${escapeHtml(previewParsed(r.parsed_json))}</pre></td>
-            <td style="font-size:11px;color:var(--notion-text-muted);max-width:180px;word-break:break-all;">${escapeHtml(String(r.image_path || "").slice(0, 120))}${String(r.image_path || "").length > 120 ? "…" : ""}</td>
+            <td class="mono" style="font-size:11px;color:var(--txt-3);white-space:nowrap;">${created}</td>
+            <td style="text-align:right;">${qsHtml}</td>
+            <td style="max-width:380px;"><pre style="margin:0;font-size:11px;line-height:1.4;color:var(--txt-2);white-space:pre-wrap;word-break:break-all;font-family:var(--font-mono);max-height:60px;overflow:hidden;">${escapeHtml(previewParsed(r.parsed_json))}</pre></td>
+            <td style="font-size:11px;color:var(--txt-3);max-width:140px;word-break:break-all;">${escapeHtml(String(r.image_path || "").slice(0, 60))}${String(r.image_path || "").length > 60 ? "…" : ""}</td>
             <td style="font-size:12px;">${noteCell}</td>
-            <td><button type="button" class="btn ai-example-del" data-id="${escapeAttr(r.id)}" style="white-space:nowrap;">🗑️ 刪除／停用此範本</button></td>
+            <td><button type="button" class="sf-btn sm danger ai-example-del" data-id="${escapeAttr(r.id)}">${SF_ICONS.x}<span>停用</span></button></td>
           </tr>`;
         })
             .join("");
+        const statCard = (label, num, sub, status) => `
+          <div style="padding:14px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);${status?`border-left:3px solid var(--${status});padding-left:14px;`:""}flex:1;min-width:160px;">
+            <div style="font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;">${label}</div>
+            <div class="mono" style="font-size:22px;font-weight:600;letter-spacing:-0.02em;">${num}</div>
+            ${sub?`<div style="font-size:11px;color:var(--txt-3);margin-top:4px;">${sub}</div>`:""}
+          </div>`;
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / AI 學習庫管理</div>
-        <h1 class="notion-page-title">AI 學習庫管理</h1>
-        <p class="notion-hint" style="margin-top:0;">列出已啟用之客戶訂單圖 Few-Shot 範例（<code>customer_order_image_examples</code>）。停用後將不再供 Gemini 視覺辨識使用，資料仍保留於資料庫。</p>
-        ${okMsg}
-        <div class="notion-card">
-          <div class="table-scroll-mobile">
-          <table style="font-size:13px;">
-            <thead><tr>
-              <th>範本 ID</th><th>客戶</th><th>來源訂單</th><th>建立時間</th><th style="text-align:right;">品質分</th>
-              <th>JSON 明細預覽</th><th>圖片路徑</th><th>備註</th><th></th>
-            </tr></thead>
-            <tbody>${tableRows || "<tr><td colspan=\"9\">尚無啟用中的範例。</td></tr>"}</tbody>
-          </table>
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+          <div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">主檔管理 / AI 學習庫</div>
+            <h1 style="margin:0;font-size:22px;font-weight:600;">AI 學習庫管理</h1>
+            <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">客戶訂單圖 Few-Shot 範例（<code class="mono" style="font-size:11px;">customer_order_image_examples</code>）。每筆範例會在該客戶下次傳訂單圖時，作為示範資料丟給 Gemini Vision，幫助辨識手寫筆跡與品名習慣。停用後資料仍保留，只是不再用於辨識。</p>
+          </div>
+          ${okMsg ? `<div class="sf-pill ok" style="align-self:flex-start;">${okMsg.replace(/<[^>]*>/g,"")}</div>` : ""}
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${statCard("啟用中範例", rows.length, "目前供 AI 辨識使用", "accent")}
+            ${statCard("涵蓋客戶", byCust.size + " 戶", "有 Few-Shot 範例的客戶", "ok")}
+            ${statCard("平均/客戶", (rows.length && byCust.size) ? (rows.length/byCust.size).toFixed(1) : "—", "範例數 / 客戶數", "info")}
+          </div>
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.spark} 全部啟用中的學習範例</div>
+              <span class="sf-card-sub">${rows.length} 筆</span>
+            </div>
+            <div class="sf-table-wrap" style="border:0;border-radius:0;">
+              <table class="sf-table">
+                <thead>
+                  <tr>
+                    <th>範本 ID</th>
+                    <th>客戶</th>
+                    <th>來源訂單</th>
+                    <th>建立時間</th>
+                    <th style="text-align:right;">品質分</th>
+                    <th>JSON 預覽</th>
+                    <th>圖片路徑</th>
+                    <th>備註</th>
+                    <th style="width:90px;"></th>
+                  </tr>
+                </thead>
+                <tbody>${tableRows || `<tr><td colspan='9' style='padding:24px;text-align:center;color:var(--txt-3);'>尚無啟用中的範例。可在訂單明細頁點「儲存為 AI 學習範例」加入。</td></tr>`}</tbody>
+              </table>
+            </div>
           </div>
         </div>
         <script>
@@ -8181,58 +8328,111 @@ function createAdminRouter() {
             }
         }
         catch (_) { /* product_packaging_ratios 可能尚未建立 */ }
-        const okMsg = req.query.ok === "del" ? "已刪除品項。" : req.query.ok === "edit" ? "已儲存。" : req.query.err ? "" : "";
-        const msg = okMsg ? "<p style='color:green'>" + okMsg + "</p>" : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
+        const okMsg = req.query.ok === "del" ? "已刪除品項" : req.query.ok === "edit" ? "已儲存" : "";
+        const errMsg = req.query.err ? String(req.query.err) : "";
         const makeRow = (p) => {
-            const specSummary = (specsByProduct.get(p.id) ?? []).map((x) => escapeHtml(x)).join("、") || "—";
+            const specSummary = (specsByProduct.get(p.id) ?? []).map((x) => escapeHtml(x)).join("、") || `<span style="color:var(--txt-3);">—</span>`;
             const isActive = p.active === 1 || p.active === "1" || p.active === undefined || p.active === null;
-            const statusHtml = isActive ? "啟用" : "<span class=\"notion-hint\" style=\"display:inline;margin:0;\">停用</span>";
+            const statusHtml = isActive ? `<span class="sf-pill ok">啟用</span>` : `<span class="sf-pill">停用</span>`;
             const toggleLabel = isActive ? "停用" : "啟用";
+            const aliases = (aliasesByProduct.get(p.id) ?? []);
+            const aliasHtml = aliases.length ? `<span style="font-size:12px;color:var(--txt-2);">${aliases.map(a => escapeHtml(a)).join("、")}</span>` : `<span style="color:var(--txt-3);">—</span>`;
             return `<tr data-product-id="${escapeAttr(p.id)}">
-            <td>${escapeHtml(p.name)}</td>
-            <td>${escapeHtml(p.erp_code ?? "")}</td>
-            <td>${escapeHtml(p.teraoka_barcode ?? "")}</td>
-            <td>${escapeHtml(p.unit)}</td>
-            <td>${(aliasesByProduct.get(p.id) ?? []).map((a) => escapeHtml(a)).join("、") || "—"} <a href="/admin/products/${encodeURIComponent(p.id)}/aliases">管理</a></td>
-            <td>${specSummary} <a href="/admin/products/${encodeURIComponent(p.id)}/edit#unit-sop">設定</a></td>
-            <td class="product-status-cell">${statusHtml}</td>
             <td>
-              <a href="/admin/products/${encodeURIComponent(p.id)}/edit">編輯</a>
-              | <button type="button" class="product-toggle-btn" data-id="${escapeAttr(p.id)}" data-active="${isActive ? "1" : "0"}">${escapeHtml(toggleLabel)}</button>
-              | <a href="/admin/products/${encodeURIComponent(p.id)}/delete">刪除</a>
+              <div style="font-weight:500;">${escapeHtml(p.name)}</div>
+              ${p.unit ? `<div style="font-size:11px;color:var(--txt-3);">單位：${escapeHtml(p.unit)}</div>` : ""}
+            </td>
+            <td><span class="mono" style="font-size:11px;color:var(--txt-2);">${escapeHtml(p.erp_code ?? "—")}</span></td>
+            <td><span class="mono" style="font-size:11px;color:var(--txt-2);">${escapeHtml(p.teraoka_barcode ?? "—")}</span></td>
+            <td>${aliasHtml} <a href="/admin/products/${encodeURIComponent(p.id)}/aliases" style="font-size:11px;">管理</a></td>
+            <td>${specSummary} <a href="/admin/products/${encodeURIComponent(p.id)}/edit#unit-sop" style="font-size:11px;">設定</a></td>
+            <td class="product-status-cell" style="text-align:right;">${statusHtml}</td>
+            <td style="white-space:nowrap;">
+              <a class="sf-btn sm" href="/admin/products/${encodeURIComponent(p.id)}/edit">${SF_ICONS.edit}</a>
+              <button type="button" class="sf-btn sm product-toggle-btn" data-id="${escapeAttr(p.id)}" data-active="${isActive ? "1" : "0"}">${escapeHtml(toggleLabel)}</button>
+              <a class="sf-btn sm danger" href="/admin/products/${encodeURIComponent(p.id)}/delete">${SF_ICONS.x}</a>
             </td>
           </tr>`;
         };
         const isProductActive = (p) => p.active === 1 || p.active === "1" || p.active === undefined || p.active === null;
         const activeList = products.filter(isProductActive);
         const inactiveList = products.filter((p) => !isProductActive(p));
-        const tbodyActive = activeList.map(makeRow).join("") || "<tr class=\"products-placeholder\"><td colspan='8'>無啟用品項</td></tr>";
-        const tbodyInactive = inactiveList.map(makeRow).join("") || "<tr class=\"products-placeholder\"><td colspan='8'>無停用品項</td></tr>";
+        const tbodyActive = activeList.map(makeRow).join("") || `<tr class="products-placeholder"><td colspan='7' style="padding:24px;text-align:center;color:var(--txt-3);">無啟用品項</td></tr>`;
+        const tbodyInactive = inactiveList.map(makeRow).join("") || `<tr class="products-placeholder"><td colspan='7' style="padding:24px;text-align:center;color:var(--txt-3);">無停用品項</td></tr>`;
+        const statCard = (label, num, status) => `
+          <div style="padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;min-width:140px;">
+            <span class="sf-dot ${status}"></span>
+            <div>
+              <div style="font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">${label}</div>
+              <div class="mono" style="font-size:18px;font-weight:600;">${num}</div>
+            </div>
+          </div>`;
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 品項與俗名</div>
-        <h1 class="notion-page-title">品項與俗名</h1>
-        ${msg}
-        <p style="margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><button type="button" class="btn btn-primary" id="openQuickAddProduct">＋ 新增貨品</button><a href="/admin/import">匯入品項</a>、<a href="/admin/import-teraoka">寺岡資料對照</a></p>
-        <form method="get" action="/admin/products" style="margin-bottom:16px;">
-          <input type="search" name="q" value="${escapeAttr(q)}" placeholder="搜尋品名、料號、條碼">
-          <button type="submit" class="btn">搜尋</button>
-        </form>
-        <div class="notion-card">
-          <div class="tab-bar" style="display:flex;gap:0;border-bottom:1px solid var(--notion-border);margin-bottom:0;">
-            <button type="button" class="tab-btn active" data-tab="products-active" style="padding:10px 16px;border:none;background:transparent;cursor:pointer;font-size:14px;border-bottom:2px solid var(--notion-accent);margin-bottom:-1px;">啟用</button>
-            <button type="button" class="tab-btn" data-tab="products-inactive" style="padding:10px 16px;border:none;background:transparent;cursor:pointer;font-size:14px;color:var(--notion-text-muted);">停用</button>
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">主檔管理 / 貨品</div>
+              <h1 style="margin:0;font-size:22px;font-weight:600;">貨品管理</h1>
+              <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">標準品項、俗名、單位規格管理。叫貨時客戶若使用俗名（例如「青菜頭→高麗菜」），可在這裡建立對應。</p>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <a class="sf-btn" href="/admin/import">${SF_ICONS.dl}<span>匯入品項</span></a>
+              <a class="sf-btn" href="/admin/import-teraoka">${SF_ICONS.link}<span>寺岡資料對照</span></a>
+              <button type="button" class="sf-btn primary" id="openQuickAddProduct">${SF_ICONS.plus}<span>新增貨品</span></button>
+            </div>
           </div>
-          <div id="products-active-panel" class="tab-panel">
-            <table>
-              <thead><tr><th>標準品名</th><th>凌越料號</th><th>寺岡條碼</th><th>單位</th><th>俗名</th><th>規格</th><th>狀態</th><th>操作</th></tr></thead>
-              <tbody id="products-active-tbody">${tbodyActive}</tbody>
-            </table>
+          ${okMsg ? `<div class="sf-pill ok" style="align-self:flex-start;">${escapeHtml(okMsg)}</div>` : ""}
+          ${errMsg ? `<div class="sf-pill bad" style="align-self:flex-start;">${escapeHtml(errMsg)}</div>` : ""}
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${statCard("品項總數", products.length, "ok")}
+            ${statCard("啟用中", activeList.length, "info")}
+            ${statCard("停用", inactiveList.length, "accent")}
           </div>
-          <div id="products-inactive-panel" class="tab-panel" style="display:none;">
-            <table>
-              <thead><tr><th>標準品名</th><th>凌越料號</th><th>寺岡條碼</th><th>單位</th><th>俗名</th><th>規格</th><th>狀態</th><th>操作</th></tr></thead>
-              <tbody id="products-inactive-tbody">${tbodyInactive}</tbody>
-            </table>
+          <form method="get" action="/admin/products" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <div style="position:relative;flex:0 0 320px;">
+              <input class="sf-input" type="search" name="q" value="${escapeAttr(q)}" placeholder="搜尋品名／凌越料號／寺岡條碼" style="padding-left:28px;">
+              <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.search}</span>
+            </div>
+            <button class="sf-btn" type="submit">${SF_ICONS.search}<span>搜尋</span></button>
+            ${q ? `<a class="sf-btn ghost" href="/admin/products">清除</a>` : ""}
+          </form>
+          <div class="sf-tabs">
+            <button type="button" class="sf-tab active" data-tab="products-active">啟用 <span class="tab-count">${activeList.length}</span></button>
+            <button type="button" class="sf-tab" data-tab="products-inactive">停用 <span class="tab-count">${inactiveList.length}</span></button>
+          </div>
+          <div>
+            <div id="products-active-panel" class="tab-panel sf-table-wrap">
+              <table class="sf-table">
+                <thead>
+                  <tr>
+                    <th>標準品名</th>
+                    <th style="width:120px;">凌越料號</th>
+                    <th style="width:120px;">寺岡條碼</th>
+                    <th>俗名</th>
+                    <th>規格</th>
+                    <th style="text-align:right;width:80px;">狀態</th>
+                    <th style="width:160px;">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="products-active-tbody">${tbodyActive}</tbody>
+              </table>
+            </div>
+            <div id="products-inactive-panel" class="tab-panel sf-table-wrap" style="display:none;">
+              <table class="sf-table">
+                <thead>
+                  <tr>
+                    <th>標準品名</th>
+                    <th style="width:120px;">凌越料號</th>
+                    <th style="width:120px;">寺岡條碼</th>
+                    <th>俗名</th>
+                    <th>規格</th>
+                    <th style="text-align:right;width:80px;">狀態</th>
+                    <th style="width:160px;">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="products-inactive-tbody">${tbodyInactive}</tbody>
+              </table>
+            </div>
           </div>
         </div>
         <script>
@@ -8260,7 +8460,7 @@ function createAdminRouter() {
           function moveRow(row, toActive){
             var statusCell = row.querySelector(".product-status-cell");
             var btn = row.querySelector(".product-toggle-btn");
-            if (statusCell) statusCell.innerHTML = toActive ? "啟用" : "<span class=\\"notion-hint\\" style=\\"display:inline;margin:0;\\">停用</span>";
+            if (statusCell) statusCell.innerHTML = toActive ? '<span class="sf-pill ok">啟用</span>' : '<span class="sf-pill">停用</span>';
             if (btn){ btn.dataset.active = toActive ? "1" : "0"; btn.textContent = toActive ? "停用" : "啟用"; }
             var fromTbody = row.parentNode;
             var toTbody = toActive ? activeTbody : inactiveTbody;
@@ -8268,13 +8468,14 @@ function createAdminRouter() {
             fromTbody.removeChild(row);
             toTbody.appendChild(row);
             if (fromTbody.children.length === 0)
-              fromTbody.innerHTML = "<tr class=\\"products-placeholder\\"><td colspan=\\"8\\">" + (fromTbody.id === "products-active-tbody" ? "無啟用品項" : "無停用品項") + "</td></tr>";
+              fromTbody.innerHTML = '<tr class="products-placeholder"><td colspan="7" style="padding:24px;text-align:center;color:var(--txt-3);">' + (fromTbody.id === "products-active-tbody" ? "無啟用品項" : "無停用品項") + '</td></tr>';
           }
-          document.querySelectorAll(".tab-btn[data-tab]").forEach(function(btn){
-            btn.addEventListener("click", function(){
+          document.querySelectorAll(".sf-tab[data-tab]").forEach(function(btn){
+            btn.addEventListener("click", function(e){
+              e.preventDefault();
               var tab = this.dataset.tab;
-              document.querySelectorAll(".tab-btn[data-tab]").forEach(function(b){ b.classList.remove("active"); b.style.borderBottom = "none"; b.style.color = ""; });
-              this.classList.add("active"); this.style.borderBottom = "2px solid var(--notion-accent)"; this.style.color = "";
+              document.querySelectorAll(".sf-tab[data-tab]").forEach(function(b){ b.classList.remove("active"); });
+              this.classList.add("active");
               document.querySelectorAll(".tab-panel").forEach(function(p){ p.style.display = "none"; });
               var panel = document.getElementById(tab + "-panel");
               if (panel) panel.style.display = "block";
@@ -8299,21 +8500,34 @@ function createAdminRouter() {
           });
         })();
         </script>
-        <div id="quickAddProductModal" class="notion-modal-overlay" style="display:none;">
-          <div class="notion-modal">
-            <h3>新增貨品</h3>
-            <form method="post" action="/admin/products/quick-add">
-              <label>標準品名 <input type="text" name="name" required style="width:100%;"></label>
-              <label>凌越料號 <input type="text" name="erp_code" style="width:100%;"></label>
-              <label>寺岡條碼 <input type="text" name="teraoka_barcode" style="width:100%;"></label>
-              <label>單位 <input type="text" name="unit" value="公斤" required style="width:100%;"></label>
-              <div class="notion-modal-actions">
-                <button type="button" class="btn" id="closeQuickAddProduct">取消</button>
-                <button type="submit" class="btn btn-primary">新增</button>
+        <div id="quickAddProductModal" class="notion-modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);align-items:center;justify-content:center;z-index:1000;">
+          <div class="sf-card" style="max-width:440px;width:90%;background:var(--bg-1);">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.plus} 新增貨品</div>
+              <button type="button" class="sf-btn sm ghost" id="closeQuickAddProduct">${SF_ICONS.x}</button>
+            </div>
+            <form method="post" action="/admin/products/quick-add" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px;">
+              <div><label class="sf-label">標準品名</label><input class="sf-input" type="text" name="name" required></div>
+              <div><label class="sf-label">凌越料號</label><input class="sf-input" type="text" name="erp_code"></div>
+              <div><label class="sf-label">寺岡條碼</label><input class="sf-input" type="text" name="teraoka_barcode"></div>
+              <div><label class="sf-label">單位</label><input class="sf-input" type="text" name="unit" value="公斤" required></div>
+              <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:6px;border-top:var(--hairline);">
+                <button type="button" class="sf-btn ghost" id="closeQuickAddProductBtn2">取消</button>
+                <button type="submit" class="sf-btn primary">${SF_ICONS.plus}<span>新增</span></button>
               </div>
             </form>
           </div>
         </div>
+        <script>
+        (function(){
+          var b2 = document.getElementById("closeQuickAddProductBtn2");
+          if (b2) b2.addEventListener("click", function(){ var m = document.getElementById("quickAddProductModal"); if(m) m.style.display="none"; });
+          var modal = document.getElementById("quickAddProductModal");
+          if (modal) { modal.style.cssText = "display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);align-items:center;justify-content:center;z-index:1000;"; }
+          var openBtn = document.getElementById("openQuickAddProduct");
+          if (openBtn && modal) { openBtn.addEventListener("click", function(){ modal.style.display = "flex"; }); }
+        })();
+        </script>
       `;
         res.type("text/html").send(notionPage("品項與俗名", body, "products", res));
     });
