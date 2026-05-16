@@ -6116,80 +6116,106 @@ function createAdminRouter() {
         </div>
         <div class="notion-breadcrumb" style="display:none;"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / 訂單明細</div>
         <p style="margin:0 0 10px;color:var(--notion-text-secondary, #555);font-size:14px;display:none;">${escapeHtml(order.order_no ?? "—")} · ${escapeHtml(order.order_date)} · <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a> · ${orderStatusDisplay}</p>
-        ${needReviewNote}
-        ${lowConfNote}
-        ${req.query.ok === "product" ? "<p class=\"notion-msg ok\">已更新。</p>" : ""}
-        ${req.query.ok === "prod_edit" ? "<p class=\"notion-msg ok\">已儲存品項。</p>" : ""}
-        ${req.query.ok === "approved" ? "<p class=\"notion-msg ok\">已標記為已確認。</p>" : ""}
-        ${req.query.ok === "unconfirmed" ? "<p class=\"notion-msg ok\">已撤銷確認。</p>" : ""}
-        ${req.query.ok === "rerecog" ? "<p class=\"notion-msg ok\">已重新辨識明細。</p>" : ""}
-        ${req.query.ok === "raw_applied" ? "<p class=\"notion-msg ok\">已補登並解析。</p>" : ""}
-        ${req.query.err === "product" ? "<p class=\"notion-msg err\">請選擇有效品項。</p>" : ""}
-        ${req.query.err === "rerecog" ? "<p class=\"notion-msg err\">重新辨識失敗：無法解析出品項（原因未細分）。若含圖片請確認 LINE_TOKEN 與 Vision／Gemini 金鑰；純文字請確認已設定 Gemini 金鑰且「原始訂單文字」有內容。</p>" : ""}
-        ${req.query.err === "rerecog_empty" ? "<p class=\"notion-msg err\">重新辨識失敗：此訂單沒有可解析的<strong>原始文字</strong>（略過 [圖片] 後為空），也無附件。請在明細上方「補登／覆寫原始訂單文字」貼上叫貨內容後再試。</p>" : ""}
-        ${req.query.err === "rerecog_gemini" ? "<p class=\"notion-msg err\">重新辨識失敗：<strong>純文字</strong>叫貨須設定 <code>GOOGLE_GEMINI_API_KEY</code> 或 <code>GEMINI_API_KEY</code>（Cloud Run 環境變數）。請在部署設定中補上後再試。</p>" : ""}
-        ${req.query.err === "rerecog_gemini_empty" ? "<p class=\"notion-msg err\">重新辨識失敗：已設定 Gemini，但未解析出任何品項（可能原文格式不易辨識、API 暫時失敗、429 配額，或 <strong>AI Studio 每月支出上限</strong> 已滿）。請查看 Cloud Run Logs 是否出現 spending cap／429；必要時至 <a href=\"https://ai.studio/spend\" target=\"_blank\" rel=\"noopener\">ai.studio/spend</a> 調高額度。</p>" : ""}
-        ${req.query.err === "rerecog_split" ? "<p class=\"notion-msg err\">重新辨識失敗：此訂單為子客戶拆單，解析結果中沒有對應子客戶的品項。請檢查叫貨內容或子客戶設定。</p>" : ""}
-        ${req.query.err === "rerecog_line" ? "<p class=\"notion-msg err\">重新辨識失敗：訂單有圖片附件，但未設定 LINE_CHANNEL_ACCESS_TOKEN，無法向 LINE 取回圖片。</p>" : ""}
-        ${req.query.err === "rerecog_vision" ? "<p class=\"notion-msg err\">重新辨識失敗：有圖片附件但無法辨識。請設定 Cloud Vision 或 Gemini API 金鑰。</p>" : ""}
-        ${req.query.err === "apply_raw_empty" ? "<p class=\"notion-msg err\">請貼上內容後再送出。</p>" : ""}
-        ${req.query.err === "apply_raw_parse" ? "<p class=\"notion-msg err\">無法解析。請改內容或檢查 Gemini API 金鑰。</p>" : ""}
-        <p style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 8px;">
-          <a href="${escapeAttr(backTo)}" class="btn">← 回上層列表</a>
-          ${prevOrder ? `<a href="/admin/orders/${encodeURIComponent(prevOrder.id)}?back=${encodeURIComponent(backTo)}" class="btn">上一筆</a>` : ""}
-          ${nextOrder ? `<a href="/admin/orders/${encodeURIComponent(nextOrder.id)}?back=${encodeURIComponent(backTo)}" class="btn">下一筆</a>` : ""}
-          ${(orderStatusLc === "approved" && nextOrder) ? `<a href="/admin/orders/${encodeURIComponent(nextOrder.id)}?back=${encodeURIComponent(backTo)}" class="btn btn-cute-next">下一筆待確認</a>` : ""}
-        </p>
-        <p class="order-detail-toolbar-main" style="display:flex;flex-wrap:nowrap;gap:8px;align-items:center;margin:0 0 12px;overflow-x:auto;-webkit-overflow-scrolling:touch;width:100%;box-sizing:border-box;">
-          ${confirmOrderFormHtml}
-          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/re-recognize?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;">
-            <button type="submit" class="btn btn-cute-rerecog" title="依原始文字與 LINE 圖片附件重建明細（覆寫現有品項）" onclick="return confirm('依原始訂單重建明細？將覆寫現有品項。');">重新辨識</button>
+        <div style="padding:0 32px;">
+          ${needReviewNote}
+          ${lowConfNote}
+          ${req.query.ok === "product" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已更新對應品項</div>" : ""}
+          ${req.query.ok === "prod_edit" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已儲存品項</div>" : ""}
+          ${req.query.ok === "approved" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已標記為已確認</div>" : ""}
+          ${req.query.ok === "unconfirmed" ? "<div class=\"sf-pill\" style=\"margin-bottom:8px;\">已撤銷確認</div>" : ""}
+          ${req.query.ok === "rerecog" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已重新辨識明細</div>" : ""}
+          ${req.query.ok === "raw_applied" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已補登並解析</div>" : ""}
+          ${req.query.err === "product" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">請選擇有效品項</div>" : ""}
+          ${req.query.err === "rerecog" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：無法解析出品項（請檢查 Gemini 金鑰與原始文字）</div>" : ""}
+          ${req.query.err === "rerecog_empty" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：此訂單沒有可解析的原始文字（請用「補登／修正」貼上叫貨內容）</div>" : ""}
+          ${req.query.err === "rerecog_gemini" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：純文字叫貨須設定 GOOGLE_GEMINI_API_KEY</div>" : ""}
+          ${req.query.err === "rerecog_gemini_empty" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：Gemini 未解析出任何品項（可能配額用罄或 spending cap）</div>" : ""}
+          ${req.query.err === "rerecog_split" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：子客戶拆單解析結果無對應品項</div>" : ""}
+          ${req.query.err === "rerecog_line" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：訂單有圖片附件，但未設定 LINE_CHANNEL_ACCESS_TOKEN</div>" : ""}
+          ${req.query.err === "rerecog_vision" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：有圖片附件但無法辨識（請設定 Vision 或 Gemini 金鑰）</div>" : ""}
+          ${req.query.err === "apply_raw_empty" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">請貼上內容後再送出</div>" : ""}
+          ${req.query.err === "apply_raw_parse" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">無法解析，請檢查內容或 Gemini 金鑰</div>" : ""}
+        </div>
+        <div class="sf-root" style="padding:0 32px 24px 32px;background:var(--bg-0);">
+        <div style="display:flex;gap:8px;align-items:center;margin:0 0 14px;flex-wrap:wrap;">
+          ${confirmOrderFormHtml ? `<span class="sf-toolbar-confirm">${confirmOrderFormHtml}</span>` : ""}
+          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/re-recognize?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;">
+            <button type="submit" class="sf-btn" title="依原始文字與 LINE 圖片附件重建明細（覆寫現有品項）" onclick="return confirm('依原始訂單重建明細？將覆寫現有品項。');">${SF_ICONS.refresh}<span>重新辨識</span></button>
           </form>
-          <button type="button" id="btn-save-example" class="btn btn-info" title="將目前畫面上的明細與附件圖存為該客戶 Few-Shot 範例（多張附件時以第一張為準）" style="flex:0 0 auto;white-space:nowrap;" ${attachments.length === 0 ? "disabled" : ""}>🎓 儲存為本客戶的 AI 學習範例</button>
-          <a href="/admin/orders/batch-lingyue-xlsx?ids=${encodeURIComponent(orderId)}" class="btn btn-cute-lingyue" style="flex:0 0 auto;white-space:nowrap;">匯出凌越</a>
-          <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1" class="btn btn-cute-preview" style="flex:0 0 auto;white-space:nowrap;">預覽訂單</a>
-          <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?download=1" class="btn btn-cute-ordersheet" style="flex:0 0 auto;white-space:nowrap;">匯出訂貨單</a>
-        </p>
-        ${attachments.length > 0 ? `<p style="margin:0 0 10px;font-size:13px;">附件 ${attachments.length} 張：${attachments.map((a, idx) => `<a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener">圖${idx + 1}</a>`).join(" · ")}</p>` : ""}
+          <button type="button" id="btn-save-example" class="sf-btn" title="將目前畫面上的明細與附件圖存為該客戶 Few-Shot 範例（多張附件時以第一張為準）" ${attachments.length === 0 ? "disabled style=\"opacity:0.5;\"" : ""}>${SF_ICONS.spark}<span>儲存為 AI 學習範例</span></button>
+          <a href="/admin/orders/batch-lingyue-xlsx?ids=${encodeURIComponent(orderId)}" class="sf-btn">${SF_ICONS.dl}<span>匯出凌越</span></a>
+          <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1" class="sf-btn">${SF_ICONS.list}<span>預覽訂單</span></a>
+          <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?download=1" class="sf-btn">${SF_ICONS.dl}<span>匯出訂貨單</span></a>
+        </div>
         <div class="order-detail-layout">
-        <aside class="order-detail-raw-col" aria-label="原始訂單對照">
-          <div class="order-detail-raw-inner notion-card raw-message-scroll" id="rawOrderBlock">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
-            <div>
-              <h3 class="order-detail-raw-title">原始訂單</h3>
-              <p class="order-detail-raw-sticky-hint">寬螢幕捲動明細時，此區塊會固定在左側方便核對。</p>
+        <aside class="order-detail-raw-col" aria-label="原始訂單對照" style="flex:0 0 min(320px, 32vw);max-width:360px;">
+          <div class="sf-card raw-message-scroll" id="rawOrderBlock">
+            <div class="sf-card-head">
+              <div class="sf-card-title">📨 原始訂單</div>
+              <button type="button" class="sf-btn sm" id="pasteRawToggleBtn" aria-expanded="false" aria-controls="pasteRaw">補登／修正</button>
             </div>
-            <button type="button" class="btn" id="pasteRawToggleBtn" aria-expanded="false" aria-controls="pasteRaw" style="padding:4px 10px;font-size:12px;">補登／修正</button>
-          </div>
-          <div class="order-detail-raw-pre-wrap"><pre>${escapeHtml(order.raw_message ?? "")}</pre></div>
-          <div id="pasteRaw" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--notion-border);">
-            <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/apply-raw-text?back=${encodeURIComponent(backTo)}" style="margin:0;">
-              <textarea name="pasted_raw" rows="5" style="width:100%;box-sizing:border-box;font-size:13px;" placeholder="貼上叫貨全文（會覆寫明細）" required title="送出後依全文重建明細"></textarea>
-              <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:8px 0 0;font-size:12px;">
-                <label style="margin:0;"><input type="radio" name="merge_mode" value="replace" checked> 取代整段</label>
-                <label style="margin:0;"><input type="radio" name="merge_mode" value="append"> 接到後面</label>
+            <div style="padding:14px;">
+              ${attachments.length > 0 ? `
+                <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:${order.raw_message && String(order.raw_message).replace(/\[圖片\]/g,"").trim() ? "14px" : "0"};">
+                  <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">客戶傳的照片 · ${attachments.length} 張</div>
+                  ${attachments.map((a, idx) => `
+                    <a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener" style="display:block;text-decoration:none;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--bg-2);">
+                      <img src="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" alt="附件 ${idx + 1}" loading="lazy" style="display:block;width:100%;height:auto;max-height:480px;object-fit:contain;background:#fff;">
+                      <div style="padding:6px 10px;font-size:11px;color:var(--txt-3);background:var(--bg-2);">圖 ${idx + 1} · 點擊放大</div>
+                    </a>
+                  `).join("")}
+                </div>
+              ` : ""}
+              ${(() => {
+                const raw = order.raw_message || "";
+                // 去掉 [圖片] 行後若有文字內容才顯示
+                const textOnly = raw.split(/\r?\n/).filter(l => l.trim() && l.trim() !== "[圖片]").join("\n");
+                if (textOnly) {
+                  return `
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">客戶打字內容</div>
+                    <pre style="background:var(--bg-2);padding:10px 12px;border-radius:var(--radius);border:var(--hairline);font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin:0;color:var(--txt-1);font-family:var(--font-ui);">${escapeHtml(textOnly)}</pre>
+                  `;
+                }
+                if (attachments.length === 0) {
+                  return `<div style="color:var(--txt-3);font-size:13px;padding:24px 8px;text-align:center;">（此訂單無原始訊息）</div>`;
+                }
+                return "";
+              })()}
+              <div id="pasteRaw" style="display:none;margin-top:14px;padding-top:14px;border-top:var(--hairline);">
+                <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/apply-raw-text?back=${encodeURIComponent(backTo)}" style="margin:0;">
+                  <textarea class="sf-textarea" name="pasted_raw" rows="5" placeholder="貼上叫貨全文（會覆寫明細）" required title="送出後依全文重建明細"></textarea>
+                  <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:8px 0 0;font-size:12px;color:var(--txt-2);">
+                    <label style="margin:0;"><input type="radio" name="merge_mode" value="replace" checked> 取代整段</label>
+                    <label style="margin:0;"><input type="radio" name="merge_mode" value="append"> 接到後面</label>
+                  </div>
+                  <p style="margin:8px 0 0;"><button type="submit" class="sf-btn primary" onclick="return confirm('依新全文重建明細？現有品項將刪除後重算。');">儲存並解析</button></p>
+                </form>
               </div>
-              <p style="margin:8px 0 0;"><button type="submit" class="btn btn-primary" onclick="return confirm('依新全文重建明細？現有品項將刪除後重算。');">儲存並解析</button></p>
-            </form>
-          </div>
+            </div>
           </div>
         </aside>
         <div class="order-detail-main-col">
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items" novalidate>
-          <div class="notion-card" id="items">
-            <p style="margin:0 0 10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-              <button type="submit" class="btn btn-cute-save" id="itemsSaveBtnTop" title="儲存數量、單位、備註與排序">儲存明細</button>
-            </p>
-            <p class="order-legend"><span class="order-legend-swatch sw-need"></span>待確認</p>
-            ${batchMoveBarHtml}
-            <div class="table-scroll-mobile"><table class="order-detail-table" style="font-size:12px;">
-              <thead><tr><th style="width:2.25rem;"><input type="checkbox" id="select_all_items" title="全選"></th><th class="order-detail-th-sort" title="順序（上移／下移）"></th><th class="order-detail-th-idx">項次</th><th class="order-table-col-system">料號</th><th>品名</th><th>子客戶/分店</th><th style="width:3.5rem;">數量</th><th>單位</th><th>備註</th><th style="width:2.75rem;">刪除</th></tr></thead>
-              <tbody>${itemsRows}</tbody>
-              <tr><td colspan="10" style="background:var(--notion-sidebar);padding:6px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="btn">＋ 增加品項</a></td></tr>
-            </table></div>
-            <p style="margin:10px 0 0;"><button type="submit" class="btn btn-cute-save" title="儲存數量、單位、備註與排序">儲存明細</button></p>
+          <div class="sf-card" id="items">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.list} 訂單明細 <span class="sf-pill">${items.length} 項</span></div>
+              <button type="submit" class="sf-btn primary sm" id="itemsSaveBtnTop" title="儲存數量、單位、備註與排序">${SF_ICONS.check}<span>儲存明細</span></button>
+            </div>
+            <div style="padding:12px 14px 0;">
+              <p class="order-legend" style="font-size:12px;color:var(--txt-3);margin:0 0 8px;"><span class="order-legend-swatch sw-need" style="display:inline-block;width:10px;height:10px;background:var(--warn);border-radius:2px;vertical-align:middle;margin-right:4px;"></span>需確認對應 / 待人工指定品項</p>
+              ${batchMoveBarHtml}
+            </div>
+            <div class="table-scroll-mobile" style="overflow-x:auto;">
+              <table class="order-detail-table sf-table" style="font-size:12px;">
+                <thead><tr><th style="width:2.25rem;"><input type="checkbox" id="select_all_items" title="全選"></th><th class="order-detail-th-sort" title="順序（上移／下移）"></th><th class="order-detail-th-idx">項次</th><th class="order-table-col-system">料號</th><th>品名</th><th>子客戶/分店</th><th style="width:3.5rem;">數量</th><th>單位</th><th>備註</th><th style="width:2.75rem;">刪除</th></tr></thead>
+                <tbody>${itemsRows}</tbody>
+                <tr><td colspan="10" style="background:var(--bg-2);padding:8px 12px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="sf-btn sm">${SF_ICONS.plus}<span>增加品項</span></a></td></tr>
+              </table>
+            </div>
+            <div style="padding:12px 14px;border-top:var(--hairline);"><button type="submit" class="sf-btn primary" title="儲存數量、單位、備註與排序">${SF_ICONS.check}<span>儲存明細</span></button></div>
           </div>
         </form>
+        </div>
         </div>
         </div>
         <div id="productModal" class="notion-modal-overlay" style="display:none;">
