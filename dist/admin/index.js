@@ -2310,18 +2310,26 @@ function createAdminRouter() {
             unapprove: "取消確認",
             approve: "已確認",
         })[a.action] || a.action;
-        // ── 訂單流量 24h（依 created_at 小時聚合）───────────────
+        // ── 訂單流量 24h：依 updated_at 台北日期 = 今日，按台北小時聚合 ──
+        // 註：order_date 是送貨日（06:00 後叫的貨會跳到隔天），不適合作為「今日活動」篩選。
+        //     orders 沒有 created_at 欄位，但訂單建立時會寫 updated_at，後續編輯也會更新。
+        //     用 updated_at 的台北日期做近似「今日活動」。
         const hourBars = new Array(24).fill(0);
+        let chartTotal = 0;
         try {
             const isPg = Boolean(process.env.DATABASE_URL);
             const rows = isPg
-                ? await db.prepare("SELECT EXTRACT(HOUR FROM created_at)::int AS h, COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' GROUP BY h").all(today)
-                : await db.prepare("SELECT CAST(strftime('%H', created_at) AS INTEGER) AS h, COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' GROUP BY h").all(today);
+                ? await db.prepare("SELECT EXTRACT(HOUR FROM (updated_at AT TIME ZONE 'Asia/Taipei'))::int AS h, COUNT(*) AS n FROM orders WHERE (updated_at AT TIME ZONE 'Asia/Taipei')::date = ?::date AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' GROUP BY h").all(today)
+                : await db.prepare("SELECT CAST(strftime('%H', datetime(updated_at, '+8 hours')) AS INTEGER) AS h, COUNT(*) AS n FROM orders WHERE date(datetime(updated_at, '+8 hours')) = date(?) AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' GROUP BY h").all(today);
             for (const r of rows || []) {
                 const h = Number(r.h);
-                if (Number.isFinite(h) && h >= 0 && h < 24) hourBars[h] = Number(r.n) || 0;
+                const n = Number(r.n) || 0;
+                if (Number.isFinite(h) && h >= 0 && h < 24) {
+                    hourBars[h] = n;
+                    chartTotal += n;
+                }
             }
-        } catch (_) {}
+        } catch (e) { console.warn("[admin] dashboard hour bars query failed:", e?.message || e); }
         const hoursWindow = hourBars.slice(6, 22); // 6:00 ~ 21:00
         const hourMax = Math.max(1, ...hoursWindow);
         const peakH = 6 + hoursWindow.indexOf(hourMax);
@@ -2423,16 +2431,17 @@ function createAdminRouter() {
             <div class="sf-card">
               <div class="sf-card-head">
                 <div class="sf-card-title">${SF_ICONS.list} 今日叫貨流量 · 06:00–21:00</div>
-                <span class="sf-card-sub">${totalOrders>0?`尖峰 ${peakH}:00`:"本日尚無訂單"}</span>
+                <span class="sf-card-sub">${chartTotal>0?`尖峰 ${peakH}:00 · 共 ${chartTotal} 單`:"今日尚未收到訂單"}</span>
               </div>
               <div style="padding:16px;">
-                ${totalOrders>0
+                ${chartTotal>0
                   ? `<div style="display:flex;align-items:flex-end;gap:4px;height:140px;">${flowBarsHtml}</div>`
-                  : `<div style="height:140px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;border:1px dashed var(--line);border-radius:var(--radius);background:var(--bg-2);">📊 本日尚無訂單資料</div>`}
+                  : `<div style="height:140px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;border:1px dashed var(--line);border-radius:var(--radius);background:var(--bg-2);">📊 今日（依收單時間）尚未收到訂單</div>`}
                 <div style="margin-top:16px;padding-top:14px;border-top:var(--hairline);display:flex;gap:24px;font-size:12px;color:var(--txt-2);flex-wrap:wrap;">
-                  ${totalOrders>0?`<span>尖峰 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${peakH}:00</strong></span>`:""}
-                  <span>今日訂單 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${totalOrders}</strong></span>
-                  <span>待確認比例 <strong class="mono" style="color:${needReviewCnt?"var(--warn)":"var(--ok)"};margin-left:6px;">${needReviewCnt}/${totalOrders||"-"}</strong></span>
+                  ${chartTotal>0?`<span>尖峰 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${peakH}:00</strong></span>`:""}
+                  <span>今日收單 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${chartTotal}</strong></span>
+                  <span>送貨日 ${today} 訂單 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${totalOrders}</strong></span>
+                  <span>待確認 <strong class="mono" style="color:${needReviewCnt?"var(--warn)":"var(--ok)"};margin-left:6px;">${needReviewCnt}/${totalOrders||"-"}</strong></span>
                   <a href="/admin/orders" style="margin-left:auto;font-size:12px;">前往訂單管理 →</a>
                 </div>
               </div>
