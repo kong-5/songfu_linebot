@@ -163,6 +163,17 @@ function initSqlite(dbPath) {
           created_by TEXT,
           created_at TEXT
         )`);
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS dashboard_events (
+          id TEXT PRIMARY KEY,
+          event_date TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          color TEXT,
+          created_by TEXT,
+          created_at TEXT,
+          updated_at TEXT
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_dashboard_events_date ON dashboard_events(event_date)");
     }
     catch (_) { /* tables may already exist */ }
     try {
@@ -472,6 +483,17 @@ async function initPg() {
             created_by TEXT,
             created_at TIMESTAMPTZ
           )`);
+                await client.query(`CREATE TABLE IF NOT EXISTS dashboard_events (
+            id TEXT PRIMARY KEY,
+            event_date TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            color TEXT,
+            created_by TEXT,
+            created_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_dashboard_events_date ON dashboard_events(event_date)");
             }
             catch (_) { /* tables may already exist */ }
             try {

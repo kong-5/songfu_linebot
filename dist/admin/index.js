@@ -886,27 +886,33 @@ const SF_TOKENS = `
 
 /* 全站搜尋 */
 .sf-global-search {
-  position: relative; flex: 0 1 480px; max-width: 480px;
-  min-width: 240px; margin: 0 12px;
+  position: relative; flex: 0 1 460px; max-width: 460px;
+  min-width: 240px; margin: 0 16px;
+  display: flex; align-items: center;
 }
 .sf-global-search-icon {
-  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
-  color: var(--txt-3); display: inline-flex; pointer-events: none;
+  position: absolute; left: 12px; top: 0; bottom: 0;
+  display: flex; align-items: center;
+  color: var(--txt-3); pointer-events: none;
 }
+.sf-global-search-icon svg { display: block; width: 16px; height: 16px; }
 .sf-global-search-input {
-  width: 100%; height: 34px; padding: 0 56px 0 32px;
+  width: 100%; height: 36px; padding: 0 60px 0 38px;
   background: var(--bg-2); border: 1px solid var(--line-2);
-  border-radius: var(--radius); color: var(--txt-1);
+  border-radius: 999px; color: var(--txt-1);
   font-size: 13px; outline: none; font-family: inherit;
-  transition: border-color .12s, box-shadow .12s;
+  transition: border-color .12s, box-shadow .12s, background .12s;
+  line-height: 36px;
 }
 .sf-global-search-input::placeholder { color: var(--txt-4); }
-.sf-global-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.sf-global-search-input:hover { background: var(--bg-3); }
+.sf-global-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--bg-1); }
 .sf-global-search-kbd {
   position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
-  font-family: var(--font-mono); font-size: 11px; padding: 2px 6px;
+  font-family: var(--font-mono); font-size: 10px; padding: 2px 7px;
   background: var(--bg-3); color: var(--txt-3); border: 1px solid var(--line);
-  border-radius: 4px; pointer-events: none;
+  border-radius: 4px; pointer-events: none; line-height: 1.4;
+  letter-spacing: 0.5px;
 }
 .sf-global-search-dropdown {
   position: absolute; top: calc(100% + 6px); left: 0; right: 0;
@@ -2619,20 +2625,24 @@ function createAdminRouter() {
             const r2 = await db.prepare("SELECT COUNT(*) AS n FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != ''").get();
             custBound = Number(r2?.n) || 0;
         } catch (_) {}
-        // ── 月曆：以本月為基底；每天統計訂單數 ────────────────────
-        const calYear = todayDate.getFullYear();
-        const calMonth = todayDate.getMonth() + 1; // 1-12
+        // ── 月曆：以本月為基底；可填寫事件 ────────────────────────
+        const calYmReq = typeof req.query.cal_ym === "string" && /^\d{4}-\d{2}$/.test(req.query.cal_ym) ? req.query.cal_ym : null;
+        const calYear = calYmReq ? Number(calYmReq.slice(0, 4)) : todayDate.getFullYear();
+        const calMonth = calYmReq ? Number(calYmReq.slice(5, 7)) : todayDate.getMonth() + 1;
         const monthStart = `${calYear}-${String(calMonth).padStart(2, "0")}-01`;
         const monthEnd = (() => {
             const nextM = calMonth === 12 ? `${calYear + 1}-01-01` : `${calYear}-${String(calMonth + 1).padStart(2, "0")}-01`;
             return nextM;
         })();
-        let dayCounts = {};
+        // 載入本月事件
+        let eventsByDate = {};
         try {
-            const rows = await db.prepare(
-                "SELECT order_date, COUNT(*) AS n FROM orders WHERE order_date >= ? AND order_date < ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' GROUP BY order_date"
-            ).all(monthStart, monthEnd);
-            for (const r of rows || []) dayCounts[String(r.order_date)] = Number(r.n) || 0;
+            const rows = await db.prepare("SELECT id, event_date, title, description, color FROM dashboard_events WHERE event_date >= ? AND event_date < ? ORDER BY event_date").all(monthStart, monthEnd);
+            for (const r of rows || []) {
+                const k = String(r.event_date);
+                if (!eventsByDate[k]) eventsByDate[k] = [];
+                eventsByDate[k].push(r);
+            }
         } catch (_) {}
         // 建立月曆格子（週一為首）
         const monthFirstDay = new Date(calYear, calMonth - 1, 1);
@@ -2644,30 +2654,36 @@ function createAdminRouter() {
         while (calCells.length % 7 !== 0) calCells.push(null);
         const calRows = [];
         for (let i = 0; i < calCells.length; i += 7) calRows.push(calCells.slice(i, i + 7));
-        const maxDayOrders = Math.max(1, ...Object.values(dayCounts));
-        const calCellHtml = (cell) => {
-            if (cell == null) return `<div style="flex:1;min-height:64px;"></div>`;
+        const calCellHtml = (cell, colIdx) => {
+            if (cell == null) return `<div style="flex:1;min-height:90px;background:var(--bg-2);border-radius:6px;opacity:.5;"></div>`;
             const ymd = `${calYear}-${String(calMonth).padStart(2, "0")}-${String(cell).padStart(2, "0")}`;
-            const cnt = dayCounts[ymd] || 0;
             const isToday = ymd === today;
-            const heat = cnt / maxDayOrders; // 0~1
-            const heatBg = cnt > 0 ? `background:rgba(34,128,237,${0.08 + heat * 0.22});` : "";
+            const evs = eventsByDate[ymd] || [];
+            const isWeekend = colIdx >= 5;
             const border = isToday ? "border:2px solid var(--accent);" : "border:1px solid var(--line);";
-            return `<a href="/admin/orders?date_from=${ymd}&date_to=${ymd}" style="flex:1;min-height:64px;${border}${heatBg}border-radius:6px;padding:6px;text-decoration:none;color:var(--txt-1);display:flex;flex-direction:column;gap:2px;transition:transform .12s;">
-              <div style="display:flex;align-items:center;justify-content:space-between;">
-                <span class="mono" style="font-size:12px;font-weight:${isToday?"700":"500"};color:${isToday?"var(--accent)":"var(--txt-1)"};">${cell}</span>
+            const evsHtml = evs.slice(0, 3).map(e => {
+                const color = e.color || "#1d5fad";
+                return `<div title="${escapeAttr(e.title)}${e.description?" — "+escapeAttr(e.description):""}" style="font-size:10px;padding:2px 4px;border-radius:3px;background:${color}22;color:${color};border-left:2px solid ${color};margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3;">${escapeHtml(e.title)}</div>`;
+            }).join("");
+            const overflow = evs.length > 3 ? `<div style="font-size:10px;color:var(--txt-3);padding-left:4px;">+${evs.length - 3}</div>` : "";
+            return `<div onclick="sfOpenDayModal('${ymd}')" style="flex:1;min-height:90px;${border}border-radius:6px;padding:6px;cursor:pointer;display:flex;flex-direction:column;background:var(--bg-1);transition:transform .12s,border-color .12s;" onmouseover="this.style.borderColor='var(--accent-line)'" onmouseout="this.style.borderColor='${isToday?'var(--accent)':'var(--line)'}'">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                <span class="mono" style="font-size:13px;font-weight:${isToday?"700":"500"};color:${isToday?"var(--accent)":isWeekend?"var(--bad)":"var(--txt-1)"};">${cell}</span>
                 ${isToday?`<span style="font-size:9px;color:var(--accent);font-weight:600;">今天</span>`:""}
               </div>
-              ${cnt>0?`<div style="font-size:11px;color:var(--txt-2);margin-top:auto;"><span class="mono" style="font-weight:600;color:var(--txt-1);">${cnt}</span> 單</div>`:""}
-            </a>`;
+              <div style="flex:1;overflow:hidden;">${evsHtml}${overflow}</div>
+            </div>`;
         };
         const weekdayLabels = ["一","二","三","四","五","六","日"];
+        const prevYM = (() => { const m = calMonth - 1; return m < 1 ? `${calYear - 1}-12` : `${calYear}-${String(m).padStart(2,"0")}`; })();
+        const nextYM = (() => { const m = calMonth + 1; return m > 12 ? `${calYear + 1}-01` : `${calYear}-${String(m).padStart(2,"0")}`; })();
         const calendarHtml = `
-          <div style="display:flex;gap:4px;margin-bottom:4px;">
+          <div style="display:flex;gap:4px;margin-bottom:6px;">
             ${weekdayLabels.map((w,i)=>`<div style="flex:1;text-align:center;font-size:10px;color:${i>=5?"var(--bad)":"var(--txt-3)"};text-transform:uppercase;letter-spacing:.06em;padding:4px 0;font-weight:600;">${w}</div>`).join("")}
           </div>
-          ${calRows.map(row => `<div style="display:flex;gap:4px;margin-bottom:4px;">${row.map(calCellHtml).join("")}</div>`).join("")}
+          ${calRows.map(row => `<div style="display:flex;gap:4px;margin-bottom:4px;">${row.map((c,i)=>calCellHtml(c,i)).join("")}</div>`).join("")}
         `;
+        const eventCount = Object.values(eventsByDate).reduce((s, arr) => s + arr.length, 0);
         // ── 冷凍冷藏 / 盤點 ──────────────────────────────────────
         let freezerRows = [];
         try {
@@ -2775,16 +2791,19 @@ function createAdminRouter() {
           </div>
           <div class="sf-card">
             <div class="sf-card-head">
-              <div class="sf-card-title">${SF_ICONS.spark} ${calYear} 年 ${calMonth} 月 · 訂單行事曆</div>
-              <span class="sf-card-sub">點任一日 → 該日訂單列表</span>
+              <div class="sf-card-title">${SF_ICONS.spark} ${calYear} 年 ${calMonth} 月 · 行事曆</div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <a class="sf-btn sm ghost" href="/admin?cal_ym=${prevYM}" title="上個月">←</a>
+                <a class="sf-btn sm ghost" href="/admin" title="回到本月">本月</a>
+                <a class="sf-btn sm ghost" href="/admin?cal_ym=${nextYM}" title="下個月">→</a>
+              </div>
             </div>
             <div style="padding:14px;">
               ${calendarHtml}
               <div style="margin-top:10px;padding-top:10px;border-top:var(--hairline);display:flex;gap:18px;font-size:11px;color:var(--txt-3);flex-wrap:wrap;align-items:center;">
                 <span style="display:inline-flex;align-items:center;gap:6px;"><span style="display:inline-block;width:12px;height:12px;border:2px solid var(--accent);border-radius:3px;"></span>今天</span>
-                <span style="display:inline-flex;align-items:center;gap:6px;"><span style="display:inline-block;width:12px;height:12px;background:rgba(34,128,237,0.10);border:1px solid var(--line);border-radius:3px;"></span>少量</span>
-                <span style="display:inline-flex;align-items:center;gap:6px;"><span style="display:inline-block;width:12px;height:12px;background:rgba(34,128,237,0.30);border:1px solid var(--line);border-radius:3px;"></span>大量</span>
-                <span style="margin-left:auto;">本月共 <strong class="mono" style="color:var(--txt-1);">${Object.values(dayCounts).reduce((s,n)=>s+n,0)}</strong> 單</span>
+                <span style="display:inline-flex;align-items:center;gap:6px;">📝 點任一日新增/編輯事件（公司公告、行程、提醒…）</span>
+                <span style="margin-left:auto;">本月共 <strong class="mono" style="color:var(--txt-1);">${eventCount}</strong> 個事件</span>
               </div>
             </div>
           </div>
@@ -2803,8 +2822,161 @@ function createAdminRouter() {
               <a href="/admin/logistics/market" class="sf-btn sm">系統整理版</a>
             </div>
           </div>
-        </div>`;
+        </div>
+        <!-- 行事曆事件 Modal -->
+        <div id="sfDayModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center;padding:24px;">
+          <div class="sf-card" style="max-width:520px;width:100%;max-height:90vh;display:flex;flex-direction:column;background:var(--bg-1);">
+            <div class="sf-card-head">
+              <div class="sf-card-title">📅 <span id="sfDayDate"></span></div>
+              <button type="button" class="sf-btn sm ghost" onclick="sfCloseDayModal()">✕</button>
+            </div>
+            <div style="padding:14px 18px;display:flex;flex-direction:column;gap:14px;flex:1;overflow:auto;">
+              <div>
+                <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">已有事件</div>
+                <div id="sfDayEvents" style="display:flex;flex-direction:column;gap:6px;"></div>
+              </div>
+              <div style="border-top:var(--hairline);padding-top:14px;">
+                <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">新增事件</div>
+                <input id="sfEvTitle" class="sf-input" placeholder="標題（例如：勞動節休假、新進員工報到）" style="margin-bottom:8px;">
+                <textarea id="sfEvDesc" class="sf-textarea" placeholder="描述（選填）" rows="2" style="margin-bottom:8px;"></textarea>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+                  <span style="font-size:11px;color:var(--txt-3);">顏色</span>
+                  <div id="sfEvColors" style="display:flex;gap:6px;"></div>
+                </div>
+                <input type="hidden" id="sfEvColor" value="#1d5fad">
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                  <button type="button" class="sf-btn primary" onclick="sfSaveEvent()">${SF_ICONS.plus}<span>新增</span></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <script>
+        const SF_EV_COLORS = [
+          {name:'藍', value:'#1d5fad'},
+          {name:'綠', value:'#16a34a'},
+          {name:'橘', value:'#e07c2a'},
+          {name:'紅', value:'#b91c1c'},
+          {name:'紫', value:'#6b21a8'},
+          {name:'灰', value:'#6b7280'},
+        ];
+        let SF_DAY_YMD = '';
+        function sfRenderColors(){
+          const wrap = document.getElementById('sfEvColors');
+          const cur = document.getElementById('sfEvColor').value;
+          wrap.innerHTML = SF_EV_COLORS.map(c => {
+            const active = c.value.toLowerCase() === cur.toLowerCase();
+            return '<button type="button" onclick="sfPickEvColor(\\''+c.value+'\\')" title="'+c.name+'" style="width:24px;height:24px;border-radius:50%;border:'+(active?'2px solid var(--txt-1)':'1px solid var(--line-2)')+';background:'+c.value+';cursor:pointer;padding:0;"></button>';
+          }).join('');
+        }
+        function sfPickEvColor(v){ document.getElementById('sfEvColor').value = v; sfRenderColors(); }
+        function sfOpenDayModal(ymd){
+          SF_DAY_YMD = ymd;
+          document.getElementById('sfDayDate').textContent = ymd;
+          document.getElementById('sfDayModal').style.display = 'flex';
+          document.getElementById('sfEvTitle').value = '';
+          document.getElementById('sfEvDesc').value = '';
+          document.getElementById('sfEvColor').value = '#1d5fad';
+          sfRenderColors();
+          sfLoadDayEvents();
+        }
+        function sfCloseDayModal(){ document.getElementById('sfDayModal').style.display = 'none'; }
+        function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+        async function sfLoadDayEvents(){
+          const r = await fetch('/admin/api/dashboard-events?date=' + encodeURIComponent(SF_DAY_YMD), { credentials:'same-origin' });
+          const j = await r.json();
+          const wrap = document.getElementById('sfDayEvents');
+          if (!j.events || !j.events.length) {
+            wrap.innerHTML = '<div style="padding:14px;text-align:center;color:var(--txt-3);font-size:12px;background:var(--bg-2);border-radius:var(--radius);">尚無事件</div>';
+            return;
+          }
+          wrap.innerHTML = j.events.map(e => {
+            const color = e.color || '#1d5fad';
+            return '<div style="display:flex;gap:10px;align-items:flex-start;padding:10px;background:'+color+'11;border-left:3px solid '+color+';border-radius:4px;">'
+              + '<div style="flex:1;min-width:0;">'
+              +   '<div style="font-size:13px;font-weight:600;color:var(--txt-1);">'+escHtml(e.title)+'</div>'
+              +   (e.description ? '<div style="font-size:12px;color:var(--txt-2);margin-top:3px;line-height:1.5;white-space:pre-wrap;">'+escHtml(e.description)+'</div>' : '')
+              + '</div>'
+              + '<button type="button" onclick="sfDeleteEvent(\\''+e.id+'\\')" class="sf-btn sm danger" style="flex-shrink:0;">✕</button>'
+              + '</div>';
+          }).join('');
+        }
+        async function sfSaveEvent(){
+          const title = document.getElementById('sfEvTitle').value.trim();
+          if (!title) { alert('請填入標題'); return; }
+          const desc = document.getElementById('sfEvDesc').value.trim();
+          const color = document.getElementById('sfEvColor').value;
+          const r = await fetch('/admin/api/dashboard-events', {
+            method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin',
+            body: JSON.stringify({ event_date: SF_DAY_YMD, title, description: desc, color })
+          });
+          const j = await r.json();
+          if (j.ok) {
+            document.getElementById('sfEvTitle').value = '';
+            document.getElementById('sfEvDesc').value = '';
+            sfLoadDayEvents();
+            // 簡單刷新整頁讓月曆格子重新渲染
+            setTimeout(()=>{ location.href = location.pathname + location.search; }, 200);
+          } else {
+            alert('儲存失敗：' + (j.error || ''));
+          }
+        }
+        async function sfDeleteEvent(id){
+          if (!confirm('確定刪除此事件？')) return;
+          const r = await fetch('/admin/api/dashboard-events/' + encodeURIComponent(id) + '/delete', { method:'POST', credentials:'same-origin' });
+          const j = await r.json();
+          if (j.ok) {
+            sfLoadDayEvents();
+            setTimeout(()=>{ location.href = location.pathname + location.search; }, 200);
+          } else {
+            alert('刪除失敗：' + (j.error || ''));
+          }
+        }
+        </script>`;
         res.type("text/html").send(notionPage("儀表板", body, "dashboard", res));
+    });
+    // === 行事曆事件 API ===
+    router.get("/api/dashboard-events", async (req, res) => {
+        try {
+            const d = String(req.query.date || "").trim();
+            const from = String(req.query.from || "").trim();
+            const to = String(req.query.to || "").trim();
+            let rows = [];
+            if (d) {
+                rows = await db.prepare("SELECT id, event_date, title, description, color, created_by, created_at, updated_at FROM dashboard_events WHERE event_date = ? ORDER BY created_at").all(d);
+            } else if (from && to) {
+                rows = await db.prepare("SELECT id, event_date, title, description, color FROM dashboard_events WHERE event_date >= ? AND event_date <= ? ORDER BY event_date, created_at").all(from, to);
+            } else {
+                rows = await db.prepare("SELECT id, event_date, title, description, color FROM dashboard_events ORDER BY event_date DESC LIMIT 200").all();
+            }
+            res.json({ ok: true, events: rows || [] });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e?.message || "讀取失敗" });
+        }
+    });
+    router.post("/api/dashboard-events", express_1.default.json(), async (req, res) => {
+        try {
+            const event_date = String(req.body?.event_date || "").trim();
+            const title = String(req.body?.title || "").trim();
+            const description = req.body?.description ? String(req.body.description).trim() : null;
+            const color = String(req.body?.color || "#1d5fad").trim().slice(0, 7);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(event_date)) { res.status(400).json({ ok: false, error: "event_date 格式錯誤" }); return; }
+            if (!title) { res.status(400).json({ ok: false, error: "請填入標題" }); return; }
+            const id = (0, id_js_1.newId)("ev");
+            const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+            await db.prepare("INSERT INTO dashboard_events (id, event_date, title, description, color, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, " + nowSql + ", " + nowSql + ")").run(id, event_date, title, description, color, req.adminUsername || "");
+            res.json({ ok: true, id });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e?.message || "建立失敗" });
+        }
+    });
+    router.post("/api/dashboard-events/:id/delete", async (req, res) => {
+        try {
+            await db.prepare("DELETE FROM dashboard_events WHERE id = ?").run(req.params.id);
+            res.json({ ok: true });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e?.message || "刪除失敗" });
+        }
     });
     router.get("/audit", async (req, res) => {
         const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -9988,11 +10160,6 @@ YY小吃, C5678...,</pre>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:6px;">
                   <button type="button" class="sf-btn primary" onclick="openSendModal()">${SF_ICONS.check}<span>傳送至 LINE…</span></button>
                   <button type="button" class="sf-btn" onclick="saveDraft()">${SF_ICONS.dl}<span>儲存為草稿</span></button>
-                  <button type="button" class="sf-btn ghost" onclick="toggleJsonPreview()">查看 JSON</button>
-                </div>
-                <div id="preview-wrap" style="display:none;margin-top:14px;padding:12px;background:var(--bg-2);border-radius:var(--radius);">
-                  <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Flex Message JSON</div>
-                  <pre id="preview-json" style="font-size:11px;max-height:280px;overflow:auto;background:var(--bg-1);border-radius:var(--radius);padding:10px;border:var(--hairline);margin:0;color:var(--txt-2);"></pre>
                 </div>
               </div>
             </div>
@@ -10330,17 +10497,7 @@ YY小吃, C5678...,</pre>
           }
           return{type,id,header_color,notice_title:document.getElementById('notice_title')?.value?.trim()||'',notice_subtitle:document.getElementById('notice_subtitle')?.value?.trim()||'',notice_content:document.getElementById('notice_content')?.value?.trim()||'',recipients};
         }
-        async function refreshJsonPreview(){
-          const data=collectFormData();
-          const r=await fetch('/admin/broadcast/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-          const json=await r.json();
-          document.getElementById('preview-json').textContent=JSON.stringify(json,null,2);
-        }
-        function toggleJsonPreview(){
-          const pw=document.getElementById('preview-wrap');
-          if (pw.style.display==='none'){ pw.style.display=''; refreshJsonPreview(); }
-          else pw.style.display='none';
-        }
+        function refreshJsonPreview(){ /* no-op：JSON 預覽功能已移除 */ }
         // === 圖片上傳 ===
         async function onImageSelected(){
           const f = document.getElementById('image_file').files[0];
