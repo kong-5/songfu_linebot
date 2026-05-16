@@ -7401,6 +7401,12 @@ function createAdminRouter() {
         }
         const id = (0, id_js_1.newId)("cust");
         await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, known_sub_customers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, knownSubCustomers);
+        if (lineGroupId) {
+            try {
+                await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(lineGroupId);
+            }
+            catch (_) { /* 表可能尚未建立 */ }
+        }
         res.redirect("/admin/customers?ok=1");
     });
     router.get("/customers/:id/quick-view", async (req, res) => {
@@ -7567,6 +7573,12 @@ function createAdminRouter() {
             return;
         }
         await db.prepare("UPDATE customers SET name = ?, teraoka_code = ?, hq_cust_code = ?, line_group_name = ?, line_group_id = ?, contact = ?, route_line = ?, default_unit = ?, order_notes = ?, known_sub_customers = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, defaultUnit, orderNotes, knownSubCustomers, active, id);
+        if (lineGroupId) {
+            try {
+                await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(lineGroupId);
+            }
+            catch (_) { /* 表可能尚未建立 */ }
+        }
         const fromOrders = req.body?.from === "orders";
         res.redirect(fromOrders ? "/admin/orders?ok=edit" : "/admin/customers?ok=edit");
     });
@@ -7671,6 +7683,131 @@ function createAdminRouter() {
             : req.query.ok === "edit" ? "已儲存。"
             : req.query.ok === "del" ? "已刪除。" : "";
         const errMsg = req.query.err ? String(req.query.err) : "";
+        // 待綁定 LINE 群組：機器人加入新群組或在未綁定群組收到訊息時自動登錄
+        let pendingGroups = [];
+        try {
+            pendingGroups = await db.prepare("SELECT group_id, source_type, group_name, first_seen_at, last_seen_at FROM pending_line_groups ORDER BY last_seen_at DESC").all();
+        }
+        catch (_) { /* 表可能尚未建立 */ }
+        const pendingRows = pendingGroups.map((g, i) => {
+            const gid = String(g.group_id || "");
+            const gidShort = gid.length > 14 ? gid.slice(0, 6) + "…" + gid.slice(-6) : gid;
+            const gname = g.group_name && String(g.group_name).trim() !== "" ? escapeHtml(String(g.group_name)) : `<span style="color:var(--txt-3);">（未取得名稱）</span>`;
+            const stype = g.source_type === "room" ? "聊天室" : g.source_type === "group" ? "群組" : "—";
+            const seen = g.last_seen_at ? escapeHtml(String(g.last_seen_at).replace("T", " ").replace("Z", "").slice(0, 19)) : "—";
+            return `
+            <tr>
+              <td>
+                <div style="font-weight:500;">${gname}</div>
+                <div style="font-size:11px;color:var(--txt-3);"><code class="mono">${escapeHtml(gidShort)}</code></div>
+              </td>
+              <td><span class="sf-pill">${stype}</span></td>
+              <td class="mono" style="font-size:11px;color:var(--txt-3);white-space:nowrap;">${seen}</td>
+              <td>
+                <form method="post" action="/admin/customers/pending-bind" class="pgrp-bind-form" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0;">
+                  <input type="hidden" name="group_id" value="${escapeAttr(gid)}">
+                  <input type="hidden" name="group_name" value="${escapeAttr(g.group_name || "")}">
+                  <input type="hidden" name="mode" value="existing">
+                  <div class="pgrp-cust-picker" data-row="${i}" style="position:relative;min-width:220px;">
+                    <input type="hidden" name="customer_id" class="pgrp-cust-id" value="">
+                    <input type="text" class="pgrp-cust-search sf-input" autocomplete="off" placeholder="輸入客戶名稱搜尋…" style="width:220px;height:32px;">
+                    <div class="pgrp-cust-dd" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:30;max-height:240px;overflow:auto;background:var(--bg-1);border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 4px 12px rgba(0,0,0,.08);"></div>
+                  </div>
+                  <button type="submit" class="sf-btn sm primary">綁定</button>
+                </form>
+                <form method="post" action="/admin/customers/pending-bind" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 0 0;">
+                  <input type="hidden" name="group_id" value="${escapeAttr(gid)}">
+                  <input type="hidden" name="group_name" value="${escapeAttr(g.group_name || "")}">
+                  <input type="hidden" name="mode" value="new">
+                  <input type="text" name="name" placeholder="新客戶名稱" required class="sf-input" style="width:160px;height:32px;">
+                  <button type="submit" class="sf-btn sm">建立並綁定</button>
+                </form>
+                <form method="post" action="/admin/customers/pending-dismiss" style="display:inline;margin:6px 0 0 0;">
+                  <input type="hidden" name="group_id" value="${escapeAttr(gid)}">
+                  <button type="submit" class="sf-btn sm ghost" style="color:var(--txt-3);">忽略</button>
+                </form>
+              </td>
+            </tr>`;
+        }).join("");
+        const pendingPanel = pendingGroups.length
+            ? `
+          <div class="sf-card" style="border-left:3px solid var(--accent);">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.link} 待綁定 LINE 群組 <span class="sf-pill warn" style="margin-left:4px;">${pendingGroups.length}</span></div>
+              <span class="sf-card-sub">機器人加入群組後會自動列出</span>
+            </div>
+            <div style="padding:0;">
+              <table class="sf-table">
+                <thead>
+                  <tr>
+                    <th>群組名稱 / ID</th>
+                    <th style="width:80px;">類型</th>
+                    <th style="width:160px;">最後出現</th>
+                    <th>串聯動作</th>
+                  </tr>
+                </thead>
+                <tbody>${pendingRows}</tbody>
+              </table>
+            </div>
+          </div>
+          <script>
+          (function(){
+            var pickers = document.querySelectorAll(".pgrp-cust-picker");
+            if (!pickers.length) return;
+            function escAttr(s){ return String(s || "").replace(/&/g,"&amp;").replace(/"/g,"&quot;"); }
+            function escHtml(s){ return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+            pickers.forEach(function(picker){
+              var hidden = picker.querySelector(".pgrp-cust-id");
+              var input = picker.querySelector(".pgrp-cust-search");
+              var dd = picker.querySelector(".pgrp-cust-dd");
+              var timer = null;
+              function hide(){ dd.style.display = "none"; dd.innerHTML = ""; }
+              function show(arr){
+                if (!arr || !arr.length){
+                  dd.innerHTML = '<div style="padding:8px 12px;color:var(--txt-3);font-size:13px;">無符合客戶</div>';
+                } else {
+                  dd.innerHTML = arr.map(function(c){
+                    return '<div class="pgrp-cust-opt" data-id="' + escAttr(c.id) + '" data-name="' + escAttr(c.name) + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--line);font-size:14px;color:var(--txt-1);">' + escHtml(c.name) + '</div>';
+                  }).join("");
+                }
+                dd.style.display = "block";
+              }
+              input.addEventListener("input", function(){
+                hidden.value = "";
+                var q = (this.value || "").trim();
+                clearTimeout(timer);
+                if (!q) { hide(); return; }
+                timer = setTimeout(function(){
+                  fetch("/admin/api/customers-search?q=" + encodeURIComponent(q), { credentials: "same-origin" })
+                    .then(function(r){ return r.json(); })
+                    .then(show)
+                    .catch(hide);
+                }, 180);
+              });
+              input.addEventListener("focus", function(){
+                if ((this.value || "").trim() && dd.innerHTML) dd.style.display = "block";
+              });
+              dd.addEventListener("click", function(e){
+                var opt = e.target.closest(".pgrp-cust-opt");
+                if (!opt) return;
+                hidden.value = opt.getAttribute("data-id") || "";
+                input.value = opt.getAttribute("data-name") || "";
+                hide();
+              });
+              document.addEventListener("click", function(e){ if (!picker.contains(e.target)) hide(); });
+            });
+            document.querySelectorAll(".pgrp-bind-form").forEach(function(f){
+              f.addEventListener("submit", function(e){
+                var hidden = f.querySelector(".pgrp-cust-id");
+                if (!hidden || !hidden.value) {
+                  e.preventDefault();
+                  alert("請從搜尋結果中選擇要綁定的客戶");
+                }
+              });
+            });
+          })();
+          </script>`
+            : "";
         const statCard = (label, num, status, href) => `
           <a href="${href || "#"}" style="text-decoration:none;color:inherit;padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;min-width:160px;">
             <span class="sf-dot ${status}"></span>
@@ -7694,6 +7831,7 @@ function createAdminRouter() {
           </div>
           ${okMsg ? `<div class="sf-pill ok" style="align-self:flex-start;">${escapeHtml(okMsg)}</div>` : ""}
           ${errMsg ? `<div class="sf-pill bad" style="align-self:flex-start;">${escapeHtml(errMsg)}</div>` : ""}
+          ${pendingPanel}
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${statCard("客戶總數", totalN, "ok", "#")}
             ${statCard("已綁定 LINE", boundN, "ok", "#")}
@@ -7827,6 +7965,85 @@ function createAdminRouter() {
         </script>
       `;
         res.type("text/html").send(notionPage("客戶管理", body, "customers", res));
+    });
+    router.post("/customers/pending-bind", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const groupId = (req.body.group_id || "").replace(/\s/g, "").trim();
+        const mode = (req.body.mode || "").trim();
+        const groupName = (req.body.group_name || "").trim() || null;
+        if (!groupId) {
+            res.redirect("/admin/customers?err=" + encodeURIComponent("缺少群組 ID"));
+            return;
+        }
+        try {
+            // 若已被其他客戶綁定，提示衝突
+            const conflict = await db.prepare("SELECT id, name FROM customers WHERE line_group_id = ? LIMIT 1").get(groupId);
+            if (conflict) {
+                await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(groupId);
+                res.redirect("/admin/customers?err=" + encodeURIComponent("此群組已綁定客戶：" + conflict.name));
+                return;
+            }
+            if (mode === "existing") {
+                const customerId = (req.body.customer_id || "").trim();
+                if (!customerId) {
+                    res.redirect("/admin/customers?err=" + encodeURIComponent("請選擇要綁定的客戶"));
+                    return;
+                }
+                const target = await db.prepare("SELECT id, line_group_name, name FROM customers WHERE id = ?").get(customerId);
+                if (!target) {
+                    res.redirect("/admin/customers?err=" + encodeURIComponent("客戶不存在"));
+                    return;
+                }
+                const keepName = target.line_group_name && String(target.line_group_name).trim() !== "" ? target.line_group_name : groupName;
+                const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+                await db.prepare("UPDATE customers SET line_group_id = ?, line_group_name = ?, updated_at = " + nowSql + " WHERE id = ?").run(groupId, keepName, customerId);
+                await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(groupId);
+                await logDataChange(req, {
+                    entityType: "customer",
+                    entityId: customerId,
+                    action: "bind_line_group",
+                    summary: `將 LINE 群組綁定到客戶 ${target.name}`,
+                    meta: { groupId: groupId.slice(0,6)+"…"+groupId.slice(-6), groupName: keepName || null },
+                });
+                res.redirect("/admin/customers?ok=edit");
+                return;
+            }
+            if (mode === "new") {
+                const name = (req.body.name || "").trim();
+                if (!name) {
+                    res.redirect("/admin/customers?err=" + encodeURIComponent("請輸入新客戶名稱"));
+                    return;
+                }
+                const newCid = (0, id_js_1.newId)("cust");
+                await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, known_sub_customers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(newCid, name, null, null, groupName, groupId, null, null, null);
+                await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(groupId);
+                await logDataChange(req, {
+                    entityType: "customer",
+                    entityId: newCid,
+                    action: "create_and_bind",
+                    summary: `建立新客戶 ${name} 並綁定 LINE 群組`,
+                    meta: { groupId: groupId.slice(0,6)+"…"+groupId.slice(-6), groupName: groupName || null },
+                });
+                res.redirect("/admin/customers?ok=1");
+                return;
+            }
+            res.redirect("/admin/customers?err=" + encodeURIComponent("未知的綁定模式"));
+        }
+        catch (e) {
+            res.redirect("/admin/customers?err=" + encodeURIComponent("綁定失敗：" + (e?.message || String(e)).slice(0, 80)));
+        }
+    });
+    router.post("/customers/pending-dismiss", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const groupId = (req.body.group_id || "").replace(/\s/g, "").trim();
+        if (groupId) {
+            try {
+                await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(groupId);
+            }
+            catch (e) {
+                res.redirect("/admin/customers?err=" + encodeURIComponent("忽略失敗：" + (e?.message || String(e)).slice(0, 80)));
+                return;
+            }
+        }
+        res.redirect("/admin/customers");
     });
     router.post("/api/customers/:id/toggle", async (req, res) => {
         const id = req.params.id;

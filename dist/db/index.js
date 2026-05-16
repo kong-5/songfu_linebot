@@ -130,6 +130,16 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS pending_line_groups (
+          group_id TEXT PRIMARY KEY,
+          source_type TEXT,
+          group_name TEXT,
+          first_seen_at TEXT,
+          last_seen_at TEXT
+        )`);
+    }
+    catch (_) { /* table may already exist */ }
+    try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS wholesale_market_snapshots (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, market_name TEXT NOT NULL, crop_name TEXT NOT NULL, category TEXT, high_price REAL, mid_price REAL, low_price REAL, created_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_wholesale_snap_date ON wholesale_market_snapshots(record_date)");
     }
@@ -400,6 +410,16 @@ async function initPg() {
             catch (_) { /* column may already exist */ }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS line_bot_state_log (id TEXT PRIMARY KEY, event_type TEXT NOT NULL, detail TEXT, created_at TIMESTAMPTZ)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS pending_line_groups (
+            group_id TEXT PRIMARY KEY,
+            source_type TEXT,
+            group_name TEXT,
+            first_seen_at TIMESTAMPTZ,
+            last_seen_at TIMESTAMPTZ
+          )`);
             }
             catch (_) { /* table may already exist */ }
             try {

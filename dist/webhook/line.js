@@ -175,6 +175,32 @@ async function duplicateAttachmentToOrders(db, lineMessageId, orderIds, nowSql) 
         await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, oid, lineMessageId);
     }
 }
+/** 機器人加入新群組或在未綁定群組收到訊息時，登錄到待綁定清單供後台一鍵串聯 */
+async function upsertPendingLineGroup(db, groupId, sourceType, groupName) {
+    if (!groupId)
+        return;
+    const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+    try {
+        // 若該 groupId 已被某客戶綁定，則不再列入待綁定（避免重複出現）
+        const bound = await db.prepare("SELECT id FROM customers WHERE line_group_id = ? LIMIT 1").get(groupId);
+        if (bound) {
+            await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(groupId);
+            return;
+        }
+        const existing = await db.prepare("SELECT group_id, group_name FROM pending_line_groups WHERE group_id = ?").get(groupId);
+        if (existing) {
+            // 更新最後出現時間；若取得到群組名稱且原本為空則補上
+            const keepName = existing.group_name && String(existing.group_name).trim() !== "" ? existing.group_name : (groupName || null);
+            await db.prepare("UPDATE pending_line_groups SET source_type = ?, group_name = ?, last_seen_at = " + nowSql + " WHERE group_id = ?").run(sourceType || null, keepName, groupId);
+        }
+        else {
+            await db.prepare("INSERT INTO pending_line_groups (group_id, source_type, group_name, first_seen_at, last_seen_at) VALUES (?, ?, ?, " + nowSql + ", " + nowSql + ")").run(groupId, sourceType || null, groupName || null);
+        }
+    }
+    catch (e) {
+        console.error("[LINE] 寫入待綁定群組失敗:", e?.message || e);
+    }
+}
 async function getNextOrderNo(db, orderDate) {
     const nextKey = "order_seq_next_" + orderDate;
     const startKey = "order_seq_start_" + orderDate;
@@ -317,6 +343,47 @@ function createLineWebhook() {
     async function processLineWebhookEvents(events) {
         for (const event of events) {
             try {
+                if (event.type === "join" || event.type === "memberJoined") {
+                    try {
+                        const st = event.source?.type || "";
+                        const rawGid = st === "group" ? (event.source.groupId || "") : st === "room" ? (event.source.roomId || "") : "";
+                        const gid = rawGid.replace(/\s/g, "").trim();
+                        if (gid) {
+                            let groupName = null;
+                            if (lineClient && st === "group") {
+                                try {
+                                    const summary = await lineClient.getGroupSummary(gid);
+                                    groupName = summary?.groupName || null;
+                                }
+                                catch (e) {
+                                    console.warn("[LINE] 取得群組名稱失敗（將維持空白）:", e?.message || e);
+                                }
+                            }
+                            await upsertPendingLineGroup(db, gid, st, groupName);
+                            console.log("[LINE] 機器人加入 %s ID=%s 名稱=%s", st, gid, groupName || "(未取得)");
+                        }
+                    }
+                    catch (e) {
+                        console.error("[LINE] join 事件處理失敗:", e?.message || e);
+                    }
+                    continue;
+                }
+                if (event.type === "leave" || event.type === "memberLeft") {
+                    try {
+                        const st = event.source?.type || "";
+                        const rawGid = st === "group" ? (event.source.groupId || "") : st === "room" ? (event.source.roomId || "") : "";
+                        const gid = rawGid.replace(/\s/g, "").trim();
+                        if (gid && event.type === "leave") {
+                            // 機器人被踢出時才清除；memberLeft 只是其他成員離開，不處理
+                            await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(gid);
+                            console.log("[LINE] 機器人離開 %s ID=%s 已從待綁定清單移除", st, gid);
+                        }
+                    }
+                    catch (e) {
+                        console.error("[LINE] leave 事件處理失敗:", e?.message || e);
+                    }
+                    continue;
+                }
                 if (event.type === "unsend") {
                     const unsentMessageId = event.unsend?.messageId;
                     if (unsentMessageId) {
@@ -454,6 +521,18 @@ function createLineWebhook() {
                     }
                     else
                         console.log("[LINE] 綁定查詢 OK customer=%s", customer.id);
+                }
+                /** 未綁定客戶的群組／聊天室：登錄到待綁定清單，後台「客戶管理」會列出供一鍵串聯 */
+                if (groupId && !customer) {
+                    let pendingName = null;
+                    if (lineClient && sourceType === "group") {
+                        try {
+                            const summary = await lineClient.getGroupSummary(groupId);
+                            pendingName = summary?.groupName || null;
+                        }
+                        catch (_) { /* 取不到名稱不影響登錄 */ }
+                    }
+                    await upsertPendingLineGroup(db, groupId, sourceType, pendingName);
                 }
                 // 照片：收單中儲存附件；可選 OCR 辨識文字並寫入品項；未收單則傳圖即開始收單
                 if (msgType === "image") {
