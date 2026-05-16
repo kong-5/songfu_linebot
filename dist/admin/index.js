@@ -64,6 +64,7 @@ const unit_spec_learn_js_1 = require("../lib/unit-spec-learn.js");
 const customer_profile_js_1 = require("../lib/customer-profile.js");
 const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
 const daily_summary_push_js_1 = require("../lib/daily-summary-push.js");
+const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
@@ -1080,6 +1081,9 @@ function normalizeAdminUserRecord(raw) {
         approvedBy: raw.approvedBy != null ? String(raw.approvedBy) : null,
         approvedAt: raw.approvedAt != null ? String(raw.approvedAt) : null,
         createdAt: raw.createdAt != null ? String(raw.createdAt) : null,
+        lineUserId: raw.lineUserId != null && String(raw.lineUserId).trim() ? String(raw.lineUserId).trim() : null,
+        lineUserName: raw.lineUserName != null ? String(raw.lineUserName) : null,
+        lineBoundAt: raw.lineBoundAt != null ? String(raw.lineBoundAt) : null,
     };
 }
 function isAdminOwnerUsername(username) {
@@ -1630,11 +1634,46 @@ function createAdminRouter() {
             const delForm = `<form method="post" action="/admin/users/delete" style="display:inline;margin-left:8px;" onsubmit="return confirm('確定刪除此帳號？');"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="btn">刪除</button></form>`;
             return `<tr><td>${escapeHtml(u.name || u.username)}</td><td><code>${escapeHtml(u.username)}</code></td><td>${escapeHtml(u.title)}</td><td>停用 ${enForm} ${!isAdminOwnerUsername(u.username) ? delForm : ""}</td></tr>`;
         }).join("");
+        const bindOkCode = typeof req.query.bind_code === "string" ? req.query.bind_code.trim() : "";
+        const bindOkUser = typeof req.query.bind_user === "string" ? req.query.bind_user.trim() : "";
+        const bindMsg = bindOkCode && bindOkUser
+            ? `<div class="sf-card" style="border-left:3px solid var(--accent);margin-bottom:16px;padding:14px 18px;">
+                <div style="font-size:13px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">員工 LINE 綁定碼</div>
+                <div style="font-size:14px;margin-bottom:10px;">已為 <strong>${escapeHtml(bindOkUser)}</strong> 產生綁定碼（10 分鐘內有效）：</div>
+                <div class="mono" style="font-size:32px;font-weight:700;letter-spacing:6px;color:var(--accent);margin-bottom:10px;">${escapeHtml(bindOkCode)}</div>
+                <div style="font-size:12px;color:var(--txt-2);line-height:1.6;">請該員工在 LINE 私訊本 Bot 傳送：<br><code style="background:var(--bg-3);padding:2px 8px;border-radius:3px;">綁定 ${escapeHtml(bindOkCode)}</code><br>送出後其 LINE userId 會自動綁到此帳號，之後該員工在客戶群內傳訊息將跳過 AI 解析（僅記錄稽核軌跡）。</div>
+              </div>`
+            : "";
+        // 員工 LINE 綁定列（僅啟用中帳號）
+        const bindingRows = activeList.map(u => {
+            const lu = u.lineUserId;
+            const bound = !!lu;
+            const luShort = lu ? `<code class="mono" style="font-size:11px;color:var(--txt-2);" title="${escapeAttr(lu)}">${escapeHtml(lu.slice(0,6))}…${escapeHtml(lu.slice(-4))}</code>` : "—";
+            const boundAt = u.lineBoundAt ? `<span style="font-size:11px;color:var(--txt-3);">${escapeHtml(String(u.lineBoundAt).slice(0,16).replace("T"," "))}</span>` : "";
+            const btn = bound
+                ? `<form method="post" action="/admin/users/line-unbind" style="display:inline;" onsubmit="return confirm('確定解除 ${escapeAttr(u.username)} 的 LINE 綁定？');"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="sf-btn sm danger">解綁</button></form>`
+                : `<form method="post" action="/admin/users/line-bind-code" style="display:inline;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><button type="submit" class="sf-btn sm">產生綁定碼</button></form>`;
+            return `<tr>
+              <td>${escapeHtml(u.name || u.username)} <span class="sf-pill">${escapeHtml(u.title)}</span></td>
+              <td><code>${escapeHtml(u.username)}</code></td>
+              <td>${bound ? `<span class="sf-pill ok">已綁定</span>` : `<span class="sf-pill">未綁定</span>`}</td>
+              <td>${luShort}</td>
+              <td>${boundAt}</td>
+              <td>${btn}</td>
+            </tr>`;
+        }).join("");
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 人員管理</div>
         <h1 class="notion-page-title">人員管理</h1>
         <p class="notion-hint">僅<strong>經理</strong>可進入本頁。負責人信箱：<code>${escapeHtml(ADMIN_OWNER_EMAIL)}</code>（可環境變數 <code>ADMIN_OWNER_EMAIL</code> 覆寫）。新帳號須由負責人<strong>核准</strong>後才可登入。<strong>移工</strong>無法刪除任何資料。</p>
         ${msg}
+        ${bindMsg}
+        <div class="notion-card">
+          <h2 style="margin-top:0;">員工 LINE 綁定（內稽用）</h2>
+          <p class="notion-hint" style="margin:0 0 12px;">員工綁定後，其在客戶群組內傳的訊息將<strong>跳過 AI 解析</strong>（不計訂單、不耗 Gemini 額度），僅記錄到稽核軌跡。便於員工在群組內與客戶確認時不誤觸發收單。</p>
+          <table><thead><tr><th>姓名</th><th>帳號</th><th>綁定狀態</th><th>LINE userId</th><th>綁定時間</th><th>操作</th></tr></thead>
+            <tbody>${bindingRows || "<tr><td colspan='6'>尚無啟用帳號</td></tr>"}</tbody></table>
+        </div>
         <div class="notion-card">
           <h2 style="margin-top:0;">待審核</h2>
           <table><thead><tr><th>姓名</th><th>帳號</th><th>職稱</th><th>操作</th></tr></thead><tbody>${pendingRows || "<tr><td colspan=\"4\">尚無待審核帳號</td></tr>"}</tbody></table>
@@ -1760,6 +1799,51 @@ function createAdminRouter() {
         }
         await saveAdminUsers(next);
         res.redirect("/admin/users?ok=del");
+    });
+    router.post("/users/line-bind-code", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
+        const username = String(req.body?.username || "").trim();
+        if (!username) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        const users = await loadAdminUsers();
+        if (!users.find(u => u.username === username)) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        try {
+            const out = await (0, employee_line_binding_js_1.generateBindCode)(db, username);
+            await logDataChange(req, {
+                entityType: "employee_line_binding",
+                entityId: username,
+                action: "generate_code",
+                summary: `為員工 ${username} 產生 LINE 綁定碼（10 分鐘有效）`,
+            });
+            res.redirect(`/admin/users?bind_code=${encodeURIComponent(out.code)}&bind_user=${encodeURIComponent(username)}`);
+        } catch (e) {
+            res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "綁定碼產生失敗"));
+        }
+    });
+    router.post("/users/line-unbind", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
+        const username = String(req.body?.username || "").trim();
+        if (!username) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        try {
+            const changed = await (0, employee_line_binding_js_1.unbindLineUserIdFromEmployee)(db, username);
+            if (changed) {
+                await logDataChange(req, {
+                    entityType: "employee_line_binding",
+                    entityId: username,
+                    action: "unbind",
+                    summary: `解除員工 ${username} 的 LINE 綁定`,
+                });
+            }
+            res.redirect("/admin/users?ok=status");
+        } catch (e) {
+            res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "解綁失敗"));
+        }
     });
     router.post("/api/working-date", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const date = req.body.date?.trim();

@@ -21,6 +21,7 @@ const customer_handwriting_hints_js_1 = require("../lib/customer-handwriting-hin
 const rebuild_order_from_sources_js_1 = require("../lib/rebuild-order-from-sources.js");
 const order_parsed_heuristics_js_1 = require("../lib/order-parsed-heuristics.js");
 const cloud_tasks_line_js_1 = require("../lib/cloud-tasks-line.js");
+const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
@@ -388,6 +389,46 @@ function createLineWebhook() {
                 if (groupId && textEarly && (textEarly === "取得群組ID" || textEarly === "群組ID")) {
                     await reply(lineClient, event.replyToken, `此群組/聊天室 ID：\n${groupId}\n請將此 ID 提供給管理員，在後台「客戶管理」編輯該客戶的「LINE 群組 ID」並儲存。`, db, { force: true });
                     continue;
+                }
+                // ── 員工 LINE 綁定指令處理（私訊／群組皆可）──────────────────
+                const senderUserId = event.source?.userId || null;
+                if (msgType === "text" && textEarly && senderUserId) {
+                    const code = (0, employee_line_binding_js_1.parseBindCommand)(textEarly);
+                    if (code) {
+                        const p = await (0, employee_line_binding_js_1.consumeBindCode)(db, code);
+                        if (!p) {
+                            await reply(lineClient, event.replyToken, "綁定碼無效或已過期。請回到後台 /admin/users 重新產生。", db, { force: true });
+                        } else {
+                            try {
+                                await (0, employee_line_binding_js_1.bindLineUserIdToEmployee)(db, p.username, senderUserId, null);
+                                await (0, line_bot_control_js_1.appendLineBotLog)(db, "employee_bound", { username: p.username, lineUserId: senderUserId.slice(0, 8) + "…" });
+                                await reply(lineClient, event.replyToken, `✅ 已綁定員工帳號 ${p.username}\n您在群組內傳訊息將不再觸發 AI 解析，僅記錄在稽核軌跡中。\n如需解綁請聯絡管理員。`, db, { force: true });
+                            } catch (e) {
+                                await reply(lineClient, event.replyToken, "綁定失敗：" + (e?.message || e), db, { force: true });
+                            }
+                        }
+                        continue;
+                    }
+                }
+                // ── 員工身份偵測：若 senderUserId 是員工，跳過 AI 解析，只記錄 ──
+                if (senderUserId) {
+                    try {
+                        const emp = await (0, employee_line_binding_js_1.findEmployeeByLineUserId)(db, senderUserId);
+                        if (emp) {
+                            const preview = msgType === "text" ? String(event.message.text || "").slice(0, 200) : `[${msgType}]`;
+                            await (0, line_bot_control_js_1.appendLineBotLog)(db, "internal_employee_message", {
+                                username: emp.username,
+                                title: emp.title,
+                                groupId: groupId || null,
+                                msgType,
+                                preview,
+                            });
+                            console.log("[LINE] 偵測到員工訊息（%s），跳過 AI 解析。msgType=%s", emp.username, msgType);
+                            continue;
+                        }
+                    } catch (e) {
+                        console.warn("[LINE] 員工身份檢查失敗:", e?.message || e);
+                    }
                 }
                 const accepting = await (0, line_bot_control_js_1.isBotAcceptingOrders)(db);
                 if (!accepting) {
