@@ -2335,6 +2335,150 @@ function createAdminRouter() {
         </div>`;
         res.type("text/html").send(notionPage("儀表板", body, "dashboard", res));
     });
+    router.get("/audit", async (req, res) => {
+        const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+        const action = typeof req.query.action === "string" ? req.query.action.trim() : "";
+        const actor = typeof req.query.actor === "string" ? req.query.actor.trim() : "";
+        const limit = Math.max(1, Math.min(500, parseInt(String(req.query.limit||"200"), 10) || 200));
+        // ── 統計（今日／本週） ─────────────────────────────────
+        let todayCount = 0, manualFixCount = 0, geminiCount = 0, alertCount = 0, criticalCount = 0;
+        try {
+            const today = getTaipeiCalendarDateYYYYMMDD();
+            const isPg = Boolean(process.env.DATABASE_URL);
+            const todayClause = isPg ? "created_at::date = ?::date" : "date(created_at) = date(?)";
+            const r1 = await db.prepare(`SELECT COUNT(*) AS n FROM data_change_log WHERE ${todayClause}`).get(today);
+            todayCount = Number(r1?.n) || 0;
+            const r2 = await db.prepare(`SELECT COUNT(*) AS n FROM data_change_log WHERE ${todayClause} AND action LIKE 'set_%'`).get(today);
+            manualFixCount = Number(r2?.n) || 0;
+            const r3 = await db.prepare(`SELECT COUNT(*) AS n FROM gemini_usage_log WHERE ${todayClause}`).get(today);
+            geminiCount = Number(r3?.n) || 0;
+            const r4 = await db.prepare(`SELECT COUNT(*) AS n FROM data_change_log WHERE ${todayClause} AND action IN ('soft_delete','delete','unapprove')`).get(today);
+            alertCount = Number(r4?.n) || 0;
+            const r5 = await db.prepare(`SELECT COUNT(*) AS n FROM data_change_log WHERE ${todayClause} AND action IN ('soft_delete','delete')`).get(today);
+            criticalCount = Number(r5?.n) || 0;
+        } catch (_) { /* ignore */ }
+        // ── 主清單 ─────────────────────────────────────────────
+        let rows = [];
+        try {
+            const where = [];
+            const params = [];
+            if (q) {
+                where.push("(summary LIKE ? OR entity_id LIKE ? OR actor_username LIKE ?)");
+                const v = `%${q}%`;
+                params.push(v, v, v);
+            }
+            if (action) { where.push("action = ?"); params.push(action); }
+            if (actor) { where.push("actor_username = ?"); params.push(actor); }
+            const sql = "SELECT created_at, actor_username, action, summary, entity_type, entity_id, meta_json FROM data_change_log" + (where.length ? " WHERE " + where.join(" AND ") : "") + " ORDER BY created_at DESC LIMIT ?";
+            params.push(limit);
+            rows = await db.prepare(sql).all(...params);
+        } catch (e) {
+            console.warn("[audit]", e?.message || e);
+        }
+        const statusForAction = (a) => {
+            if (a === "soft_delete" || a === "delete") return "bad";
+            if (a === "unapprove") return "warn";
+            if (a === "approve") return "ok";
+            if (a && a.startsWith("set_")) return "info";
+            if (a === "send_promo" || a === "send_notice" || a === "daily_summary_manual" || a === "daily_summary_dry_run") return "accent";
+            return "info";
+        };
+        const actorColorFor = (name) => {
+            const s = String(name || "");
+            if (s.toLowerCase().includes("system")) return "var(--txt-3)";
+            if (s.toLowerCase().includes("gemini")) return "var(--accent)";
+            if (s.toLowerCase().includes("line")) return "var(--ok)";
+            return "var(--info)";
+        };
+        const rowsHtml = rows.length
+            ? rows.map(r => {
+                const s = statusForAction(r.action);
+                let metaPills = "";
+                try {
+                    if (r.meta_json) {
+                        const m = typeof r.meta_json === "string" ? JSON.parse(r.meta_json) : r.meta_json;
+                        const entries = [];
+                        if (m && typeof m === "object") {
+                            for (const [k, v] of Object.entries(m)) {
+                                if (v == null || typeof v === "object") continue;
+                                if (typeof v === "string" && v.length > 60) continue;
+                                entries.push([k, String(v)]);
+                                if (entries.length >= 4) break;
+                            }
+                        }
+                        if (entries.length) metaPills = `<div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;">${entries.map(([k,v]) => `<span class="mono" style="font-size:10px;padding:1px 6px;background:var(--bg-3);border-radius:3px;color:var(--txt-3);">${escapeHtml(k)}: <span style="color:var(--txt-1);">${escapeHtml(v)}</span></span>`).join("")}</div>`;
+                    }
+                } catch (_) {}
+                const actorInitial = (r.actor_username || "?").charAt(0).toUpperCase();
+                return `<tr>
+                  <td class="mono" style="font-size:11px;color:var(--txt-3);white-space:nowrap;">${escapeHtml(String(r.created_at||"").slice(0,19))}</td>
+                  <td><span class="sf-dot ${s}"></span></td>
+                  <td>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <span class="sf-avatar" style="width:18px;height:18px;font-size:10px;background:${actorColorFor(r.actor_username)};">${escapeHtml(actorInitial)}</span>
+                      <span style="font-size:12px;">${escapeHtml(r.actor_username||"system")}</span>
+                    </div>
+                  </td>
+                  <td class="mono" style="font-size:11px;color:var(--accent);">${escapeHtml(r.action||"")}</td>
+                  <td class="mono" style="font-size:11px;color:var(--txt-2);">${escapeHtml((r.entity_type||"") + (r.entity_id?":"+r.entity_id:""))}</td>
+                  <td style="font-size:12px;">${escapeHtml(r.summary||"")}${metaPills}</td>
+                </tr>`;
+              }).join("")
+            : `<tr><td colspan="6" style="padding:24px;text-align:center;color:var(--txt-3);">尚無稽核紀錄（或無符合條件的紀錄）</td></tr>`;
+        const statCard = (label, num, status) => `
+          <div style="padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;">
+            <span class="sf-dot ${status}"></span>
+            <div>
+              <div style="font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">${label}</div>
+              <div class="mono" style="font-size:18px;font-weight:600;">${num}</div>
+            </div>
+          </div>`;
+        const body = `
+        <div class="sf-root" style="padding:24px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;">
+          <div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核軌跡 / DATA CHANGE LOG</div>
+            <h1 style="margin:0;font-size:22px;font-weight:600;">稽核軌跡</h1>
+            <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">所有資料變更皆永久保存。誰、何時、改了什麼，皆可追溯。重大事件（作廢／刪除品項）會以紅色標示。</p>
+          </div>
+          <form method="get" action="/admin/audit" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <div style="position:relative;flex:0 0 280px;">
+              <input class="sf-input" name="q" value="${escapeAttr(q)}" placeholder="搜尋（實體、操作者、摘要）..." style="padding-left:28px;">
+              <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.search}</span>
+            </div>
+            <input class="sf-input" name="action" value="${escapeAttr(action)}" placeholder="動作（如 soft_delete）" style="flex:0 0 180px;">
+            <input class="sf-input" name="actor" value="${escapeAttr(actor)}" placeholder="操作者帳號" style="flex:0 0 160px;">
+            <button class="sf-btn" type="submit">${SF_ICONS.filter}<span>套用篩選</span></button>
+            <a class="sf-btn" href="/admin/audit">重設</a>
+            <div style="flex:1;"></div>
+            <span class="sf-pill">共 ${rows.length} 筆 / 限制 ${limit}</span>
+          </form>
+          <div style="display:flex;gap:12px;">
+            ${statCard("今日事件", todayCount, "ok")}
+            ${statCard("人工修正", manualFixCount, "info")}
+            ${statCard("AI 辨識", geminiCount, "accent")}
+            ${statCard("系統警示", alertCount, "warn")}
+            ${statCard("重大變更", criticalCount, "bad")}
+          </div>
+          <div class="sf-card" style="flex:1;min-height:0;display:flex;flex-direction:column;">
+            <div style="overflow:auto;flex:1;max-height:calc(100vh - 360px);">
+              <table class="sf-table">
+                <thead style="position:sticky;top:0;z-index:1;">
+                  <tr>
+                    <th style="width:160px;">時間</th>
+                    <th style="width:24px;"></th>
+                    <th style="width:140px;">操作者</th>
+                    <th style="width:200px;">動作</th>
+                    <th style="width:200px;">實體</th>
+                    <th>摘要</th>
+                  </tr>
+                </thead>
+                <tbody>${rowsHtml}</tbody>
+              </table>
+            </div>
+          </div>
+        </div>`;
+        res.type("text/html").send(notionPage("稽核軌跡", body, "audit", res));
+    });
     router.get("/recognition-stats", async (req, res) => {
         const isPg = Boolean(process.env.DATABASE_URL);
         const dateRe = /^\d{4}-\d{2}-\d{2}$/;
