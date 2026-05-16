@@ -7391,54 +7391,126 @@ function createAdminRouter() {
             : await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, active FROM customers ORDER BY name").all());
         const makeRow = (r) => {
             const active = r.active === 1 || r.active === "1" || r.active === undefined || r.active === null;
+            const bound = !!r.line_group_id;
+            const initial = (r.name || "?").charAt(0).toUpperCase();
+            const groupCell = bound
+                ? `<div style="display:flex;align-items:center;gap:6px;">
+                     <span style="color:var(--ok);display:inline-flex;">${SF_ICONS.check}</span>
+                     <code class="mono" style="font-size:11px;color:var(--txt-2);">${escapeHtml((r.line_group_id||"").slice(0,12))}${r.line_group_id && r.line_group_id.length > 12 ? "…" : ""}</code>
+                     ${r.line_group_name ? `<span style="font-size:11px;color:var(--txt-3);">· ${escapeHtml(r.line_group_name)}</span>` : ""}
+                   </div>`
+                : `<span class="sf-pill warn">${SF_ICONS.warn}<span>尚未綁定</span></span>`;
+            const codeCell = `<span class="mono" style="font-size:11px;color:var(--txt-2);">${escapeHtml(r.teraoka_code ?? "—")} / ${escapeHtml(r.hq_cust_code ?? "—")}</span>`;
             return `<tr data-customer-id="${escapeAttr(r.id)}">
-            <td>${escapeHtml(r.name)}</td>
-            <td>${escapeHtml(r.teraoka_code ?? "")}</td>
-            <td>${escapeHtml(r.hq_cust_code ?? "")}</td>
-            <td>${escapeHtml(r.line_group_name ?? "")}</td>
-            <td>${r.line_group_id ? "已綁定" : "—"}</td>
-            <td>${escapeHtml(r.contact ?? "")}</td>
-            <td class="customer-status-cell">${active ? "<span style='color:green'>啟用</span>" : "<span style='color:gray'>停用</span>"}</td>
+            <td><span class="sf-dot ${active ? "ok" : ""}"></span></td>
             <td>
-              <a href="/admin/customers/${encodeURIComponent(r.id)}/edit">編輯</a>
-              | <button type="button" class="customer-toggle-btn" data-id="${escapeAttr(r.id)}" data-active="${active ? "1" : "0"}">${active ? "停用" : "啟用"}</button>
-              | <a href="/admin/customers/${encodeURIComponent(r.id)}/delete">刪除</a>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="sf-avatar" style="background:${bound?"var(--accent)":"var(--txt-3)"};">${escapeHtml(initial)}</span>
+                <div>
+                  <div style="font-size:13px;font-weight:500;">${escapeHtml(r.name)}</div>
+                  <div class="mono" style="font-size:10px;color:var(--txt-3);">${escapeHtml(r.id)}</div>
+                </div>
+              </div>
+            </td>
+            <td>${groupCell}</td>
+            <td>${codeCell}</td>
+            <td style="font-size:12px;color:var(--txt-2);">${escapeHtml(r.contact ?? "")}</td>
+            <td style="text-align:right;" class="customer-status-cell">${active ? `<span class="sf-pill ok">啟用</span>` : `<span class="sf-pill">停用</span>`}</td>
+            <td>
+              <a class="sf-btn sm" href="/admin/customers/${encodeURIComponent(r.id)}/edit">${SF_ICONS.edit}</a>
+              <button type="button" class="sf-btn sm customer-toggle-btn" data-id="${escapeAttr(r.id)}" data-active="${active ? "1" : "0"}">${active ? "停用" : "啟用"}</button>
+              <a class="sf-btn sm danger" href="/admin/customers/${encodeURIComponent(r.id)}/delete">${SF_ICONS.x}</a>
             </td>
           </tr>`;
         };
         const isCustomerActive = (r) => r.active === 1 || r.active === "1" || r.active === undefined || r.active === null;
         const activeList = rows.filter(isCustomerActive);
         const inactiveList = rows.filter((r) => !isCustomerActive(r));
-        const tbodyActive = activeList.map(makeRow).join("") || "<tr class=\"customers-placeholder\"><td colspan='8'>無啟用客戶</td></tr>";
-        const tbodyInactive = inactiveList.map(makeRow).join("") || "<tr class=\"customers-placeholder\"><td colspan='8'>無停用客戶</td></tr>";
+        const tbodyActive = activeList.map(makeRow).join("") || "<tr class=\"customers-placeholder\"><td colspan='7' style='padding:24px;text-align:center;color:var(--txt-3);'>無啟用客戶</td></tr>";
+        const tbodyInactive = inactiveList.map(makeRow).join("") || "<tr class=\"customers-placeholder\"><td colspan='7' style='padding:24px;text-align:center;color:var(--txt-3);'>無停用客戶</td></tr>";
         const searchVal = escapeAttr(q);
+        // 統計
+        const totalN = rows.length;
+        const boundN = rows.filter(r => !!r.line_group_id).length;
+        const activeN = activeList.length;
+        const inactiveN = inactiveList.length;
+        const okMsg = req.query.ok === "1" ? "客戶已建立。"
+            : req.query.ok === "edit" ? "已儲存。"
+            : req.query.ok === "del" ? "已刪除。" : "";
+        const errMsg = req.query.err ? String(req.query.err) : "";
+        const statCard = (label, num, status) => `
+          <div style="padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;">
+            <span class="sf-dot ${status}"></span>
+            <div>
+              <div style="font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">${label}</div>
+              <div class="mono" style="font-size:18px;font-weight:600;">${num}</div>
+            </div>
+          </div>`;
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 客戶管理</div>
-        <h1 class="notion-page-title">客戶管理</h1>
-        ${msg}
-        <p style="margin-bottom:16px;"><a href="/admin/customers/new">＋ 新增客戶</a>、<a href="/admin/import-customers">匯入客戶</a></p>
-        <form method="get" action="/admin/customers" style="display:flex;gap:8px;align-items:center;margin-bottom:16px;">
-          <label style="margin:0;">搜尋（名稱模糊）：<input type="search" name="q" value="${searchVal}" placeholder="輸入關鍵字" style="width:220px;"></label>
-          <button type="submit" class="btn">搜尋</button>
-          ${q ? `<a href="/admin/customers" class="btn">清除</a>` : ""}
-        </form>
-        <p class="notion-msg ok" style="margin-bottom:16px;">匯入後可點「編輯」補上 LINE 群組名稱、LINE 群組 ID。停用後該群組將不再對應叫貨。</p>
-        <div class="notion-card">
-          <div class="tab-bar" style="display:flex;gap:0;border-bottom:1px solid var(--notion-border);margin-bottom:0;">
-            <button type="button" class="tab-btn active" data-tab="customers-active" style="padding:10px 16px;border:none;background:transparent;cursor:pointer;font-size:14px;border-bottom:2px solid var(--notion-accent);margin-bottom:-1px;">啟用</button>
-            <button type="button" class="tab-btn" data-tab="customers-inactive" style="padding:10px 16px;border:none;background:transparent;cursor:pointer;font-size:14px;color:var(--notion-text-muted);">停用</button>
+        <div class="sf-root" style="padding:24px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">管理 / 客戶</div>
+              <h1 style="margin:0;font-size:22px;font-weight:600;">客戶與品項管理</h1>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <a class="sf-btn" href="/admin/import-customers">${SF_ICONS.dl}<span>匯入 CSV</span></a>
+              <a class="sf-btn" href="/admin/line-binding">${SF_ICONS.link}<span>LINE 綁定檢查</span></a>
+              <a class="sf-btn primary" href="/admin/customers/new">${SF_ICONS.plus}<span>新增客戶</span></a>
+            </div>
           </div>
-          <div id="customers-active-panel" class="tab-panel">
-            <table>
-              <thead><tr><th>名稱</th><th>寺岡編號</th><th>凌越編號</th><th>LINE 群組名稱</th><th>LINE 綁定</th><th>聯絡</th><th>狀態</th><th>操作</th></tr></thead>
-              <tbody id="customers-active-tbody">${tbodyActive}</tbody>
-            </table>
+          ${okMsg ? `<div class="sf-pill ok" style="align-self:flex-start;">${escapeHtml(okMsg)}</div>` : ""}
+          ${errMsg ? `<div class="sf-pill bad" style="align-self:flex-start;">${escapeHtml(errMsg)}</div>` : ""}
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${statCard("客戶總數", totalN, "ok")}
+            ${statCard("已綁定 LINE", `${boundN} / ${totalN}`, boundN===totalN?"ok":"warn")}
+            ${statCard("啟用客戶", activeN, "info")}
+            ${statCard("停用客戶", inactiveN, "accent")}
           </div>
-          <div id="customers-inactive-panel" class="tab-panel" style="display:none;">
-            <table>
-              <thead><tr><th>名稱</th><th>寺岡編號</th><th>凌越編號</th><th>LINE 群組名稱</th><th>LINE 綁定</th><th>聯絡</th><th>狀態</th><th>操作</th></tr></thead>
-              <tbody id="customers-inactive-tbody">${tbodyInactive}</tbody>
-            </table>
+          <form method="get" action="/admin/customers" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <div style="position:relative;flex:0 0 280px;">
+              <input class="sf-input" name="q" value="${searchVal}" placeholder="搜尋客戶（名稱）..." style="padding-left:28px;">
+              <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.search}</span>
+            </div>
+            <button class="sf-btn" type="submit">${SF_ICONS.search}<span>搜尋</span></button>
+            ${q ? `<a class="sf-btn ghost" href="/admin/customers">清除</a>` : ""}
+            <div style="flex:1;"></div>
+            <button type="button" class="sf-btn ${"active"===""?"primary":""}" id="tab-btn-active" data-tab="customers-active">啟用 (${activeN})</button>
+            <button type="button" class="sf-btn" id="tab-btn-inactive" data-tab="customers-inactive">停用 (${inactiveN})</button>
+          </form>
+          <div class="sf-card" style="flex:1;min-height:0;display:flex;flex-direction:column;">
+            <div id="customers-active-panel" class="tab-panel" style="overflow:auto;max-height:calc(100vh - 360px);">
+              <table class="sf-table">
+                <thead style="position:sticky;top:0;z-index:1;">
+                  <tr>
+                    <th style="width:24px;"></th>
+                    <th>客戶名稱</th>
+                    <th>LINE 群組</th>
+                    <th>寺岡 / 凌越</th>
+                    <th>聯絡</th>
+                    <th style="text-align:right;width:90px;">狀態</th>
+                    <th style="width:140px;">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="customers-active-tbody">${tbodyActive}</tbody>
+              </table>
+            </div>
+            <div id="customers-inactive-panel" class="tab-panel" style="display:none;overflow:auto;max-height:calc(100vh - 360px);">
+              <table class="sf-table">
+                <thead style="position:sticky;top:0;z-index:1;">
+                  <tr>
+                    <th style="width:24px;"></th>
+                    <th>客戶名稱</th>
+                    <th>LINE 群組</th>
+                    <th>寺岡 / 凌越</th>
+                    <th>聯絡</th>
+                    <th style="text-align:right;width:90px;">狀態</th>
+                    <th style="width:140px;">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="customers-inactive-tbody">${tbodyInactive}</tbody>
+              </table>
+            </div>
           </div>
         </div>
         <script>
@@ -7452,7 +7524,9 @@ function createAdminRouter() {
           function moveRow(row, toActive){
             var statusCell = row.querySelector(".customer-status-cell");
             var btn = row.querySelector(".customer-toggle-btn");
-            if (statusCell) statusCell.innerHTML = toActive ? "<span style=\\"color:green\\">啟用</span>" : "<span style=\\"color:gray\\">停用</span>";
+            var dot = row.querySelector(".sf-dot");
+            if (statusCell) statusCell.innerHTML = toActive ? '<span class="sf-pill ok">啟用</span>' : '<span class="sf-pill">停用</span>';
+            if (dot) dot.className = "sf-dot" + (toActive ? " ok" : "");
             if (btn){ btn.dataset.active = toActive ? "1" : "0"; btn.textContent = toActive ? "停用" : "啟用"; }
             var fromTbody = row.parentNode;
             var toTbody = toActive ? activeTbody : inactiveTbody;
@@ -7460,18 +7534,22 @@ function createAdminRouter() {
             fromTbody.removeChild(row);
             toTbody.appendChild(row);
             if (fromTbody.children.length === 0)
-              fromTbody.innerHTML = "<tr class=\\"customers-placeholder\\"><td colspan=\\"8\\">" + (fromTbody.id === "customers-active-tbody" ? "無啟用客戶" : "無停用客戶") + "</td></tr>";
+              fromTbody.innerHTML = '<tr class="customers-placeholder"><td colspan="7" style="padding:24px;text-align:center;color:var(--txt-3);">' + (fromTbody.id === "customers-active-tbody" ? "無啟用客戶" : "無停用客戶") + '</td></tr>';
           }
-          document.querySelectorAll(".tab-btn[data-tab]").forEach(function(btn){
-            btn.addEventListener("click", function(){
+          document.querySelectorAll("[data-tab]").forEach(function(btn){
+            btn.addEventListener("click", function(e){
+              e.preventDefault();
               var tab = this.dataset.tab;
-              document.querySelectorAll(".tab-btn[data-tab]").forEach(function(b){ b.classList.remove("active"); b.style.borderBottom = "none"; b.style.color = ""; });
-              this.classList.add("active"); this.style.borderBottom = "2px solid var(--notion-accent)"; this.style.color = "";
+              document.querySelectorAll("[data-tab]").forEach(function(b){ b.classList.remove("primary"); });
+              this.classList.add("primary");
               document.querySelectorAll(".tab-panel").forEach(function(p){ p.style.display = "none"; });
               var panel = document.getElementById(tab + "-panel");
               if (panel) panel.style.display = "block";
             });
           });
+          // 預設啟用 tab 高亮
+          var tba = document.getElementById("tab-btn-active");
+          if (tba) tba.classList.add("primary");
           document.querySelectorAll(".customer-toggle-btn").forEach(function(btn){
             btn.addEventListener("click", function(){
               var el = this, id = el.dataset.id;
@@ -7492,7 +7570,7 @@ function createAdminRouter() {
         })();
         </script>
       `;
-        res.type("text/html").send(notionPage("客戶管理", body, "", res));
+        res.type("text/html").send(notionPage("客戶與品項管理", body, "customers", res));
     });
     router.post("/api/customers/:id/toggle", async (req, res) => {
         const id = req.params.id;
