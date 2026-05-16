@@ -63,6 +63,7 @@ const gemini_eval_harness_js_1 = require("../lib/gemini-eval-harness.js");
 const unit_spec_learn_js_1 = require("../lib/unit-spec-learn.js");
 const customer_profile_js_1 = require("../lib/customer-profile.js");
 const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
+const daily_summary_push_js_1 = require("../lib/daily-summary-push.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
@@ -1398,6 +1399,15 @@ function createAdminRouter() {
     router.get("/line-bot", async (_req, res) => {
         const s = await (0, line_bot_control_js_1.getLineBotSettings)(db);
         const accepting = await (0, line_bot_control_js_1.isBotAcceptingOrders)(db);
+        let dailySummaryEnabled = false;
+        let dailySummaryHour = 22;
+        try {
+            const r1 = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("daily_summary_push_enabled");
+            dailySummaryEnabled = !!(r1 && (r1.value === "1" || r1.value === "true"));
+            const r2 = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("daily_summary_push_hour");
+            const n = r2?.value ? parseInt(String(r2.value), 10) : NaN;
+            if (Number.isFinite(n) && n >= 0 && n <= 23) dailySummaryHour = n;
+        } catch (_) { /* ignore */ }
         let logs = [];
         try {
             logs = await db.prepare("SELECT event_type, detail, created_at FROM line_bot_state_log ORDER BY created_at DESC LIMIT 80").all();
@@ -1436,6 +1446,9 @@ function createAdminRouter() {
             <hr style="margin:16px 0;border:none;border-top:1px solid var(--notion-border);">
             <p class="notion-hint" style="margin-top:6px;"><label style="margin:0;font-weight:400;"><input type="checkbox" name="line_order_confirm_reply_enabled" value="1" ${s.orderConfirmReplyEnabled ? "checked" : ""}> <strong>啟用「訂單編號確認回覆」</strong>：客戶最後一則訊息後，若 N 秒內無新訊息，自動回覆「感謝您的下訂，訂單已成立，訂單編號：XXX」。預設關閉。</label></p>
             <p class="notion-hint" style="margin-top:4px;">延遲秒數 <input type="number" name="line_order_confirm_reply_delay_sec" min="30" max="3600" step="10" value="${escapeAttr(String(s.orderConfirmReplyDelaySec || 600))}" style="width:90px;">（範圍 30 ~ 3600 秒；預設 600 秒 = 10 分鐘。建議拉長以避免客戶還在補品項時就誤發回覆。）</p>
+            <hr style="margin:16px 0;border:none;border-top:1px solid var(--notion-border);">
+            <p class="notion-hint" style="margin-top:6px;"><label style="margin:0;font-weight:400;"><input type="checkbox" name="daily_summary_push_enabled" value="1" ${dailySummaryEnabled ? "checked" : ""}> <strong>啟用「每日訂單摘要推播」（內稽用）</strong>：每日於指定時刻自動推送 Flex Message 給每個客戶 LINE 群組，列出當日所有訂單品項。客戶有錯誤可立刻回覆。預設關閉。</label></p>
+            <p class="notion-hint" style="margin-top:4px;">推送時刻 <select name="daily_summary_push_hour" style="padding:2px 6px;">${Array.from({length:24},(_,h)=>`<option value="${h}" ${h===dailySummaryHour?"selected":""}>${String(h).padStart(2,"0")}:00</option>`).join("")}</select>（台北時間。預設 22:00；推送會避開已作廢訂單）　<a href="/admin/daily-summary-test" style="font-size:12px;margin-left:8px;">→ 手動測試推播</a></p>
             <p class="notion-hint">測試階段建議選「一律開啟」，確認無誤後再改「依時段」。AI 過濾建議先關閉，避免誤擋。</p>
             <p><button type="submit" class="btn btn-primary">儲存設定</button></p>
           </form>
@@ -1465,8 +1478,29 @@ function createAdminRouter() {
         const confirmDelay = Number.isFinite(confirmDelayRaw) ? Math.max(30, Math.min(3600, confirmDelayRaw)) : 600;
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_order_confirm_reply_enabled", confirmEnabled);
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("line_order_confirm_reply_delay_sec", String(confirmDelay));
-        await (0, line_bot_control_js_1.appendLineBotLog)(db, "settings_saved", { mode: m, windowStart: wStart, windowEnd: wEnd, aiGate: aiGate === "1", suppressCustomerReply: suppressReply === "1", orderConfirmReplyEnabled: confirmEnabled === "1", orderConfirmReplyDelaySec: confirmDelay });
+        const dailyEnabled = req.body.daily_summary_push_enabled === "1" ? "1" : "0";
+        const dailyHourRaw = parseInt(String(req.body.daily_summary_push_hour || "22"), 10);
+        const dailyHour = Number.isFinite(dailyHourRaw) && dailyHourRaw >= 0 && dailyHourRaw <= 23 ? dailyHourRaw : 22;
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("daily_summary_push_enabled", dailyEnabled);
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("daily_summary_push_hour", String(dailyHour));
+        await (0, line_bot_control_js_1.appendLineBotLog)(db, "settings_saved", { mode: m, windowStart: wStart, windowEnd: wEnd, aiGate: aiGate === "1", suppressCustomerReply: suppressReply === "1", orderConfirmReplyEnabled: confirmEnabled === "1", orderConfirmReplyDelaySec: confirmDelay, dailySummaryPushEnabled: dailyEnabled === "1", dailySummaryPushHour: dailyHour });
         res.redirect("/admin/line-bot?ok=1");
+    });
+    router.get("/daily-summary-test", requireManager, async (req, res) => {
+        const dry = req.query.dry === "1";
+        try {
+            const out = await daily_summary_push_js_1.runDailySummaryPush(db, { dryRun: dry });
+            await logDataChange(req, {
+                entityType: "broadcast",
+                entityId: new Date().toISOString(),
+                action: dry ? "daily_summary_dry_run" : "daily_summary_manual",
+                summary: `${dry ? "（試跑）" : ""}手動觸發每日訂單摘要：成功 ${out.sent} 個，略過 ${out.skipped} 個，錯誤 ${(out.errors||[]).length}`,
+                meta: out,
+            });
+            res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>每日訂單摘要 手動測試</title><style>body{font-family:system-ui;padding:24px;max-width:680px;margin:0 auto;}pre{background:#f5f5f5;padding:12px;border-radius:6px;overflow:auto;}</style></head><body><h2>每日訂單摘要手動觸發${dry?"（試跑，不實際發送）":""}</h2><p><strong>結果：</strong>成功 ${out.sent} 個群組，略過 ${out.skipped} 個（當日無訂單），錯誤 ${(out.errors||[]).length}</p><pre>${escapeHtml(JSON.stringify(out, null, 2))}</pre><p><a href="/admin/daily-summary-test?dry=1">試跑模式</a> | <a href="/admin/daily-summary-test">實際發送</a> | <a href="/admin/line-bot">回 LINE 機器人設定</a></p></body></html>`);
+        } catch (e) {
+            res.status(500).type("text/plain").send("失敗：" + (e?.message || e));
+        }
     });
     /** DB 尚無 line_unit_conversion_rules 時的範例；胡蘿蔔／小黃瓜等請改用品項 2-2 或自行在換算頁新增，避免與品項設定衝突 */
     const DEFAULT_LINE_UNIT_RULES = JSON.stringify({
@@ -7927,7 +7961,7 @@ YY小吃, C5678...,</pre>
         res.redirect("/admin/import-teraoka?ok=1&matched=" + matched + "&unmatched=" + unmatchedCount);
     });
     // ── Broadcast ──────────────────────────────────────────────────────────────
-    router.get("/broadcast", async (req, res) => {
+    router.get("/broadcast", requireManager, async (req, res) => {
         const customers = await db.prepare("SELECT id, name FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != '' ORDER BY name ASC").all();
         const successCount = req.query.sent ? parseInt(req.query.sent, 10) : null;
         const errMsg = req.query.err ? decodeURIComponent(String(req.query.err)) : null;
@@ -8091,7 +8125,7 @@ async function sendMsg(){
 </script>`;
         res.send(notionPage("群發訊息", body, "broadcast", res));
     });
-    router.post("/broadcast/preview", async (req, res) => {
+    router.post("/broadcast/preview", requireManager, async (req, res) => {
         const data = req.body || {};
         try {
             const msg = data.type === "notice"
@@ -8103,7 +8137,7 @@ async function sendMsg(){
             res.status(400).json({ error: e?.message || "建立預覽失敗" });
         }
     });
-    router.post("/broadcast/send", async (req, res) => {
+    router.post("/broadcast/send", requireManager, async (req, res) => {
         const data = req.body || {};
         const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
         if (!token) {
@@ -8151,6 +8185,15 @@ async function sendMsg(){
             }
         }
         if (errors.length) console.warn("[broadcast] 部分傳送失敗:", errors.join(" | "));
+        try {
+            await logDataChange(req, {
+                entityType: "broadcast",
+                entityId: new Date().toISOString(),
+                action: data.type === "notice" ? "send_notice" : "send_promo",
+                summary: `群發訊息 ${data.type === "notice" ? "公告" : "限時優惠"}：成功 ${sent} 個群組${errors.length ? `，失敗 ${errors.length}` : ""}`,
+                meta: { type: data.type, sent, errors, payload: data, recipients_count: targets.length },
+            });
+        } catch (_) { /* ignore audit failure */ }
         res.json({ ok: true, sent, errors });
     });
     return router;

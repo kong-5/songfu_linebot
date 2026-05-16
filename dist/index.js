@@ -204,6 +204,25 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             console.error("[rhythm] auto schedule", e?.message || e);
         }
     }, 60000);
+    // 內稽：每日 N 點自動推送當日訂單摘要給每個客戶 LINE 群組（後台可切換時刻與啟用）
+    const daily_summary_push_js_1 = require("./lib/daily-summary-push.js");
+    let dailySummaryMark = null;
+    setInterval(async () => {
+        if (!dbReady) return;
+        try {
+            const db = (0, index_js_1.getDb)(dbPath);
+            if (!(await daily_summary_push_js_1.isDailySummaryPushEnabled(db))) return;
+            const targetHour = await daily_summary_push_js_1.getDailySummaryPushHour(db);
+            if (taipeiHourNow() !== targetHour) return;
+            const todayMark = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+            if (dailySummaryMark === todayMark) return;
+            const out = await daily_summary_push_js_1.runDailySummaryPush(db);
+            dailySummaryMark = todayMark;
+            console.log("[daily-summary] auto push ok sent=%s skipped=%s errors=%s", out.sent, out.skipped, (out.errors||[]).length);
+        } catch (e) {
+            console.error("[daily-summary] auto push 失敗:", e?.message || e);
+        }
+    }, 60000);
 })().catch((e) => {
     console.error("[startup] 無法啟動:", e);
     process.exit(1);
