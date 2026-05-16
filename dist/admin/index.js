@@ -716,18 +716,51 @@ const SF_TOKENS = `
 .sf-card-sub { font-size: 11px; color: var(--txt-3); font-family: var(--font-mono); }
 .sf-card-body { padding: 16px; }
 
-/* table */
-.sf-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
-.sf-table th {
+/* table — 扁平樣式，不被 card 包住 */
+.sf-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; background: var(--bg-1); }
+.sf-table thead th {
   text-align: left; font-weight: 500; color: var(--txt-3); font-size: 11px;
   text-transform: uppercase; letter-spacing: 0.06em;
-  padding: 8px 12px; border-bottom: var(--hairline); background: var(--bg-2);
+  padding: 10px 14px; border-bottom: 1px solid var(--line-2); background: var(--bg-2);
 }
-.sf-table td {
-  padding: 10px 12px; border-bottom: var(--hairline); vertical-align: middle; color: var(--txt-1);
+.sf-table tbody td {
+  padding: 12px 14px; border-bottom: var(--hairline); vertical-align: middle; color: var(--txt-1);
 }
-.sf-table tr:hover td { background: var(--bg-2); }
-.sf-table .num, .sf-table .mono { text-align: right; }
+.sf-table tbody tr:last-child td { border-bottom: none; }
+.sf-table tbody tr:hover td { background: var(--bg-2); }
+.sf-table tbody tr.row-active td { background: var(--accent-soft); }
+.sf-table .num, .sf-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* 表格容器：subtle border，不像 card 那麼厚重 */
+.sf-table-wrap {
+  background: var(--bg-1);
+  border: var(--hairline);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+/* 真正的 tabs（上方分頁列，含底線） */
+.sf-tabs {
+  display: flex; gap: 0; border-bottom: 1px solid var(--line);
+  margin-bottom: 0;
+}
+.sf-tab {
+  padding: 10px 18px; background: transparent; border: 0; cursor: pointer;
+  font-size: 13px; color: var(--txt-3); font-family: inherit;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  display: inline-flex; align-items: center; gap: 8px;
+  transition: color .12s, border-color .12s;
+}
+.sf-tab:hover { color: var(--txt-1); }
+.sf-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.sf-tab .tab-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  background: var(--bg-3); color: var(--txt-2); min-width: 22px;
+}
+.sf-tab.active .tab-count { background: var(--accent-soft); color: var(--accent); }
+.sf-tab .tab-count.warn { background: var(--warn-soft); color: var(--warn); }
+.sf-tab .tab-count.bad { background: var(--bad-soft); color: var(--bad); }
 
 /* form */
 .sf-input, .sf-select, .sf-textarea {
@@ -980,7 +1013,7 @@ const NOTION_SIDEBAR = (active) => `
     <details class="sidebar-group">
       <summary class="sidebar-group-title">訂單管理</summary>
       <div class="sidebar-links">
-        <a href="/admin/orders">訂單查詢</a>
+        <a href="/admin/orders">訂單審核</a>
         <a href="/admin/review">待確認品項</a>
         <a href="/admin/export">資料匯出</a>
         <a href="/admin/rhythm" class="${active === "rhythm" ? "active" : ""}">週期與預期清單</a>
@@ -3707,7 +3740,7 @@ function createAdminRouter() {
         }
         </style>
         <div class="new-order-mobile">
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / 新增訂單</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / 新增訂單</div>
         <h1 class="notion-page-title">新增紙本訂單</h1>
         <p>貼上訂單文字（可複製 LINE 對話），系統會用<strong>與收單機器人相同的規則</strong>解析品項；規則解析不到時才會嘗試 Google AI。若需依客戶別名對照品項，請先<strong>搜尋並點選客戶</strong>。上傳照片時會先以 Cloud Vision OCR 辨識文字。</p>
         <div class="notion-card">
@@ -4909,129 +4942,195 @@ function createAdminRouter() {
                 const labels = labelByOrder.get(o.id) || [];
                 const preview = labels.slice(0, 4).join("、");
                 const previewShort = preview.length > 72 ? preview.slice(0, 72) + "…" : preview;
-                const srcIcons = buildOrderSourceIcons(o);
-                const infoHtml = cnt > 0
-                    ? `<span style="display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;max-width:100%;">${srcIcons}<span>${cnt} 筆品項</span></span>${previewShort ? `<span class="notion-hint" style="display:block;margin-top:4px;font-size:12px;">${escapeHtml(previewShort)}</span>` : ""}${n > 0 ? `<span style="color:#c00;font-size:12px;display:block;margin-top:2px;">${n} 項待確認</span>` : ""}`
-                    : `${srcIcons ? `<span style="display:block;margin-bottom:4px;">${srcIcons}</span>` : ""}<span class="notion-hint">無品項</span>`;
+                const statusLc = String(o.status || "").toLowerCase();
+                const isApproved = statusLc === "approved";
+                const dotStatus = isApproved ? "ok" : (n > 0 ? "warn" : "info");
                 const custDisp = o.customer_name || "未選客戶";
                 const custLink = o.customer_id
-                    ? `<a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders">${escapeHtml(o.customer_name)}</a>`
-                    : `<span class="notion-hint">${escapeHtml(custDisp)}</span>`;
+                    ? `<a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders" style="color:var(--txt-1);font-weight:500;">${escapeHtml(o.customer_name)}</a>`
+                    : `<span style="color:var(--txt-3);">${escapeHtml(custDisp)}</span>`;
                 const backBase = `/admin/orders?date_from=${encodeURIComponent(filterDateFrom)}&date_to=${encodeURIComponent(filterDateTo)}${onlyNeedReview ? "&need_review=1" : ""}`;
                 const detailUrl = o.is_logistics
                     ? `/admin/logistics/orders/${encodeURIComponent(o.id)}`
                     : `/admin/orders/${encodeURIComponent(o.id)}?back=${encodeURIComponent(backBase)}`;
-                const detailLabel = o.is_logistics ? "紙本明細" : "明細";
                 const orderNoCell = o.is_logistics
-                    ? `<span class="notion-hint" title="後台新增訂單">紙本</span>`
-                    : `${escapeHtml(o.order_no ?? "—")}`;
+                    ? `<span class="sf-pill">紙本</span>`
+                    : `<span class="mono" style="font-size:12px;">${escapeHtml(o.order_no ?? "—")}</span>`;
                 const checkboxCell = o.is_logistics
-                    ? `<span class="notion-hint" title="批次操作用於 LINE 訂單；紙本請點明細">—</span>`
+                    ? `<span style="color:var(--txt-3);">—</span>`
                     : `<input type="checkbox" name="order_ids" value="${escapeAttr(o.id)}" form="batchOrderActionsForm" class="order-batch-cb">`;
-                return `<tr class="order-row" data-cust="${escapeAttr(custDisp)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no ?? ""))}">
-            <td>${idx + 1}</td>
-            <td>${checkboxCell}</td>
-            <td style="white-space:nowrap;">${buildStatusIcons(o)}</td>
-            <td>${orderNoCell}</td>
-            <td>${escapeHtml(o.order_date)}</td>
+                // 來源 pill
+                let hasText = false;
+                if (o.source_raw_message != null && String(o.source_raw_message).trim() !== "") {
+                    for (const line of String(o.source_raw_message).split(/\r?\n/)) {
+                        const t = line.trim();
+                        if (t && t !== "[圖片]") { hasText = true; break; }
+                    }
+                }
+                const hasImg = (o.source_attachment_count ?? 0) > 0;
+                const srcPills = o.is_logistics ? `<span class="sf-pill">紙本</span>` : [
+                    hasText ? `<span class="sf-pill info" title="含文字叫貨">字</span>` : "",
+                    hasImg ? `<span class="sf-pill accent" title="含圖片叫貨">圖</span>` : "",
+                ].join(" ");
+                const statusPill = isApproved
+                    ? `<span class="sf-pill ok">✓ 已確認</span>`
+                    : (n > 0 ? `<span class="sf-pill warn">${n} 待確認</span>` : `<span class="sf-pill">待簽核</span>`);
+                const expIcons = [
+                    o.sheet_exported_at ? `<span class="sf-pill" title="已匯出揀貨單">🖨</span>` : "",
+                    o.lingyue_exported_at ? `<span class="sf-pill" title="已匯出凌越 Excel">▦</span>` : "",
+                ].join(" ");
+                return `<tr class="order-row" data-cust="${escapeAttr(custDisp)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no ?? ""))}" data-status="${escapeAttr(isApproved ? "approved" : (n>0?"need_review":"pending"))}">
+            <td style="width:36px;">${checkboxCell}</td>
+            <td style="width:24px;"><span class="sf-dot ${dotStatus}"></span></td>
+            <td style="white-space:nowrap;">${orderNoCell}</td>
+            <td class="mono" style="font-size:12px;color:var(--txt-3);white-space:nowrap;">${escapeHtml(o.order_date)}</td>
             <td>${custLink}</td>
-            <td style="max-width:min(320px, 40vw);">${infoHtml}</td>
-            <td><a href="${detailUrl}">${detailLabel}</a></td>
+            <td style="white-space:nowrap;">${srcPills}</td>
+            <td style="max-width:380px;">
+              <div style="font-size:12px;color:var(--txt-1);font-weight:500;">${cnt > 0 ? `${cnt} 筆品項` : `<span style="color:var(--txt-3);">無品項</span>`}</div>
+              ${previewShort ? `<div style="font-size:11px;color:var(--txt-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(previewShort)}</div>` : ""}
+            </td>
+            <td style="white-space:nowrap;">${statusPill}${expIcons ? " " + expIcons : ""}</td>
+            <td style="text-align:right;white-space:nowrap;"><a class="sf-btn sm" href="${detailUrl}">明細</a></td>
           </tr>`;
             })
                 .join("");
-            const deletedRows = deletedOrders.map((o, idx) => `<tr>
-            <td>${idx + 1}</td>
-            <td>${escapeHtml(o.order_no ?? "—")}</td>
-            <td>${escapeHtml(o.order_date)}</td>
+            const deletedRows = deletedOrders.map((o) => `<tr>
+            <td style="width:24px;"><span class="sf-dot bad"></span></td>
+            <td><span class="mono" style="font-size:12px;">${escapeHtml(o.order_no ?? "—")}</span></td>
+            <td class="mono" style="font-size:12px;color:var(--txt-3);">${escapeHtml(o.order_date)}</td>
             <td>${escapeHtml(o.customer_name ?? "—")}</td>
-            <td><a href="/admin/orders/${encodeURIComponent(o.id)}?back=${encodeURIComponent("/admin/orders?date_from=" + encodeURIComponent(filterDateFrom) + "&date_to=" + encodeURIComponent(filterDateTo) + (onlyNeedReview ? "&need_review=1" : ""))}">明細</a></td>
+            <td style="text-align:right;"><a class="sf-btn sm" href="/admin/orders/${encodeURIComponent(o.id)}?back=${encodeURIComponent("/admin/orders?date_from=" + encodeURIComponent(filterDateFrom) + "&date_to=" + encodeURIComponent(filterDateTo) + (onlyNeedReview ? "&need_review=1" : ""))}">明細</a></td>
           </tr>`).join("");
             const filterLink = onlyNeedReview
                 ? `<a href="/admin/orders?date_from=${escapeAttr(filterDateFrom)}&date_to=${escapeAttr(filterDateTo)}">顯示全部訂單</a>`
                 : `<a href="/admin/orders?need_review=1&date_from=${escapeAttr(filterDateFrom)}&date_to=${escapeAttr(filterDateTo)}">只看有待確認的訂單</a>`;
             const usingCloudSqlOrders = Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.trim());
             const orderListDbWarning = usingCloudSqlOrders ? "" : `<p class="notion-msg err" style="margin-bottom:12px;">目前未連線 Cloud SQL，資料不會長期保留，收單後可能看不到或重開就消失。請在 Cloud Run 設定 <strong>DATABASE_URL</strong>。</p>`;
+            // 統計
+            const totalShown = orders.length;
+            const approvedCount = orders.filter(o => String(o.status||"").toLowerCase() === "approved").length;
+            const needReviewSum = orders.reduce((s, o) => s + (o.need_review_count||0), 0);
+            const pendingCount = totalShown - approvedCount;
+            const statCard = (label, num, status, href) => `
+              <a href="${href || "#"}" style="text-decoration:none;color:inherit;padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;min-width:140px;">
+                <span class="sf-dot ${status}"></span>
+                <div>
+                  <div style="font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">${label}</div>
+                  <div class="mono" style="font-size:18px;font-weight:600;">${num}</div>
+                </div>
+              </a>`;
             const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 訂單查詢</div>
-        <h1 class="notion-page-title">訂單查詢</h1>
-        ${orderListDbWarning}
-        ${req.query.ok === "log_saved" ? "<p class=\"notion-msg ok\">已儲存紙本訂單。</p>" : ""}
-        ${req.query.ok === "seq" ? "<p class=\"notion-msg ok\">已儲存本日起始編號。</p>" : ""}
-        ${req.query.ok === "del" ? "<p class=\"notion-msg ok\">已將選取訂單移至下方「已刪除訂單」區。</p>" : ""}
-        ${req.query.ok === "approved" ? "<p class=\"notion-msg ok\">已將選取訂單標記為已確認。</p>" : ""}
-        ${req.query.err === "none" ? "<p class=\"notion-msg err\">請先勾選要處理的訂單。</p>" : ""}
-        <p class="notion-hint" style="margin-bottom:8px;">依訂單日期區間篩選（預設為當日）。</p>
-        <p class="notion-hint" style="margin-bottom:12px;"><a href="/admin/review">待確認品名</a>（補對照）　${filterLink}</p>
-        <p style="margin-bottom:12px;"><a href="/admin/logistics/orders/new" class="btn btn-primary" style="background:#f59e0b;border-color:#f59e0b;color:#fff;">＋ 新增訂單</a></p>
-        <div class="notion-card" style="margin-bottom:16px;">
-          <h2 style="margin-top:0;">篩選</h2>
-          <p class="notion-hint" style="margin:0 0 10px;">僅依<strong>訂單日期</strong>向伺服器查詢；客戶與貨單編號請在下方列表旁篩選（僅限本頁已載入之訂單）。</p>
-          <form id="ordersFilterForm" method="get" action="/admin/orders" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
-            ${onlyNeedReview ? '<input type="hidden" name="need_review" value="1">' : ""}
-            <input type="hidden" name="date_from" id="ordersDateFrom" value="${escapeAttr(filterDateFrom)}">
-            <input type="hidden" name="date_to" id="ordersDateTo" value="${escapeAttr(filterDateTo)}">
-            <label style="margin:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span>日期區間</span>
-              <input type="text" id="ordersDateRange" readonly placeholder="點選選擇起訖日期" autocomplete="off" style="width:min(260px, 85vw);padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:var(--notion-radius);background:var(--notion-bg);cursor:pointer;font-size:14px;">
-            </label>
-            <button type="button" class="btn" id="ordersPrevRange" title="整段區間向前移一天">前一日</button>
-            <button type="button" class="btn" id="ordersNextRange" title="整段區間向後移一天">後一日</button>
-            <button type="submit" class="btn">查詢</button>
-            <a href="${onlyNeedReview ? "/admin/orders?need_review=1" : "/admin/orders"}" class="btn">清除（預設當日）</a>
-          </form>
-          <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css">
-        </div>
-        <details class="notion-card" style="margin-bottom:16px;">
-          <summary style="cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;gap:8px;">
-            <span style="color:var(--notion-text-muted);font-size:11px;">▸</span> 本日起始編號（與 ERP 對齊）
-          </summary>
-          <div style="padding-top:12px;">
-            <p class="notion-hint">訂單編號規則：西元年月日＋流水號（例 20250226001）。設定本日（${escapeHtml(today)}）的起始流水號，之後新訂單依序遞增。</p>
-            <form method="post" action="/admin/api/order-seq-start" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <input type="hidden" name="date" value="${escapeAttr(today)}">
-              <label>起始流水號 <input type="number" name="start" value="${escapeAttr(orderSeqStartVal)}" min="1" placeholder="1" style="width:80px;"></label>
-              <button type="submit" class="btn">儲存</button>
-            </form>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css">
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 訂單審核</div>
+              <h1 style="margin:0;font-size:22px;font-weight:600;">訂單審核</h1>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <a class="sf-btn" href="/admin/review">${SF_ICONS.warn}<span>待確認品名</span></a>
+              <a class="sf-btn" href="/admin/export">${SF_ICONS.dl}<span>資料匯出</span></a>
+              <a class="sf-btn primary" href="/admin/logistics/orders/new">${SF_ICONS.plus}<span>新增訂單</span></a>
+            </div>
           </div>
-        </details>
-        <div class="notion-card">
-          <h2 style="margin-top:0;display:flex;align-items:center;flex-wrap:wrap;">訂單列表<span class="admin-info-icon" title="勾選訂單後，可批次刪除、下載揀貨單（含條碼，已改 POST 傳送 ID，避免網址過長）。凌越 Excel：多筆合併為同一檔案（表頭一列），依訂單日期／編號排序；一次勾選過多若下載失敗請分批。" tabindex="0">i</span></h2>
-          <p style="margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:center;gap:12px;">
-            <label style="margin:0;display:flex;align-items:center;gap:6px;font-size:14px;">貨單編號 <input type="search" id="orderFilterOrderNo" placeholder="篩選列表內" autocomplete="off" style="width:min(200px, 50vw);padding:6px 8px;border:1px solid var(--notion-border-strong);border-radius:var(--notion-radius);font-size:14px;"></label>
-            <label style="margin:0;display:flex;align-items:center;gap:6px;font-size:14px;">客戶 <input type="search" id="orderFilterCustomer" placeholder="篩選列表內" autocomplete="off" style="width:min(200px, 50vw);padding:6px 8px;border:1px solid var(--notion-border-strong);border-radius:var(--notion-radius);font-size:14px;"></label>
-          </p>
-          <style>
-            .order-src-icons{display:inline-flex;align-items:center;gap:4px;flex-shrink:0;margin-right:2px;}
-            .order-src-icon{font-size:10px;line-height:1.2;padding:2px 5px;border-radius:4px;font-weight:600;border:1px solid var(--notion-border);letter-spacing:0.02em;}
-            .order-src-t{background:#e8f4fc;color:#0369a1;border-color:#93c5fd;}
-            .order-src-i{background:#faf5ff;color:#7e22ce;border-color:#d8b4fe;}
-          </style>
-          <p class="notion-hint" style="margin-top:0;margin-bottom:10px;">狀態圖示：<span class="osi osi-approve" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">✓</span> 已確認、<span class="osi osi-warn" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">!</span> 待確認、<span class="osi osi-sheet" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">🖨</span> 已匯出揀貨單、<span class="osi osi-xlsx" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">▦</span> 已匯出凌越。<br>
-          來源標籤（LINE）：<span class="order-src-icon order-src-t">字</span> 原始對話含文字叫貨、<span class="order-src-icon order-src-i">圖</span> 曾附圖片；兩者皆有則並列。（紙本後台訂單不顯示）</p>
-          <form id="batchOrderActionsForm" method="post" action="/admin/orders/batch-delete" style="margin-bottom:12px;">
-          <p style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
-            <button type="button" class="btn" id="orderSelectAll">全選</button>
-            <button type="button" class="btn" id="orderSelectNone">取消全選</button>
-            <button type="button" class="btn btn-primary" id="btnBatchApprove">選取後確認</button>
-            <button type="submit" class="btn" onclick="return confirm('確定要刪除勾選的訂單？此動作無法復原。');">刪除選取訂單</button>
-            <button type="button" class="btn btn-primary" id="btnBatchOrderSheet">匯出揀貨單（含條碼）</button>
-            <button type="button" class="btn btn-primary" id="btnBatchLingyueXlsx">匯出凌越訂單 Excel</button>
-          </p>
-          </form>
-          <table>
-            <thead><tr><th style="width:48px;">項次</th><th style="width:36px;"><input type="checkbox" id="orderSelectAllCb" title="全選"></th><th>狀態</th><th>訂單編號</th><th>日期</th><th>客戶</th><th>訂單資訊</th><th></th></tr></thead>
-            <tbody>${rows.length ? rows : "<tr><td colspan='8'>無訂單</td></tr>"}</tbody>
-          </table>
-          <details style="margin-top:14px;">
-            <summary style="cursor:pointer;">已刪除訂單（${deletedOrders.length}）</summary>
-            <div style="margin-top:8px;">
-              <table>
-                <thead><tr><th style="width:48px;">項次</th><th>訂單編號</th><th>日期</th><th>客戶</th><th></th></tr></thead>
-                <tbody>${deletedRows || "<tr><td colspan='5'>目前無已刪除訂單</td></tr>"}</tbody>
-              </table>
+          ${orderListDbWarning}
+          ${req.query.ok === "log_saved" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已儲存紙本訂單</div>" : ""}
+          ${req.query.ok === "seq" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已儲存本日起始編號</div>" : ""}
+          ${req.query.ok === "del" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單移至「已刪除訂單」</div>" : ""}
+          ${req.query.ok === "approved" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單標記為已確認</div>" : ""}
+          ${req.query.err === "none" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">請先勾選要處理的訂單</div>" : ""}
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${statCard("總訂單", totalShown, "ok", "#")}
+            ${statCard("待簽核", pendingCount, pendingCount>0?"warn":"ok", "#")}
+            ${statCard("已確認", approvedCount, "ok", "#")}
+            ${statCard("品項待對應", needReviewSum, needReviewSum>0?"warn":"ok", "/admin/review")}
+            ${statCard("已刪除", deletedOrders.length, deletedOrders.length>0?"bad":"info", "#")}
+          </div>
+          <div class="sf-card">
+            <div class="sf-card-body" style="padding:14px 16px;">
+              <form id="ordersFilterForm" method="get" action="/admin/orders" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
+                ${onlyNeedReview ? '<input type="hidden" name="need_review" value="1">' : ""}
+                <input type="hidden" name="date_from" id="ordersDateFrom" value="${escapeAttr(filterDateFrom)}">
+                <input type="hidden" name="date_to" id="ordersDateTo" value="${escapeAttr(filterDateTo)}">
+                <label class="sf-label" style="margin:0;display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:13px;color:var(--txt-2);">
+                  日期區間
+                  <input type="text" id="ordersDateRange" readonly placeholder="點選日期" autocomplete="off" style="width:240px;height:36px;padding:0 10px;border:1px solid var(--line-2);border-radius:var(--radius);background:var(--bg-2);color:var(--txt-1);cursor:pointer;font-size:13px;">
+                </label>
+                <button type="button" class="sf-btn" id="ordersPrevRange" title="向前一天">← 前一日</button>
+                <button type="button" class="sf-btn" id="ordersNextRange" title="向後一天">後一日 →</button>
+                <button type="submit" class="sf-btn primary">${SF_ICONS.search}<span>查詢</span></button>
+                <a class="sf-btn ghost" href="${onlyNeedReview ? "/admin/orders?need_review=1" : "/admin/orders"}">重設</a>
+                <div style="flex:1;"></div>
+                <a class="sf-btn ghost" href="${onlyNeedReview ? `/admin/orders?date_from=${escapeAttr(filterDateFrom)}&date_to=${escapeAttr(filterDateTo)}` : `/admin/orders?need_review=1&date_from=${escapeAttr(filterDateFrom)}&date_to=${escapeAttr(filterDateTo)}`}">${onlyNeedReview ? "顯示全部" : "只看待確認"}</a>
+              </form>
+            </div>
+          </div>
+          <details class="sf-card">
+            <summary style="padding:12px 16px;cursor:pointer;font-size:13px;color:var(--txt-2);list-style:none;display:flex;align-items:center;gap:8px;">
+              <span style="font-size:11px;color:var(--txt-3);">▸</span>
+              <span>本日（${escapeHtml(today)}）起始流水號設定（與 ERP 對齊）</span>
+            </summary>
+            <div style="padding:0 16px 14px 32px;border-top:var(--hairline);padding-top:12px;">
+              <p style="font-size:12px;color:var(--txt-3);margin:0 0 10px;">訂單編號規則：西元年月日＋3 位流水號（例 20260516001）。</p>
+              <form method="post" action="/admin/api/order-seq-start" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <input type="hidden" name="date" value="${escapeAttr(today)}">
+                <label style="font-size:13px;color:var(--txt-2);">起始流水號 <input class="sf-input" type="number" name="start" value="${escapeAttr(orderSeqStartVal)}" min="1" placeholder="1" style="width:90px;display:inline-block;margin-left:6px;"></label>
+                <button type="submit" class="sf-btn primary">儲存</button>
+              </form>
             </div>
           </details>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <div style="position:relative;flex:0 0 240px;">
+              <input class="sf-input" id="orderFilterOrderNo" placeholder="篩選：貨單編號" autocomplete="off" style="padding-left:28px;">
+              <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.search}</span>
+            </div>
+            <div style="position:relative;flex:0 0 240px;">
+              <input class="sf-input" id="orderFilterCustomer" placeholder="篩選：客戶名稱" autocomplete="off" style="padding-left:28px;">
+              <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.users}</span>
+            </div>
+            <div style="flex:1;"></div>
+            <form id="batchOrderActionsForm" method="post" action="/admin/orders/batch-delete" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0;">
+              <span style="font-size:12px;color:var(--txt-3);" id="batchSelectedHint">未選</span>
+              <button type="button" class="sf-btn sm" id="orderSelectAll">全選</button>
+              <button type="button" class="sf-btn sm" id="orderSelectNone">取消</button>
+              <button type="button" class="sf-btn sm primary" id="btnBatchApprove">${SF_ICONS.check}<span>確認</span></button>
+              <button type="button" class="sf-btn sm" id="btnBatchOrderSheet">${SF_ICONS.dl}<span>揀貨單</span></button>
+              <button type="button" class="sf-btn sm" id="btnBatchLingyueXlsx">${SF_ICONS.dl}<span>凌越 Excel</span></button>
+              <button type="submit" class="sf-btn sm danger" onclick="return confirm('確定要刪除勾選的訂單？');">${SF_ICONS.x}<span>刪除</span></button>
+            </form>
+          </div>
+          <div class="sf-table-wrap" style="overflow:auto;max-height:calc(100vh - 460px);">
+            <table class="sf-table">
+              <thead style="position:sticky;top:0;z-index:1;">
+                <tr>
+                  <th style="width:36px;"><input type="checkbox" id="orderSelectAllCb" title="全選"></th>
+                  <th style="width:24px;"></th>
+                  <th>訂單編號</th>
+                  <th>日期</th>
+                  <th>客戶</th>
+                  <th>來源</th>
+                  <th>品項</th>
+                  <th>狀態</th>
+                  <th style="text-align:right;width:80px;"></th>
+                </tr>
+              </thead>
+              <tbody>${rows.length ? rows : `<tr><td colspan='9' style='padding:32px;text-align:center;color:var(--txt-3);'>所選日期區間內無訂單</td></tr>`}</tbody>
+            </table>
+          </div>
+          ${deletedOrders.length ? `<details class="sf-card">
+            <summary style="padding:12px 16px;cursor:pointer;font-size:13px;color:var(--txt-2);list-style:none;display:flex;align-items:center;gap:8px;">
+              <span style="font-size:11px;color:var(--txt-3);">▸</span>
+              <span>已刪除訂單（${deletedOrders.length}）</span>
+            </summary>
+            <div class="sf-table-wrap" style="border-top:var(--hairline);border-radius:0;">
+              <table class="sf-table">
+                <thead><tr><th style="width:24px;"></th><th>訂單編號</th><th>日期</th><th>客戶</th><th></th></tr></thead>
+                <tbody>${deletedRows}</tbody>
+              </table>
+            </div>
+          </details>` : ""}
+        </div>
           <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
           <script>
           (function(){
@@ -5151,19 +5250,26 @@ function createAdminRouter() {
             var fc = document.getElementById("orderFilterCustomer");
             if (fo) fo.addEventListener("input", applyListFilters);
             if (fc) fc.addEventListener("input", applyListFilters);
+            // 即時統計勾選數
+            function updateSelectedHint(){
+              var n = document.querySelectorAll(".order-batch-cb:checked").length;
+              var h = document.getElementById("batchSelectedHint");
+              if (h) h.textContent = n > 0 ? "已選 " + n + " 筆" : "未選";
+            }
+            document.addEventListener("change", function(e){ if (e.target && e.target.classList && e.target.classList.contains("order-batch-cb")) updateSelectedHint(); });
+            ["orderSelectAll","orderSelectNone","orderSelectAllCb"].forEach(function(id){ var el = document.getElementById(id); if (el) el.addEventListener("click", function(){ setTimeout(updateSelectedHint, 0); }); });
           })();
           </script>
-        </div>
       `;
-            res.type("text/html").send(notionPage("訂單查詢", body, "orders", res));
+            res.type("text/html").send(notionPage("訂單審核", body, "orders", res));
         }
         catch (e) {
             const errMsg = (e?.message || String(e)).slice(0, 500);
             console.error("[admin] GET /orders 錯誤:", errMsg, e?.stack);
             res.status(500).type("text/html").send(`
-        <!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>訂單查詢錯誤</title></head>
+        <!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>訂單審核錯誤</title></head>
         <body style="font-family:sans-serif;padding:2rem;max-width:640px;">
-          <h1>訂單查詢暫時無法使用</h1>
+          <h1>訂單審核暫時無法使用</h1>
           <p>請稍後再試，或聯絡管理員檢查後台與資料庫連線。</p>
           <p style="margin-top:1rem;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;word-break:break-all;"><strong>錯誤訊息：</strong><br>${escapeHtml(errMsg)}</p>
           <p class="notion-hint" style="margin-top:1rem;">若為「column … does not exist」，請確認 Cloud SQL 已執行過最新 schema（含 order_no、order_attachments 等）。</p>
@@ -5510,7 +5616,7 @@ function createAdminRouter() {
                 break;
         }
         if (!ids.length) {
-            res.status(400).type("text/html").send("<!DOCTYPE html><html><body><p>請先勾選訂單。</p><a href=\"/admin/orders\">回訂單查詢</a></body></html>");
+            res.status(400).type("text/html").send("<!DOCTYPE html><html><body><p>請先勾選訂單。</p><a href=\"/admin/orders\">回訂單審核</a></body></html>");
             return;
         }
         const orderSheetPrintStyle = `
@@ -5591,7 +5697,7 @@ function createAdminRouter() {
         </div>`);
         }
         if (!parts.length) {
-            res.status(404).type("text/html").send("<!DOCTYPE html><html><body><p>找不到選取的訂單。</p><a href=\"/admin/orders\">回訂單查詢</a></body></html>");
+            res.status(404).type("text/html").send("<!DOCTYPE html><html><body><p>找不到選取的訂單。</p><a href=\"/admin/orders\">回訂單審核</a></body></html>");
             return;
         }
         const tsSheet = new Date().toISOString();
@@ -5605,9 +5711,9 @@ function createAdminRouter() {
         }
         const sheetBody = `
         ${orderSheetPrintStyle}
-        <p class="no-print notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / 合併揀貨單</p>
+        <p class="no-print notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / 合併揀貨單</p>
         ${parts.join("\n")}
-        <p class="no-print" style="margin-top:1rem;"><a href="/admin/orders">← 回訂單查詢</a></p>
+        <p class="no-print" style="margin-top:1rem;"><a href="/admin/orders">← 回訂單審核</a></p>
       `;
         const meta = firstOrderMeta || { date: new Date().toISOString().slice(0, 10), customer: "客戶", orderNo: "01" };
         const safeCustomer = String(meta.customer).replace(/[\\/:*?"<>|]/g, "_").trim() || "客戶";
@@ -5991,7 +6097,7 @@ function createAdminRouter() {
             </div>
           </div>
         </div>
-        <div class="notion-breadcrumb" style="display:none;"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / 訂單明細</div>
+        <div class="notion-breadcrumb" style="display:none;"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / 訂單明細</div>
         <p style="margin:0 0 10px;color:var(--notion-text-secondary, #555);font-size:14px;display:none;">${escapeHtml(order.order_no ?? "—")} · ${escapeHtml(order.order_date)} · <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a> · ${orderStatusDisplay}</p>
         ${needReviewNote}
         ${lowConfNote}
@@ -7052,7 +7158,7 @@ function createAdminRouter() {
         const units = [...ORDER_LINE_UNITS, "個"];
         const unitOpts = units.map((u) => `<option value="${escapeAttr(u)}">${escapeHtml(u)}</option>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品項</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品項</div>
         <h1 class="notion-page-title">增加品項</h1>
         <div class="notion-card">
           <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add" id="addItemForm">
@@ -7229,7 +7335,7 @@ function createAdminRouter() {
 </style>`;
         const sheetBody = `
         ${singleOrderSheetStyle}
-        <div class="no-print notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 訂貨單</div>
+        <div class="no-print notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 訂貨單</div>
         ${preview ? "<p class=\"no-print\"><button type=\"button\" class=\"btn btn-primary\" id=\"exportJpgBtn\">匯出 JPG</button> 預覽下方訂單圖後可點此匯出</p>" : ""}
         <div id="order-sheet-content" style="margin-top:12px; width:210mm; min-height:297mm; box-sizing:border-box; background:white; padding:10mm 8mm;" class="order-sheet-a4 order-sheet-print">
         <div class="order-sheet-inner">
@@ -7311,7 +7417,7 @@ function createAdminRouter() {
       ORDER BY cpa.alias
     `).all(customer.id);
         const fromOrders = req.query.from === "orders";
-        const backLink = fromOrders ? "<a href=\"/admin/orders\">← 回訂單查詢</a>" : "<a href=\"/admin/customers\">← 回客戶列表</a>";
+        const backLink = fromOrders ? "<a href=\"/admin/orders\">← 回訂單審核</a>" : "<a href=\"/admin/customers\">← 回客戶列表</a>";
         const editLink = fromOrders
             ? `<a href="/admin/customers/${encodeURIComponent(customer.id)}/edit?from=orders">編輯</a>`
             : `<a href="/admin/customers/${encodeURIComponent(customer.id)}/edit">編輯</a>`;
@@ -7433,7 +7539,7 @@ function createAdminRouter() {
           </form>
         </div>
         ${profileSection}
-        <p>${req.query.from === "orders" ? `<a href="/admin/orders">← 回訂單查詢</a>` : `<a href="/admin/customers">← 回客戶列表</a>`}</p>
+        <p>${req.query.from === "orders" ? `<a href="/admin/orders">← 回訂單審核</a>` : `<a href="/admin/customers">← 回客戶列表</a>`}</p>
       `;
             res.type("text/html").send(notionPage("編輯客戶", editBody, "", res));
         }
@@ -7595,19 +7701,20 @@ function createAdminRouter() {
             ${statCard("停用客戶", inactiveN, "accent", "#")}
           </div>
           <form method="get" action="/admin/customers" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <div style="position:relative;flex:0 0 280px;">
+            <div style="position:relative;flex:0 0 320px;">
               <input class="sf-input" name="q" value="${searchVal}" placeholder="搜尋客戶（名稱）..." style="padding-left:28px;">
               <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.search}</span>
             </div>
             <button class="sf-btn" type="submit">${SF_ICONS.search}<span>搜尋</span></button>
             ${q ? `<a class="sf-btn ghost" href="/admin/customers">清除</a>` : ""}
-            <div style="flex:1;"></div>
-            <button type="button" class="sf-btn primary" id="tab-btn-bound" data-tab="customers-bound">已綁定 (${boundN})</button>
-            <button type="button" class="sf-btn" id="tab-btn-unbound" data-tab="customers-unbound">未綁定 (${unboundN})</button>
-            <button type="button" class="sf-btn" id="tab-btn-inactive" data-tab="customers-inactive">停用 (${inactiveN})</button>
           </form>
-          <div class="sf-card" style="flex:1;min-height:0;display:flex;flex-direction:column;">
-            <div id="customers-bound-panel" class="tab-panel" style="overflow:auto;max-height:calc(100vh - 360px);">
+          <div class="sf-tabs">
+            <button type="button" class="sf-tab active" id="tab-btn-bound" data-tab="customers-bound">已綁定 <span class="tab-count">${boundN}</span></button>
+            <button type="button" class="sf-tab" id="tab-btn-unbound" data-tab="customers-unbound">未綁定 <span class="tab-count ${unboundN>0?"warn":""}">${unboundN}</span></button>
+            <button type="button" class="sf-tab" id="tab-btn-inactive" data-tab="customers-inactive">停用 <span class="tab-count">${inactiveN}</span></button>
+          </div>
+          <div style="flex:1;min-height:0;display:flex;flex-direction:column;">
+            <div id="customers-bound-panel" class="tab-panel sf-table-wrap" style="overflow:auto;max-height:calc(100vh - 380px);">
               <table class="sf-table">
                 <thead style="position:sticky;top:0;z-index:1;">
                   <tr>
@@ -7623,7 +7730,7 @@ function createAdminRouter() {
                 <tbody id="customers-bound-tbody">${tbodyBound}</tbody>
               </table>
             </div>
-            <div id="customers-unbound-panel" class="tab-panel" style="display:none;overflow:auto;max-height:calc(100vh - 360px);">
+            <div id="customers-unbound-panel" class="tab-panel sf-table-wrap" style="display:none;overflow:auto;max-height:calc(100vh - 380px);">
               <table class="sf-table">
                 <thead style="position:sticky;top:0;z-index:1;">
                   <tr>
@@ -7639,7 +7746,7 @@ function createAdminRouter() {
                 <tbody id="customers-unbound-tbody">${tbodyUnbound}</tbody>
               </table>
             </div>
-            <div id="customers-inactive-panel" class="tab-panel" style="display:none;overflow:auto;max-height:calc(100vh - 360px);">
+            <div id="customers-inactive-panel" class="tab-panel sf-table-wrap" style="display:none;overflow:auto;max-height:calc(100vh - 380px);">
               <table class="sf-table">
                 <thead style="position:sticky;top:0;z-index:1;">
                   <tr>
@@ -7692,16 +7799,13 @@ function createAdminRouter() {
             btn.addEventListener("click", function(e){
               e.preventDefault();
               var tab = this.dataset.tab;
-              document.querySelectorAll("[data-tab]").forEach(function(b){ b.classList.remove("primary"); });
-              this.classList.add("primary");
+              document.querySelectorAll("[data-tab]").forEach(function(b){ b.classList.remove("active"); });
+              this.classList.add("active");
               document.querySelectorAll(".tab-panel").forEach(function(p){ p.style.display = "none"; });
               var panel = document.getElementById(tab + "-panel");
               if (panel) panel.style.display = "block";
             });
           });
-          // 預設已綁定 tab 高亮
-          var tbb = document.getElementById("tab-btn-bound");
-          if (tbb) tbb.classList.add("primary");
           document.querySelectorAll(".customer-toggle-btn").forEach(function(btn){
             btn.addEventListener("click", function(){
               var el = this, id = el.dataset.id;
