@@ -2141,19 +2141,198 @@ function createAdminRouter() {
             res.redirect("/admin/line-bot/unit-conversion?err=1");
         }
     });
-    router.get("/", (_req, res) => {
+    router.get("/", async (req, res) => {
+        const today = getTaipeiCalendarDateYYYYMMDD();
+        const todayDate = new Date(today + "T12:00:00");
+        const weekdayZh = ["日","一","二","三","四","五","六"][todayDate.getDay()];
+        // ── KPI 資料 ──────────────────────────────────────────────
+        let totalOrders = 0, pendingOrders = 0, approvedOrders = 0;
+        let needReviewCnt = 0;
+        try {
+            const r1 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted'").get(today);
+            totalOrders = Number(r1?.n) || 0;
+            const r2 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') = 'approved'").get(today);
+            approvedOrders = Number(r2?.n) || 0;
+            const r3 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','approved')").get(today);
+            pendingOrders = Number(r3?.n) || 0;
+            const r4 = await db.prepare("SELECT COUNT(*) AS n FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.order_date = ? AND oi.need_review = 1").get(today);
+            needReviewCnt = Number(r4?.n) || 0;
+        } catch (_) { /* ignore */ }
+        let yesterdayOrders = 0;
+        try {
+            const yesterday = new Date(todayDate.getTime() - 86400000).toISOString().slice(0,10);
+            const r = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted'").get(yesterday);
+            yesterdayOrders = Number(r?.n) || 0;
+        } catch (_) {}
+        const deltaOrders = totalOrders - yesterdayOrders;
+        // ── 警示來源：data_change_log 最近 30 筆異常 ──────────────
+        let alerts = [];
+        try {
+            alerts = await db.prepare(
+                "SELECT created_at, actor_username, action, summary, entity_type, entity_id " +
+                "FROM data_change_log WHERE action IN ('soft_delete','delete','unapprove','approve') " +
+                "ORDER BY created_at DESC LIMIT 12"
+            ).all();
+        } catch (_) {}
+        const alertStatusFor = (a) => {
+            if (a.action === "soft_delete" || a.action === "delete") return "bad";
+            if (a.action === "unapprove") return "warn";
+            return "info";
+        };
+        const alertLabelFor = (a) => ({
+            soft_delete: "訂單作廢",
+            delete: "刪除品項",
+            unapprove: "取消確認",
+            approve: "已確認",
+        })[a.action] || a.action;
+        // ── 訂單流量 24h（依 created_at 小時聚合）───────────────
+        const hourBars = new Array(24).fill(0);
+        try {
+            const isPg = Boolean(process.env.DATABASE_URL);
+            const rows = isPg
+                ? await db.prepare("SELECT EXTRACT(HOUR FROM created_at)::int AS h, COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' GROUP BY h").all(today)
+                : await db.prepare("SELECT CAST(strftime('%H', created_at) AS INTEGER) AS h, COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' GROUP BY h").all(today);
+            for (const r of rows || []) {
+                const h = Number(r.h);
+                if (Number.isFinite(h) && h >= 0 && h < 24) hourBars[h] = Number(r.n) || 0;
+            }
+        } catch (_) {}
+        const hoursWindow = hourBars.slice(6, 22); // 6:00 ~ 21:00
+        const hourMax = Math.max(1, ...hoursWindow);
+        const peakH = 6 + hoursWindow.indexOf(hourMax);
+        const flowBarsHtml = hoursWindow.map((v, i) => {
+            const hour = 6 + i;
+            const isPeak = v === hourMax && v > 0;
+            const barH = Math.round((v / hourMax) * 110);
+            return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;">
+                <span class="mono" style="font-size:9px;color:${v?"var(--txt-2)":"transparent"};margin-bottom:2px;">${v || "·"}</span>
+                <div style="width:100%;height:${v?Math.max(barH,2):0}px;background:var(--accent);opacity:${isPeak?1:0.45};border-radius:2px 2px 0 0;"></div>
+                <span class="mono" style="font-size:9px;color:var(--txt-3);margin-top:4px;">${hour}</span>
+              </div>`;
+        }).join("");
+        // ── 客戶綁定情況 ────────────────────────────────────────
+        let custTotal = 0, custBound = 0;
+        try {
+            const r = await db.prepare("SELECT COUNT(*) AS n FROM customers").get();
+            custTotal = Number(r?.n) || 0;
+            const r2 = await db.prepare("SELECT COUNT(*) AS n FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != ''").get();
+            custBound = Number(r2?.n) || 0;
+        } catch (_) {}
+        // ── 冷凍冷藏 / 盤點 ──────────────────────────────────────
+        let freezerRows = [];
+        try {
+            freezerRows = await db.prepare("SELECT name, freezer_type FROM freezer_fridge_warehouses ORDER BY name LIMIT 8").all();
+        } catch (_) {}
         const tapmc = wholesale_price_js_1.TAPMC_PRICE_URL;
+        const kpiCard = (label, num, unit, sub, status, delta) => `
+          <div class="sf-kpi ${status?"status-"+status:""}">
+            <div class="sf-kpi-head">
+              <span class="sf-kpi-label">${label}</span>
+              ${status?`<span class="sf-dot ${status}"></span>`:""}
+            </div>
+            <div class="sf-kpi-value">
+              <span class="sf-kpi-num">${num}</span>
+              ${unit?`<span class="sf-kpi-unit">${unit}</span>`:""}
+            </div>
+            <div class="sf-kpi-foot">
+              ${delta?`<span class="mono">${delta}</span>`:""}
+              ${sub?`<span>${sub}</span>`:""}
+            </div>
+          </div>`;
+        const alertsRows = alerts.length
+            ? alerts.map(a => {
+                const s = alertStatusFor(a);
+                return `<div style="padding:12px 16px;border-bottom:var(--hairline);display:flex;gap:10px;${s==="bad"?"background:var(--bad-soft);":""}">
+                  <div style="padding-top:4px;"><span class="sf-dot ${s}"></span></div>
+                  <div style="flex:1;min-width:0;">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
+                      <span class="mono" style="font-size:11px;color:var(--txt-3);">${escapeHtml(String(a.created_at||"").slice(11,19))}</span>
+                      <span style="font-size:13px;font-weight:500;color:var(--txt-1);">${escapeHtml(alertLabelFor(a))}</span>
+                      <span class="sf-pill">${escapeHtml(a.actor_username||"system")}</span>
+                    </div>
+                    <div style="font-size:12px;color:var(--txt-2);line-height:1.5;">${escapeHtml(a.summary||"")}</div>
+                  </div>
+                </div>`;
+              }).join("")
+            : `<div style="padding:24px;text-align:center;color:var(--txt-3);font-size:13px;">尚無稽核事件</div>`;
+        const checklistCard = (title, head, items) => `
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${title}</div>
+              <span class="mono" style="font-size:11px;color:var(--txt-3);">${head}</span>
+            </div>
+            <div style="padding:12px 16px;display:flex;flex-direction:column;gap:6px;">
+              ${items.map((it, idx) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:12px;border-bottom:${idx<items.length-1?"1px dashed var(--line)":"none"};">
+                <span class="sf-dot ${it.status||""}"></span>
+                <span style="color:var(--txt-2);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${escapeHtml(it.name)}</span>
+                <span class="mono" style="color:${it.status==="bad"?"var(--bad)":it.status==="warn"?"var(--warn)":"var(--txt-1)"};">${escapeHtml(it.val||"")}</span>
+              </div>`).join("")}
+            </div>
+          </div>`;
         const body = `
-        <div class="notion-breadcrumb">儀表板</div>
-        <h1 class="notion-page-title">儀表板</h1>
-        <div class="notion-card" style="border-left:4px solid var(--notion-accent);">
-          <h2 style="margin-top:0;">北農單日交易行情</h2>
-          <p class="notion-hint" style="margin-top:0;">即時行情請至臺北農產官網查詢（場內拍賣／全場交易、上／中／下價說明與 Excel／PDF 下載皆在該站）。本頁不載入資料以加快儀表板開啟速度。</p>
-          <p style="margin-top:12px;"><a href="${tapmc}" target="_blank" rel="noopener" class="btn btn-primary">開啟臺北農產「單日交易行情查詢」</a></p>
-          <p class="notion-hint" style="margin-top:12px;">若需本系統內依農業部開放資料整理的北農行情，請至 <a href="/admin/logistics/market">物流工具 → 北農行情</a>。</p>
-        </div>
-        <p class="notion-hint">更多儀表板項目將陸續新增。</p>
-      `;
+        <div class="sf-root" style="padding:24px;display:flex;flex-direction:column;gap:20px;background:var(--bg-0);min-height:100%;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">儀表板 / 今日營運</div>
+              <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em;">松富物流 · HACCP 監控中心</h1>
+              <div style="margin-top:6px;font-size:12px;color:var(--txt-3);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                <span class="mono">作業日 · ${today} (週${weekdayZh})</span>
+                <span class="sf-pill ok"><span class="sf-dot ok"></span>系統正常</span>
+                <span class="sf-pill info">DB · ${process.env.DATABASE_URL?"PostgreSQL":"SQLite"}</span>
+                <span class="sf-pill accent">${SF_ICONS.spark} Gemini 2.5 Flash</span>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <a class="sf-btn" href="/admin">${SF_ICONS.refresh}<span>重新整理</span></a>
+              <a class="sf-btn" href="/admin/export">${SF_ICONS.dl}<span>當日報表</span></a>
+              <a class="sf-btn primary" href="/admin/orders?need_review=1">${SF_ICONS.check}<span>批次簽核 (${pendingOrders})</span></a>
+            </div>
+          </div>
+          <div style="display:flex;gap:12px;">
+            ${kpiCard("今日訂單", totalOrders, "單", deltaOrders>=0?`vs 昨日 ${yesterdayOrders}`:"", "ok", deltaOrders>0?`↑ +${deltaOrders}`:deltaOrders<0?`↓ ${deltaOrders}`:"· 持平")}
+            ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"", pendingOrders>5?"warn":"ok")}
+            ${kpiCard("已確認", approvedOrders, "單", totalOrders?`完成 ${Math.round(approvedOrders*100/totalOrders)}%`:"", "ok")}
+            ${kpiCard("LINE 綁定", custBound, "/" + custTotal + " 戶", "未綁定可至客戶列表處理", custBound===custTotal?"ok":"warn")}
+          </div>
+          <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;">
+            <div class="sf-card">
+              <div class="sf-card-head">
+                <div class="sf-card-title">${SF_ICONS.list} 今日叫貨流量 · 06:00–21:00</div>
+                <span class="sf-card-sub">尖峰 ${peakH}:00</span>
+              </div>
+              <div style="padding:16px;">
+                <div style="display:flex;align-items:flex-end;gap:4px;height:140px;">${flowBarsHtml}</div>
+                <div style="margin-top:16px;padding-top:14px;border-top:var(--hairline);display:flex;gap:24px;font-size:12px;color:var(--txt-2);flex-wrap:wrap;">
+                  <span>尖峰 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${peakH}:00</strong></span>
+                  <span>今日訂單 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${totalOrders}</strong></span>
+                  <span>待確認比例 <strong class="mono" style="color:${needReviewCnt?"var(--warn)":"var(--ok)"};margin-left:6px;">${needReviewCnt}/${totalOrders||"-"}</strong></span>
+                </div>
+              </div>
+            </div>
+            <div class="sf-card" style="display:flex;flex-direction:column;">
+              <div class="sf-card-head">
+                <div class="sf-card-title">${SF_ICONS.bell} 即時稽核事件</div>
+                <span class="sf-pill ${alerts.filter(a=>alertStatusFor(a)==="bad").length?"bad":"info"}">${alerts.length} 筆</span>
+              </div>
+              <div style="flex:1;overflow:auto;max-height:380px;">${alertsRows}</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
+            ${checklistCard("冷凍／冷藏庫", `${freezerRows.length} 個庫房`, freezerRows.slice(0,4).map(r => ({ name: r.name, val: r.freezer_type || "—", status: "info" })))}
+            ${checklistCard("每日盤點", `${today}`, [{ name: "前往盤點作業", val: "→", status: "info" }, { name: "盤差報表", val: "→", status: "info" }, { name: "庫房管理", val: "→", status: "info" }, { name: "ERP 匯入", val: "→", status: "info" }])}
+            ${checklistCard("LINE 綁定", `${custBound} / ${custTotal} 戶`, [{ name: "已綁定客戶", val: custBound + " 戶", status: "ok" }, { name: "未綁定客戶", val: (custTotal-custBound) + " 戶", status: custBound===custTotal?"ok":"warn" }, { name: "群發訊息", val: "→", status: "info" }, { name: "綁定檢查", val: "→", status: "info" }])}
+          </div>
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.spark} 北農行情</div>
+              <a href="${tapmc}" target="_blank" rel="noopener" class="sf-card-sub">前往臺北農產 →</a>
+            </div>
+            <div style="padding:14px 16px;display:flex;gap:12px;align-items:center;">
+              <span style="font-size:12px;color:var(--txt-3);">即時行情請至臺北農產官網查詢。</span>
+              <a href="/admin/logistics/market" class="sf-btn sm">系統整理版</a>
+            </div>
+          </div>
+        </div>`;
         res.type("text/html").send(notionPage("儀表板", body, "dashboard", res));
     });
     router.get("/recognition-stats", async (req, res) => {
