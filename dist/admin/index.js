@@ -833,18 +833,14 @@ const SF_TOKENS = `
 }
 .sf-theme-toggle:hover { background: var(--bg-3); color: var(--txt-1); }
 
-/* mobile collapse */
+/* mobile collapse — 與既有 .notion-app.sidebar-open 機制相容 */
 .sf-sidebar-toggle { display: none; }
 @media (max-width: 760px) {
-  .sf-app { flex-direction: column; }
-  .sf-sidebar { position: fixed; top: 0; left: -240px; z-index: 50; height: 100vh; transition: left .2s; box-shadow: 0 0 20px rgba(0,0,0,0.2); }
-  .sf-app.sidebar-open .sf-sidebar { left: 0; }
-  .sf-sidebar-toggle { display: inline-flex; }
-  .sf-sidebar-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40;
-    opacity: 0; pointer-events: none; transition: opacity .2s;
+  .sf-sidebar {
+    position: fixed; top: 0; left: -240px; z-index: 50; height: 100vh;
+    transition: left .2s; box-shadow: 0 0 20px rgba(0,0,0,0.2);
   }
-  .sf-app.sidebar-open .sf-sidebar-overlay { opacity: 1; pointer-events: auto; }
+  .notion-app.sidebar-open .sf-sidebar { left: 0; }
 }
 
 /* scrollbars (thin) */
@@ -1218,9 +1214,10 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
     const headerHtml = loggedInUser ? renderNotionAppHeader(loggedInUser, title, headerOpts) : "";
     const tb = topBar || "";
     const mainWrap = `<div class="notion-main-wrap">${tb}<main class="notion-main">${body}</main></div>`;
+    // 使用新 SF 側邊欄，但容器仍維持既有 .notion-app / .notion-layout 以利不破壞既有 layout JS
     const shell = headerHtml
-        ? `<div class="notion-app" id="notionAppRoot">${headerHtml}<div class="notion-layout">${NOTION_SIDEBAR(active)}<div class="notion-sidebar-overlay" id="sidebarOverlay"></div>${mainWrap}</div></div>`
-        : `<div class="notion-layout">${NOTION_SIDEBAR(active)}${mainWrap}</div>`;
+        ? `<div class="notion-app" id="notionAppRoot">${headerHtml}<div class="notion-layout">${sfSidebar(active)}<div class="notion-sidebar-overlay" id="sidebarOverlay"></div>${mainWrap}</div></div>`
+        : `<div class="notion-layout">${sfSidebar(active)}${mainWrap}</div>`;
     const uiScript = `<script>(function(){
       var app = document.getElementById('notionAppRoot');
       var btn = document.getElementById('sidebarToggleBtn');
