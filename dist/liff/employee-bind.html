@@ -53,7 +53,22 @@
 <script>
 (function(){
   const LIFF_ID = window.__LIFF_ID__ || "";
-  const BIND_TOKEN = new URLSearchParams(location.search).get("t") || "";
+  // LIFF 會把原始 query string 包進 ?liff.state=%3Ft%3D... 再丟回 endpoint，
+  // 因此要同時嘗試直接讀 ?t= 與從 liff.state 還原。
+  function readBindToken() {
+    const sp = new URLSearchParams(location.search);
+    let t = sp.get("t");
+    if (t) return t;
+    const ls = sp.get("liff.state");
+    if (ls) {
+      try {
+        const inner = new URLSearchParams(ls.startsWith("?") ? ls.slice(1) : ls);
+        const it = inner.get("t");
+        if (it) return it;
+      } catch (_) { /* ignore */ }
+    }
+    return "";
+  }
   const $ = (s) => document.querySelector(s);
   const status = $("#status");
   const btn = $("#bind-btn");
@@ -70,11 +85,13 @@
     setStatus("err", "尚未設定 LIFF_ID_EMPLOYEE_BIND。請至後台確認環境變數。");
     return;
   }
-  if (!BIND_TOKEN) {
-    setStatus("err", "連結缺少綁定 token（?t=…）。請向管理員索取新的綁定連結。");
-    return;
-  }
   liff.init({ liffId: LIFF_ID }).then(async () => {
+    // init 完成後 SDK 會把原始 query 還原（?t=…），如果沒有再自行解 liff.state
+    const BIND_TOKEN = readBindToken();
+    if (!BIND_TOKEN) {
+      setStatus("err", "連結缺少綁定 token（?t=…）。請向管理員索取新的綁定連結。");
+      return;
+    }
     if (!liff.isLoggedIn()) {
       liff.login({ redirectUri: location.href });
       return;
