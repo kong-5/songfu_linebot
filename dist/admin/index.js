@@ -6005,7 +6005,7 @@ function createAdminRouter() {
               if (!btn) return;
               btn.addEventListener("click", function(){
                 const form = document.getElementById("batchOrderActionsForm");
-                const checked = form.querySelectorAll('input.order-batch-cb:checked').length;
+                const checked = document.querySelectorAll('input.order-batch-cb:checked').length;
                 if (!checked) { alert("請先勾選要作廢的訂單"); return; }
                 const r = window.prompt(
                   "作廢 " + checked + " 筆訂單的原因？\\n\\n" +
