@@ -3845,19 +3845,42 @@ function createAdminRouter() {
                 <div class="sf-card">
                   <div class="sf-card-head"><div class="sf-card-title">📋 提醒清單（依優先順序）</div><span class="sf-card-sub">點客戶名跳客戶 360；點「複製訊息」可貼到 LINE 給客戶</span></div>
                   <div style="padding:0;">
-                    ${rows.length ? `<table class="sf-table" style="font-size:13px;"><thead><tr><th></th><th>客戶</th><th>最後叫貨</th><th style="text-align:right;">已 N 天</th><th style="text-align:right;">平均間隔</th><th style="text-align:right;">逾期倍數</th><th>客戶分</th><th></th></tr></thead><tbody>${rows.map(r => `
+                    ${rows.length ? `<div style="overflow-x:auto;"><table class="sf-table" style="font-size:13px;table-layout:fixed;width:100%;">
+                      <colgroup>
+                        <col style="width:64px;">
+                        <col>
+                        <col style="width:110px;">
+                        <col style="width:80px;">
+                        <col style="width:90px;">
+                        <col style="width:80px;">
+                        <col style="width:60px;">
+                        <col style="width:88px;">
+                      </colgroup>
+                      <thead><tr>
+                        <th style="text-align:center;">等級</th>
+                        <th>客戶</th>
+                        <th>最後叫貨</th>
+                        <th style="text-align:right;">已 N 天</th>
+                        <th style="text-align:right;">平均間隔</th>
+                        <th style="text-align:right;">逾期倍</th>
+                        <th style="text-align:center;">分數</th>
+                        <th style="text-align:center;"></th>
+                      </tr></thead>
+                      <tbody>${rows.map(r => `
                       <tr>
-                        <td>${severityPill(r.overdueRatio)}</td>
-                        <td><a href="/admin/customers/${encodeURIComponent(r.id)}/360" style="font-weight:500;">${escapeHtml(r.name)}</a>${r.handoverNotes ? `<div style="font-size:11px;color:var(--txt-3);margin-top:2px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(r.handoverNotes)}">📝 ${escapeHtml(String(r.handoverNotes).slice(0,40))}${String(r.handoverNotes).length>40?"…":""}</div>` : ""}</td>
-                        <td class="mono" style="color:var(--txt-3);">${escapeHtml(r.lastOrderDate || "—")}</td>
-                        <td style="text-align:right;" class="mono"><strong style="color:var(--bad);">${r.daysSince}</strong></td>
-                        <td style="text-align:right;" class="mono" style="color:var(--txt-3);">${r.avg}</td>
-                        <td style="text-align:right;" class="mono">${r.overdueRatio.toFixed(1)}×</td>
-                        <td><span class="sf-pill" style="background:${r.tier.bg};color:${r.tier.color};font-size:11px;">${r.score}</span></td>
-                        <td style="text-align:right;white-space:nowrap;">
-                          <button type="button" class="sf-btn sm copy-reminder-btn" data-name="${escapeAttr(r.name)}" data-days="${r.daysSince}" title="複製提醒訊息">📋 複製</button>
+                        <td style="text-align:center;">${severityPill(r.overdueRatio)}</td>
+                        <td style="overflow:hidden;">
+                          <a href="/admin/customers/${encodeURIComponent(r.id)}/360" style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;max-width:100%;">${escapeHtml(r.name)}</a>
+                          ${r.handoverNotes ? `<div style="font-size:11px;color:var(--txt-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(r.handoverNotes)}">📝 ${escapeHtml(String(r.handoverNotes).slice(0,40))}${String(r.handoverNotes).length>40?"…":""}</div>` : ""}
                         </td>
-                      </tr>`).join("")}</tbody></table>` : `<p style="padding:24px;text-align:center;color:var(--ok);">✓ 目前沒有客戶需要提醒</p>`}
+                        <td class="mono" style="color:var(--txt-3);white-space:nowrap;">${escapeHtml(r.lastOrderDate || "—")}</td>
+                        <td style="text-align:right;white-space:nowrap;" class="mono"><strong style="color:var(--bad);">${r.daysSince}</strong></td>
+                        <td style="text-align:right;white-space:nowrap;color:var(--txt-3);" class="mono">${r.avg}</td>
+                        <td style="text-align:right;white-space:nowrap;" class="mono">${r.overdueRatio.toFixed(1)}×</td>
+                        <td style="text-align:center;"><span class="sf-pill" style="background:${r.tier.bg};color:${r.tier.color};font-size:11px;padding:1px 6px;">${r.score}</span></td>
+                        <td style="text-align:center;"><button type="button" class="sf-btn sm copy-reminder-btn" data-name="${escapeAttr(r.name)}" data-days="${r.daysSince}" title="複製提醒訊息給客戶">複製</button></td>
+                      </tr>`).join("")}</tbody>
+                    </table></div>` : `<p style="padding:24px;text-align:center;color:var(--ok);">✓ 目前沒有客戶需要提醒</p>`}
                   </div>
                 </div>
               </div>
