@@ -10083,109 +10083,140 @@ function createAdminRouter() {
         const packInnerSelectHtml = `<select name="inner_unit" required class="pu-pack-unit" aria-label="內層單位" style="width:5.5rem;">
             <option value="" disabled selected>內層</option>${packUnitOptionsHtml}</select>`;
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/products">品項與俗名</a> / 編輯品項</div>
-        <h1 class="notion-page-title" id="unit-sop">編輯品項</h1>
-        <p style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;">
-          <a href="#unit-sop" class="btn">1.基本資料</a>
-          <a href="#step-21" class="btn">2-1 俗名</a>
-          <a href="#step-22" class="btn">2-2 單位→公斤</a>
-          <a href="#step-23" class="btn">2-3 包裝規格</a>
-          <a href="#step-24" class="btn">2-4 推算</a>
-        </p>
-        ${embedHint}
+        <style>
+          .pe-page { max-width: 880px; margin: 0 auto; padding: ${embed ? "12px 16px 32px" : "20px 24px 48px"}; }
+          .pe-title-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin: 0 0 16px; flex-wrap:wrap; }
+          .pe-title-row h1 { margin: 0; font-size: 22px; font-weight: 600; }
+          .pe-context-spot { background: linear-gradient(0deg, rgba(35,131,226,0.04), rgba(35,131,226,0.08)); border: 1px solid rgba(35,131,226,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+          .pe-context-spot .pe-ctx-head { font-size: 12px; color: var(--notion-text-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+          .pe-context-spot .pe-ctx-main { font-size: 14px; line-height: 1.5; }
+          .pe-context-spot .pe-ctx-main strong { font-size: 15px; }
+          .pe-context-spot .pe-ctx-tip { font-size: 12px; color: var(--notion-text-muted); margin: 6px 0 0; }
+          .pe-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+          @media (max-width: 580px) { .pe-grid-2 { grid-template-columns: 1fr; } }
+          .pe-grid-2 label { margin: 0; }
+          .pe-grid-2 input, .pe-grid-2 select { width: 100%; padding: 7px 9px; font-size: 14px; }
+          .pe-card { background:#fff; border: 1px solid var(--notion-border); border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; }
+          .pe-card h2 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+          .pe-card .sec-hint { font-size: 12px; color: var(--notion-text-muted); margin: 0 0 14px; line-height: 1.55; }
+          .pe-actions { margin-top: 14px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+          .pe-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+          .pe-table thead th { font-weight:600; padding: 6px 8px; background: var(--notion-sidebar); text-align: left; font-size: 12px; color: var(--notion-text-muted); border-bottom: 1px solid var(--notion-border); }
+          .pe-table tbody td { padding: 6px 8px; border-bottom: 1px solid var(--notion-border); }
+          .pe-table tbody tr:last-child td { border-bottom: none; }
+          .pe-add-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 10px 0 0; }
+          .pe-add-row label { margin: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--notion-text-muted); }
+          .pe-add-row input, .pe-add-row select { padding: 6px 8px; font-size: 13px; }
+          .pe-mini-hint { font-size: 11px; color: var(--notion-text-muted); margin: 8px 0 0; }
+          details.pe-sop { background:#fff; border: 1px solid var(--notion-border); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+          details.pe-sop > summary { cursor: pointer; font-weight: 600; font-size: 14px; list-style: none; display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+          details.pe-sop > summary::-webkit-details-marker { display: none; }
+          details.pe-sop > summary::before { content: "▸"; font-size: 12px; color: var(--notion-text-muted); }
+          details.pe-sop[open] > summary::before { content: "▾"; }
+          details.pe-sop .pe-step-body { padding-top: 14px; }
+        </style>
+        <div class="pe-page">
+        ${embed ? "" : `<div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/products">品項與俗名</a> / 編輯品項</div>`}
+        <div class="pe-title-row">
+          <h1>編輯品項：${escapeHtml(row.name)}</h1>
+          ${embed ? `<a href="${escapeAttr(returnUrl || "/admin/products")}" class="btn">← 返回訂單</a>` : `<a href="/admin/products" class="btn">← 回品項列表</a>`}
+        </div>
         ${errMsg}
         ${okFlash}
-        <div class="notion-card">
-          <h2 style="margin-top:0;">1. 基本資料（主檔）</h2>
-          <p class="notion-hint" style="margin-top:0;">標準品名、ERP／條碼、預設單位。與下方「叫貨單位」可不同（青菜常出現包／把等非主檔單位）。</p>
+        ${hasOrderContext ? `
+        <div class="pe-context-spot">
+          <div class="pe-ctx-head">本次從訂單帶入</div>
+          <div class="pe-ctx-main">客戶寫：<strong>${escapeHtml(contextRaw)}</strong>${contextUnit && contextUnit.trim() ? `　原始單位：<strong>${escapeHtml(contextUnit.trim())}</strong>` : ""}</div>
+          <p class="pe-ctx-tip">最快做法：在「俗名」加上「<strong>${escapeHtml(contextRaw)}</strong>」→ 之後 AI 看到這寫法就直接對應本品項；如果單位也常被認錯，再到「單位 → 公斤」補一條。</p>
+        </div>` : ""}
+
+        <div class="pe-card">
+          <h2>基本資料</h2>
+          <p class="sec-hint">主檔品名與識別碼。「主檔預設單位」與下方「叫貨單位」可不同（青菜常出現包／把等非主檔單位）。</p>
           <form method="post" action="/admin/products/${encodeURIComponent(row.id)}/edit"${formTarget}>
             ${hiddenReturn}
             ${hiddenEmbed}
-            <label>標準品名 <input type="text" name="name" value="${escapeAttr(row.name)}" required style="width:100%;"></label>
-            <label>凌越料號 <input type="text" name="erp_code" value="${escapeAttr(row.erp_code ?? "")}" style="width:100%;"></label>
-            <label>寺岡條碼 <input type="text" name="teraoka_barcode" value="${escapeAttr(row.teraoka_barcode ?? "")}" style="width:100%;"></label>
-            <label>主檔預設單位 <select name="unit" style="width:100%;">${unitOptsHtml}</select></label>
-            <label><input type="checkbox" name="active" value="1" ${row.active === 1 ? "checked" : ""}> 啟用（未勾選即停用）</label>
-            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存基本資料</button></p>
+            <div class="pe-grid-2">
+              <label style="grid-column: 1 / -1;">標準品名 <input type="text" name="name" value="${escapeAttr(row.name)}" required></label>
+              <label>凌越料號 <input type="text" name="erp_code" value="${escapeAttr(row.erp_code ?? "")}"></label>
+              <label>寺岡條碼 <input type="text" name="teraoka_barcode" value="${escapeAttr(row.teraoka_barcode ?? "")}"></label>
+              <label>主檔預設單位 <select name="unit">${unitOptsHtml}</select></label>
+              <label style="display:flex;align-items:center;gap:6px;padding-top:18px;"><input type="checkbox" name="active" value="1" ${row.active === 1 ? "checked" : ""}> 啟用</label>
+            </div>
+            <div class="pe-actions"><button type="submit" class="btn btn-primary">儲存基本資料</button></div>
           </form>
         </div>
-        <div class="notion-card pu-sop">
-          <h2 style="margin-top:0;">2. 單位與換算（俗名／非規格／包裝／推算）</h2>
-          <p class="pu-sop-intro"><strong>建議順序：</strong>2-1 俗名 → 2-2 <strong>非規格</strong>（叫貨單位直接換公斤，青菜常用）→ 2-3 <strong>規格</strong>（一箱幾包、一箱幾罐）→ 2-4 看推算。2-2 填公斤換算時會<strong>自動</strong>寫入 LINE 叫貨單位換算規則。</p>
-          ${orderCtxBlock}
-          <details class="pu-sop-step" open id="step-21">
-            <summary>2-1 俗名（客戶用語 → 本品項）</summary>
-            <div class="pu-step-body">
-              <p class="step-hint">全公司有效；與「主檔品名」不同時特別有用。</p>
-              <table style="font-size:13px;"><thead><tr><th>俗名</th><th>操作</th></tr></thead><tbody>${aliasRows || "<tr><td colspan='2'>尚無俗名</td></tr>"}</tbody></table>
-              <form method="post" action="/admin/products/${encodeURIComponent(productId)}/aliases/add" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;max-width:640px;"${formTarget}>
-                <input type="hidden" name="return" value="${escapeAttr(returnUrl)}">
-                ${embed ? `<input type="hidden" name="embed" value="1">` : ""}
-                <input type="hidden" name="context_raw" value="${escapeAttr(contextRaw)}">
-                <input type="hidden" name="context_unit" value="${escapeAttr(contextUnit)}">
-                <label style="margin:0;flex:1;min-width:200px;">新增俗名 <input type="text" name="alias" placeholder="例：薑絲一包、大陸妹" required style="width:100%;"></label>
-                <button type="submit" class="btn btn-primary">新增</button>
-              </form>
-              <p class="notion-hint" style="margin-bottom:0;"><a href="/admin/products/${encodeURIComponent(productId)}/aliases"${linkTarget}>開啟舊版俗名整頁</a>（一般不必）</p>
-            </div>
-          </details>
-          <details class="pu-sop-step" open id="step-22">
-            <summary>2-2 叫貨單位 → 公斤（<strong>非規格</strong>，最常用）</summary>
-            <div class="pu-step-body">
-              <p class="step-hint">客戶下單用的單位字（一包、一小把、一罐…），對應<strong>幾公斤</strong>。與主檔「預設單位」可不同。</p>
-              <div class="pu-chip-row"><span class="notion-hint" style="margin:0;">快速帶入單位：</span>${unitChipsHtml}</div>
-              <table style="font-size:13px;"><thead><tr><th>叫貨單位</th><th>備註</th><th>每 1 單位＝</th><th></th></tr></thead><tbody>${specTableRows || "<tr><td colspan='4'>尚無，請用下方表單新增</td></tr>"}</tbody></table>
-              <form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--notion-border);"${formTarget}>
-                <input type="hidden" name="return" value="${escapeAttr(returnUrl)}">
-                ${embed ? `<input type="hidden" name="embed" value="1">` : ""}
-                <input type="hidden" name="redirect_to_edit" value="1">
-                <input type="hidden" name="context_raw" value="${escapeAttr(contextRaw)}">
-                <input type="hidden" name="context_unit" value="${escapeAttr(contextUnit)}">
-                <label style="display:inline-block;margin-right:10px;">叫貨單位 <input type="text" name="unit" id="puSpecUnitInput" required value="${escapeAttr(defaultSpecUnit)}" placeholder="包、把…" style="width:5rem;"></label>
-                <label style="display:inline-block;margin-right:10px;">備註 <input type="text" name="note_label" placeholder="選填" style="width:7rem;"></label>
-                <label style="display:inline-block;">每 1 單位＝ <input type="number" name="conversion_kg" step="0.001" min="0.001" value="1" style="width:5rem;"> 公斤</label>
-                <p class="notion-hint" style="margin:10px 0 0;">有填公斤換算時，會自動更新 <strong>LINE 叫貨單位換算</strong>規則（與進線訂單換算一致，無須另勾選）。</p>
-                <p style="margin-top:10px;"><button type="submit" class="btn btn-primary">新增一筆 2-2</button></p>
-              </form>
-            </div>
-          </details>
-          <details class="pu-sop-step" open id="step-23">
-            <summary>2-3 包裝規格（<strong>規格</strong>：箱／盒與內層）</summary>
-            <div class="pu-step-body">
-              <p class="step-hint">描述「1 外層＝幾個內層」，例如 1 箱＝12 包、1 箱＝24 罐。內層重量請在 2-2 先填好，本區會一併<strong>推算</strong>外層公斤（2-4）。</p>
-              <table style="font-size:13px;"><thead><tr><th>1 外層單位</th><th>＝ 幾個內層</th><th>內層單位</th><th>備註</th><th></th></tr></thead><tbody>${packTableRows || "<tr><td colspan='5'>尚無包裝關係</td></tr>"}</tbody></table>
-              <form method="post" action="/admin/products/${encodeURIComponent(productId)}/pack-ratios/add" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--notion-border);"${formTarget}>
-                <input type="hidden" name="return" value="${escapeAttr(returnUrl)}">
-                ${embed ? `<input type="hidden" name="embed" value="1">` : ""}
-                <input type="hidden" name="context_raw" value="${escapeAttr(contextRaw)}">
-                <input type="hidden" name="context_unit" value="${escapeAttr(contextUnit)}">
-                <span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px;">1 ${packOuterSelectHtml}</span>
-                <span style="margin:0 4px;">＝</span>
-                <input type="number" name="inner_count" step="0.001" min="0.001" value="1" required style="width:4.5rem;">
-                <span style="display:inline-flex;align-items:center;margin-left:8px;">${packInnerSelectHtml}</span>
-                <label style="display:inline-block;margin-left:10px;">備註 <input type="text" name="note" placeholder="選填" style="width:6rem;"></label>
-                <p style="margin-top:10px;"><button type="submit" class="btn btn-primary">新增包裝關係</button></p>
-              </form>
-            </div>
-          </details>
-          <details class="pu-sop-step" open id="step-24">
-            <summary>2-4 推算：各叫貨單位約幾公斤</summary>
-            <div class="pu-step-body">
-              <p class="step-hint"><span class="pu-sop-badge">直接</span>＝在 2-2 填寫；<span class="pu-sop-badge">推算</span>＝由 2-2＋2-3 計算。外層單位若要進 LINE，請在 2-2 為該單位各別新增並勾選同步（或至 <a href="/admin/line-bot/unit-conversion"${linkTarget}>叫貨單位換算</a>）。</p>
-              ${derivedHtml}
-            </div>
-          </details>
-        </div>
-        <details class="notion-card">
-          <summary style="cursor:pointer;font-weight:600;">變更紀錄</summary>
-          <div style="margin-top:12px;">
-            <p class="notion-hint">品項、俗名、規格異動。</p>
-            <div style="overflow-x:auto;">
-              <table style="font-size:13px;"><thead><tr><th>時間</th><th>操作者</th><th>動作</th><th>摘要</th></tr></thead><tbody>${logRows || "<tr><td colspan='4'>尚無紀錄</td></tr>"}</tbody></table>
-            </div>
+
+        <details class="pe-sop" open id="step-21">
+          <summary>俗名（客戶寫法 → 本品項）${aliases.length ? ` <span class="sf-pill" style="margin-left:auto;font-size:11px;">${aliases.length} 筆</span>` : ""}</summary>
+          <div class="pe-step-body">
+            <p class="sec-hint">全公司有效；客戶寫的別名（例「大陸妹」「美生菜」）對應到本品項。</p>
+            <table class="pe-table"><thead><tr><th>俗名</th><th style="width:120px;">操作</th></tr></thead><tbody>${aliasRows || "<tr><td colspan='2' style='color:var(--notion-text-muted);'>尚無俗名</td></tr>"}</tbody></table>
+            <form method="post" action="/admin/products/${encodeURIComponent(productId)}/aliases/add" class="pe-add-row"${formTarget}>
+              <input type="hidden" name="return" value="${escapeAttr(returnUrl)}">
+              ${embed ? `<input type="hidden" name="embed" value="1">` : ""}
+              <input type="hidden" name="context_raw" value="${escapeAttr(contextRaw)}">
+              <input type="hidden" name="context_unit" value="${escapeAttr(contextUnit)}">
+              <label style="flex:1;min-width:200px;">新增俗名 <input type="text" name="alias" placeholder="${hasOrderContext ? escapeAttr(contextRaw) + "（一鍵新增）" : "例：大陸妹"}" ${hasOrderContext ? `value="${escapeAttr(contextRaw)}"` : ""} required></label>
+              <button type="submit" class="btn btn-primary">新增</button>
+            </form>
           </div>
         </details>
-        <p>${embed ? `<a href="${escapeAttr(returnUrl || "/admin/products")}"${linkTarget}>← 返回</a>` : `<a href="/admin/products">← 回品項列表</a>`}</p>
+
+        <details class="pe-sop" open id="step-22">
+          <summary>叫貨單位 → 公斤${unitSpecs.length ? ` <span class="sf-pill" style="margin-left:auto;font-size:11px;">${unitSpecs.length} 筆</span>` : ""}</summary>
+          <div class="pe-step-body">
+            <p class="sec-hint">客戶下單用的單位（一包、一小把、一罐…）對應<strong>幾公斤</strong>。填了會自動更新 <strong>LINE 叫貨單位換算</strong>。</p>
+            <div class="pu-chip-row"><span class="notion-hint" style="margin:0;font-size:12px;">快選：</span>${unitChipsHtml}</div>
+            <table class="pe-table"><thead><tr><th>叫貨單位</th><th>備註</th><th>每 1 單位＝</th><th style="width:80px;"></th></tr></thead><tbody>${specTableRows || "<tr><td colspan='4' style='color:var(--notion-text-muted);'>尚無單位換算</td></tr>"}</tbody></table>
+            <form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs" class="pe-add-row"${formTarget}>
+              <input type="hidden" name="return" value="${escapeAttr(returnUrl)}">
+              ${embed ? `<input type="hidden" name="embed" value="1">` : ""}
+              <input type="hidden" name="redirect_to_edit" value="1">
+              <input type="hidden" name="context_raw" value="${escapeAttr(contextRaw)}">
+              <input type="hidden" name="context_unit" value="${escapeAttr(contextUnit)}">
+              <label>叫貨單位 <input type="text" name="unit" id="puSpecUnitInput" required value="${escapeAttr(defaultSpecUnit)}" placeholder="包、把…" style="width:5rem;"></label>
+              <label>備註 <input type="text" name="note_label" placeholder="選填" style="width:6rem;"></label>
+              <label>每 1 單位＝ <span style="display:inline-flex;align-items:center;gap:4px;"><input type="number" name="conversion_kg" step="0.001" min="0.001" value="1" style="width:5rem;"><span style="font-size:12px;color:var(--notion-text-muted);">公斤</span></span></label>
+              <button type="submit" class="btn btn-primary">新增</button>
+            </form>
+          </div>
+        </details>
+
+        <details class="pe-sop" id="step-23">
+          <summary>包裝規格（1 箱＝N 包等）${packRatios.length ? ` <span class="sf-pill" style="margin-left:auto;font-size:11px;">${packRatios.length} 筆</span>` : ""}</summary>
+          <div class="pe-step-body">
+            <p class="sec-hint">少用。如要描述「1 箱＝12 包」、「1 箱＝24 罐」這類關係。內層重量請在上方「叫貨單位 → 公斤」先填好，本區會推算外層公斤。</p>
+            <table class="pe-table"><thead><tr><th>1 外層</th><th>＝幾個內層</th><th>內層單位</th><th>備註</th><th style="width:80px;"></th></tr></thead><tbody>${packTableRows || "<tr><td colspan='5' style='color:var(--notion-text-muted);'>尚無包裝關係</td></tr>"}</tbody></table>
+            <form method="post" action="/admin/products/${encodeURIComponent(productId)}/pack-ratios/add" class="pe-add-row"${formTarget}>
+              <input type="hidden" name="return" value="${escapeAttr(returnUrl)}">
+              ${embed ? `<input type="hidden" name="embed" value="1">` : ""}
+              <input type="hidden" name="context_raw" value="${escapeAttr(contextRaw)}">
+              <input type="hidden" name="context_unit" value="${escapeAttr(contextUnit)}">
+              <label>1 外層 ${packOuterSelectHtml}</label>
+              <label>＝幾個 <input type="number" name="inner_count" step="0.001" min="0.001" value="1" required style="width:4.5rem;"></label>
+              <label>內層 ${packInnerSelectHtml}</label>
+              <label>備註 <input type="text" name="note" placeholder="選填" style="width:6rem;"></label>
+              <button type="submit" class="btn btn-primary">新增</button>
+            </form>
+          </div>
+        </details>
+
+        <details class="pe-sop" id="step-24">
+          <summary>推算結果（唯讀，看各單位約幾公斤）</summary>
+          <div class="pe-step-body">
+            <p class="sec-hint"><span class="pu-sop-badge">直接</span>＝直接填的；<span class="pu-sop-badge">推算</span>＝由上面兩區計算。</p>
+            ${derivedHtml}
+          </div>
+        </details>
+
+        <details class="pe-sop" id="step-history">
+          <summary>變更紀錄（${recentLogs.length}）</summary>
+          <div class="pe-step-body" style="overflow-x:auto;">
+            <table class="pe-table"><thead><tr><th>時間</th><th>操作者</th><th>動作</th><th>摘要</th></tr></thead><tbody>${logRows || "<tr><td colspan='4' style='color:var(--notion-text-muted);'>尚無紀錄</td></tr>"}</tbody></table>
+          </div>
+        </details>
+        </div>
         <script>
         (function(){
           document.querySelectorAll(".pu-chip[data-target][data-unit]").forEach(function(btn){
