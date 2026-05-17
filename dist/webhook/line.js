@@ -117,6 +117,28 @@ function formatSplitSubNamesForReply(keySet) {
     });
     return arr.map((k) => (k === "" ? "主客戶" : k)).join("、");
 }
+/**
+ * 客訴關鍵詞偵測：訊息含有以下其中一種明確負面信號即視為客訴。
+ * 保守策略：只比對清楚的客訴詞，避免「上次叫的菜很好」這類正面引用被誤判。
+ */
+function detectComplaintKeywords(text) {
+    if (!text) return { matched: false, keywords: [] };
+    const t = String(text);
+    const patterns = [
+        /壞掉|壞了|爛掉|爛了|腐爛|發霉|發臭|有蟲|生蟲|長蟲|變質|不新鮮/,
+        /客訴|投訴|抱怨|退錢|退費|退貨|賠償|要賠|理賠/,
+        /送錯|配錯|漏送|少送|多送|送少|送多|寄錯/,
+        /上次.{0,8}(壞|爛|不好|有問題|不新鮮|不對|怪)/,
+        /品質.{0,5}(差|不好|有問題)/,
+        /菜.{0,5}有問題|貨.{0,5}有問題/,
+    ];
+    const matched = [];
+    for (const p of patterns) {
+        const m = t.match(p);
+        if (m && !matched.includes(m[0])) matched.push(m[0]);
+    }
+    return { matched: matched.length > 0, keywords: matched };
+}
 async function insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, { orderDate, customerId, groupId, rawMessage, remark, orderSubSplitKey, lineMessageId, }) {
     const orderId = (0, id_js_1.newId)("ord");
     const orderNo = await getNextOrderNo(db, orderDate);
@@ -1008,6 +1030,27 @@ function createLineWebhook() {
                     db,
                     customerId: cid,
                 };
+                // 客訴關鍵詞偵測：命中即把該訂單標為客訴並跳過 AI 解析
+                const complaintHit = detectComplaintKeywords(text);
+                if (complaintHit.matched) {
+                    try {
+                        await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("complaint", orderId);
+                        console.log("[LINE] 偵測到客訴關鍵詞 [" + complaintHit.keywords.join(",") + "] → 訂單 " + orderId + " 標為 complaint");
+                        // 寫入稽核軌跡
+                        try {
+                            const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+                            await db.prepare(
+                                "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
+                            ).run(dclId, "order", orderId, "auto_create_complaint",
+                                  `自動偵測客訴關鍵詞 [${complaintHit.keywords.join(",")}]，已標為客訴`,
+                                  JSON.stringify({ matched_keywords: complaintHit.keywords, raw_text: text.slice(0, 500), source: "auto_keyword" }),
+                                  "system:complaint_detector");
+                        } catch (_) { /* ignore log err */ }
+                    } catch (e) {
+                        console.warn("[LINE] 標記客訴失敗:", e?.message || e);
+                    }
+                    continue;
+                }
                 // 過短或不含數字的訊息（純 emoji、問候語等）略過 Gemini 解析
                 const looksLikeOrder = text.length >= 4 && /[\d０-９]/.test(text);
                 if (!looksLikeOrder) {
