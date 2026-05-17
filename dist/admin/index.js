@@ -6524,7 +6524,7 @@ function createAdminRouter() {
           </tr>`;
             })
                 .join("");
-            const voidReasonLabel = { ai_wrong:"AI 辨識錯誤", customer_complaint:"客訴", customer_cancelled:"客戶取消", duplicate:"重複叫貨", staff_error:"內部錯誤", other:"其他" };
+            const voidReasonLabel = { ai_wrong:"AI 辨識錯誤", customer_complaint:"客訴", customer_cancelled:"客戶取消", duplicate:"重複叫貨", staff_error:"內部錯誤", not_order:"非訂單訊息", other:"其他" };
             const deletedRows = deletedOrders.map((o) => {
               const backUrl = "/admin/orders?date_from=" + encodeURIComponent(filterDateFrom) + "&date_to=" + encodeURIComponent(filterDateTo) + (onlyNeedReview ? "&need_review=1" : "");
               const reasonLabel = voidReasonLabel[o.void_reason] || (o.void_reason || "—");
@@ -6592,6 +6592,7 @@ function createAdminRouter() {
           ${req.query.ok === "seq" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已儲存本日起始編號</div>" : ""}
           ${req.query.ok === "del" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單作廢（移到「已作廢」清單）</div>" : ""}
           ${req.query.ok === "approved" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單標記為已確認</div>" : ""}
+          ${req.query.ok === "approved_done" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">🎉 全部待確認都處理完了</div>" : ""}
           ${req.query.err === "none" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">請先勾選要處理的訂單</div>" : ""}
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${statCard("總訂單", totalShown, "ok", "#")}
@@ -7141,7 +7142,7 @@ function createAdminRouter() {
             return;
         }
         // 作廢原因（前端 prompt 帶入）
-        const validReasons = ["ai_wrong", "customer_complaint", "customer_cancelled", "duplicate", "staff_error", "other"];
+        const validReasons = ["ai_wrong", "customer_complaint", "customer_cancelled", "duplicate", "staff_error", "not_order", "other"];
         const rawReason = String(req.body.void_reason || "other").trim().toLowerCase();
         const reason = validReasons.includes(rawReason) ? rawReason : "other";
         const note = String(req.body.void_note || "").trim().slice(0, 500);
@@ -7171,7 +7172,7 @@ function createAdminRouter() {
         const backTo = (typeof req.query.back === "string" && req.query.back.startsWith("/admin/orders"))
             ? req.query.back
             : "";
-        const validReasons = ["ai_wrong", "customer_complaint", "customer_cancelled", "duplicate", "staff_error", "other"];
+        const validReasons = ["ai_wrong", "customer_complaint", "customer_cancelled", "duplicate", "staff_error", "not_order", "other"];
         const rawReason = String(req.body?.void_reason || "other").trim().toLowerCase();
         const reason = validReasons.includes(rawReason) ? rawReason : "other";
         const note = String(req.body?.void_note || "").trim().slice(0, 500);
@@ -7726,7 +7727,7 @@ function createAdminRouter() {
         const orderStatusDisplay = orderStatusLc === "approved" ? "已確認" : orderStatusLc === "pending" ? "待確認" : orderStatusLc === "deleted" ? "已作廢" : orderStatusLc === "complaint" ? "客訴" : escapeHtml(String(order.status || ""));
         const confirmOrderFormHtml = orderStatusLc === "approved"
             ? `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/unapprove?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve" title="再按一次可撤銷確認" onclick="return confirm('確定要撤銷確認？訂單將恢復為待確認。');">已確認</button></form>`
-            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve">確認</button></form>`;
+            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}&next=1" style="display:inline;margin:0;flex:0 0 auto;" title="確認後自動跳到下一筆待確認"><button type="submit" class="btn btn-cute-approve">確認 → 下一筆</button></form>`;
         const toComplaintFormHtml = orderStatusLc === "complaint" || orderStatusLc === "deleted"
             ? ""
             : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/to-complaint" style="display:inline;margin:0;"><button type="submit" class="sf-btn sm" title="此筆其實是客訴而非訂單，按下將轉入客訴處理流程" onclick="return confirm('確定將此筆轉為客訴？將不再出現在訂單列表，並進入客訴處理流程。');" style="color:#c2410c;border-color:#fed7aa;">⚠ 轉為客訴</button></form>`;
@@ -7743,7 +7744,7 @@ function createAdminRouter() {
             : (req.query.ok === "date_unchanged" ? `<div class="sf-pill info" style="align-self:flex-start;margin-bottom:8px;">日期未變動</div>` : "");
         // 作廢資訊（若為已作廢訂單，顯示原因 + 取消作廢按鈕）
         const orderVoidReason = order.void_reason || null;
-        const orderVoidLabel = { ai_wrong:"AI 辨識錯誤", customer_complaint:"客訴", customer_cancelled:"客戶取消", duplicate:"重複叫貨", staff_error:"內部錯誤", other:"其他" }[orderVoidReason] || orderVoidReason;
+        const orderVoidLabel = { ai_wrong:"AI 辨識錯誤", customer_complaint:"客訴", customer_cancelled:"客戶取消", duplicate:"重複叫貨", staff_error:"內部錯誤", not_order:"非訂單訊息", other:"其他" }[orderVoidReason] || orderVoidReason;
         const orderVoidedAt = order.voided_at ? String(order.voided_at).replace("T", " ").slice(0, 16) : null;
         const isOrderVoided = orderStatusLc === "deleted";
         const body = `
@@ -7786,7 +7787,6 @@ function createAdminRouter() {
                   <button type="button" class="sf-btn sm" id="orderEditDateMon" title="自動填入下週一">下週一</button>
                   <button type="submit" class="sf-btn sm primary" title="儲存新的出貨日">儲存</button>
                 </form>
-                ${toComplaintFormHtml ? `<span style="margin-left:auto;">${toComplaintFormHtml}</span>` : ""}
               </div>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -7829,6 +7829,7 @@ function createAdminRouter() {
           ${req.query.ok === "product" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已更新對應品項</div>" : ""}
           ${req.query.ok === "prod_edit" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已儲存品項</div>" : ""}
           ${req.query.ok === "approved" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已標記為已確認</div>" : ""}
+          ${req.query.ok === "approved_prev" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">✓ 上一筆已確認，已自動跳到下一筆待確認</div>" : ""}
           ${req.query.ok === "unconfirmed" ? "<div class=\"sf-pill\" style=\"margin-bottom:8px;\">已撤銷確認</div>" : ""}
           ${req.query.ok === "rerecog" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已重新辨識明細</div>" : ""}
           ${req.query.ok === "raw_applied" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已補登並解析</div>" : ""}
@@ -7844,17 +7845,55 @@ function createAdminRouter() {
           ${req.query.err === "apply_raw_parse" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">無法解析，請檢查內容或 Gemini 金鑰</div>" : ""}
         </div>
         <div class="sf-root" style="padding:0 32px 24px 32px;background:var(--bg-0);">
-        <div style="display:flex;gap:8px;align-items:center;margin:0 0 14px;flex-wrap:wrap;">
+        <div class="order-action-toolbar" style="display:flex;gap:8px;align-items:center;margin:0 0 14px;flex-wrap:wrap;">
           ${confirmOrderFormHtml ? `<span class="sf-toolbar-confirm">${confirmOrderFormHtml}</span>` : ""}
           <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/re-recognize?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;">
             <button type="submit" class="sf-btn" title="依原始文字與 LINE 圖片附件重建明細（覆寫現有品項）" onclick="return confirm('依原始訂單重建明細？將覆寫現有品項。');">${SF_ICONS.refresh}<span>重新辨識</span></button>
           </form>
-          <button type="button" id="btn-save-example" class="sf-btn" title="將目前畫面上的明細與附件圖存為該客戶 Few-Shot 範例（多張附件時以第一張為準）" ${attachments.length === 0 ? "disabled style=\"opacity:0.5;\"" : ""}>${SF_ICONS.spark}<span>儲存為 AI 學習範例</span></button>
-          <a href="/admin/orders/batch-lingyue-xlsx?ids=${encodeURIComponent(orderId)}" class="sf-btn">${SF_ICONS.dl}<span>匯出凌越</span></a>
-          <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1" class="sf-btn">${SF_ICONS.list}<span>預覽訂單</span></a>
-          <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?download=1" class="sf-btn">${SF_ICONS.dl}<span>匯出訂貨單</span></a>
+          <div class="sf-more-dropdown" id="orderMoreDropdown" style="position:relative;display:inline-block;">
+            <button type="button" class="sf-btn" id="btnOrderMoreToggle" aria-haspopup="true" aria-expanded="false" title="更多動作">⋯ 更多</button>
+            <div class="sf-more-menu" id="orderMoreMenu" role="menu" hidden style="position:absolute;top:calc(100% + 4px);left:0;min-width:220px;background:var(--bg-0);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.12);padding:6px;z-index:50;display:flex;flex-direction:column;gap:2px;">
+              <button type="button" id="btn-save-example" class="sf-more-item" title="將目前畫面上的明細與附件圖存為該客戶 Few-Shot 範例（多張附件時以第一張為準）" ${attachments.length === 0 ? "disabled" : ""}>${SF_ICONS.spark}<span>儲存為 AI 學習範例</span>${attachments.length === 0 ? `<span style="margin-left:auto;font-size:11px;color:var(--txt-3);">（需有附件）</span>` : ""}</button>
+              <a href="/admin/orders/batch-lingyue-xlsx?ids=${encodeURIComponent(orderId)}" class="sf-more-item">${SF_ICONS.dl}<span>匯出凌越</span></a>
+              <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1" class="sf-more-item">${SF_ICONS.list}<span>預覽訂單</span></a>
+              <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?download=1" class="sf-more-item">${SF_ICONS.dl}<span>匯出訂貨單</span></a>
+            </div>
+          </div>
+          <style>
+            .sf-more-item { display:flex;align-items:center;gap:8px;padding:8px 10px;border:none;background:transparent;text-align:left;font-size:13px;color:var(--txt-1);cursor:pointer;border-radius:6px;text-decoration:none;font-family:inherit;width:100%; }
+            .sf-more-item:hover { background:var(--bg-2); }
+            .sf-more-item:disabled { color:var(--txt-3);cursor:not-allowed;opacity:.6; }
+            .sf-more-item:disabled:hover { background:transparent; }
+            .sf-more-item svg { flex:0 0 auto; }
+            @media (max-width: 720px) {
+              .order-action-toolbar { gap:6px; }
+              .order-action-toolbar .sf-btn { padding:6px 10px;font-size:13px; }
+              .order-action-toolbar > span[style*="flex:1"] { display:none !important; }
+              .sf-toolbar-danger { margin-left:auto; }
+            }
+          </style>
+          <script>
+          (function(){
+            const moreToggle = document.getElementById("btnOrderMoreToggle");
+            const moreMenu = document.getElementById("orderMoreMenu");
+            const moreDropdown = document.getElementById("orderMoreDropdown");
+            if (!moreToggle || !moreMenu || !moreDropdown) return;
+            function closeMore(){ moreMenu.hidden = true; moreToggle.setAttribute("aria-expanded","false"); }
+            function openMore(){ moreMenu.hidden = false; moreToggle.setAttribute("aria-expanded","true"); }
+            moreToggle.addEventListener("click", function(e){
+              e.stopPropagation();
+              if (moreMenu.hidden) openMore(); else closeMore();
+            });
+            document.addEventListener("click", function(e){
+              if (!moreMenu.hidden && !moreDropdown.contains(e.target)) closeMore();
+            });
+            document.addEventListener("keydown", function(e){ if (e.key === "Escape" && !moreMenu.hidden) closeMore(); });
+            moreMenu.querySelectorAll("a,button").forEach(el => el.addEventListener("click", function(){ setTimeout(closeMore, 0); }));
+          })();
+          </script>
           ${isOrderVoided ? "" : `
           <span style="flex:1;"></span>
+          ${toComplaintFormHtml}
           <div class="sf-toolbar-danger" style="display:inline-flex;gap:6px;padding:4px;background:rgba(239,68,68,0.06);border:1px dashed rgba(239,68,68,0.3);border-radius:8px;align-items:center;">
             <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/void${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" id="voidOrderForm" style="display:inline-flex;margin:0;gap:6px;">
               <input type="hidden" name="void_reason" id="voidOrderReason" value="">
@@ -7862,31 +7901,86 @@ function createAdminRouter() {
               <button type="button" id="btnVoidOrder" class="sf-btn danger" title="作廢整張訂單（會保留稽核紀錄、可由「已作廢訂單」清單恢復）">${SF_ICONS.x}<span>作廢此訂單</span></button>
             </form>
           </div>
+          <div id="voidOrderModal" class="notion-modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="voidOrderModalTitle">
+            <div class="notion-modal" style="max-width:460px;">
+              <h3 id="voidOrderModalTitle" style="margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px;">
+                <span style="color:#dc2626;">⊘</span>
+                <span>作廢此訂單</span>
+              </h3>
+              <p style="margin:0 0 14px;font-size:12px;color:var(--txt-3);">選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。</p>
+              <div id="voidReasonGroup" style="display:flex;flex-direction:column;gap:6px;">
+                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="not_order"><span class="void-reason-icon">🚫</span><span class="void-reason-text"><strong>非訂單訊息</strong><br><span style="font-size:11px;color:var(--txt-3);">匯款證明、寒喧、門市互動等</span></span></label>
+                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="duplicate"><span class="void-reason-icon">🔁</span><span class="void-reason-text"><strong>重複叫貨</strong><br><span style="font-size:11px;color:var(--txt-3);">同一筆叫貨被讀進 2 次</span></span></label>
+                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="customer_cancelled"><span class="void-reason-icon">❌</span><span class="void-reason-text"><strong>客戶取消</strong><br><span style="font-size:11px;color:var(--txt-3);">客戶主動說不要了</span></span></label>
+                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="customer_complaint"><span class="void-reason-icon">💬</span><span class="void-reason-text"><strong>客訴問題</strong></span></label>
+                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="ai_wrong"><span class="void-reason-icon">🤖</span><span class="void-reason-text"><strong>AI 辨識整單錯誤</strong><br><span style="font-size:11px;color:var(--txt-3);">會回饋學習庫</span></span></label>
+                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="staff_error"><span class="void-reason-icon">🧑‍💼</span><span class="void-reason-text"><strong>內部錯誤</strong></span></label>
+                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="other"><span class="void-reason-icon">📝</span><span class="void-reason-text"><strong>其他</strong></span></label>
+              </div>
+              <textarea id="voidOrderModalNote" placeholder="備註（可留白）" rows="2" style="margin-top:12px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
+              <div class="notion-modal-actions" style="justify-content:flex-end;">
+                <button type="button" class="sf-btn" id="voidOrderModalCancel">取消</button>
+                <button type="button" class="sf-btn danger" id="voidOrderModalConfirm">確定作廢</button>
+              </div>
+            </div>
+          </div>
+          <style>
+            .void-reason-row { display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--bg-1);transition:background .1s,border-color .1s;margin:0;font-size:13px; }
+            .void-reason-row:hover { background:var(--bg-2);border-color:var(--txt-3); }
+            .void-reason-row input[type=radio] { margin-top:3px; }
+            .void-reason-row.is-selected { background:#fee2e2;border-color:#dc2626; }
+            .void-reason-icon { font-size:18px;line-height:1;margin-top:1px;flex:0 0 auto; }
+            .void-reason-text { flex:1;line-height:1.4; }
+          </style>
           <script>
           (function(){
             const btn = document.getElementById("btnVoidOrder");
-            if (!btn) return;
-            btn.addEventListener("click", function(){
-              const r = window.prompt(
-                "作廢此訂單的原因？\\n\\n" +
-                "  1 = AI 辨識整單錯誤（會回饋學習庫）\\n" +
-                "  2 = 客訴問題\\n" +
-                "  3 = 客戶取消\\n" +
-                "  4 = 重複叫貨\\n" +
-                "  5 = 內部錯誤\\n" +
-                "  6 = 其他\\n\\n" +
-                "按「取消」放棄作廢。",
-                "1"
-              );
-              if (r === null) return;
-              const map = { "1":"ai_wrong", "2":"customer_complaint", "3":"customer_cancelled", "4":"duplicate", "5":"staff_error", "6":"other" };
-              const reason = map[String(r).trim()] || "other";
-              let note = "";
-              if (reason !== "ai_wrong") {
-                note = window.prompt("備註（可留白）：", "") || "";
-              }
+            const modal = document.getElementById("voidOrderModal");
+            const cancelBtn = document.getElementById("voidOrderModalCancel");
+            const confirmBtn = document.getElementById("voidOrderModalConfirm");
+            const noteInput = document.getElementById("voidOrderModalNote");
+            const group = document.getElementById("voidReasonGroup");
+            if (!btn || !modal || !confirmBtn || !group) return;
+            const LS_KEY = "songfu.void_order.last_reason";
+            function getLast() { try { return localStorage.getItem(LS_KEY) || "not_order"; } catch(_) { return "not_order"; } }
+            function setLast(v) { try { localStorage.setItem(LS_KEY, v); } catch(_) {} }
+            function getPicked() {
+              const r = group.querySelector('input[name="void_reason_pick"]:checked');
+              return r ? r.value : "";
+            }
+            function highlight() {
+              group.querySelectorAll(".void-reason-row").forEach(row => {
+                const r = row.querySelector('input[type=radio]');
+                row.classList.toggle("is-selected", r && r.checked);
+              });
+            }
+            function open() {
+              const last = getLast();
+              const target = group.querySelector('input[value="' + last + '"]') || group.querySelector('input[type=radio]');
+              if (target) target.checked = true;
+              noteInput.value = "";
+              highlight();
+              modal.style.display = "flex";
+              noteInput.focus();
+            }
+            function close() { modal.style.display = "none"; }
+            btn.addEventListener("click", open);
+            cancelBtn.addEventListener("click", close);
+            modal.addEventListener("click", function(e){ if (e.target === modal) close(); });
+            document.addEventListener("keydown", function(e){
+              if (modal.style.display === "none") return;
+              if (e.key === "Escape") close();
+              else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) confirmBtn.click();
+            });
+            group.addEventListener("change", highlight);
+            confirmBtn.addEventListener("click", function(){
+              const reason = getPicked();
+              if (!reason) { alert("請選擇作廢原因"); return; }
+              setLast(reason);
               document.getElementById("voidOrderReason").value = reason;
-              document.getElementById("voidOrderNote").value = note;
+              document.getElementById("voidOrderNote").value = noteInput.value.trim();
+              confirmBtn.disabled = true;
+              confirmBtn.textContent = "作廢中…";
               document.getElementById("voidOrderForm").submit();
             });
           })();
@@ -8173,7 +8267,13 @@ function createAdminRouter() {
                 if (id) { params.append('ord_' + id, String(seq)); seq++; }
               });
               fetch(itemsForm.action, { method: 'POST', body: params, headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' } })
-                .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, data: d }; }); })
+                .then(function(r){
+                  return r.text().then(function(t){
+                    var d = null;
+                    try { d = t ? JSON.parse(t) : null; } catch (_) { /* 非 JSON：保留原始文字 */ }
+                    return { ok: r.ok, status: r.status, data: d, rawText: t };
+                  });
+                })
                 .then(function(result){
                   if (btn) { btn.disabled = false; btn.textContent = origText; }
                   if (result.ok && result.data && result.data.ok) {
@@ -8184,12 +8284,17 @@ function createAdminRouter() {
                     msg.style.display = 'block';
                     setTimeout(function(){ msg.style.display = 'none'; }, 3000);
                   } else {
-                    alert(result.data && result.data.error ? result.data.error : '儲存失敗，請稍後再試。');
+                    var serverMsg = (result.data && result.data.error)
+                      ? result.data.error
+                      : (result.rawText ? String(result.rawText).slice(0, 300) : '');
+                    console.error('[儲存明細] HTTP ' + result.status, result);
+                    alert('儲存失敗 (HTTP ' + result.status + ')：' + (serverMsg || '請稍後再試。'));
                   }
                 })
-                .catch(function(){
+                .catch(function(err){
                   if (btn) { btn.disabled = false; btn.textContent = origText; }
-                  alert('儲存請求失敗，請稍後再試。');
+                  console.error('[儲存明細] 請求例外：', err);
+                  alert('儲存請求失敗：' + (err && err.message ? err.message : '網路或伺服器無回應'));
                 });
             });
           }
@@ -8895,58 +9000,69 @@ function createAdminRouter() {
     router.post("/orders/:orderId/items", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { orderId } = req.params;
         const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest" || (req.get("Accept") || "").includes("application/json");
-        const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
-        if (!order) {
-            if (wantsJson) {
-                res.status(404).json({ error: "訂單不存在" });
+        try {
+            const order = await db.prepare("SELECT id FROM orders WHERE id = ?").get(orderId);
+            if (!order) {
+                if (wantsJson) {
+                    res.status(404).json({ error: "訂單不存在" });
+                    return;
+                }
+                res.status(404).send("訂單不存在");
                 return;
             }
-            res.status(404).send("訂單不存在");
-            return;
-        }
-        const body = req.body;
-        const existingItems = await db.prepare("SELECT id, quantity, unit, remark, sub_customer FROM order_items WHERE order_id = ?").all(orderId);
-        const fmtQty = (v) => {
-            const n = Number(v);
-            if (!Number.isFinite(n))
-                return "";
-            return Number.isInteger(n) ? String(n) : String(n).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
-        };
-        for (const row of existingItems) {
-            const itemId = row.id;
-            const qtyRaw = body["qty_" + itemId];
-            const qtyParsed = parseFloat(qtyRaw);
-            const nextQty = Number.isFinite(qtyParsed) && qtyParsed >= 0 ? qtyParsed : (Number.isFinite(Number(row.quantity)) ? Number(row.quantity) : 0);
-            const unitRaw = (body["unit_" + itemId] ?? "").trim();
-            const nextUnit = unitRaw || "公斤";
-            const remarkInput = (body["remark_" + itemId] ?? "").trim();
-            const subCustomerInput = (body["sub_customer_" + itemId] ?? "").trim();
-            const prevUnit = String(row.unit || "").trim();
-            const prevRemark = String(row.remark || "").trim();
-            let nextRemark = remarkInput;
-            const convertedToKg = prevUnit && prevUnit !== "公斤" && nextUnit === "公斤";
-            if (convertedToKg && !nextRemark) {
-                const originTag = fmtQty(row.quantity) + prevUnit;
-                nextRemark = prevRemark
-                    ? (prevRemark.includes(originTag) ? prevRemark : (prevRemark + "；" + originTag))
-                    : originTag;
+            const body = req.body;
+            const existingItems = await db.prepare("SELECT id, quantity, unit, remark, sub_customer FROM order_items WHERE order_id = ?").all(orderId);
+            const fmtQty = (v) => {
+                const n = Number(v);
+                if (!Number.isFinite(n))
+                    return "";
+                return Number.isInteger(n) ? String(n) : String(n).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+            };
+            for (const row of existingItems) {
+                const itemId = row.id;
+                const qtyRaw = body["qty_" + itemId];
+                const qtyParsed = parseFloat(qtyRaw);
+                const nextQty = Number.isFinite(qtyParsed) && qtyParsed >= 0 ? qtyParsed : (Number.isFinite(Number(row.quantity)) ? Number(row.quantity) : 0);
+                const unitRaw = (body["unit_" + itemId] ?? "").trim();
+                const nextUnit = unitRaw || "公斤";
+                const remarkInput = (body["remark_" + itemId] ?? "").trim();
+                const subCustomerInput = (body["sub_customer_" + itemId] ?? "").trim();
+                const prevUnit = String(row.unit || "").trim();
+                const prevRemark = String(row.remark || "").trim();
+                let nextRemark = remarkInput;
+                const convertedToKg = prevUnit && prevUnit !== "公斤" && nextUnit === "公斤";
+                if (convertedToKg && !nextRemark) {
+                    const originTag = fmtQty(row.quantity) + prevUnit;
+                    nextRemark = prevRemark
+                        ? (prevRemark.includes(originTag) ? prevRemark : (prevRemark + "；" + originTag))
+                        : originTag;
+                }
+                await db.prepare("UPDATE order_items SET quantity = ?, unit = ?, remark = ?, sub_customer = ?, include_export = 1 WHERE id = ? AND order_id = ?").run(nextQty, nextUnit, nextRemark || null, subCustomerInput || null, itemId, orderId);
+                const ordRaw = body["ord_" + row.id];
+                const ordNum = parseInt(String(ordRaw || ""), 10);
+                if (Number.isFinite(ordNum) && ordNum > 0) {
+                    await db.prepare("UPDATE order_items SET display_order = ? WHERE id = ? AND order_id = ?").run(ordNum, row.id, orderId);
+                }
             }
-            await db.prepare("UPDATE order_items SET quantity = ?, unit = ?, remark = ?, sub_customer = ?, include_export = 1 WHERE id = ? AND order_id = ?").run(nextQty, nextUnit, nextRemark || null, subCustomerInput || null, itemId, orderId);
-            const ordRaw = body["ord_" + row.id];
-            const ordNum = parseInt(String(ordRaw || ""), 10);
-            if (Number.isFinite(ordNum) && ordNum > 0) {
-                await db.prepare("UPDATE order_items SET display_order = ? WHERE id = ? AND order_id = ?").run(ordNum, row.id, orderId);
+            try {
+                await customer_handwriting_hints_js_1.recordHandwritingHintsForOrder(db, orderId);
             }
+            catch (_) { /* 筆跡對照表寫入失敗不阻擋 */ }
+            if (wantsJson) {
+                res.json({ ok: true });
+                return;
+            }
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=items");
         }
-        try {
-            await customer_handwriting_hints_js_1.recordHandwritingHintsForOrder(db, orderId);
+        catch (err) {
+            const msg = err && err.message ? String(err.message) : String(err);
+            console.error("[POST /admin/orders/" + orderId + "/items] 儲存明細失敗：", err);
+            if (wantsJson) {
+                res.status(500).json({ ok: false, error: "儲存失敗：" + msg });
+                return;
+            }
+            res.status(500).send("儲存失敗：" + msg);
         }
-        catch (_) { /* 筆跡對照表寫入失敗不阻擋 */ }
-        if (wantsJson) {
-            res.json({ ok: true });
-            return;
-        }
-        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=items");
     });
     router.post("/orders/:orderId/items/:itemId/delete", express_1.default.urlencoded({ extended: true }), express_1.default.json(), async (req, res) => {
         const { orderId, itemId } = req.params;
@@ -9007,7 +9123,8 @@ function createAdminRouter() {
         const backTo = (typeof req.query.back === "string" && req.query.back.startsWith("/admin/orders"))
             ? req.query.back
             : "";
-        const order = await db.prepare("SELECT id, order_no, status FROM orders WHERE id = ?").get(orderId);
+        const goNext = req.query.next === "1";
+        const order = await db.prepare("SELECT id, order_no, order_date, status FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
             return;
@@ -9020,6 +9137,36 @@ function createAdminRouter() {
             summary: `確認訂單 ${order.order_no || orderId}（前狀態：${order.status || "－"}）`,
             meta: { before: order },
         });
+        if (goNext) {
+            // 找下一筆「pending」訂單（沿用詳細頁 nextOrder 方向：order_date 較小者優先；同日 id 較小者）
+            const nextPending = await db.prepare(`
+                SELECT id FROM orders
+                WHERE LOWER(COALESCE(status,'pending')) = 'pending'
+                  AND id != ?
+                  AND (order_date < ? OR (order_date = ? AND id < ?))
+                ORDER BY order_date DESC, id DESC
+                LIMIT 1
+            `).get(orderId, order.order_date, order.order_date, orderId);
+            if (nextPending && nextPending.id) {
+                res.redirect("/admin/orders/" + encodeURIComponent(nextPending.id) + "?ok=approved_prev" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+                return;
+            }
+            // 沒有更舊的 pending，試找任何其他 pending（任意方向）
+            const anyPending = await db.prepare(`
+                SELECT id FROM orders
+                WHERE LOWER(COALESCE(status,'pending')) = 'pending'
+                  AND id != ?
+                ORDER BY order_date DESC, id DESC
+                LIMIT 1
+            `).get(orderId);
+            if (anyPending && anyPending.id) {
+                res.redirect("/admin/orders/" + encodeURIComponent(anyPending.id) + "?ok=approved_prev" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+                return;
+            }
+            // 完全沒有 pending → 回列表
+            res.redirect((backTo || "/admin/orders") + (backTo.includes("?") ? "&" : "?") + "ok=approved_done");
+            return;
+        }
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=approved" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
     });
     router.post("/orders/:orderId/set-date", express_1.default.urlencoded({ extended: true }), async (req, res) => {
