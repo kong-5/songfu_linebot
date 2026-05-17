@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>客戶速查 · 松富物流</title>
+<style>
+  :root { --accent:#1d4ed8; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --line:#e3e2e0; --bg:#f7f6f3; --bg2:#fafafa; --txt1:#37352f; --txt2:#787774; --txt3:#9b9a97; color-scheme:light; }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:var(--bg);color:var(--txt1);min-height:100vh;padding-bottom:env(safe-area-inset-bottom,0);}
+  header{position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;gap:10px;}
+  header h1{font-size:16px;margin:0;flex:1;}
+  .search-wrap{padding:12px 16px;background:#fff;border-bottom:1px solid var(--line);}
+  .search-wrap input{width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;font-size:15px;}
+  .status{padding:8px 16px;font-size:12px;color:var(--txt2);background:#fff;}
+  .results{padding:8px 12px;}
+  .cust-item{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;cursor:pointer;}
+  .cust-item:active{transform:scale(0.98);}
+  .cust-name{font-weight:600;font-size:15px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .tier-pill{font-size:11px;padding:2px 10px;border-radius:10px;font-weight:600;white-space:nowrap;}
+  .empty{padding:40px 20px;text-align:center;color:var(--txt3);font-size:13px;}
+  .detail{padding:0 12px 12px;}
+  .detail .card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;}
+  .detail .card h3{margin:0 0 10px;font-size:14px;font-weight:600;color:var(--txt2);}
+  .detail .head{padding:14px;background:#fff;border-radius:10px;border:1px solid var(--line);margin-bottom:10px;}
+  .detail .head .name-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .detail .head .big{font-size:18px;font-weight:700;}
+  .detail .head .stars{color:#f59e0b;font-size:14px;}
+  .detail .head .score-val{font-family:ui-monospace,monospace;color:var(--txt3);font-size:12px;}
+  .detail .meta-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;}
+  .detail .meta-item{padding:6px 10px;background:var(--bg2);border-radius:6px;}
+  .detail .meta-item .lbl{font-size:10px;color:var(--txt3);text-transform:uppercase;letter-spacing:.06em;}
+  .detail .meta-item .val{font-family:ui-monospace,monospace;font-size:14px;font-weight:600;}
+  .detail .meta-item .val.bad{color:var(--bad);}
+  .notes-box{padding:10px 12px;background:#fef9c3;border-left:3px solid #f59e0b;border-radius:6px;font-size:13px;line-height:1.6;white-space:pre-wrap;}
+  .item-row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--line);font-size:13px;}
+  .item-row:last-child{border-bottom:none;}
+  .alert-card{padding:10px 14px;background:#fff8e1;border:1px solid #f59e0b;color:#92400e;border-radius:8px;font-size:13px;margin-bottom:10px;}
+  .back-btn{padding:6px 12px;background:#fff;border:1px solid var(--line);border-radius:6px;font-size:13px;cursor:pointer;}
+</style>
+</head>
+<body>
+<header>
+  <button type="button" class="back-btn" id="back-btn" style="display:none;">← 返回</button>
+  <h1>👤 客戶速查</h1>
+  <span style="font-size:11px;color:var(--txt2);" id="me">登入中…</span>
+</header>
+<div id="search-view">
+  <div class="search-wrap">
+    <input type="search" id="search-input" placeholder="輸入客戶名稱、店名…" autocomplete="off">
+  </div>
+  <div class="status" id="status">輸入名稱開始查詢</div>
+  <div class="results" id="results"></div>
+</div>
+<div id="detail-view" style="display:none;" class="detail"></div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+(function(){
+  const LIFF_ID = window.__LIFF_ID__ || "";
+  const $ = (s) => document.querySelector(s);
+  const statusEl = $("#status");
+  const resultsEl = $("#results");
+  const searchInput = $("#search-input");
+  const searchView = $("#search-view");
+  const detailView = $("#detail-view");
+  const backBtn = $("#back-btn");
+  let idToken = null;
+  let searchTimer;
+
+  function setStatus(text){ statusEl.textContent = text; }
+  function escapeHtml(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]); }
+  async function api(path, opts){
+    const init = Object.assign({headers:{}}, opts || {});
+    init.headers["Authorization"] = "Bearer " + idToken;
+    const r = await fetch(path, init);
+    let j = null; try { j = await r.json(); } catch(_){}
+    return { status: r.status, body: j || {} };
+  }
+
+  if (!LIFF_ID){ setStatus("尚未設定 LIFF_ID_CUSTOMER_LOOKUP"); return; }
+  liff.init({liffId:LIFF_ID}).then(async ()=>{
+    if (!liff.isLoggedIn()){ liff.login({redirectUri:location.href}); return; }
+    const p = await liff.getProfile();
+    $("#me").textContent = p.displayName || "";
+    idToken = liff.getIDToken();
+    if (!idToken){ setStatus("無法取得 ID Token"); return; }
+    searchInput.addEventListener("input", onSearch);
+    backBtn.addEventListener("click", showSearch);
+    searchInput.focus();
+    setStatus("請輸入客戶名稱開始查詢");
+  }).catch(e => setStatus("LIFF 初始化失敗："+(e?.message||e)));
+
+  function onSearch(){
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(doSearch, 250);
+  }
+  async function doSearch(){
+    const q = searchInput.value.trim();
+    if (!q){ resultsEl.innerHTML = ""; setStatus("請輸入客戶名稱開始查詢"); return; }
+    setStatus("搜尋中…");
+    const r = await api("/liff/api/customer-lookup/search?q="+encodeURIComponent(q));
+    if (r.status !== 200 || !r.body.ok){
+      setStatus("搜尋失敗："+(r.body.error || "HTTP "+r.status));
+      return;
+    }
+    const list = r.body.customers || [];
+    setStatus("找到 "+list.length+" 筆");
+    if (!list.length){ resultsEl.innerHTML = '<div class="empty">查無此客戶</div>'; return; }
+    resultsEl.innerHTML = list.map(c => `
+      <div class="cust-item" data-id="${escapeHtml(c.id)}">
+        <span class="cust-name">${escapeHtml(c.name)}</span>
+        <span class="tier-pill" style="background:${c.tier.bg};color:${c.tier.color};">${escapeHtml(c.tier.label)} ${c.score}</span>
+      </div>`).join("");
+    resultsEl.querySelectorAll(".cust-item").forEach(el => {
+      el.addEventListener("click", () => showDetail(el.dataset.id));
+    });
+  }
+
+  async function showDetail(id){
+    searchView.style.display = "none";
+    detailView.style.display = "block";
+    backBtn.style.display = "inline-block";
+    detailView.innerHTML = '<div class="empty">載入中…</div>';
+    const r = await api("/liff/api/customer-lookup/detail?id="+encodeURIComponent(id));
+    if (r.status !== 200 || !r.body.ok){
+      detailView.innerHTML = '<div class="empty" style="color:var(--bad);">'+escapeHtml(r.body.error || "載入失敗")+'</div>';
+      return;
+    }
+    const d = r.body;
+    const c = d.customer;
+    const t = d.tier;
+    const daysClass = (d.daysSinceLastOrder != null && d.avgIntervalDays != null && d.daysSinceLastOrder > d.avgIntervalDays * 1.5) ? "bad" : "";
+    const alertHtml = daysClass === "bad" ? `<div class="alert-card">⚠ 已 ${d.daysSinceLastOrder} 天沒叫貨（平均 ${d.avgIntervalDays} 天），建議關心一下</div>` : "";
+    const recentItems = (d.topItems || []).slice(0, 8);
+    const recentComplaints = d.recentComplaints || [];
+    detailView.innerHTML = `
+      <div class="head">
+        <div class="name-line">
+          <span class="big">${escapeHtml(c.name)}</span>
+          <span class="tier-pill" style="background:${t.bg};color:${t.color};">${escapeHtml(t.label)}</span>
+          <span class="stars">${t.stars}</span>
+          <span class="score-val">${d.score}/100</span>
+        </div>
+        <div class="meta-row">
+          <div class="meta-item"><div class="lbl">90 天訂單</div><div class="val">${d.orders90}</div></div>
+          <div class="meta-item"><div class="lbl">距上次叫貨</div><div class="val ${daysClass}">${d.daysSinceLastOrder != null ? d.daysSinceLastOrder + " 天" : "—"}</div></div>
+          <div class="meta-item"><div class="lbl">平均間隔</div><div class="val">${d.avgIntervalDays != null ? d.avgIntervalDays + " 天" : "—"}</div></div>
+          <div class="meta-item"><div class="lbl">客訴</div><div class="val ${d.openComplaints > 0 ? 'bad' : ''}">${d.complaintsTotal}（未解 ${d.openComplaints}）</div></div>
+        </div>
+      </div>
+      ${alertHtml}
+      ${c.crm_handover_notes ? `<div class="card"><h3>📝 交接備註</h3><div class="notes-box">${escapeHtml(c.crm_handover_notes)}</div></div>` : ""}
+      ${recentItems.length ? `<div class="card"><h3>🛒 常買 Top ${recentItems.length}</h3>${recentItems.map(it => `<div class="item-row"><span>${escapeHtml(it.name)}</span><span style="color:var(--txt-3);" class="mono">${it.count} 次</span></div>`).join("")}</div>` : ""}
+      ${recentComplaints.length ? `<div class="card"><h3>📨 客訴歷史</h3>${recentComplaints.map(c => `<div class="item-row"><span>${escapeHtml(c.order_date)} · ${escapeHtml((c.raw_message || "").slice(0, 30))}…</span><span style="color:${c.handle_status === 'resolved' ? 'var(--ok)' : 'var(--bad)'};font-size:11px;">${c.handle_status === 'resolved' ? '已解決' : '待處理'}</span></div>`).join("")}</div>` : ""}
+      ${d.topWeekdays?.length ? `<div class="card"><h3>📅 常下單時段</h3><div style="font-size:13px;color:var(--txt-2);">${d.topWeekdays.map(([k,v]) => escapeHtml(k)+'×'+v).join('、')}</div></div>` : ""}
+    `;
+  }
+
+  function showSearch(){
+    detailView.style.display = "none";
+    searchView.style.display = "block";
+    backBtn.style.display = "none";
+    searchInput.focus();
+  }
+})();
+</script>
+</body>
+</html>

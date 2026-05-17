@@ -63,6 +63,14 @@ function createLiffRouter() {
     router.get("/order-review", (_req, res) => {
         serveLiffPage(res, "order-review.html", (process.env.LIFF_ID_ORDER_REVIEW || "").trim());
     });
+    // 冷凍冷藏溫度記錄 LIFF 頁
+    router.get("/freezer-temp", (_req, res) => {
+        serveLiffPage(res, "freezer-temp.html", (process.env.LIFF_ID_FREEZER_TEMP || "").trim());
+    });
+    // 客戶速查 LIFF 頁
+    router.get("/customer-lookup", (_req, res) => {
+        serveLiffPage(res, "customer-lookup.html", (process.env.LIFF_ID_CUSTOMER_LOOKUP || "").trim());
+    });
 
     // 查綁定 token 對應的員工帳號（不直接執行綁定，只用來在頁面顯示要綁誰）
     router.get("/api/employee-bind/lookup", async (req, res) => {
@@ -326,6 +334,154 @@ function createLiffRouter() {
                 meta: { before: { order_date: order.order_date }, after: { order_date: newDate }, source: "liff:order-review" },
             });
             res.json({ ok: true });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+
+    // ===== 冷凍冷藏溫度記錄 LIFF API =====
+    // GET /liff/api/freezer-temp/load?date=YYYY-MM-DD
+    router.get("/api/freezer-temp/load", async (req, res) => {
+        try {
+            const db = (0, index_js_1.getDb)(dbPath);
+            const auth = await (0, liff_auth_js_1.authenticateLiffEmployee)(db, req);
+            if (!auth.ok) { res.status(auth.status || 401).json({ ok: false, error: auth.error }); return; }
+            const date = String(req.query?.date || "").trim();
+            const todayIso = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date());
+            const d = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : todayIso;
+            const warehouses = await db.prepare(
+                "SELECT id, name, sort_order, compliant_temp, power_compliant, light_compliant, heat_compliant FROM freezer_fridge_warehouses ORDER BY sort_order, name"
+            ).all();
+            const row = await db.prepare("SELECT entries_json, filler_name, confirmed_at, anomaly FROM freezer_fridge_daily WHERE date = ?").get(d);
+            let entries = [];
+            if (row?.entries_json) {
+                try { entries = typeof row.entries_json === "string" ? JSON.parse(row.entries_json) : (row.entries_json || []); } catch (_) { entries = []; }
+            }
+            res.json({
+                ok: true, date: d,
+                warehouses: (warehouses || []).map(w => ({ id: w.id, name: w.name, compliant_temp: w.compliant_temp })),
+                entries: Array.isArray(entries) ? entries : [],
+                filler_name: row?.filler_name || "",
+                confirmed_at: row?.confirmed_at || null,
+                anomaly: row?.anomaly === 1 || row?.anomaly === true,
+            });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+    // POST /liff/api/freezer-temp/save  body: { date, fillerName, entries: [{warehouseId, temp, powerOk, lightOff, heatOk}] }
+    router.post("/api/freezer-temp/save", express_1.json({ limit: "32kb" }), async (req, res) => {
+        try {
+            const db = (0, index_js_1.getDb)(dbPath);
+            const auth = await (0, liff_auth_js_1.authenticateLiffEmployee)(db, req);
+            if (!auth.ok) { res.status(auth.status || 401).json({ ok: false, error: auth.error }); return; }
+            const date = String(req.body?.date || "").trim();
+            const fillerName = String(req.body?.fillerName || auth.employee.name || auth.employee.username || "").trim();
+            const entriesInput = Array.isArray(req.body?.entries) ? req.body.entries : [];
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { res.status(400).json({ ok: false, error: "date 格式錯誤" }); return; }
+            if (!fillerName) { res.status(400).json({ ok: false, error: "請填寫填表人" }); return; }
+            // 計算 anomaly：任一條目 powerOk=false / heatOk=false / lightOff=false 或溫度超標
+            const warehouses = await db.prepare("SELECT id, compliant_temp FROM freezer_fridge_warehouses").all();
+            const compliantMap = new Map((warehouses || []).map(w => [w.id, w.compliant_temp || ""]));
+            let anomaly = false;
+            const normalized = entriesInput.map(e => {
+                const wId = String(e?.warehouseId || "").trim();
+                const temp = String(e?.temp || "").trim();
+                const powerOk = e?.powerOk !== false;
+                const lightOff = e?.lightOff !== false;
+                const heatOk = e?.heatOk !== false;
+                if (!powerOk || !lightOff || !heatOk) anomaly = true;
+                const stdStr = String(compliantMap.get(wId) || "");
+                const stdN = parseFloat((stdStr.match(/-?\d+(\.\d+)?/) || [])[0] || "");
+                const curN = parseFloat(temp);
+                if (Number.isFinite(stdN) && Number.isFinite(curN) && (curN - stdN) > 5) anomaly = true;
+                return { warehouseId: wId, temp, powerOk, lightOff, heatOk };
+            });
+            const entriesJson = JSON.stringify(normalized);
+            const isPg = Boolean(process.env.DATABASE_URL);
+            const nowSql = isPg ? "CURRENT_TIMESTAMP" : "datetime('now')";
+            // upsert (PG: ON CONFLICT; SQLite: INSERT OR REPLACE)
+            if (isPg) {
+                await db.prepare(
+                    "INSERT INTO freezer_fridge_daily (date, entries_json, filler_name, confirmed_at, anomaly) VALUES (?, ?, ?, " + nowSql + ", ?) " +
+                    "ON CONFLICT (date) DO UPDATE SET entries_json = EXCLUDED.entries_json, filler_name = EXCLUDED.filler_name, confirmed_at = EXCLUDED.confirmed_at, anomaly = EXCLUDED.anomaly"
+                ).run(date, entriesJson, fillerName, anomaly ? 1 : 0);
+            } else {
+                await db.prepare("INSERT OR REPLACE INTO freezer_fridge_daily (date, entries_json, filler_name, confirmed_at, anomaly) VALUES (?, ?, ?, " + nowSql + ", ?)").run(date, entriesJson, fillerName, anomaly ? 1 : 0);
+            }
+            res.json({ ok: true, anomaly });
+        } catch (e) {
+            console.error("[liff freezer-temp save]", e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+
+    // ===== 客戶速查 LIFF API =====
+    const customer_scoring_js_1 = require("../lib/customer-scoring.js");
+    const customer_profile_js_1 = require("../lib/customer-profile.js");
+    // GET /liff/api/customer-lookup/search?q=...
+    router.get("/api/customer-lookup/search", async (req, res) => {
+        try {
+            const db = (0, index_js_1.getDb)(dbPath);
+            const auth = await (0, liff_auth_js_1.authenticateLiffEmployee)(db, req);
+            if (!auth.ok) { res.status(auth.status || 401).json({ ok: false, error: auth.error }); return; }
+            const q = String(req.query?.q || "").trim();
+            if (!q) { res.json({ ok: true, customers: [] }); return; }
+            const like = "%" + q.replace(/[%_]/g, "\\$&") + "%";
+            const rows = await db.prepare(
+                "SELECT id, name FROM customers WHERE (active = 1 OR active IS NULL) AND (name LIKE ? OR teraoka_code LIKE ? OR hq_cust_code LIKE ?) ORDER BY name LIMIT 30"
+            ).all(like, like, like);
+            const todayIso = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date());
+            const results = [];
+            for (const c of rows || []) {
+                const inputs = await (0, customer_scoring_js_1.fetchCustomerScoringInputs)(db, c.id, todayIso);
+                const { score } = (0, customer_scoring_js_1.computeCustomerScore)(inputs || {});
+                const tier = (0, customer_scoring_js_1.scoreToTier)(score);
+                results.push({ id: c.id, name: c.name, score, tier });
+            }
+            res.json({ ok: true, customers: results });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+    // GET /liff/api/customer-lookup/detail?id=...
+    router.get("/api/customer-lookup/detail", async (req, res) => {
+        try {
+            const db = (0, index_js_1.getDb)(dbPath);
+            const auth = await (0, liff_auth_js_1.authenticateLiffEmployee)(db, req);
+            if (!auth.ok) { res.status(auth.status || 401).json({ ok: false, error: auth.error }); return; }
+            const id = String(req.query?.id || "").trim();
+            if (!id) { res.status(400).json({ ok: false, error: "missing id" }); return; }
+            const customer = await db.prepare("SELECT id, name, line_group_id, contact, crm_handover_notes FROM customers WHERE id = ?").get(id);
+            if (!customer) { res.status(404).json({ ok: false, error: "找不到客戶" }); return; }
+            const todayIso = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date());
+            const inputs = await (0, customer_scoring_js_1.fetchCustomerScoringInputs)(db, id, todayIso);
+            const { score } = (0, customer_scoring_js_1.computeCustomerScore)(inputs || {});
+            const tier = (0, customer_scoring_js_1.scoreToTier)(score);
+            let profile = null;
+            try { profile = await (0, customer_profile_js_1.computeCustomerProfile)(db, id); } catch (_) {}
+            // 最近客訴
+            const recentComplaints = await db.prepare(
+                "SELECT o.id, o.order_date, o.raw_message, COALESCE(ch.handle_status, 'pending') AS handle_status " +
+                "FROM orders o LEFT JOIN complaint_handling ch ON ch.order_id = o.id " +
+                "WHERE o.customer_id = ? AND LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' " +
+                "ORDER BY o.order_date DESC LIMIT 5"
+            ).all(id);
+            res.json({
+                ok: true,
+                customer,
+                score, tier,
+                orders90: inputs?.orders90 ?? 0,
+                ordersAll: inputs?.ordersAll ?? 0,
+                daysSinceLastOrder: inputs?.daysSinceLastOrder ?? null,
+                avgIntervalDays: inputs?.avgIntervalDays ?? null,
+                lastOrderDate: inputs?.lastOrderDate ?? null,
+                complaintsTotal: inputs?.complaintsAll ?? 0,
+                openComplaints: inputs?.complaintsOpen ?? 0,
+                topItems: profile?.topItems || [],
+                topWeekdays: profile?.topWeekdays || [],
+                recentComplaints,
+            });
         } catch (e) {
             res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
         }

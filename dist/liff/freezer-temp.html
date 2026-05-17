@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>冷凍冷藏溫度記錄 · 松富物流</title>
+<style>
+  :root { --accent:#1d4ed8; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --line:#e3e2e0; --bg:#f7f6f3; --bg2:#fafafa; --txt1:#37352f; --txt2:#787774; --txt3:#9b9a97; color-scheme:light; }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:var(--bg);color:var(--txt1);min-height:100vh;padding-bottom:env(safe-area-inset-bottom,0);}
+  header{position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--line);padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+  header h1{font-size:16px;margin:0;}
+  header .who{font-size:11px;color:var(--txt2);text-align:right;}
+  .toolbar{padding:10px 16px;background:#fff;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+  .toolbar input{padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:14px;}
+  .status{padding:8px 16px;font-size:12px;color:var(--txt2);background:#fff;border-bottom:1px solid var(--line);}
+  .status.err{background:#ffebee;color:#c62828;}
+  .status.ok{background:#e7f5e9;color:#2e7d32;}
+  .list{padding:8px 12px;display:flex;flex-direction:column;gap:8px;}
+  .wh{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;}
+  .wh .head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;}
+  .wh .name{font-weight:600;font-size:15px;}
+  .wh .standard{font-size:11px;color:var(--txt2);}
+  .row{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;align-items:center;margin-bottom:8px;}
+  .row label{font-size:12px;color:var(--txt2);}
+  .row input[type="number"],.row input[type="text"]{padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:15px;width:100%;font-family:ui-monospace,monospace;}
+  .seg{display:flex;gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .seg button{flex:1;padding:8px 0;border:none;background:#fff;font-size:13px;cursor:pointer;color:var(--txt2);min-height:38px;}
+  .seg button.active{background:var(--ok);color:#fff;}
+  .seg button.active.danger{background:var(--bad);}
+  .filler{padding:14px 16px;background:#fff;border-bottom:1px solid var(--line);}
+  .filler input{padding:8px 10px;border:1px solid var(--line);border-radius:6px;width:100%;font-size:14px;}
+  .footer-fixed{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 16px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0));display:flex;gap:8px;}
+  .footer-fixed button{flex:1;padding:14px;border-radius:8px;border:none;font-size:16px;font-weight:700;cursor:pointer;min-height:48px;}
+  .footer-fixed .primary{background:var(--ok);color:#fff;}
+  .footer-fixed .primary:disabled{background:#999;}
+  .empty{padding:40px 20px;text-align:center;color:var(--txt3);font-size:13px;}
+  .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#37352f;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;z-index:200;opacity:0;transition:opacity .2s;pointer-events:none;}
+  .toast.show{opacity:1;}
+  .alert-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;}
+  .alert-badge.bad{background:#fee2e2;color:#b91c1c;}
+</style>
+</head>
+<body>
+<header>
+  <h1>🌡️ 冷凍冷藏溫度記錄</h1>
+  <div class="who" id="me">登入中…</div>
+</header>
+<div class="toolbar">
+  <label style="font-size:13px;color:var(--txt2);">日期</label>
+  <input type="date" id="date-input">
+  <button type="button" id="today-btn" style="padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:12px;cursor:pointer;">今天</button>
+</div>
+<div class="filler">
+  <label style="font-size:12px;color:var(--txt2);">填表人</label>
+  <input type="text" id="filler-input" placeholder="自動帶入 LINE 名稱，可修改">
+</div>
+<div class="status" id="status">載入中…</div>
+<div class="list" id="list"></div>
+<div class="footer-fixed">
+  <button type="button" class="primary" id="save-btn" disabled>儲存所有溫度</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+(function(){
+  const LIFF_ID = window.__LIFF_ID__ || "";
+  const $ = (s) => document.querySelector(s);
+  const statusEl = $("#status");
+  const listEl = $("#list");
+  const toastEl = $("#toast");
+  const dateInput = $("#date-input");
+  const fillerInput = $("#filler-input");
+  const saveBtn = $("#save-btn");
+  let idToken = null;
+  let warehouses = [];
+  let entries = {};
+
+  function setStatus(cls, text){ statusEl.className = "status " + cls; statusEl.textContent = text; }
+  function toast(text, ms){
+    toastEl.textContent = text; toastEl.classList.add("show");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => toastEl.classList.remove("show"), ms || 2000);
+  }
+  function todayTaipei(){
+    return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei"}).format(new Date());
+  }
+  async function api(path, opts){
+    const init = Object.assign({headers:{}}, opts || {});
+    init.headers["Authorization"] = "Bearer " + idToken;
+    if (init.body && !init.headers["Content-Type"]) init.headers["Content-Type"] = "application/json";
+    const r = await fetch(path, init);
+    let j = null;
+    try { j = await r.json(); } catch(_){}
+    return { status: r.status, body: j || {} };
+  }
+  function escapeHtml(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]); }
+
+  if (!LIFF_ID){ setStatus("err", "尚未設定 LIFF_ID_FREEZER_TEMP"); return; }
+  liff.init({liffId:LIFF_ID}).then(async ()=>{
+    if (!liff.isLoggedIn()){ liff.login({redirectUri:location.href}); return; }
+    const p = await liff.getProfile();
+    $("#me").textContent = p.displayName || "";
+    fillerInput.value = p.displayName || "";
+    idToken = liff.getIDToken();
+    if (!idToken){ setStatus("err","無法取得 ID Token"); return; }
+    dateInput.value = todayTaipei();
+    $("#today-btn").addEventListener("click", ()=>{ dateInput.value = todayTaipei(); load(); });
+    dateInput.addEventListener("change", load);
+    saveBtn.addEventListener("click", doSave);
+    await load();
+  }).catch(e => setStatus("err","LIFF 初始化失敗："+(e?.message||e)));
+
+  async function load(){
+    setStatus("","載入中…");
+    saveBtn.disabled = true;
+    const date = dateInput.value || todayTaipei();
+    const r = await api("/liff/api/freezer-temp/load?date="+encodeURIComponent(date));
+    if (r.status !== 200 || !r.body.ok){
+      setStatus("err", r.body.error || ("HTTP "+r.status));
+      return;
+    }
+    warehouses = r.body.warehouses || [];
+    entries = {};
+    for (const e of (r.body.entries||[])) entries[e.warehouseId] = e;
+    if (r.body.filler_name) fillerInput.value = r.body.filler_name;
+    if (r.body.confirmed_at){
+      setStatus("ok", "✓ "+date+" 已填表"+(r.body.anomaly?"（含異常）":""));
+    } else if (Object.keys(entries).length){
+      setStatus("","已部分填寫，可繼續完成");
+    } else {
+      setStatus("", warehouses.length ? date+" · "+warehouses.length+" 個庫房待填" : "尚無庫房");
+    }
+    render();
+    saveBtn.disabled = warehouses.length === 0;
+  }
+
+  function render(){
+    if (!warehouses.length){
+      listEl.innerHTML = '<div class="empty">尚未設定庫房，請至後台「冷凍／冷藏」新增</div>';
+      return;
+    }
+    listEl.innerHTML = warehouses.map(w => {
+      const e = entries[w.id] || {temp:"",powerOk:true,lightOff:true,heatOk:true};
+      const tempVal = e.temp || "";
+      // 異常檢測：簡單版（合規溫度若是 -18 以下開頭，且實際溫度大於合規數字 +5 度則警示）
+      let alertHtml = "";
+      const stdN = parseFloat(String(w.compliant_temp||"").match(/-?\d+(\.\d+)?/)?.[0] || "");
+      const curN = parseFloat(tempVal);
+      if (Number.isFinite(stdN) && Number.isFinite(curN)){
+        const diff = curN - stdN;
+        if (diff > 5) alertHtml = '<span class="alert-badge bad">⚠ 超標</span>';
+      }
+      return `<div class="wh" data-wh="${w.id}">
+        <div class="head">
+          <span class="name">${escapeHtml(w.name)} ${alertHtml}</span>
+          <span class="standard">合規 ${escapeHtml(w.compliant_temp||"未設")}</span>
+        </div>
+        <div class="row">
+          <label>溫度（℃）</label>
+          <input type="number" class="temp-input" inputmode="decimal" step="0.1" value="${tempVal}" placeholder="例：-18.5">
+        </div>
+        <div class="row">
+          <label>電源</label>
+          <div class="seg">
+            <button type="button" class="seg-btn ${e.powerOk?"active":""}" data-field="powerOk" data-val="1">正常</button>
+            <button type="button" class="seg-btn ${!e.powerOk?"active danger":""}" data-field="powerOk" data-val="0">異常</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>電燈</label>
+          <div class="seg">
+            <button type="button" class="seg-btn ${e.lightOff?"active":""}" data-field="lightOff" data-val="1">關閉</button>
+            <button type="button" class="seg-btn ${!e.lightOff?"active danger":""}" data-field="lightOff" data-val="0">開啟</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>電熱</label>
+          <div class="seg">
+            <button type="button" class="seg-btn ${e.heatOk?"active":""}" data-field="heatOk" data-val="1">符合</button>
+            <button type="button" class="seg-btn ${!e.heatOk?"active danger":""}" data-field="heatOk" data-val="0">不符合</button>
+          </div>
+        </div>
+      </div>`;
+    }).join("");
+    // 綁定 seg 按鈕
+    listEl.querySelectorAll(".wh").forEach(card => {
+      const whId = card.dataset.wh;
+      card.querySelectorAll(".temp-input").forEach(inp => {
+        inp.addEventListener("input", () => {
+          if (!entries[whId]) entries[whId] = {warehouseId:whId,temp:"",powerOk:true,lightOff:true,heatOk:true};
+          entries[whId].temp = inp.value;
+          // 重渲染只刷新該卡 alert badge（簡化：直接整頁 render 也行）
+          const w = warehouses.find(x => x.id === whId);
+          if (w){
+            const stdN = parseFloat(String(w.compliant_temp||"").match(/-?\d+(\.\d+)?/)?.[0] || "");
+            const curN = parseFloat(inp.value);
+            const nameEl = card.querySelector(".name");
+            const existingBadge = nameEl.querySelector(".alert-badge");
+            if (existingBadge) existingBadge.remove();
+            if (Number.isFinite(stdN) && Number.isFinite(curN) && (curN - stdN) > 5){
+              nameEl.insertAdjacentHTML("beforeend", ' <span class="alert-badge bad">⚠ 超標</span>');
+            }
+          }
+        });
+      });
+      card.querySelectorAll(".seg-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const field = btn.dataset.field;
+          const val = btn.dataset.val === "1";
+          if (!entries[whId]) entries[whId] = {warehouseId:whId,temp:"",powerOk:true,lightOff:true,heatOk:true};
+          entries[whId][field] = val;
+          // toggle visual state
+          btn.parentElement.querySelectorAll(".seg-btn").forEach(b => b.classList.remove("active","danger"));
+          btn.classList.add("active");
+          if (!val) btn.classList.add("danger");
+        });
+      });
+    });
+  }
+
+  async function doSave(){
+    const date = dateInput.value || todayTaipei();
+    const filler = fillerInput.value.trim();
+    if (!filler){ toast("請填寫填表人"); return; }
+    // 補上所有 warehouse 的條目（沒填的也記錄空值）
+    const payload = warehouses.map(w => {
+      const e = entries[w.id] || {warehouseId:w.id,temp:"",powerOk:true,lightOff:true,heatOk:true};
+      // 從 DOM 拿最新 temp（避免 input 改了沒回寫 entries）
+      const card = listEl.querySelector('.wh[data-wh="'+w.id+'"]');
+      const inp = card ? card.querySelector(".temp-input") : null;
+      const t = inp ? inp.value.trim() : (e.temp||"");
+      return {warehouseId:w.id, temp:t, powerOk:!!e.powerOk, lightOff:!!e.lightOff, heatOk:!!e.heatOk};
+    });
+    saveBtn.disabled = true;
+    saveBtn.textContent = "儲存中…";
+    const r = await api("/liff/api/freezer-temp/save", {
+      method:"POST",
+      body: JSON.stringify({date, fillerName:filler, entries:payload})
+    });
+    saveBtn.disabled = false;
+    saveBtn.textContent = "儲存所有溫度";
+    if (r.status !== 200 || !r.body.ok){
+      toast("儲存失敗："+(r.body.error || "HTTP "+r.status));
+      return;
+    }
+    toast("✓ 已儲存"+(r.body.anomaly?"（含異常將提醒主管）":""));
+    await load();
+  }
+})();
+</script>
+</body>
+</html>

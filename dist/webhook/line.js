@@ -188,7 +188,26 @@ function detectCustomerIntent(text) {
                 /剛剛.{0,5}(漏|忘|沒)/,
             ],
         },
+        {
+            key: "basket_return",
+            patterns: [
+                /退籃|收籃|還籃/,
+                /(\d+|一|二|三|四|五|六|七|八|九|十).{0,3}(個|顆)?籃(子|$|，|。|\s)/,
+                /(空|髒)?籃.{0,5}(要還|要退|退回|回收|拿走)/,
+                /籃子.{0,5}(明天|後天|下次).{0,5}(還|退)/,
+            ],
+        },
     ];
+    /** 從訊息中抽取籃數（簡單啟發式） */
+    function extractBasketCount(text) {
+        if (!text) return null;
+        const numMatch = String(text).match(/(\d+).{0,3}(個|顆)?籃/);
+        if (numMatch) return parseInt(numMatch[1], 10);
+        const cnMap = { "一":1,"二":2,"兩":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,"十":10 };
+        const cnMatch = String(text).match(/([一二兩三四五六七八九十]).{0,3}(個|顆)?籃/);
+        if (cnMatch) return cnMap[cnMatch[1]] ?? null;
+        return null;
+    }
     const matched = [];
     let primaryIntent = null;
     for (const { key, patterns } of intents) {
@@ -1124,13 +1143,19 @@ function createLineWebhook() {
                     }
                     continue;
                 }
-                // 取消 / 改訂單 / 詢送貨 / 補叫貨：寫入稽核但仍嘗試 AI 解析（內容可能還含品項）
-                if (intentHit.intent && ["cancel_order", "modify_order", "delivery_inquiry", "add_to_order"].includes(intentHit.intent)) {
+                // 取消 / 改訂單 / 詢送貨 / 補叫貨 / 空籃回收：寫入稽核但仍嘗試 AI 解析（內容可能還含品項）
+                if (intentHit.intent && ["cancel_order", "modify_order", "delivery_inquiry", "add_to_order", "basket_return"].includes(intentHit.intent)) {
                     try {
-                        const intentLabel = { cancel_order: "取消訂單", modify_order: "改訂單", delivery_inquiry: "詢送貨時間", add_to_order: "補叫貨" }[intentHit.intent] || intentHit.intent;
+                        const intentLabel = { cancel_order: "取消訂單", modify_order: "改訂單", delivery_inquiry: "詢送貨時間", add_to_order: "補叫貨", basket_return: "空籃回收" }[intentHit.intent] || intentHit.intent;
+                        // 若為空籃回收，嘗試抽取數字
+                        let basketSuffix = "";
+                        if (intentHit.intent === "basket_return") {
+                            const n = extractBasketCount(text);
+                            if (n != null && Number.isFinite(n)) basketSuffix = `（${n} 個）`;
+                        }
                         // 訂單 remark 補上「客戶意圖：…」前綴（保留既有 remark）
                         const r = await db.prepare("SELECT remark FROM orders WHERE id = ?").get(orderId);
-                        const newPrefix = `[客戶意圖：${intentLabel}]`;
+                        const newPrefix = `[客戶意圖：${intentLabel}${basketSuffix}]`;
                         const existing = String(r?.remark || "").trim();
                         const newRemark = existing.includes(newPrefix) ? existing : (existing ? newPrefix + " " + existing : newPrefix);
                         await db.prepare("UPDATE orders SET remark = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRemark, orderId);
