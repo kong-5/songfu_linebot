@@ -129,6 +129,14 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     } catch (e) {
         console.error("[startup] LIFF 路由建立失敗:", e?.message || e);
     }
+    // 隱私權政策 / 服務條款（供 LINE Console publish 用，公開可存取）
+    try {
+        const legal_index_js_1 = require("./legal/index.js");
+        app.use(legal_index_js_1.createLegalRouter());
+        console.log("[startup] 法律頁面已掛載 /privacy /terms");
+    } catch (e) {
+        console.error("[startup] 法律頁面建立失敗:", e?.message || e);
+    }
     // 公開圖片端點：給 LINE 抓取群發圖片（無需 cookie）
     app.get("/broadcast-img/:id/:token", async (req, res) => {
         try {
