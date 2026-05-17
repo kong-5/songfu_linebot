@@ -506,45 +506,150 @@ const NOTION_STYLE = `
     .order-detail-raw-inner { position: static; max-height: 220px; }
     .order-detail-raw-pre-wrap { max-height: min(14vh, 110px); }
     .order-detail-raw-sticky-hint { display: none; }
+    /* 手機版品項卡：3 段式緊湊版型
+       Row1: 料號 + 品項名稱（大字）+ 作廢×（右上）
+       Row2: 子客戶
+       Row3: 數量（大字）+ 單位 + 備註
+       HTML 欄序：1=cb 2=sort 3=idx 4=erp 5=product 6=sub_customer 7=qty 8=unit 9=remark 10=del */
     table.order-detail-table tbody tr {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: auto 1fr auto;
       grid-template-areas:
-        "orig orig"
-        "erp erp"
-        "product product"
-        "qty unit"
-        "remark del";
+        "orig orig orig"
+        "erp product del"
+        "subcust subcust subcust"
+        "qty unit remark";
       gap: 0;
       border: 1px solid var(--notion-border);
       border-radius: 12px;
       margin-bottom: 12px;
       overflow: hidden;
+      background: var(--notion-bg);
     }
-    table.order-detail-table tbody tr td { border-bottom: none; padding: 8px 10px; }
+    table.order-detail-table tbody tr td { border-bottom: none; padding: 8px 10px; display:flex; align-items:center; gap:6px; }
     table.order-detail-table tbody tr td::before { content: none; }
+    /* 隱藏 cb、sort、idx（手機版多餘） */
     table.order-detail-table tbody tr td:nth-child(1),
-    table.order-detail-table tbody tr td:nth-child(2) { display:none; }
-    table.order-detail-table tbody tr td:nth-child(3) { grid-area: erp; border-top: 1px solid var(--notion-border); padding-top: 6px; padding-bottom: 4px; }
-    table.order-detail-table tbody tr td:nth-child(4) { grid-area: product; padding-top: 2px; padding-bottom: 8px; }
-    table.order-detail-table tbody tr td:nth-child(5) { grid-area: qty; border-top: 1px solid var(--notion-border); }
-    table.order-detail-table tbody tr td:nth-child(6) { grid-area: unit; border-top: 1px solid var(--notion-border); }
-    /* 以下 6 個規則屬於手機版 cell-as-card 樣式，本應在 max-width:760px 但歷史 bug 放錯位置造成桌面亂版，這裡修正放回手機版內 */
-    table.order-detail-table tbody tr td:nth-child(7) { grid-area: remark; border-top: 1px solid var(--notion-border); }
-    table.order-detail-table tbody tr td:nth-child(8) { grid-area: del; border-top: 1px solid var(--notion-border); justify-content:flex-end; align-items:flex-end; }
-    table.order-detail-table tbody tr td:nth-child(3)::before { content: "料號"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
-    table.order-detail-table tbody tr td:nth-child(5)::before { content: "數量"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
-    table.order-detail-table tbody tr td:nth-child(6)::before { content: "單位"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
-    table.order-detail-table tbody tr td:nth-child(7)::before { content: "備註"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
+    table.order-detail-table tbody tr td:nth-child(2),
+    table.order-detail-table tbody tr td:nth-child(3) { display:none; }
+    /* Row 2: 料號 + 品項 + 作廢 */
+    table.order-detail-table tbody tr td:nth-child(4) {
+      grid-area: erp;
+      padding: 10px 6px 10px 12px;
+      font-size: 12px;
+      color: var(--notion-text-muted);
+      font-family: ui-monospace, monospace;
+      align-self: center;
+      justify-content: flex-start;
+    }
+    table.order-detail-table tbody tr td:nth-child(5) {
+      grid-area: product;
+      padding: 10px 6px;
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--notion-text);
+      align-self: center;
+      min-width: 0;
+      overflow-wrap: break-word;
+    }
+    table.order-detail-table tbody tr td:nth-child(5) .order-final-product,
+    table.order-detail-table tbody tr td:nth-child(5) .product-pick { font-size: 17px; font-weight: 600; }
+    table.order-detail-table tbody tr td:nth-child(5) .conf-pill { font-size: 11px; font-weight: 600; }
+    table.order-detail-table tbody tr td:nth-child(5) .product-change { font-size: 12px; font-weight: 400; opacity: 0.7; margin-left:6px; }
+    table.order-detail-table tbody tr td:nth-child(10) {
+      grid-area: del;
+      padding: 6px 8px;
+      align-self: start;
+      justify-self: end;
+      justify-content: flex-end;
+    }
+    table.order-detail-table tbody tr td:nth-child(10) .order-del-btn-icon { min-width: 1.85rem; font-size: 16px; padding: 2px 6px; }
+    /* Row 3: 子客戶 */
+    table.order-detail-table tbody tr td:nth-child(6) {
+      grid-area: subcust;
+      padding: 6px 12px 8px;
+      border-top: 1px solid var(--notion-border);
+      gap: 6px;
+    }
+    table.order-detail-table tbody tr td:nth-child(6)::before {
+      content: "子客戶";
+      color: var(--notion-text-muted);
+      font-size: 11px;
+      margin-right: 4px;
+      flex: 0 0 auto;
+    }
+    table.order-detail-table tbody tr td:nth-child(6) input {
+      width: 100% !important;
+      max-width: none !important;
+      flex: 1;
+      font-size: 13px;
+    }
+    /* Row 4: 數量 + 單位 + 備註 */
+    table.order-detail-table tbody tr td:nth-child(7) {
+      grid-area: qty;
+      padding: 8px 6px 10px 12px;
+      border-top: 1px solid var(--notion-border);
+      gap: 4px;
+    }
+    table.order-detail-table tbody tr td:nth-child(7)::before {
+      content: "數量";
+      color: var(--notion-text-muted);
+      font-size: 11px;
+      margin-right: 4px;
+      flex: 0 0 auto;
+    }
+    table.order-detail-table tbody tr td:nth-child(7) input {
+      font-size: 17px !important;
+      font-weight: 600;
+      width: 100% !important;
+      max-width: 4.5rem !important;
+      text-align: center;
+      padding: 4px 6px;
+    }
+    table.order-detail-table tbody tr td:nth-child(8) {
+      grid-area: unit;
+      padding: 8px 6px 10px;
+      border-top: 1px solid var(--notion-border);
+      gap: 0;
+    }
+    table.order-detail-table tbody tr td:nth-child(8) select {
+      font-size: 15px;
+      font-weight: 500;
+      width: 100%;
+      max-width: 5.5rem;
+      padding: 4px 6px;
+    }
+    table.order-detail-table tbody tr td:nth-child(9) {
+      grid-area: remark;
+      padding: 8px 12px 10px 6px;
+      border-top: 1px solid var(--notion-border);
+      gap: 4px;
+    }
+    table.order-detail-table tbody tr td:nth-child(9)::before {
+      content: "備註";
+      color: var(--notion-text-muted);
+      font-size: 11px;
+      margin-right: 4px;
+      flex: 0 0 auto;
+    }
+    table.order-detail-table tbody tr td:nth-child(9) input {
+      width: 100% !important;
+      max-width: none !important;
+      flex: 1;
+      font-size: 13px;
+    }
+    /* 第一列：原始 raw_card */
     table.order-detail-table tbody tr::before {
       content: attr(data-raw-card);
       grid-area: orig;
       display: block;
-      padding: 9px 10px 8px;
-      font-size: 13px;
+      padding: 9px 12px 8px;
+      font-size: 12px;
       color: var(--notion-text-muted);
       border-bottom: 1px solid var(--notion-border);
+      background: var(--notion-sidebar);
       white-space: pre-wrap;
+      word-break: break-all;
     }
     /* 訂單列表行：手機改用 3 列卡片版型，蓋過上方 td-as-row 的預設行為 */
     .sf-table tbody tr.order-row > td:not(.order-mobile-only) { display: none !important; }
@@ -1684,6 +1789,61 @@ function createAdminRouter() {
         catch (e) {
             console.error("[admin] data_change_log insert failed", e);
         }
+    }
+    /**
+     * 公斤計價品項：自動把客戶寫的非公斤單位（把/小把/罐…）換算成公斤儲存。
+     * 規則：products.unit === '公斤' 才會作用（按件計價的品項不受影響）；
+     *      只動有 unit_specs.conversion_kg 對應、quantity 是有效正數、未作廢的訂單品項。
+     * @param {*} req 用於 logDataChange 抓 actor
+     * @param {string} productId
+     * @param {string} [restrictUnit] 若提供：只處理 unit = 此值的品項（給「剛新增單位規則時」用）
+     * @returns {Promise<{converted:number, byUnit:Object, skipped?:string, masterUnit?:string}>}
+     */
+    async function autoConvertOrderItemsToKg(req, productId, restrictUnit) {
+        const product = await db.prepare("SELECT id, name, unit FROM products WHERE id = ?").get(productId);
+        if (!product) return { converted: 0, byUnit: {}, skipped: "no_product" };
+        const masterUnit = String(product.unit || "").trim();
+        if (masterUnit !== "公斤") return { converted: 0, byUnit: {}, skipped: "not_kg_billed", masterUnit };
+        const specs = await db.prepare(
+            "SELECT unit, conversion_kg FROM product_unit_specs WHERE product_id = ? AND conversion_kg IS NOT NULL AND conversion_kg > 0"
+        ).all(productId);
+        const kgPerUnit = {};
+        for (const s of specs || []) {
+            kgPerUnit[String(s.unit || "").trim()] = Number(s.conversion_kg);
+        }
+        if (Object.keys(kgPerUnit).length === 0) return { converted: 0, byUnit: {}, skipped: "no_specs" };
+        let sql = "SELECT id, order_id, quantity, unit, raw_name FROM order_items WHERE product_id = ? AND voided_at IS NULL AND TRIM(COALESCE(unit, '')) NOT IN ('公斤', '')";
+        const params = [productId];
+        const r = String(restrictUnit || "").trim();
+        if (r) {
+            sql += " AND TRIM(COALESCE(unit, '')) = ?";
+            params.push(r);
+        }
+        const items = await db.prepare(sql).all(...params);
+        let converted = 0;
+        const byUnit = {};
+        for (const it of items || []) {
+            const u = String(it.unit || "").trim();
+            const kg = kgPerUnit[u];
+            if (!kg) continue;
+            const q = Number(it.quantity);
+            if (!Number.isFinite(q) || q <= 0) continue;
+            const newQty = Math.round(q * kg * 10000) / 10000; // 4 位小數精度
+            await db.prepare("UPDATE order_items SET quantity = ?, unit = '公斤' WHERE id = ?").run(newQty, it.id);
+            converted++;
+            byUnit[u] = (byUnit[u] || 0) + 1;
+            try {
+                await logDataChange(req, {
+                    entityType: "order_item",
+                    entityId: it.id,
+                    productId,
+                    action: "auto_convert_to_kg",
+                    summary: `${product.name}：${q} ${u} → ${newQty} 公斤（自動換算，1 ${u} = ${kg} 公斤）`,
+                    meta: { order_id: it.order_id, before: { quantity: q, unit: u }, after: { quantity: newQty, unit: "公斤" }, conversion_kg: kg, source: "auto_convert" },
+                });
+            } catch (_) { /* ignore log err */ }
+        }
+        return { converted, byUnit };
     }
     async function loadAdminUsers() {
         const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("admin_users");
@@ -7114,7 +7274,7 @@ function createAdminRouter() {
             : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve">確認</button></form>`;
         const toComplaintFormHtml = orderStatusLc === "complaint" || orderStatusLc === "deleted"
             ? ""
-            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/to-complaint" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="sf-btn" title="此筆其實是客訴，不是訂單" onclick="return confirm('確定將此筆轉為客訴？將不再出現在訂單列表，並進入客訴處理流程。');">⚠️ 轉為客訴</button></form>`;
+            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/to-complaint" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="sf-btn danger" title="此筆其實是客訴，不是訂單" onclick="return confirm('確定將此筆轉為客訴？將不再出現在訂單列表，並進入客訴處理流程。');">⚠️ 轉為客訴</button></form>`;
         const statusPillCls = orderStatusLc === "approved" ? "ok" : orderStatusLc === "deleted" ? "bad" : orderStatusLc === "complaint" ? "bad" : "warn";
         // 訂貨日（系統紀錄時間） - 取 updated_at 的前 16 字（YYYY-MM-DD HH:mm）
         const orderReceivedAt = order.updated_at ? String(order.updated_at).replace("T", " ").slice(0, 16) : "—";
@@ -7228,7 +7388,6 @@ function createAdminRouter() {
         <div class="sf-root" style="padding:0 32px 24px 32px;background:var(--bg-0);">
         <div style="display:flex;gap:8px;align-items:center;margin:0 0 14px;flex-wrap:wrap;">
           ${confirmOrderFormHtml ? `<span class="sf-toolbar-confirm">${confirmOrderFormHtml}</span>` : ""}
-          ${toComplaintFormHtml}
           <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/re-recognize?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;">
             <button type="submit" class="sf-btn" title="依原始文字與 LINE 圖片附件重建明細（覆寫現有品項）" onclick="return confirm('依原始訂單重建明細？將覆寫現有品項。');">${SF_ICONS.refresh}<span>重新辨識</span></button>
           </form>
@@ -7238,11 +7397,14 @@ function createAdminRouter() {
           <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?download=1" class="sf-btn">${SF_ICONS.dl}<span>匯出訂貨單</span></a>
           ${isOrderVoided ? "" : `
           <span style="flex:1;"></span>
-          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/void${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" id="voidOrderForm" style="display:inline-flex;margin:0;gap:6px;">
-            <input type="hidden" name="void_reason" id="voidOrderReason" value="">
-            <input type="hidden" name="void_note" id="voidOrderNote" value="">
-            <button type="button" id="btnVoidOrder" class="sf-btn danger" title="作廢整張訂單（會保留稽核紀錄、可由「已作廢訂單」清單恢復）">${SF_ICONS.x}<span>作廢此訂單</span></button>
-          </form>
+          <div class="sf-toolbar-danger" style="display:inline-flex;gap:6px;padding:4px;background:rgba(239,68,68,0.06);border:1px dashed rgba(239,68,68,0.3);border-radius:8px;align-items:center;">
+            ${toComplaintFormHtml}
+            <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/void${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" id="voidOrderForm" style="display:inline-flex;margin:0;gap:6px;">
+              <input type="hidden" name="void_reason" id="voidOrderReason" value="">
+              <input type="hidden" name="void_note" id="voidOrderNote" value="">
+              <button type="button" id="btnVoidOrder" class="sf-btn danger" title="作廢整張訂單（會保留稽核紀錄、可由「已作廢訂單」清單恢復）">${SF_ICONS.x}<span>作廢此訂單</span></button>
+            </form>
+          </div>
           <script>
           (function(){
             const btn = document.getElementById("btnVoidOrder");
@@ -10249,10 +10411,22 @@ function createAdminRouter() {
                 console.error("[admin] sync line unit rule from spec", e);
             }
         }
+        // 公斤計價品項：把這個品項下所有「該單位」的訂單品項自動換算成公斤
+        let autoConverted = 0;
+        if (syncLine) {
+            try {
+                const conv = await autoConvertOrderItemsToKg(req, productId, unit);
+                autoConverted = conv.converted || 0;
+            } catch (e) {
+                console.warn("[spec auto-convert] failed:", e?.message || e);
+            }
+        }
         if (redirectToEdit) {
             let u = buildEditRedirect("");
             if (syncLine)
                 u = appendQueryToAdminPath(u, "sync_line", "1");
+            if (autoConverted > 0)
+                u = appendQueryToAdminPath(u, "auto_converted", String(autoConverted));
             res.redirect(302, u);
             return;
         }
@@ -10501,7 +10675,19 @@ function createAdminRouter() {
         } catch (e) {
             console.warn("[alias auto-link] failed:", e?.message || e);
         }
-        const linkQuery = autoLinked > 0 ? "&auto_linked=" + autoLinked : "";
+        // 連動後，若該品項為公斤計價（products.unit='公斤'），把剛連結的品項以及其他同品項
+        // 非公斤單位的訂單品項，依 unit_specs 換算成公斤
+        let autoConverted = 0;
+        if (autoLinked > 0) {
+            try {
+                const conv = await autoConvertOrderItemsToKg(req, productId);
+                autoConverted = conv.converted || 0;
+            } catch (e) {
+                console.warn("[alias auto-convert] failed:", e?.message || e);
+            }
+        }
+        const linkQuery = (autoLinked > 0 ? "&auto_linked=" + autoLinked : "")
+            + (autoConverted > 0 ? "&auto_converted=" + autoConverted : "");
         res.redirect("/admin/products/" + encodeURIComponent(productId) + "/edit?ok=alias_add" + qEmbed + qCtx + linkQuery);
     });
     router.get("/products/:id/edit", async (req, res) => {
@@ -10569,10 +10755,17 @@ function createAdminRouter() {
         const logRows = recentLogs.map((l) => `<tr><td style="white-space:nowrap;font-size:12px;">${escapeHtml(String(l.created_at ?? ""))}</td><td>${escapeHtml(String(l.actor_username ?? "—"))}</td><td>${escapeHtml(String(l.action ?? ""))}</td><td>${escapeHtml(String(l.summary ?? "—"))}</td></tr>`).join("");
         const errMsg = req.query.err ? `<div class="notion-msg err">${escapeHtml(String(req.query.err))}</div>` : "";
         const autoLinkedCount = Math.max(0, parseInt(String(req.query.auto_linked || "0"), 10) || 0);
+        const autoConvertedCount = Math.max(0, parseInt(String(req.query.auto_converted || "0"), 10) || 0);
+        const aliasFlashSuffix = autoLinkedCount > 0
+            ? `，並自動套用到 <strong>${autoLinkedCount}</strong> 筆既有訂單品項` + (autoConvertedCount > 0 ? `（其中 <strong>${autoConvertedCount}</strong> 筆已換算為公斤）` : "")
+            : "（沒有舊訂單需要連動）";
+        const specFlashSuffix = autoConvertedCount > 0
+            ? `（同步將 <strong>${autoConvertedCount}</strong> 筆既有訂單的「${escapeHtml(String(req.query.context_raw || "—"))}」單位自動換算成公斤）`
+            : "";
         const okFlash = req.query.ok === "alias_add"
-            ? `<div class="notion-msg ok">已新增俗名${autoLinkedCount > 0 ? `，並自動套用到 <strong>${autoLinkedCount}</strong> 筆既有訂單品項（已自動連結到此品項、移除待確認旗標）` : "（沒有舊訂單需要連動）"}。</div>`
+            ? `<div class="notion-msg ok">已新增俗名${aliasFlashSuffix}。</div>`
             : req.query.ok === "spec_add"
-                ? `<div class="notion-msg ok">已新增叫貨單位換算。${req.query.sync_line === "1" ? "已更新 <strong>LINE 叫貨單位換算</strong>規則（與進線換算一致）。" : ""}</div>`
+                ? `<div class="notion-msg ok">已新增叫貨單位換算。${req.query.sync_line === "1" ? "已更新 <strong>LINE 叫貨單位換算</strong>規則（與進線換算一致）。" : ""}${autoConvertedCount > 0 ? `<br>同時自動把 <strong>${autoConvertedCount}</strong> 筆既有訂單品項（公斤計價）換算成公斤。` : ""}</div>`
                 : req.query.ok === "spec_del"
                     ? `<div class="notion-msg ok">已刪除一筆叫貨單位換算。</div>`
                     : req.query.ok === "pack_add"
