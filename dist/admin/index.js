@@ -1791,9 +1791,22 @@ function createAdminRouter() {
         }
     }
     /**
+     * 在備註欄補上「原 X 單位」前綴；如備註已有相同前綴則不重複加。
+     */
+    function buildOrigUnitRemark(originalQty, originalUnit, existingRemark) {
+        const tag = `原 ${originalQty} ${originalUnit}`;
+        const existing = String(existingRemark || "").trim();
+        if (!existing) return tag;
+        // 若已存在「原 N 單位」前綴，剝除避免重複
+        const stripped = existing.replace(/^原\s+[\d.]+\s+\S+\s*(?:／|\/)?\s*/, "").trim();
+        if (!stripped) return tag;
+        return tag + "／" + stripped;
+    }
+    /**
      * 公斤計價品項：自動把客戶寫的非公斤單位（把/小把/罐…）換算成公斤儲存。
      * 規則：products.unit === '公斤' 才會作用（按件計價的品項不受影響）；
      *      只動有 unit_specs.conversion_kg 對應、quantity 是有效正數、未作廢的訂單品項。
+     *      備註欄自動補「原 X 單位」前綴（保留客戶原始叫貨方式）。
      * @param {*} req 用於 logDataChange 抓 actor
      * @param {string} productId
      * @param {string} [restrictUnit] 若提供：只處理 unit = 此值的品項（給「剛新增單位規則時」用）
@@ -1812,7 +1825,7 @@ function createAdminRouter() {
             kgPerUnit[String(s.unit || "").trim()] = Number(s.conversion_kg);
         }
         if (Object.keys(kgPerUnit).length === 0) return { converted: 0, byUnit: {}, skipped: "no_specs" };
-        let sql = "SELECT id, order_id, quantity, unit, raw_name FROM order_items WHERE product_id = ? AND voided_at IS NULL AND TRIM(COALESCE(unit, '')) NOT IN ('公斤', '')";
+        let sql = "SELECT id, order_id, quantity, unit, raw_name, remark FROM order_items WHERE product_id = ? AND voided_at IS NULL AND TRIM(COALESCE(unit, '')) NOT IN ('公斤', '')";
         const params = [productId];
         const r = String(restrictUnit || "").trim();
         if (r) {
@@ -1829,7 +1842,10 @@ function createAdminRouter() {
             const q = Number(it.quantity);
             if (!Number.isFinite(q) || q <= 0) continue;
             const newQty = Math.round(q * kg * 10000) / 10000; // 4 位小數精度
-            await db.prepare("UPDATE order_items SET quantity = ?, unit = '公斤' WHERE id = ?").run(newQty, it.id);
+            // 備註欄補上原叫貨方式（保留客戶原始描述供司機/匯出參考）
+            const origForRemark = (Number.isInteger(q) ? String(q) : String(q));
+            const newRemark = buildOrigUnitRemark(origForRemark, u, it.remark);
+            await db.prepare("UPDATE order_items SET quantity = ?, unit = '公斤', remark = ? WHERE id = ?").run(newQty, newRemark, it.id);
             converted++;
             byUnit[u] = (byUnit[u] || 0) + 1;
             try {
@@ -1838,8 +1854,8 @@ function createAdminRouter() {
                     entityId: it.id,
                     productId,
                     action: "auto_convert_to_kg",
-                    summary: `${product.name}：${q} ${u} → ${newQty} 公斤（自動換算，1 ${u} = ${kg} 公斤）`,
-                    meta: { order_id: it.order_id, before: { quantity: q, unit: u }, after: { quantity: newQty, unit: "公斤" }, conversion_kg: kg, source: "auto_convert" },
+                    summary: `${product.name}：${q} ${u} → ${newQty} 公斤（自動換算，1 ${u} = ${kg} 公斤；備註已補「原 ${q} ${u}」）`,
+                    meta: { order_id: it.order_id, before: { quantity: q, unit: u, remark: it.remark }, after: { quantity: newQty, unit: "公斤", remark: newRemark }, conversion_kg: kg, source: "auto_convert" },
                 });
             } catch (_) { /* ignore log err */ }
         }
