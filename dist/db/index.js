@@ -96,6 +96,11 @@ function initSqlite(dbPath) {
         "ALTER TABLE order_items ADD COLUMN voided_by TEXT",
         "ALTER TABLE order_items ADD COLUMN void_reason TEXT",
         "ALTER TABLE order_items ADD COLUMN void_note TEXT",
+        // 訂單層級作廢原因（status='deleted' 仍是主要旗標，這幾欄補充原因）
+        "ALTER TABLE orders ADD COLUMN voided_at TEXT",
+        "ALTER TABLE orders ADD COLUMN voided_by TEXT",
+        "ALTER TABLE orders ADD COLUMN void_reason TEXT",
+        "ALTER TABLE orders ADD COLUMN void_note TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -397,11 +402,16 @@ async function initPg() {
                 }
                 catch (_e) { /* column may exist */ }
             }
-            // 作廢機制欄位
+            // 作廢機制欄位（品項）
             try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ"); } catch (_) {}
             try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_by TEXT"); } catch (_) {}
             try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS void_reason TEXT"); } catch (_) {}
             try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS void_note TEXT"); } catch (_) {}
+            // 作廢機制欄位（訂單）
+            try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ"); } catch (_) {}
+            try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS voided_by TEXT"); } catch (_) {}
+            try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS void_reason TEXT"); } catch (_) {}
+            try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS void_note TEXT"); } catch (_) {}
             try {
                 await client.query("ALTER TABLE customers ADD COLUMN known_sub_customers TEXT");
             }

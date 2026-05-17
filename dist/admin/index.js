@@ -5647,9 +5647,10 @@ function createAdminRouter() {
       LIMIT 300
     `).all(filterDateFrom, filterDateTo);
             let deletedOrders = await db.prepare(`
-      SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, c.name AS customer_name
+      SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, c.name AS customer_name,
+             o.voided_at, o.voided_by, o.void_reason, o.void_note
       FROM orders o
-      JOIN customers c ON c.id = o.customer_id
+      LEFT JOIN customers c ON c.id = o.customer_id
       WHERE o.order_date >= ? AND o.order_date <= ? AND COALESCE(LOWER(TRIM(o.status)), '') = 'deleted'
       ORDER BY o.order_date DESC, o.id DESC
       LIMIT 300
@@ -5866,13 +5867,29 @@ function createAdminRouter() {
           </tr>`;
             })
                 .join("");
-            const deletedRows = deletedOrders.map((o) => `<tr>
-            <td style="width:24px;"><span class="sf-dot bad"></span></td>
-            <td><span class="mono" style="font-size:12px;">${escapeHtml(o.order_no ?? "—")}</span></td>
-            <td class="mono" style="font-size:12px;color:var(--txt-3);">${escapeHtml(o.order_date)}</td>
-            <td>${escapeHtml(o.customer_name ?? "—")}</td>
-            <td style="text-align:right;"><a class="sf-btn sm" href="/admin/orders/${encodeURIComponent(o.id)}?back=${encodeURIComponent("/admin/orders?date_from=" + encodeURIComponent(filterDateFrom) + "&date_to=" + encodeURIComponent(filterDateTo) + (onlyNeedReview ? "&need_review=1" : ""))}">明細</a></td>
-          </tr>`).join("");
+            const voidReasonLabel = { ai_wrong:"AI 辨識錯誤", customer_complaint:"客訴", customer_cancelled:"客戶取消", duplicate:"重複叫貨", staff_error:"內部錯誤", other:"其他" };
+            const deletedRows = deletedOrders.map((o) => {
+              const backUrl = "/admin/orders?date_from=" + encodeURIComponent(filterDateFrom) + "&date_to=" + encodeURIComponent(filterDateTo) + (onlyNeedReview ? "&need_review=1" : "");
+              const reasonLabel = voidReasonLabel[o.void_reason] || (o.void_reason || "—");
+              const reasonPillCls = o.void_reason === "ai_wrong" ? "warn" : (o.void_reason === "customer_complaint" ? "bad" : "");
+              const voidedShort = o.voided_at ? String(o.voided_at).replace("T", " ").slice(0,16) : "—";
+              const custName = (o.customer_name && String(o.customer_name).trim()) || (o.customer_id ? `客戶 ${String(o.customer_id).slice(0,6)}` : "—");
+              return `<tr>
+                <td style="width:24px;"><span class="sf-dot bad"></span></td>
+                <td><span class="mono" style="font-size:12px;">${escapeHtml(o.order_no ?? "—")}</span></td>
+                <td class="mono" style="font-size:12px;color:var(--txt-3);">${escapeHtml(o.order_date)}</td>
+                <td>${escapeHtml(custName)}</td>
+                <td><span class="sf-pill ${reasonPillCls}" style="font-size:11px;">${escapeHtml(reasonLabel)}</span></td>
+                <td style="font-size:11px;color:var(--txt-3);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(o.void_note || "")}">${escapeHtml(o.void_note || "—")}</td>
+                <td class="mono" style="font-size:11px;color:var(--txt-3);">${escapeHtml(voidedShort)}${o.voided_by?"<br>by "+escapeHtml(o.voided_by):""}</td>
+                <td style="text-align:right;white-space:nowrap;">
+                  <form method="post" action="/admin/orders/${encodeURIComponent(o.id)}/unvoid?back=${encodeURIComponent(backUrl)}" style="display:inline-block;margin:0;">
+                    <button type="submit" class="sf-btn sm" onclick="return confirm('取消作廢「${escapeAttr(o.order_no || o.id)}」並恢復為待確認？');" title="取消作廢，恢復為待確認">↶ 取消作廢</button>
+                  </form>
+                  <a class="sf-btn sm" href="/admin/orders/${encodeURIComponent(o.id)}?back=${encodeURIComponent(backUrl)}">明細</a>
+                </td>
+              </tr>`;
+            }).join("");
             const filterLink = onlyNeedReview
                 ? `<a href="/admin/orders?date_from=${escapeAttr(filterDateFrom)}&date_to=${escapeAttr(filterDateTo)}">顯示全部訂單</a>`
                 : `<a href="/admin/orders?need_review=1&date_from=${escapeAttr(filterDateFrom)}&date_to=${escapeAttr(filterDateTo)}">只看有待確認的訂單</a>`;
@@ -5976,8 +5993,42 @@ function createAdminRouter() {
               <button type="button" class="sf-btn sm primary" id="btnBatchApprove">${SF_ICONS.check}<span>確認</span></button>
               <button type="button" class="sf-btn sm" id="btnBatchOrderSheet">${SF_ICONS.dl}<span>揀貨單</span></button>
               <button type="button" class="sf-btn sm" id="btnBatchLingyueXlsx">${SF_ICONS.dl}<span>凌越 Excel</span></button>
-              <button type="submit" class="sf-btn sm danger" onclick="return confirm('確定要作廢勾選的訂單？訂單會保留稽核紀錄，不會真的刪除。');">${SF_ICONS.x}<span>作廢</span></button>
+              <button type="button" class="sf-btn sm danger" id="btnBatchVoid">${SF_ICONS.x}<span>作廢</span></button>
+              <input type="hidden" name="void_reason" id="batchVoidReason" value="">
+              <input type="hidden" name="void_note" id="batchVoidNote" value="">
             </form>
+            <script>
+            (function(){
+              const btn = document.getElementById("btnBatchVoid");
+              if (!btn) return;
+              btn.addEventListener("click", function(){
+                const form = document.getElementById("batchOrderActionsForm");
+                const checked = form.querySelectorAll('input.order-batch-cb:checked').length;
+                if (!checked) { alert("請先勾選要作廢的訂單"); return; }
+                const r = window.prompt(
+                  "作廢 " + checked + " 筆訂單的原因？\\n\\n" +
+                  "  1 = AI 辨識整單錯誤（會回饋學習庫）\\n" +
+                  "  2 = 客訴問題\\n" +
+                  "  3 = 客戶取消\\n" +
+                  "  4 = 重複叫貨\\n" +
+                  "  5 = 內部錯誤\\n" +
+                  "  6 = 其他\\n\\n" +
+                  "按「取消」放棄作廢。",
+                  "1"
+                );
+                if (r === null) return;
+                const map = { "1":"ai_wrong", "2":"customer_complaint", "3":"customer_cancelled", "4":"duplicate", "5":"staff_error", "6":"other" };
+                const reason = map[String(r).trim()] || "other";
+                let note = "";
+                if (reason !== "ai_wrong") {
+                  note = window.prompt("備註（可留白）：", "") || "";
+                }
+                document.getElementById("batchVoidReason").value = reason;
+                document.getElementById("batchVoidNote").value = note;
+                form.submit();
+              });
+            })();
+            </script>
           </div>
           <div class="sf-table-wrap">
             <table class="sf-table">
@@ -6004,7 +6055,7 @@ function createAdminRouter() {
             </summary>
             <div class="sf-table-wrap" style="border-top:var(--hairline);border-radius:0;">
               <table class="sf-table">
-                <thead><tr><th style="width:24px;"></th><th>訂單編號</th><th>日期</th><th>客戶</th><th></th></tr></thead>
+                <thead><tr><th style="width:24px;"></th><th>訂單編號</th><th>出貨日</th><th>客戶</th><th>作廢原因</th><th>備註</th><th>作廢時間</th><th style="text-align:right;"></th></tr></thead>
                 <tbody>${deletedRows}</tbody>
               </table>
             </div>
@@ -6432,25 +6483,54 @@ function createAdminRouter() {
             res.redirect("/admin/orders?err=none");
             return;
         }
+        // 作廢原因（前端 prompt 帶入）
+        const validReasons = ["ai_wrong", "customer_complaint", "customer_cancelled", "duplicate", "staff_error", "other"];
+        const rawReason = String(req.body.void_reason || "other").trim().toLowerCase();
+        const reason = validReasons.includes(rawReason) ? rawReason : "other";
+        const note = String(req.body.void_note || "").trim().slice(0, 500);
+        const actor = req.adminUsername || "system";
         for (const oid of ids.slice(0, 200)) {
             try {
                 const before = await db.prepare("SELECT id, order_no, customer_id, order_date, status, raw_message FROM orders WHERE id = ?").get(oid);
                 const itemsSnap = await db.prepare("SELECT id, raw_name, quantity, unit, product_id, remark, sub_customer FROM order_items WHERE order_id = ?").all(oid);
                 const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-                await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("deleted", oid);
+                await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + ", voided_at = " + nowSql + ", voided_by = ?, void_reason = ?, void_note = ? WHERE id = ?").run("deleted", actor, reason, note || null, oid);
                 await logDataChange(req, {
                     entityType: "order",
                     entityId: oid,
                     action: "soft_delete",
-                    summary: `批次作廢訂單 ${before?.order_no || oid}（共 ${itemsSnap.length} 個品項）`,
-                    meta: { before, items: itemsSnap, source: "batch-delete" },
+                    summary: `作廢訂單 ${before?.order_no || oid}（${reason}）${note ? "備註：" + note : ""}`,
+                    meta: { before, items: itemsSnap, source: "batch-delete", void_reason: reason, void_note: note },
                 });
             }
             catch (e) {
                 console.error("[admin] batch-delete order", oid, e?.message || e);
             }
         }
-        res.redirect("/admin/orders?ok=del");
+        res.redirect("/admin/orders?ok=del&n=" + ids.length);
+    });
+    router.post("/orders/:orderId/unvoid", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const { orderId } = req.params;
+        const backTo = (typeof req.query.back === "string" && req.query.back.startsWith("/admin/orders"))
+            ? req.query.back
+            : "";
+        const before = await db.prepare("SELECT id, order_no, status, void_reason FROM orders WHERE id = ?").get(orderId);
+        if (!before) { res.status(404).send("訂單不存在"); return; }
+        if (String(before.status||"").toLowerCase() !== "deleted") {
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent("此訂單未作廢"));
+            return;
+        }
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        // 取消作廢：status 回 pending、清掉 voided_at/by/reason/note；保留稽核軌跡
+        await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + ", voided_at = NULL, voided_by = NULL, void_reason = NULL, void_note = NULL WHERE id = ?").run("pending", orderId);
+        await logDataChange(req, {
+            entityType: "order",
+            entityId: orderId,
+            action: "unvoid",
+            summary: `取消作廢訂單 ${before.order_no || orderId}（原作廢原因：${before.void_reason || "—"}）`,
+            meta: { before },
+        });
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=unvoided" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
     });
     router.post("/orders/batch-approve", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         let ids = req.body.order_ids;
@@ -6826,7 +6906,9 @@ function createAdminRouter() {
             ? req.query.back
             : "/admin/orders?date_from=" + encodeURIComponent(getTaipeiCalendarDateYYYYMMDD()) + "&date_to=" + encodeURIComponent(getTaipeiCalendarDateYYYYMMDD());
         const order = await db.prepare(`
-      SELECT o.id, o.order_no, o.order_date, o.status, o.updated_at, o.raw_message, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code, c.known_sub_customers
+      SELECT o.id, o.order_no, o.order_date, o.status, o.updated_at, o.raw_message, o.customer_id,
+             o.voided_at, o.voided_by, o.void_reason, o.void_note,
+             c.name AS customer_name, c.teraoka_code AS customer_teraoka_code, c.known_sub_customers
       FROM orders o LEFT JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
         if (!order) {
@@ -6971,12 +7053,29 @@ function createAdminRouter() {
         const dateOkBanner = req.query.ok === "date_saved"
             ? `<div class="sf-pill ok" style="align-self:flex-start;margin-bottom:8px;">✓ 出貨日期已更新</div>`
             : (req.query.ok === "date_unchanged" ? `<div class="sf-pill info" style="align-self:flex-start;margin-bottom:8px;">日期未變動</div>` : "");
+        // 作廢資訊（若為已作廢訂單，顯示原因 + 取消作廢按鈕）
+        const orderVoidReason = order.void_reason || null;
+        const orderVoidLabel = { ai_wrong:"AI 辨識錯誤", customer_complaint:"客訴", customer_cancelled:"客戶取消", duplicate:"重複叫貨", staff_error:"內部錯誤", other:"其他" }[orderVoidReason] || orderVoidReason;
+        const orderVoidedAt = order.voided_at ? String(order.voided_at).replace("T", " ").slice(0, 16) : null;
+        const isOrderVoided = orderStatusLc === "deleted";
         const body = `
         <div style="padding:20px 24px 0;">
           <div class="sf-breadcrumb" style="margin-bottom:6px;">訂單 · 出貨日 ${escapeHtml(order.order_date)}</div>
           ${dateOkBanner}
+          ${req.query.ok === "voided" ? `<div class="sf-pill bad" style="align-self:flex-start;margin-bottom:8px;">已作廢此訂單${order.void_reason ? "（"+escapeHtml(orderVoidLabel || "")+"）" : ""}</div>` : ""}
+          ${req.query.ok === "unvoided" ? `<div class="sf-pill ok" style="align-self:flex-start;margin-bottom:8px;">已取消作廢，訂單恢復為待確認狀態</div>` : ""}
+          ${isOrderVoided ? `
+          <div style="background:#fff8e1;border:1px solid #f59e0b;border-radius:8px;padding:10px 14px;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+            <strong style="color:#92400e;">⊘ 此訂單已作廢</strong>
+            ${orderVoidLabel ? `<span class="sf-pill warn">${escapeHtml(orderVoidLabel)}</span>` : ""}
+            ${order.void_note ? `<span style="font-size:12px;color:var(--txt-2);">${escapeHtml(order.void_note)}</span>` : ""}
+            ${orderVoidedAt ? `<span class="mono" style="font-size:11px;color:var(--txt-3);">${escapeHtml(orderVoidedAt)}${order.voided_by?" by "+escapeHtml(order.voided_by):""}</span>` : ""}
+            <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/unvoid${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" style="margin-left:auto;">
+              <button type="submit" class="sf-btn sm primary" onclick="return confirm('確定取消作廢並恢復為待確認？');">取消作廢</button>
+            </form>
+          </div>` : ""}
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;">
-            <div>
+            <div style="flex:1;min-width:0;">
               <h2 style="margin:0;font-size:20px;font-weight:600;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                 <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders" style="color:inherit;">${escapeHtml(orderCustomerName)}</a>
                 ${hasCustomerName ? "" : `<span class="sf-pill bad" style="font-weight:400;">⚠ 客戶資料缺名稱</span>`}
@@ -6984,19 +7083,20 @@ function createAdminRouter() {
                 ${needReviewCount > 0 ? `<span class="sf-pill warn">${SF_ICONS.warn}<span>${needReviewCount} 待確認</span></span>` : ""}
                 ${lowConfCount > 0 ? `<span class="sf-pill bad">${SF_ICONS.warn}<span>${lowConfCount} 低信心</span></span>` : ""}
               </h2>
-              <div style="margin-top:6px;font-size:12px;color:var(--txt-3);display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+              <div style="margin-top:6px;font-size:12px;color:var(--txt-3);display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
                 <span class="mono">${escapeHtml(order.order_no ?? "—")}</span>
                 <span>· ${escapeHtml(items.length+"")} 項</span>
                 ${attachments.length ? `<span>· 圖 ${attachments.length}</span>` : "<span>· 純文字</span>"}
-                <span>· 訂貨日 <span class="mono">${escapeHtml(orderReceivedAt)}</span></span>
+                <span>· 訂貨 <span class="mono" style="color:var(--txt-2);">${escapeHtml(orderReceivedAt)}</span></span>
+                <span style="display:inline-flex;align-items:center;gap:4px;">· 出貨
+                  <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/set-date${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" style="display:inline-flex;gap:4px;align-items:center;margin:0;">
+                    <input type="date" name="order_date" id="orderEditDate" value="${escapeAttr(order.order_date || "")}" required style="padding:2px 4px;border:1px solid var(--line);border-radius:4px;font-size:12px;font-family:ui-monospace,monospace;color:var(--txt-1);background:#fff;width:130px;">
+                    <button type="button" class="sf-btn sm ghost" id="orderEditDateTomorrow" title="設為明天" style="padding:1px 6px;font-size:11px;">明</button>
+                    <button type="button" class="sf-btn sm ghost" id="orderEditDateMon" title="設為下週一" style="padding:1px 6px;font-size:11px;">一</button>
+                    <button type="submit" class="sf-btn sm primary" title="儲存出貨日" style="padding:1px 6px;font-size:11px;">存</button>
+                  </form>
+                </span>
               </div>
-              <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/set-date${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--bg-1);border:1px solid var(--line);border-radius:8px;padding:8px 12px;">
-                <span style="font-size:13px;color:var(--txt-2);">出貨日：</span>
-                <input type="date" name="order_date" id="orderEditDate" value="${escapeAttr(order.order_date || "")}" required style="padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:13px;">
-                <button type="button" class="sf-btn sm" id="orderEditDateTomorrow">明天</button>
-                <button type="button" class="sf-btn sm" id="orderEditDateMon">下週一</button>
-                <button type="submit" class="sf-btn sm primary">儲存出貨日</button>
-              </form>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <a class="sf-btn ghost" href="${escapeAttr(backTo)}">← 回列表</a>
