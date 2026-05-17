@@ -8930,6 +8930,9 @@ function createAdminRouter() {
             const handleStatus = handling?.handle_status || "pending";
             const handlerVal = handling?.handler || "";
             const noteVal = handling?.note || "";
+            // 用於自動填入「處理人」「處理備註」（只在欄位空白時建議）
+            let suggestedHandler = "";
+            let suggestedNote = "";
             const attachments = await db.prepare("SELECT id, line_message_id FROM order_attachments WHERE order_id = ?").all(orderId);
             const groupId = order.line_group_id || null;
             const baseTime = String(handling?.created_at || order.updated_at || "");
@@ -8989,11 +8992,27 @@ function createAdminRouter() {
                 </div>
               </div>`;
             const timelineItems = [];
+            const empReplyForNote = [];
+            const empNameOrder = [];
+            const empNameCount = new Map();
             for (const m of employeeMsgs) {
                 let d = {};
                 try { d = typeof m.detail === "string" ? JSON.parse(m.detail) : (m.detail || {}); } catch (_) { d = {}; }
+                const username = String(d.username || "").trim();
+                const displayName = String(d.name || d.displayName || "").trim();
+                const empName = displayName || username || "員工";
                 const empLabel = `${d.username || "員工"}${d.title ? `（${d.title}）` : ""}`;
-                const preview = String(d.preview || "");
+                const preview = String(d.preview || "").trim();
+                // 收集員工名稱（去重，保留出現順序；同時記錄出現次數，用於挑「主要處理人」）
+                if (empName && empName !== "員工") {
+                    if (!empNameOrder.includes(empName)) empNameOrder.push(empName);
+                    empNameCount.set(empName, (empNameCount.get(empName) || 0) + 1);
+                }
+                // 收集員工回覆內容（給處理備註用，格式：HH:MM 員工：訊息）
+                if (preview) {
+                    const hhmm = String(m.created_at || "").slice(11, 16);
+                    empReplyForNote.push(`[${hhmm}] ${empName}：${preview}`);
+                }
                 timelineItems.push({
                     ts: m.created_at,
                     html: `<div style="border-left:3px solid #2383e2;padding:10px 14px;margin-bottom:8px;background:var(--bg-1);border-radius:0 6px 6px 0;">
@@ -9001,6 +9020,32 @@ function createAdminRouter() {
                       <div style="white-space:pre-wrap;font-size:13px;">${escapeHtml(preview)}</div>
                     </div>`
                 });
+            }
+            // 處理人建議：以「回覆最多次」為主，相同次數時取最先回覆者
+            if (empNameOrder.length) {
+                const ranked = [...empNameOrder].sort((a, b) => {
+                    const ca = empNameCount.get(a) || 0, cb = empNameCount.get(b) || 0;
+                    if (ca !== cb) return cb - ca;
+                    return empNameOrder.indexOf(a) - empNameOrder.indexOf(b);
+                });
+                suggestedHandler = ranked[0];
+                // 若有多位回覆，加註其他人（最多顯示 3 位）
+                if (ranked.length > 1) {
+                    suggestedHandler += "（協同：" + ranked.slice(1, 4).join("、") + "）";
+                }
+            }
+            // 處理備註建議：列出員工回覆的時間軸
+            if (empReplyForNote.length) {
+                const rawText = String(order.raw_message || "").replace(/\[圖片\]/g, "").trim();
+                const lines = [];
+                if (rawText) {
+                    const short = rawText.length > 120 ? rawText.slice(0, 120) + "…" : rawText;
+                    lines.push(`【客戶訴求】${short}`);
+                    lines.push("");
+                }
+                lines.push("【員工回覆】");
+                for (const r of empReplyForNote) lines.push(r);
+                suggestedNote = lines.join("\n");
             }
             for (const o of (otherCustOrders || [])) {
                 const t = String(o.raw_message || "").replace(/\[圖片\]/g, "[圖]").trim();
@@ -9057,10 +9102,12 @@ function createAdminRouter() {
                         </select>
                       </label>
                       <label style="font-size:13px;color:var(--txt-2);">處理人
-                        <input type="text" name="handler" class="sf-input" value="${escapeAttr(handlerVal)}" placeholder="例：阿榮、客服小敏" style="margin-top:4px;">
+                        <input type="text" name="handler" class="sf-input" value="${escapeAttr(handlerVal || suggestedHandler)}" placeholder="例：阿榮、客服小敏" style="margin-top:4px;">
+                        ${(!handlerVal && suggestedHandler) ? `<span style="font-size:11px;color:var(--ok);display:block;margin-top:4px;">🪄 已依員工回覆自動帶入「${escapeHtml(suggestedHandler)}」，可修改後再儲存</span>` : ""}
                       </label>
                       <label style="font-size:13px;color:var(--txt-2);">處理備註
-                        <textarea name="note" class="sf-input" rows="6" placeholder="記錄處理經過、客戶回覆、補償方案等" style="margin-top:4px;font-family:inherit;">${escapeHtml(noteVal)}</textarea>
+                        <textarea name="note" class="sf-input" rows="8" placeholder="記錄處理經過、客戶回覆、補償方案等" style="margin-top:4px;font-family:inherit;">${escapeHtml(noteVal || suggestedNote)}</textarea>
+                        ${(!noteVal && suggestedNote) ? `<span style="font-size:11px;color:var(--ok);display:block;margin-top:4px;">🪄 已彙整對話內容自動帶入，可修改／補充後再儲存</span>` : ""}
                       </label>
                       <button type="submit" class="sf-btn primary">儲存</button>
                       ${handling?.resolved_at ? `<div style="font-size:12px;color:var(--txt-3);">解決時間：${escapeHtml(formatTs(handling.resolved_at))}</div>` : ""}
