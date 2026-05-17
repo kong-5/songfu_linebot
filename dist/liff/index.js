@@ -157,37 +157,33 @@ function createLiffRouter() {
             const statusFilter = onlyPending
                 ? "AND COALESCE(LOWER(TRIM(o.status)), '') NOT IN ('approved','deleted')"
                 : "AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'";
+            // DB-agnostic：訂單清單 + 各自的 count，items_preview 改用第二個 query 後在 JS 聚合
             const rows = await db.prepare(`
                 SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id,
                        c.name AS customer_name,
                        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
-                       (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count,
-                       (SELECT GROUP_CONCAT(COALESCE(NULLIF(TRIM(p.name),''), NULLIF(TRIM(oi2.raw_name),''), '—'), '、')
-                          FROM (SELECT * FROM order_items WHERE order_id = o.id ORDER BY id LIMIT 4) oi2
-                          LEFT JOIN products p ON p.id = oi2.product_id) AS items_preview
+                       (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
                 FROM orders o JOIN customers c ON c.id = o.customer_id
                 WHERE o.order_date = ? ${statusFilter}
                 ORDER BY o.updated_at DESC, o.id DESC
                 LIMIT 100
             `).all(d);
-            // PG 沒有 GROUP_CONCAT；上面是 SQLite 寫法。若是 PG，重做 items_preview。
-            const isPg = Boolean(process.env.DATABASE_URL);
-            let orders = rows || [];
-            if (isPg) {
-                const pgRows = await db.prepare(`
-                    SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id,
-                           c.name AS customer_name,
-                           (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
-                           (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count,
-                           (SELECT string_agg(COALESCE(NULLIF(TRIM(p.name),''), NULLIF(TRIM(oi2.raw_name),''), '—'), '、')
-                              FROM (SELECT * FROM order_items WHERE order_id = o.id ORDER BY id LIMIT 4) oi2
-                              LEFT JOIN products p ON p.id = oi2.product_id) AS items_preview
-                    FROM orders o JOIN customers c ON c.id = o.customer_id
-                    WHERE o.order_date = ? ${statusFilter}
-                    ORDER BY o.updated_at DESC, o.id DESC
-                    LIMIT 100
-                `).all(d);
-                orders = pgRows || [];
+            const orders = rows || [];
+            // items_preview：拿出 order_id IN (...) 全部品項名稱，JS 內每單取前 4 個用「、」串
+            const previewByOrder = new Map();
+            if (orders.length) {
+                const ids = orders.map(o => o.id);
+                const ph = ids.map(() => "?").join(",");
+                const itemRows = await db.prepare(`
+                    SELECT oi.order_id, COALESCE(NULLIF(TRIM(p.name), ''), NULLIF(TRIM(oi.raw_name), ''), '—') AS name
+                    FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
+                    WHERE oi.order_id IN (${ph}) ORDER BY oi.order_id, oi.id
+                `).all(...ids);
+                for (const r of itemRows || []) {
+                    const arr = previewByOrder.get(r.order_id) || [];
+                    if (arr.length < 4) arr.push(r.name);
+                    previewByOrder.set(r.order_id, arr);
+                }
             }
             res.json({
                 ok: true,
@@ -201,7 +197,7 @@ function createLiffRouter() {
                     customer_name: o.customer_name,
                     item_count: Number(o.item_count) || 0,
                     need_review_count: Number(o.need_review_count) || 0,
-                    items_preview: o.items_preview || "",
+                    items_preview: (previewByOrder.get(o.id) || []).join("、"),
                 })),
             });
         } catch (e) {
