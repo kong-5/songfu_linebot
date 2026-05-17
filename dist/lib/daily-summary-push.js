@@ -115,7 +115,7 @@ async function runDailySummaryPush(db, options = {}) {
     for (const c of customers) {
         try {
             const orders = await db.prepare(
-                "SELECT id, order_no FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' ORDER BY id"
+                "SELECT id, order_no FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY id"
             ).all(c.id, date);
             if (!orders.length) { skipped++; continue; }
             const orderIds = orders.map(o => o.id);

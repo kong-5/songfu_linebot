@@ -311,6 +311,20 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_pack_pair ON product_packaging_ratios(product_id, outer_unit, inner_unit)");
     }
     catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS complaint_handling (
+          order_id TEXT PRIMARY KEY,
+          handle_status TEXT NOT NULL DEFAULT 'pending',
+          handler TEXT,
+          note TEXT,
+          resolved_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (order_id) REFERENCES orders(id)
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_complaint_handling_status ON complaint_handling(handle_status)");
+    }
+    catch (_) { /* table may already exist */ }
     for (const alt of alters) {
         try {
             sqlite.exec(alt);
@@ -648,6 +662,19 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_rhythm_sig_date ON rhythm_daily_signals(signal_date)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_rhythm_sig_cust ON rhythm_daily_signals(customer_id)");
                 await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_rhythm_sig_unique ON rhythm_daily_signals(signal_date, customer_id, product_id, signal_type)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS complaint_handling (
+            order_id TEXT PRIMARY KEY REFERENCES orders(id),
+            handle_status TEXT NOT NULL DEFAULT 'pending',
+            handler TEXT,
+            note TEXT,
+            resolved_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_complaint_handling_status ON complaint_handling(handle_status)");
             }
             catch (_) { /* table may already exist */ }
         }

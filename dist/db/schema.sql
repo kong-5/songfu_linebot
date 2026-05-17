@@ -313,3 +313,16 @@ CREATE TABLE IF NOT EXISTS rhythm_daily_signals (
 CREATE INDEX IF NOT EXISTS idx_rhythm_sig_date ON rhythm_daily_signals(signal_date);
 CREATE INDEX IF NOT EXISTS idx_rhythm_sig_cust ON rhythm_daily_signals(customer_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_rhythm_sig_unique ON rhythm_daily_signals(signal_date, customer_id, product_id, signal_type);
+
+-- 客訴處理：與 orders 1-1（orders.status='complaint' 時建立）
+CREATE TABLE IF NOT EXISTS complaint_handling (
+  order_id TEXT PRIMARY KEY,
+  handle_status TEXT NOT NULL DEFAULT 'pending',
+  handler TEXT,
+  note TEXT,
+  resolved_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (order_id) REFERENCES orders(id)
+);
+CREATE INDEX IF NOT EXISTS idx_complaint_handling_status ON complaint_handling(handle_status);

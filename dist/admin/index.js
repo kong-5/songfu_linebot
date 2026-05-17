@@ -1089,6 +1089,7 @@ function sfSidebar(active) {
         <div class="sf-nav-group-title">日常作業</div>
         ${item("/admin", "dashboard", "spark", "儀表板")}
         ${item("/admin/orders", "orders", "list", "訂單審核")}
+        ${item("/admin/complaints", "complaints", "warn", "客訴處理")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
@@ -1864,7 +1865,7 @@ function createAdminRouter() {
             out.orders = await db.prepare(
                 "SELECT o.id, o.order_no, o.order_date, o.status, c.name AS customer_name " +
                 "FROM orders o LEFT JOIN customers c ON c.id = o.customer_id " +
-                "WHERE (o.order_no LIKE ? OR o.id LIKE ?) AND COALESCE(LOWER(TRIM(o.status)),'') <> 'deleted' " +
+                "WHERE (o.order_no LIKE ? OR o.id LIKE ?) AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') " +
                 "ORDER BY o.order_date DESC, o.id DESC LIMIT 8"
             ).all(like, like);
         } catch (_) {}
@@ -2826,11 +2827,11 @@ function createAdminRouter() {
         let totalOrders = 0, pendingOrders = 0, approvedOrders = 0;
         let needReviewCnt = 0;
         try {
-            const r1 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted'").get(today);
+            const r1 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')").get(today);
             totalOrders = Number(r1?.n) || 0;
             const r2 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') = 'approved'").get(today);
             approvedOrders = Number(r2?.n) || 0;
-            const r3 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','approved')").get(today);
+            const r3 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','approved','complaint')").get(today);
             pendingOrders = Number(r3?.n) || 0;
             const r4 = await db.prepare("SELECT COUNT(*) AS n FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.order_date = ? AND oi.need_review = 1 AND oi.voided_at IS NULL").get(today);
             needReviewCnt = Number(r4?.n) || 0;
@@ -2838,10 +2839,24 @@ function createAdminRouter() {
         let yesterdayOrders = 0;
         try {
             const yesterday = new Date(todayDate.getTime() - 86400000).toISOString().slice(0,10);
-            const r = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted'").get(yesterday);
+            const r = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')").get(yesterday);
             yesterdayOrders = Number(r?.n) || 0;
         } catch (_) {}
         const deltaOrders = totalOrders - yesterdayOrders;
+        // ── 客訴：今日新增 + 未解決總數 + 今日明細 ─────────────────
+        let complaintsTodayNew = 0, complaintsOpenTotal = 0, complaintsTodayOpen = [];
+        try {
+            const r1 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND LOWER(TRIM(COALESCE(status,''))) = 'complaint'").get(today);
+            complaintsTodayNew = Number(r1?.n) || 0;
+            const r2 = await db.prepare("SELECT COUNT(*) AS n FROM orders o LEFT JOIN complaint_handling ch ON ch.order_id = o.id WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND COALESCE(ch.handle_status, 'pending') <> 'resolved'").get();
+            complaintsOpenTotal = Number(r2?.n) || 0;
+            complaintsTodayOpen = await db.prepare(
+                "SELECT o.id, o.order_no, o.order_date, c.name AS customer_name, o.raw_message, COALESCE(ch.handle_status, 'pending') AS handle_status, ch.handler " +
+                "FROM orders o JOIN customers c ON c.id = o.customer_id LEFT JOIN complaint_handling ch ON ch.order_id = o.id " +
+                "WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND COALESCE(ch.handle_status, 'pending') <> 'resolved' " +
+                "ORDER BY o.order_date DESC, o.id DESC LIMIT 6"
+            ).all();
+        } catch (e) { console.warn("[admin] dashboard complaints query failed:", e?.message || e); }
         // ── 警示來源：data_change_log 最近 30 筆異常 ──────────────
         let alerts = [];
         try {
@@ -2871,8 +2886,8 @@ function createAdminRouter() {
         try {
             const isPg = Boolean(process.env.DATABASE_URL);
             const rows = isPg
-                ? await db.prepare("SELECT EXTRACT(HOUR FROM (updated_at AT TIME ZONE 'Asia/Taipei'))::int AS h, COUNT(*) AS n FROM orders WHERE (updated_at AT TIME ZONE 'Asia/Taipei')::date = ?::date AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' GROUP BY h").all(today)
-                : await db.prepare("SELECT CAST(strftime('%H', datetime(updated_at, '+8 hours')) AS INTEGER) AS h, COUNT(*) AS n FROM orders WHERE date(datetime(updated_at, '+8 hours')) = date(?) AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' GROUP BY h").all(today);
+                ? await db.prepare("SELECT EXTRACT(HOUR FROM (updated_at AT TIME ZONE 'Asia/Taipei'))::int AS h, COUNT(*) AS n FROM orders WHERE (updated_at AT TIME ZONE 'Asia/Taipei')::date = ?::date AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY h").all(today)
+                : await db.prepare("SELECT CAST(strftime('%H', datetime(updated_at, '+8 hours')) AS INTEGER) AS h, COUNT(*) AS n FROM orders WHERE date(datetime(updated_at, '+8 hours')) = date(?) AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY h").all(today);
             for (const r of rows || []) {
                 const h = Number(r.h);
                 const n = Number(r.n) || 0;
@@ -2978,8 +2993,33 @@ function createAdminRouter() {
             ${kpiCard("今日訂單", totalOrders, "單", deltaOrders>=0?`vs 昨日 ${yesterdayOrders}`:"", "ok", deltaOrders>0?`↑ +${deltaOrders}`:deltaOrders<0?`↓ ${deltaOrders}`:"· 持平", "/admin/orders")}
             ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"", pendingOrders>5?"warn":"ok", null, "/admin/orders?need_review=1")}
             ${kpiCard("已確認", approvedOrders, "單", totalOrders?`完成 ${Math.round(approvedOrders*100/totalOrders)}%`:"", "ok", null, "/admin/orders")}
+            ${kpiCard("客訴", complaintsOpenTotal, "未解決", complaintsTodayNew>0?`今日新增 ${complaintsTodayNew}`:"今日無新客訴", complaintsOpenTotal>0?"bad":"ok", null, "/admin/complaints")}
             ${kpiCard("LINE 綁定", custBound, "/" + custTotal + " 戶", "未綁定可至客戶列表處理", custBound===custTotal?"ok":"warn", null, "/admin/customers")}
           </div>
+          ${complaintsTodayOpen.length ? `
+          <div class="sf-card" style="border-left:4px solid #ef4444;">
+            <div class="sf-card-head">
+              <a href="/admin/complaints" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
+                <div class="sf-card-title">⚠️ 未解決客訴（${complaintsOpenTotal}）</div>
+              </a>
+              <a href="/admin/complaints" class="sf-card-sub">前往處理 →</a>
+            </div>
+            <div>
+              ${complaintsTodayOpen.map(c => {
+                const t = String(c.raw_message || "").replace(/\[圖片\]/g, "[圖]").trim();
+                const preview = t.length > 80 ? t.slice(0, 80) + "…" : t;
+                const statusPill = c.handle_status === "handling"
+                  ? `<span class="sf-pill warn">處理中</span>`
+                  : `<span class="sf-pill bad">待處理</span>`;
+                return `<a href="/admin/complaints/${encodeURIComponent(c.id)}" style="display:flex;gap:12px;padding:10px 16px;border-bottom:var(--hairline);text-decoration:none;color:inherit;align-items:flex-start;">
+                  <div style="min-width:80px;font-size:12px;color:var(--txt-3);">${escapeHtml(c.order_date)}</div>
+                  <div style="min-width:120px;font-size:13px;font-weight:500;">${escapeHtml(c.customer_name)}</div>
+                  <div style="flex:1;font-size:12px;color:var(--txt-2);">${escapeHtml(preview) || "<span style='color:var(--txt-3);'>—</span>"}</div>
+                  <div style="display:flex;gap:6px;align-items:center;">${statusPill}${c.handler ? `<span style="font-size:12px;color:var(--txt-3);">${escapeHtml(c.handler)}</span>` : ""}</div>
+                </a>`;
+              }).join("")}
+            </div>
+          </div>` : ""}
           <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;">
             <div class="sf-card">
               <div class="sf-card-head">
@@ -5644,7 +5684,7 @@ function createAdminRouter() {
         (SELECT COUNT(*) FROM order_attachments oa WHERE oa.order_id = o.id) AS source_attachment_count
       FROM orders o
       LEFT JOIN customers c ON c.id = o.customer_id
-      WHERE o.order_date >= ? AND o.order_date <= ? AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
+      WHERE o.order_date >= ? AND o.order_date <= ? AND COALESCE(LOWER(TRIM(o.status)), '') NOT IN ('deleted','complaint')
       ORDER BY o.order_date DESC, o.id DESC
       LIMIT 300
     `).all(filterDateFrom, filterDateTo);
@@ -5905,7 +5945,7 @@ function createAdminRouter() {
             try {
                 const r = await db.prepare(
                     "SELECT COUNT(*) AS c FROM order_items oi JOIN orders o ON o.id = oi.order_id " +
-                    "WHERE oi.need_review = 1 AND oi.voided_at IS NULL AND COALESCE(LOWER(TRIM(o.status)),'') <> 'deleted'"
+                    "WHERE oi.need_review = 1 AND oi.voided_at IS NULL AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint')"
                 ).get();
                 needReviewSum = Number(r?.c) || 0;
             } catch (_) { /* fallback 為 0 */ }
@@ -7068,11 +7108,14 @@ function createAdminRouter() {
               <span id="move_items_status" style="font-size:12px;color:var(--notion-text-secondary);"></span>
             </div>`;
         const orderStatusLc = String(order.status || "").toLowerCase();
-        const orderStatusDisplay = orderStatusLc === "approved" ? "已確認" : orderStatusLc === "pending" ? "待確認" : orderStatusLc === "deleted" ? "已作廢" : escapeHtml(String(order.status || ""));
+        const orderStatusDisplay = orderStatusLc === "approved" ? "已確認" : orderStatusLc === "pending" ? "待確認" : orderStatusLc === "deleted" ? "已作廢" : orderStatusLc === "complaint" ? "客訴" : escapeHtml(String(order.status || ""));
         const confirmOrderFormHtml = orderStatusLc === "approved"
             ? `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/unapprove?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve" title="再按一次可撤銷確認" onclick="return confirm('確定要撤銷確認？訂單將恢復為待確認。');">已確認</button></form>`
             : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve">確認</button></form>`;
-        const statusPillCls = orderStatusLc === "approved" ? "ok" : orderStatusLc === "deleted" ? "bad" : "warn";
+        const toComplaintFormHtml = orderStatusLc === "complaint" || orderStatusLc === "deleted"
+            ? ""
+            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/to-complaint" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="sf-btn" title="此筆其實是客訴，不是訂單" onclick="return confirm('確定將此筆轉為客訴？將不再出現在訂單列表，並進入客訴處理流程。');">⚠️ 轉為客訴</button></form>`;
+        const statusPillCls = orderStatusLc === "approved" ? "ok" : orderStatusLc === "deleted" ? "bad" : orderStatusLc === "complaint" ? "bad" : "warn";
         // 訂貨日（系統紀錄時間） - 取 updated_at 的前 16 字（YYYY-MM-DD HH:mm）
         const orderReceivedAt = order.updated_at ? String(order.updated_at).replace("T", " ").slice(0, 16) : "—";
         // 客戶名 fallback
@@ -7185,6 +7228,7 @@ function createAdminRouter() {
         <div class="sf-root" style="padding:0 32px 24px 32px;background:var(--bg-0);">
         <div style="display:flex;gap:8px;align-items:center;margin:0 0 14px;flex-wrap:wrap;">
           ${confirmOrderFormHtml ? `<span class="sf-toolbar-confirm">${confirmOrderFormHtml}</span>` : ""}
+          ${toComplaintFormHtml}
           <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/re-recognize?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;">
             <button type="submit" class="sf-btn" title="依原始文字與 LINE 圖片附件重建明細（覆寫現有品項）" onclick="return confirm('依原始訂單重建明細？將覆寫現有品項。');">${SF_ICONS.refresh}<span>重新辨識</span></button>
           </form>
@@ -8407,6 +8451,450 @@ function createAdminRouter() {
             meta: { before: order },
         });
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=unconfirmed" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+    });
+    router.post("/orders/:orderId/to-complaint", async (req, res) => {
+        const { orderId } = req.params;
+        const order = await db.prepare("SELECT id, order_no, status FROM orders WHERE id = ?").get(orderId);
+        if (!order) {
+            res.status(404).send("訂單不存在");
+            return;
+        }
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("complaint", orderId);
+        const existing = await db.prepare("SELECT order_id FROM complaint_handling WHERE order_id = ?").get(orderId);
+        if (!existing) {
+            await db.prepare("INSERT INTO complaint_handling (order_id, handle_status, created_at, updated_at) VALUES (?, ?, " + nowSql + ", " + nowSql + ")").run(orderId, "pending");
+        }
+        await logDataChange(req, {
+            entityType: "order",
+            entityId: orderId,
+            action: "to_complaint",
+            summary: `轉為客訴 ${order.order_no || orderId}（前狀態：${order.status || "－"}）`,
+            meta: { before: order },
+        });
+        res.redirect("/admin/complaints/" + encodeURIComponent(orderId));
+    });
+    router.post("/complaints/:orderId/to-order", async (req, res) => {
+        const { orderId } = req.params;
+        const order = await db.prepare("SELECT id, order_no, status FROM orders WHERE id = ?").get(orderId);
+        if (!order) {
+            res.status(404).send("訂單不存在");
+            return;
+        }
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("pending", orderId);
+        await logDataChange(req, {
+            entityType: "order",
+            entityId: orderId,
+            action: "from_complaint",
+            summary: `從客訴還原為訂單 ${order.order_no || orderId}`,
+            meta: { before: order },
+        });
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId));
+    });
+    router.post("/complaints/:orderId/update", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const { orderId } = req.params;
+        const order = await db.prepare("SELECT id, order_no, status FROM orders WHERE id = ?").get(orderId);
+        if (!order) {
+            res.status(404).send("訂單不存在");
+            return;
+        }
+        const handleStatusRaw = String(req.body.handle_status || "pending").trim();
+        const handleStatus = ["pending", "handling", "resolved"].includes(handleStatusRaw) ? handleStatusRaw : "pending";
+        const handler = String(req.body.handler || "").trim() || null;
+        const note = String(req.body.note || "").trim() || null;
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        const existing = await db.prepare("SELECT order_id, handle_status FROM complaint_handling WHERE order_id = ?").get(orderId);
+        if (existing) {
+            if (handleStatus === "resolved" && existing.handle_status !== "resolved") {
+                await db.prepare("UPDATE complaint_handling SET handle_status = ?, handler = ?, note = ?, resolved_at = " + nowSql + ", updated_at = " + nowSql + " WHERE order_id = ?").run(handleStatus, handler, note, orderId);
+            }
+            else if (handleStatus !== "resolved" && existing.handle_status === "resolved") {
+                await db.prepare("UPDATE complaint_handling SET handle_status = ?, handler = ?, note = ?, resolved_at = NULL, updated_at = " + nowSql + " WHERE order_id = ?").run(handleStatus, handler, note, orderId);
+            }
+            else {
+                await db.prepare("UPDATE complaint_handling SET handle_status = ?, handler = ?, note = ?, updated_at = " + nowSql + " WHERE order_id = ?").run(handleStatus, handler, note, orderId);
+            }
+        }
+        else {
+            const resolvedSql = handleStatus === "resolved" ? nowSql : "NULL";
+            await db.prepare("INSERT INTO complaint_handling (order_id, handle_status, handler, note, resolved_at, created_at, updated_at) VALUES (?, ?, ?, ?, " + resolvedSql + ", " + nowSql + ", " + nowSql + ")").run(orderId, handleStatus, handler, note);
+        }
+        await logDataChange(req, {
+            entityType: "complaint",
+            entityId: orderId,
+            action: "complaint_update",
+            summary: `更新客訴處理 ${order.order_no || orderId}（${handleStatus}）`,
+            meta: { handleStatus, handler, note },
+        });
+        res.redirect("/admin/complaints/" + encodeURIComponent(orderId) + "?ok=updated");
+    });
+    function complaintsBuildWhere(filterStatus, dateFrom, dateTo) {
+        const parts = ["LOWER(TRIM(COALESCE(o.status,''))) = 'complaint'"];
+        const params = [];
+        if (filterStatus === "pending") parts.push("COALESCE(ch.handle_status, 'pending') = 'pending'");
+        else if (filterStatus === "handling") parts.push("ch.handle_status = 'handling'");
+        else if (filterStatus === "resolved") parts.push("ch.handle_status = 'resolved'");
+        else if (filterStatus === "open") parts.push("COALESCE(ch.handle_status, 'pending') <> 'resolved'");
+        if (dateFrom) { parts.push("o.order_date >= ?"); params.push(dateFrom); }
+        if (dateTo) { parts.push("o.order_date <= ?"); params.push(dateTo); }
+        return { where: parts.join(" AND "), params };
+    }
+    async function complaintsFetchRows(filterStatus, dateFrom, dateTo, limit) {
+        const { where, params } = complaintsBuildWhere(filterStatus, dateFrom, dateTo);
+        const sql = "SELECT o.id, o.order_no, o.order_date, o.customer_id, c.name AS customer_name, o.raw_message, o.updated_at, o.line_group_id, " +
+            "COALESCE(ch.handle_status, 'pending') AS handle_status, ch.handler, ch.note, ch.resolved_at, ch.created_at AS complaint_created_at, ch.updated_at AS handle_updated_at " +
+            "FROM orders o " +
+            "JOIN customers c ON c.id = o.customer_id " +
+            "LEFT JOIN complaint_handling ch ON ch.order_id = o.id " +
+            "WHERE " + where + " " +
+            "ORDER BY o.order_date DESC, o.id DESC LIMIT " + Number(limit || 500);
+        return db.prepare(sql).all(...params);
+    }
+    router.get("/complaints", async (req, res) => {
+        try {
+            const filterRaw = String(req.query.status || "open").toLowerCase();
+            const filter = ["open", "all", "pending", "handling", "resolved"].includes(filterRaw) ? filterRaw : "open";
+            const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+            const dateFromRaw = String(req.query.date_from || "").trim();
+            const dateToRaw = String(req.query.date_to || "").trim();
+            const dateFrom = dateRe.test(dateFromRaw) ? dateFromRaw : "";
+            const dateTo = dateRe.test(dateToRaw) ? dateToRaw : "";
+            const rowsRaw = await complaintsFetchRows(filter, dateFrom, dateTo, 500);
+            const periodWhereSql = (dateFrom ? " AND o.order_date >= '" + dateFrom + "'" : "") + (dateTo ? " AND o.order_date <= '" + dateTo + "'" : "");
+            const cntPending = Number((await db.prepare("SELECT COUNT(*) AS n FROM orders o LEFT JOIN complaint_handling ch ON ch.order_id = o.id WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND COALESCE(ch.handle_status,'pending') = 'pending'" + periodWhereSql).get())?.n) || 0;
+            const cntHandling = Number((await db.prepare("SELECT COUNT(*) AS n FROM orders o LEFT JOIN complaint_handling ch ON ch.order_id = o.id WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND ch.handle_status = 'handling'" + periodWhereSql).get())?.n) || 0;
+            const cntResolved = Number((await db.prepare("SELECT COUNT(*) AS n FROM orders o LEFT JOIN complaint_handling ch ON ch.order_id = o.id WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND ch.handle_status = 'resolved'" + periodWhereSql).get())?.n) || 0;
+            const cntAll = cntPending + cntHandling + cntResolved;
+            const resolveRate = cntAll > 0 ? Math.round((cntResolved * 100) / cntAll) : 0;
+            const periodLabel = (dateFrom || dateTo) ? `${dateFrom || "—"} ~ ${dateTo || "—"}` : "全部期間";
+            const statusPill = (s) => {
+                if (s === "resolved") return `<span class="sf-pill ok">已解決</span>`;
+                if (s === "handling") return `<span class="sf-pill warn">處理中</span>`;
+                return `<span class="sf-pill bad">待處理</span>`;
+            };
+            const previewRaw = (raw) => {
+                const t = String(raw || "").replace(/\[圖片\]/g, "[圖]").trim();
+                if (!t) return "<span style='color:var(--txt-3);'>—</span>";
+                const short = t.length > 60 ? t.slice(0, 60) + "…" : t;
+                return escapeHtml(short);
+            };
+            const rows = rowsRaw.map((r) => `
+              <tr>
+                <td><a href="/admin/complaints/${encodeURIComponent(r.id)}">${escapeHtml(r.order_no || r.id)}</a></td>
+                <td>${escapeHtml(r.order_date)}</td>
+                <td><a href="/admin/customers/${encodeURIComponent(r.customer_id)}/quick-view?from=complaints" style="color:inherit;">${escapeHtml(r.customer_name)}</a></td>
+                <td style="max-width:380px;">${previewRaw(r.raw_message)}</td>
+                <td>${statusPill(r.handle_status)}</td>
+                <td>${escapeHtml(r.handler || "—")}</td>
+                <td>${escapeHtml(String(r.handle_updated_at || r.updated_at || "").slice(0,16).replace("T"," "))}</td>
+                <td><a class="sf-btn sm" href="/admin/complaints/${encodeURIComponent(r.id)}">處理</a></td>
+              </tr>`).join("");
+            const qsCommon = (extra) => {
+                const params = new URLSearchParams();
+                if (dateFrom) params.set("date_from", dateFrom);
+                if (dateTo) params.set("date_to", dateTo);
+                Object.entries(extra || {}).forEach(([k, v]) => params.set(k, v));
+                const s = params.toString();
+                return s ? "?" + s : "";
+            };
+            const tabLink = (key, label, count) => `<a class="sf-btn sm ${filter===key?'primary':''}" href="/admin/complaints${qsCommon({ status: key })}">${escapeHtml(label)}<span style="margin-left:6px;opacity:0.7;">${count}</span></a>`;
+            const exportQs = qsCommon({ status: filter });
+            const statCard = (label, num, status, sub) => `
+              <div style="padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;min-width:140px;">
+                <span class="sf-dot ${status}"></span>
+                <div>
+                  <div style="font-size:10px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">${escapeHtml(label)}</div>
+                  <div class="mono" style="font-size:18px;font-weight:600;">${num}</div>
+                  ${sub ? `<div style="font-size:11px;color:var(--txt-3);">${escapeHtml(sub)}</div>` : ""}
+                </div>
+              </div>`;
+            const body = `
+              <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css">
+              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+                <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+                  <div>
+                    <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 客訴處理</div>
+                    <h1 style="margin:0;font-size:22px;font-weight:600;">客訴處理</h1>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    <a class="sf-btn primary" href="/admin/complaints/export.xlsx${exportQs}" title="依目前篩選匯出 Excel 報表">${SF_ICONS.dl}<span>匯出報表</span></a>
+                  </div>
+                </div>
+                <p style="margin:0;color:var(--txt-3);font-size:13px;">由訂單頁「轉為客訴」按鈕送入。客訴不會出現在訂單列表，也不會匯出到凌越。員工在 LINE 群組回覆客戶的訊息會自動串到對話時間軸。</p>
+                <div class="sf-card">
+                  <div class="sf-card-body" style="padding:14px 16px;">
+                    <form id="complaintsFilterForm" method="get" action="/admin/complaints" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
+                      <input type="hidden" name="status" value="${escapeAttr(filter)}">
+                      <input type="hidden" name="date_from" id="complaintsDateFrom" value="${escapeAttr(dateFrom)}">
+                      <input type="hidden" name="date_to" id="complaintsDateTo" value="${escapeAttr(dateTo)}">
+                      <label class="sf-label" style="margin:0;display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:13px;color:var(--txt-2);">
+                        日期區間
+                        <input type="text" id="complaintsDateRange" readonly placeholder="不限期間" autocomplete="off" style="width:240px;height:36px;padding:0 10px;border:1px solid var(--line-2);border-radius:var(--radius);background:var(--bg-2);color:var(--txt-1);cursor:pointer;font-size:13px;">
+                      </label>
+                      <button type="submit" class="sf-btn primary">${SF_ICONS.search}<span>查詢</span></button>
+                      <a class="sf-btn ghost" href="/admin/complaints?status=${escapeAttr(filter)}">清除日期</a>
+                      <div style="flex:1;"></div>
+                      <span style="font-size:12px;color:var(--txt-3);">期間：<strong>${escapeHtml(periodLabel)}</strong></span>
+                    </form>
+                  </div>
+                </div>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                  ${statCard("總筆數", cntAll, "info", periodLabel)}
+                  ${statCard("待處理", cntPending, cntPending>0?"bad":"ok")}
+                  ${statCard("處理中", cntHandling, cntHandling>0?"warn":"ok")}
+                  ${statCard("已解決", cntResolved, "ok")}
+                  ${statCard("解決率", cntAll ? resolveRate + "%" : "—", resolveRate>=80?"ok":resolveRate>=50?"warn":"bad")}
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  ${tabLink("open", "未解決", cntPending + cntHandling)}
+                  ${tabLink("pending", "待處理", cntPending)}
+                  ${tabLink("handling", "處理中", cntHandling)}
+                  ${tabLink("resolved", "已解決", cntResolved)}
+                  ${tabLink("all", "全部", cntAll)}
+                </div>
+                <div class="sf-table-wrap">
+                  <table class="sf-table">
+                    <thead><tr><th>訂單編號</th><th>日期</th><th>客戶</th><th>客訴內容</th><th>處理狀態</th><th>處理人</th><th>更新</th><th></th></tr></thead>
+                    <tbody>${rows || `<tr><td colspan='8' style='padding:32px;text-align:center;color:var(--txt-3);'>此期間 / 分類無客訴</td></tr>`}</tbody>
+                  </table>
+                </div>
+              </div>
+              <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+              <script>
+                (function(){
+                  var df = document.getElementById("complaintsDateFrom");
+                  var dt = document.getElementById("complaintsDateTo");
+                  var rangeInp = document.getElementById("complaintsDateRange");
+                  function pad2(n){ return n < 10 ? "0" + n : String(n); }
+                  function fmtYMD(d){ return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+                  if (typeof flatpickr !== "undefined" && rangeInp && df && dt) {
+                    flatpickr(rangeInp, {
+                      mode: "range",
+                      dateFormat: "Y-m-d",
+                      defaultDate: df.value && dt.value ? [df.value, dt.value] : null,
+                      allowInput: false,
+                      onChange: function(selectedDates){
+                        if (selectedDates.length >= 1) {
+                          df.value = fmtYMD(selectedDates[0]);
+                          dt.value = selectedDates.length >= 2 ? fmtYMD(selectedDates[1]) : fmtYMD(selectedDates[0]);
+                        }
+                      }
+                    });
+                  }
+                })();
+              </script>`;
+            res.type("text/html").send(notionPage("客訴處理", body, "complaints", res));
+        } catch (e) {
+            console.error("[admin] /complaints", e);
+            res.status(500).send("載入客訴列表失敗：" + (e?.message || e));
+        }
+    });
+    router.get("/complaints/export.xlsx", async (req, res) => {
+        try {
+            const filterRaw = String(req.query.status || "all").toLowerCase();
+            const filter = ["open", "all", "pending", "handling", "resolved"].includes(filterRaw) ? filterRaw : "all";
+            const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+            const dateFromRaw = String(req.query.date_from || "").trim();
+            const dateToRaw = String(req.query.date_to || "").trim();
+            const dateFrom = dateRe.test(dateFromRaw) ? dateFromRaw : "";
+            const dateTo = dateRe.test(dateToRaw) ? dateToRaw : "";
+            const rowsRaw = await complaintsFetchRows(filter, dateFrom, dateTo, 5000);
+            const statusLabel = (s) => s === "resolved" ? "已解決" : s === "handling" ? "處理中" : "待處理";
+            const cleanText = (t) => String(t == null ? "" : t).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "").trim();
+            const formatTs = (ts) => {
+                const s = String(ts || "");
+                return s ? s.slice(0, 16).replace("T", " ") : "";
+            };
+            const header = ["訂單編號", "客訴日期", "客戶", "客訴內容", "處理狀態", "處理人", "處理備註", "客訴建立時間", "解決時間", "最後更新"];
+            const aoa = [header];
+            for (const r of rowsRaw) {
+                aoa.push([
+                    cleanText(r.order_no || r.id),
+                    cleanText(r.order_date),
+                    cleanText(r.customer_name),
+                    cleanText(String(r.raw_message || "").replace(/\[圖片\]/g, "[圖]")),
+                    statusLabel(r.handle_status),
+                    cleanText(r.handler),
+                    cleanText(r.note),
+                    formatTs(r.complaint_created_at),
+                    formatTs(r.resolved_at),
+                    formatTs(r.handle_updated_at || r.updated_at),
+                ]);
+            }
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.aoa_to_sheet(aoa);
+            ws["!cols"] = [{ wch: 14 }, { wch: 12 }, { wch: 18 }, { wch: 50 }, { wch: 10 }, { wch: 10 }, { wch: 40 }, { wch: 18 }, { wch: 18 }, { wch: 18 }];
+            XLSX.utils.book_append_sheet(wb, ws, "客訴紀錄");
+            const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+            const bin = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+            const period = (dateFrom || dateTo) ? `${dateFrom || "起"}_${dateTo || "迄"}` : "全部";
+            const fname = `客訴紀錄_${period}_${filter}.xlsx`;
+            res.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + encodeURIComponent(fname));
+            res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet").send(bin);
+        } catch (e) {
+            console.error("[admin] /complaints/export.xlsx", e);
+            res.status(500).type("text/plain; charset=utf-8").send("匯出失敗：" + (e?.message || e));
+        }
+    });
+    router.get("/complaints/:orderId", async (req, res) => {
+        try {
+            const { orderId } = req.params;
+            const order = await db.prepare(
+                "SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, o.line_group_id, o.updated_at, c.name AS customer_name " +
+                "FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?"
+            ).get(orderId);
+            if (!order) {
+                res.status(404).send("訂單不存在");
+                return;
+            }
+            const handling = await db.prepare("SELECT order_id, handle_status, handler, note, resolved_at, created_at, updated_at FROM complaint_handling WHERE order_id = ?").get(orderId);
+            const handleStatus = handling?.handle_status || "pending";
+            const handlerVal = handling?.handler || "";
+            const noteVal = handling?.note || "";
+            const attachments = await db.prepare("SELECT id, line_message_id FROM order_attachments WHERE order_id = ?").all(orderId);
+            const groupId = order.line_group_id || null;
+            const baseTime = String(handling?.created_at || order.updated_at || "");
+            const windowEndRaw = handling?.resolved_at || null;
+            let employeeMsgs = [];
+            if (groupId) {
+                try {
+                    const isPg = Boolean(process.env.DATABASE_URL);
+                    const baseClause = isPg ? "created_at >= $1::timestamptz - INTERVAL '1 day'" : "created_at >= datetime(?, '-1 day')";
+                    const endClause = windowEndRaw
+                        ? (isPg ? " AND created_at <= $2::timestamptz + INTERVAL '1 day'" : " AND created_at <= datetime(?, '+1 day')")
+                        : "";
+                    const sql = "SELECT id, event_type, detail, created_at FROM line_bot_state_log " +
+                        "WHERE event_type = 'internal_employee_message' AND " + baseClause + endClause +
+                        " ORDER BY created_at ASC LIMIT 200";
+                    const params = windowEndRaw ? [baseTime, windowEndRaw] : [baseTime];
+                    const all = await db.prepare(sql).all(...params);
+                    employeeMsgs = (all || []).filter((r) => {
+                        try {
+                            const d = typeof r.detail === "string" ? JSON.parse(r.detail) : r.detail;
+                            return d && d.groupId === groupId;
+                        } catch (_) { return false; }
+                    });
+                } catch (e) {
+                    console.warn("[admin] /complaints/:id timeline query failed:", e?.message || e);
+                }
+            }
+            const otherCustOrders = await db.prepare(
+                "SELECT id, order_no, order_date, status, raw_message, updated_at FROM orders " +
+                "WHERE customer_id = ? AND id <> ? AND order_date >= date(?, '-3 day') AND order_date <= date(?, '+7 day') " +
+                "ORDER BY order_date DESC, id DESC LIMIT 50"
+            ).all(order.customer_id, orderId, order.order_date, order.order_date).catch(async () => {
+                if (process.env.DATABASE_URL) {
+                    return db.prepare(
+                        "SELECT id, order_no, order_date, status, raw_message, updated_at FROM orders " +
+                        "WHERE customer_id = $1 AND id <> $2 AND order_date::date >= ($3::date - INTERVAL '3 day') AND order_date::date <= ($3::date + INTERVAL '7 day') " +
+                        "ORDER BY order_date DESC, id DESC LIMIT 50"
+                    ).all(order.customer_id, orderId, order.order_date);
+                }
+                return [];
+            });
+            const formatTs = (ts) => {
+                const s = String(ts || "");
+                if (!s) return "";
+                return s.slice(0, 16).replace("T", " ");
+            };
+            const attachmentBlock = attachments.length
+                ? `<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">${attachments.map((a) => `<img src="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" alt="客戶傳的照片" style="max-width:100%;border:1px solid var(--line-2);border-radius:6px;">`).join("")}</div>`
+                : "";
+            const rawText = String(order.raw_message || "").replace(/\[圖片\]/g, "").trim();
+            const originalCard = `
+              <div class="sf-card" style="border-left:4px solid #ef4444;">
+                <div class="sf-card-head"><div class="sf-card-title">📨 客戶原始客訴 · ${escapeHtml(order.order_date)} ${formatTs(order.updated_at)}</div></div>
+                <div style="padding:14px;">
+                  ${rawText ? `<pre style="white-space:pre-wrap;font-family:inherit;font-size:13px;margin:0;background:var(--bg-2);padding:10px;border-radius:6px;">${escapeHtml(rawText)}</pre>` : "<p style='color:var(--txt-3);margin:0;'>無原始文字</p>"}
+                  ${attachmentBlock}
+                </div>
+              </div>`;
+            const timelineItems = [];
+            for (const m of employeeMsgs) {
+                let d = {};
+                try { d = typeof m.detail === "string" ? JSON.parse(m.detail) : (m.detail || {}); } catch (_) { d = {}; }
+                const empLabel = `${d.username || "員工"}${d.title ? `（${d.title}）` : ""}`;
+                const preview = String(d.preview || "");
+                timelineItems.push({
+                    ts: m.created_at,
+                    html: `<div style="border-left:3px solid #2383e2;padding:10px 14px;margin-bottom:8px;background:var(--bg-1);border-radius:0 6px 6px 0;">
+                      <div style="font-size:12px;color:var(--txt-3);margin-bottom:4px;">👤 ${escapeHtml(empLabel)} 回覆 · ${formatTs(m.created_at)}</div>
+                      <div style="white-space:pre-wrap;font-size:13px;">${escapeHtml(preview)}</div>
+                    </div>`
+                });
+            }
+            for (const o of (otherCustOrders || [])) {
+                const t = String(o.raw_message || "").replace(/\[圖片\]/g, "[圖]").trim();
+                if (!t) continue;
+                const short = t.length > 200 ? t.slice(0, 200) + "…" : t;
+                timelineItems.push({
+                    ts: o.updated_at,
+                    html: `<div style="border-left:3px solid #d1d5db;padding:10px 14px;margin-bottom:8px;background:var(--bg-1);border-radius:0 6px 6px 0;">
+                      <div style="font-size:12px;color:var(--txt-3);margin-bottom:4px;">📨 客戶同期訊息（訂單 <a href="/admin/orders/${encodeURIComponent(o.id)}">${escapeHtml(o.order_no || o.id)}</a>） · ${escapeHtml(o.order_date)} ${formatTs(o.updated_at)}</div>
+                      <div style="white-space:pre-wrap;font-size:13px;">${escapeHtml(short)}</div>
+                    </div>`
+                });
+            }
+            timelineItems.sort((a, b) => String(a.ts || "").localeCompare(String(b.ts || "")));
+            const timelineHtml = timelineItems.length
+                ? timelineItems.map((x) => x.html).join("")
+                : `<p style="color:var(--txt-3);margin:0;">尚無後續訊息（員工在 LINE 群組回覆會自動出現於此）</p>`;
+            const okMsg = req.query.ok === "updated" ? `<div class="sf-pill ok" style="align-self:flex-start;">已更新處理狀態</div>` : "";
+            const body = `
+              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+                  <div>
+                    <div class="sf-breadcrumb" style="margin-bottom:6px;"><a href="/admin/complaints">客訴處理</a> / 客訴明細</div>
+                    <h2 style="margin:0;font-size:20px;font-weight:600;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                      <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=complaints" style="color:inherit;">${escapeHtml(order.customer_name)}</a>
+                      <span class="sf-pill bad">客訴</span>
+                    </h2>
+                    <div style="margin-top:6px;font-size:12px;color:var(--txt-3);">${escapeHtml(order.order_no || order.id)} · ${escapeHtml(order.order_date)}${groupId ? "" : ' · <span style="color:#b91c1c;">⚠ 客戶未綁定 LINE 群組，無法串接對話</span>'}</div>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    <a class="sf-btn ghost" href="/admin/complaints">← 回客訴列表</a>
+                    <form method="post" action="/admin/complaints/${encodeURIComponent(orderId)}/to-order" style="display:inline;margin:0;">
+                      <button type="submit" class="sf-btn" onclick="return confirm('確定要從客訴還原為訂單？將回到待確認訂單列表。');">還原為訂單</button>
+                    </form>
+                  </div>
+                </div>
+                ${okMsg}
+                <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:flex-start;">
+                  <div style="display:flex;flex-direction:column;gap:14px;">
+                    ${originalCard}
+                    <div class="sf-card">
+                      <div class="sf-card-head"><div class="sf-card-title">💬 對話時間軸</div></div>
+                      <div style="padding:14px;">${timelineHtml}</div>
+                    </div>
+                  </div>
+                  <div class="sf-card" style="position:sticky;top:12px;">
+                    <div class="sf-card-head"><div class="sf-card-title">📝 處理紀錄</div></div>
+                    <form method="post" action="/admin/complaints/${encodeURIComponent(orderId)}/update" style="padding:14px;display:flex;flex-direction:column;gap:12px;">
+                      <label style="font-size:13px;color:var(--txt-2);">處理狀態
+                        <select name="handle_status" class="sf-input" style="margin-top:4px;">
+                          <option value="pending" ${handleStatus==="pending"?"selected":""}>待處理</option>
+                          <option value="handling" ${handleStatus==="handling"?"selected":""}>處理中</option>
+                          <option value="resolved" ${handleStatus==="resolved"?"selected":""}>已解決</option>
+                        </select>
+                      </label>
+                      <label style="font-size:13px;color:var(--txt-2);">處理人
+                        <input type="text" name="handler" class="sf-input" value="${escapeAttr(handlerVal)}" placeholder="例：阿榮、客服小敏" style="margin-top:4px;">
+                      </label>
+                      <label style="font-size:13px;color:var(--txt-2);">處理備註
+                        <textarea name="note" class="sf-input" rows="6" placeholder="記錄處理經過、客戶回覆、補償方案等" style="margin-top:4px;font-family:inherit;">${escapeHtml(noteVal)}</textarea>
+                      </label>
+                      <button type="submit" class="sf-btn primary">儲存</button>
+                      ${handling?.resolved_at ? `<div style="font-size:12px;color:var(--txt-3);">解決時間：${escapeHtml(formatTs(handling.resolved_at))}</div>` : ""}
+                    </form>
+                  </div>
+                </div>
+              </div>`;
+            res.type("text/html").send(notionPage("客訴明細", body, "complaints", res));
+        } catch (e) {
+            console.error("[admin] /complaints/:id", e);
+            res.status(500).send("載入客訴明細失敗：" + (e?.message || e));
+        }
     });
     router.get("/orders/:orderId/items/add", async (req, res) => {
         const { orderId } = req.params;
