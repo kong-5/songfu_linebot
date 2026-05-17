@@ -529,6 +529,23 @@ const NOTION_STYLE = `
     table.order-detail-table tbody tr td:nth-child(4) { grid-area: product; padding-top: 2px; padding-bottom: 8px; }
     table.order-detail-table tbody tr td:nth-child(5) { grid-area: qty; border-top: 1px solid var(--notion-border); }
     table.order-detail-table tbody tr td:nth-child(6) { grid-area: unit; border-top: 1px solid var(--notion-border); }
+    /* 以下 6 個規則屬於手機版 cell-as-card 樣式，本應在 max-width:760px 但歷史 bug 放錯位置造成桌面亂版，這裡修正放回手機版內 */
+    table.order-detail-table tbody tr td:nth-child(7) { grid-area: remark; border-top: 1px solid var(--notion-border); }
+    table.order-detail-table tbody tr td:nth-child(8) { grid-area: del; border-top: 1px solid var(--notion-border); justify-content:flex-end; align-items:flex-end; }
+    table.order-detail-table tbody tr td:nth-child(3)::before { content: "料號"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
+    table.order-detail-table tbody tr td:nth-child(5)::before { content: "數量"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
+    table.order-detail-table tbody tr td:nth-child(6)::before { content: "單位"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
+    table.order-detail-table tbody tr td:nth-child(7)::before { content: "備註"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
+    table.order-detail-table tbody tr::before {
+      content: attr(data-raw-card);
+      grid-area: orig;
+      display: block;
+      padding: 9px 10px 8px;
+      font-size: 13px;
+      color: var(--notion-text-muted);
+      border-bottom: 1px solid var(--notion-border);
+      white-space: pre-wrap;
+    }
     /* 訂單列表行：手機改用 3 列卡片版型，蓋過上方 td-as-row 的預設行為 */
     .sf-table tbody tr.order-row > td:not(.order-mobile-only) { display: none !important; }
     .sf-table tbody tr.order-row > td.order-mobile-only {
@@ -553,22 +570,7 @@ const NOTION_STYLE = `
   /* 隱藏佔位（保留結構完整） */
   @media (min-width: 761px) {
     .order-mobile-only { display: none !important; }
-    table.order-detail-table tbody tr td:nth-child(7) { grid-area: remark; border-top: 1px solid var(--notion-border); }
-    table.order-detail-table tbody tr td:nth-child(8) { grid-area: del; border-top: 1px solid var(--notion-border); justify-content:flex-end; align-items:flex-end; }
-    table.order-detail-table tbody tr td:nth-child(3)::before { content: "料號"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
-    table.order-detail-table tbody tr td:nth-child(5)::before { content: "數量"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
-    table.order-detail-table tbody tr td:nth-child(6)::before { content: "單位"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
-    table.order-detail-table tbody tr td:nth-child(7)::before { content: "備註"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
-    table.order-detail-table tbody tr::before {
-      content: attr(data-raw-card);
-      grid-area: orig;
-      display: block;
-      padding: 9px 10px 8px;
-      font-size: 13px;
-      color: var(--notion-text-muted);
-      border-bottom: 1px solid var(--notion-border);
-      white-space: pre-wrap;
-    }
+    /* 桌面版訂單明細表格：恢復為標準 table（手機 grid 規則上方已限定在 max-width:760px） */
     .order-final-erp { display:block; font-size:11px; color:var(--notion-text-muted); margin-bottom:2px; }
     .order-final-product { font-size: 18px; font-weight: 800; letter-spacing: 0.01em; }
     .order-del-btn { min-height: 32px; }
