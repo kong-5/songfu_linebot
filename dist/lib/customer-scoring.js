@@ -20,6 +20,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.computeCustomerScore = computeCustomerScore;
 exports.scoreToTier = scoreToTier;
 exports.fetchCustomerScoringInputs = fetchCustomerScoringInputs;
+exports.fetchAllCustomerReminderStats = fetchAllCustomerReminderStats;
 
 /**
  * 計算分數（純函式，純資料 → 分數，方便測試）
@@ -146,4 +147,63 @@ async function fetchCustomerScoringInputs(db, customerId, todayIso) {
         avgIntervalDays = Math.round((gaps.reduce((a, b) => a + b, 0) / gaps.length) * 10) / 10;
     }
     return { orders90, ordersAll, items90, complaintsAll, complaintsOpen, daysSinceLastOrder, avgIntervalDays, lastOrderDate: lastRow?.order_date || null };
+}
+
+/**
+ * 批次計算「所有啟用客戶」的提醒狀態（單一 aggregate query，速度比逐筆呼叫 fetchCustomerScoringInputs 快 100 倍以上）
+ * @param {*} db
+ * @param {string} todayIso 'YYYY-MM-DD'
+ * @returns {Promise<Array<{id, name, lineGroupId, handoverNotes, lastOrderDate, daysSinceLastOrder, avgIntervalDays, orders90, ordersAll}>>}
+ */
+async function fetchAllCustomerReminderStats(db, todayIso) {
+    const fromIso90 = (() => {
+        const d = new Date(todayIso + "T00:00:00+08:00");
+        d.setDate(d.getDate() - 89);
+        return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(d);
+    })();
+    // 單一 query 算出每位客戶的最後訂單、累計訂單、90 天訂單、90 天 distinct dates、90 天日期範圍
+    // 用 CASE WHEN 而非 PG 專屬 FILTER，相容 SQLite + PG
+    const sql = `
+        SELECT
+          c.id, c.name, c.line_group_id, c.crm_handover_notes,
+          MAX(CASE WHEN COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') THEN o.order_date END) AS last_order_date,
+          COUNT(CASE WHEN COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') THEN 1 END) AS orders_all,
+          COUNT(CASE WHEN o.order_date >= ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') THEN 1 END) AS orders_90,
+          COUNT(DISTINCT CASE WHEN o.order_date >= ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') THEN o.order_date END) AS distinct_dates_90,
+          MIN(CASE WHEN o.order_date >= ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') THEN o.order_date END) AS min_date_90,
+          MAX(CASE WHEN o.order_date >= ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') THEN o.order_date END) AS max_date_90
+        FROM customers c
+        LEFT JOIN orders o ON o.customer_id = c.id
+        WHERE (c.active = 1 OR c.active IS NULL)
+        GROUP BY c.id, c.name, c.line_group_id, c.crm_handover_notes
+    `;
+    const rows = await db.prepare(sql).all(fromIso90, fromIso90, fromIso90, fromIso90);
+    return (rows || []).map((r) => {
+        const lastOrderDate = r.last_order_date;
+        let daysSinceLastOrder = null;
+        if (lastOrderDate) {
+            const last = new Date(String(lastOrderDate) + "T00:00:00+08:00");
+            const today = new Date(todayIso + "T00:00:00+08:00");
+            daysSinceLastOrder = Math.round((today - last) / 86400000);
+        }
+        let avgIntervalDays = null;
+        const distinctDates = Number(r.distinct_dates_90) || 0;
+        if (distinctDates >= 2 && r.min_date_90 && r.max_date_90) {
+            const mn = new Date(String(r.min_date_90) + "T00:00:00+08:00");
+            const mx = new Date(String(r.max_date_90) + "T00:00:00+08:00");
+            const span = (mx - mn) / 86400000;
+            avgIntervalDays = Math.round((span / (distinctDates - 1)) * 10) / 10;
+        }
+        return {
+            id: r.id,
+            name: r.name,
+            lineGroupId: r.line_group_id,
+            handoverNotes: r.crm_handover_notes,
+            lastOrderDate,
+            daysSinceLastOrder,
+            avgIntervalDays,
+            orders90: Number(r.orders_90) || 0,
+            ordersAll: Number(r.orders_all) || 0,
+        };
+    });
 }

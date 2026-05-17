@@ -971,7 +971,22 @@ const SF_TOKENS = `
 .sf-sidebar-title { font-size: 13px; font-weight: 600; line-height: 1.2; }
 .sf-sidebar-ver { font-size: 10px; color: var(--txt-3); font-family: var(--font-mono); }
 .sf-nav { padding: 8px; flex: 1; overflow: auto; }
-.sf-nav-group { margin-bottom: 12px; }
+.sf-nav-group { margin-bottom: 8px; }
+details.sf-nav-group > summary { list-style: none; cursor: pointer; }
+details.sf-nav-group > summary::-webkit-details-marker { display: none; }
+details.sf-nav-group > summary > .sf-nav-group-title {
+  padding: 6px 10px; font-size: 10px; color: var(--txt-3);
+  text-transform: uppercase; letter-spacing: .08em; font-weight: 500;
+  display: flex; align-items: center; justify-content: space-between;
+  border-radius: 4px; transition: background .12s;
+}
+details.sf-nav-group > summary > .sf-nav-group-title::after {
+  content: "▸"; font-size: 9px; opacity: .55; transition: transform .15s;
+}
+details.sf-nav-group[open] > summary > .sf-nav-group-title::after {
+  transform: rotate(90deg);
+}
+details.sf-nav-group > summary:hover > .sf-nav-group-title { background: var(--bg-2); color: var(--txt-2); }
 .sf-nav-group-title {
   padding: 6px 10px; font-size: 10px; color: var(--txt-3);
   text-transform: uppercase; letter-spacing: .08em; font-weight: 500;
@@ -1227,34 +1242,37 @@ function sfSidebar(active) {
       </div>
     </div>
     <nav class="sf-nav">
-      <div class="sf-nav-group">
-        <div class="sf-nav-group-title">日常作業</div>
+      <details class="sf-nav-group" open>
+        <summary><div class="sf-nav-group-title">日常作業</div></summary>
         ${item("/admin", "dashboard", "spark", "儀表板")}
         ${item("/admin/orders", "orders", "list", "訂單審核")}
         ${item("/admin/complaints", "complaints", "warn", "客訴處理")}
         ${item("/admin/reminders", "reminders", "bell", "忘記叫貨提醒")}
+      </details>
+      <details class="sf-nav-group" ${["env","inventory","logistics-procurement"].includes(active) ? "open" : ""}>
+        <summary><div class="sf-nav-group-title">庫存與物流</div></summary>
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
-      </div>
-      <div class="sf-nav-group">
-        <div class="sf-nav-group-title">主檔管理</div>
+      </details>
+      <details class="sf-nav-group" ${["customers","products","ai-examples"].includes(active) ? "open" : ""}>
+        <summary><div class="sf-nav-group-title">主檔管理</div></summary>
         ${item("/admin/customers", "customers", "users", "客戶管理")}
         ${item("/admin/products", "products", "box", "貨品管理")}
         ${item("/admin/ai-examples", "ai-examples", "spark", "AI 學習庫")}
-      </div>
-      <div class="sf-nav-group">
-        <div class="sf-nav-group-title">稽核與報表</div>
-        ${item("/admin/audit", "audit", "history", "稽核軌跡")}
+      </details>
+      <details class="sf-nav-group" ${["audit","analytics","recognition-stats","broadcast"].includes(active) ? "open" : ""}>
+        <summary><div class="sf-nav-group-title">報表與通訊</div></summary>
         ${item("/admin/analytics", "analytics", "spark", "營運分析")}
+        ${item("/admin/audit", "audit", "history", "稽核軌跡")}
         ${item("/admin/recognition-stats", "recognition-stats", "spark", "辨識成效")}
         ${item("/admin/broadcast", "broadcast", "bell", "群發訊息")}
-      </div>
-      <div class="sf-nav-group">
-        <div class="sf-nav-group-title">設定</div>
+      </details>
+      <details class="sf-nav-group" ${["line-bot","users"].includes(active) ? "open" : ""}>
+        <summary><div class="sf-nav-group-title">系統設定</div></summary>
         ${item("/admin/line-bot", "line-bot", "spark", "LINE 機器人")}
         ${item("/admin/users", "users", "users", "人員管理")}
-      </div>
+      </details>
     </nav>
     <div class="sf-sidebar-foot" id="sfSidebarFoot"></div>
   </aside>
@@ -3072,6 +3090,18 @@ function createAdminRouter() {
                 "ORDER BY o.order_date DESC, o.id DESC LIMIT 6"
             ).all();
         } catch (e) { console.warn("[admin] dashboard complaints query failed:", e?.message || e); }
+        // ── 提醒叫貨：用 bulk helper 取得「逾期未叫貨」客戶數（速度 < 1 秒）──
+        let reminderTotal = 0, reminderCritical = 0, reminderTop = [];
+        try {
+            const reminderStats = await (0, customer_scoring_js_1.fetchAllCustomerReminderStats)(db, today);
+            const overdueList = (reminderStats || [])
+                .filter(c => c.daysSinceLastOrder != null && c.avgIntervalDays != null && c.daysSinceLastOrder > c.avgIntervalDays * 1.5)
+                .map(c => ({ ...c, overdueRatio: c.daysSinceLastOrder / c.avgIntervalDays }));
+            reminderTotal = overdueList.length;
+            reminderCritical = overdueList.filter(c => c.overdueRatio >= 3).length;
+            overdueList.sort((a, b) => b.overdueRatio - a.overdueRatio);
+            reminderTop = overdueList.slice(0, 5);
+        } catch (e) { console.warn("[admin] dashboard reminder query failed:", e?.message || e); }
         // ── 警示來源：data_change_log 最近 30 筆異常 ──────────────
         let alerts = [];
         try {
@@ -3209,8 +3239,29 @@ function createAdminRouter() {
             ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"", pendingOrders>5?"warn":"ok", null, "/admin/orders?need_review=1")}
             ${kpiCard("已確認", approvedOrders, "單", totalOrders?`完成 ${Math.round(approvedOrders*100/totalOrders)}%`:"", "ok", null, "/admin/orders")}
             ${kpiCard("客訴", complaintsOpenTotal, "未解決", complaintsTodayNew>0?`今日新增 ${complaintsTodayNew}`:"今日無新客訴", complaintsOpenTotal>0?"bad":"ok", null, "/admin/complaints")}
-            ${kpiCard("LINE 綁定", custBound, "/" + custTotal + " 戶", "未綁定可至客戶列表處理", custBound===custTotal?"ok":"warn", null, "/admin/customers")}
+            ${kpiCard("提醒叫貨", reminderTotal, "戶", reminderCritical > 0 ? `嚴重逾期 ${reminderCritical} 戶` : reminderTotal > 0 ? "逾期未叫貨" : "全部準時", reminderCritical > 0 ? "bad" : reminderTotal > 0 ? "warn" : "ok", null, "/admin/reminders")}
           </div>
+          ${reminderTop.length ? `
+          <div class="sf-card" style="border-left:4px solid #f59e0b;">
+            <div class="sf-card-head">
+              <a href="/admin/reminders" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
+                <div class="sf-card-title">🔔 提醒叫貨 Top ${reminderTop.length}（共 ${reminderTotal} 戶）</div>
+              </a>
+              <a href="/admin/reminders" class="sf-card-sub">完整清單 →</a>
+            </div>
+            <div style="padding:0;">
+              ${reminderTop.map(c => {
+                const tagCls = c.overdueRatio >= 3 ? "bad" : c.overdueRatio >= 2 ? "warn" : "info";
+                const tagLabel = c.overdueRatio >= 3 ? "嚴重" : c.overdueRatio >= 2 ? "高" : "中";
+                return `<a href="/admin/customers/${encodeURIComponent(c.id)}/360" style="display:flex;gap:12px;padding:10px 16px;border-bottom:var(--hairline);text-decoration:none;color:inherit;align-items:center;">
+                  <span class="sf-pill ${tagCls}">${tagLabel}</span>
+                  <span style="flex:1;font-size:13px;">${escapeHtml(c.name)}</span>
+                  <span style="font-size:12px;color:var(--txt-3);">最後 ${escapeHtml(c.lastOrderDate || "—")}</span>
+                  <span class="mono" style="font-size:12px;"><strong style="color:var(--bad);">${c.daysSinceLastOrder} 天</strong> / 平均 ${c.avgIntervalDays} 天</span>
+                </a>`;
+              }).join("")}
+            </div>
+          </div>` : ""}
           ${complaintsTodayOpen.length ? `
           <div class="sf-card" style="border-left:4px solid #ef4444;">
             <div class="sf-card-head">
@@ -3729,38 +3780,32 @@ function createAdminRouter() {
     router.get("/reminders", async (req, res) => {
         try {
             const todayIso = getTaipeiCalendarDateYYYYMMDD();
-            // 取所有啟用中客戶，計算每位 daysSinceLastOrder vs avgIntervalDays
-            const customers = await db.prepare(
-                "SELECT id, name, line_group_id, crm_handover_notes FROM customers WHERE active = 1 OR active IS NULL ORDER BY name"
-            ).all();
+            // 單一 aggregate query 取得所有客戶資料（從 30 秒+ 降到 ~1 秒）
+            const all = await (0, customer_scoring_js_1.fetchAllCustomerReminderStats)(db, todayIso);
+            const totalActive = all.length;
             const rows = [];
-            for (const c of customers) {
-                try {
-                    const inputs = await (0, customer_scoring_js_1.fetchCustomerScoringInputs)(db, c.id, todayIso);
-                    if (!inputs) continue;
-                    // 提醒條件：曾叫過貨 + 有平均間隔樣本 + 已超過平均 × 1.5
-                    if (inputs.daysSinceLastOrder == null || inputs.avgIntervalDays == null) continue;
-                    if (inputs.daysSinceLastOrder <= inputs.avgIntervalDays * 1.5) continue;
-                    const { score } = (0, customer_scoring_js_1.computeCustomerScore)(inputs);
-                    const tier = (0, customer_scoring_js_1.scoreToTier)(score);
-                    const overdueRatio = inputs.daysSinceLastOrder / inputs.avgIntervalDays;
-                    rows.push({
-                        id: c.id, name: c.name,
-                        lineGroupId: c.line_group_id,
-                        handoverNotes: c.crm_handover_notes,
-                        daysSince: inputs.daysSinceLastOrder,
-                        avg: inputs.avgIntervalDays,
-                        overdueRatio,
-                        lastOrderDate: inputs.lastOrderDate,
-                        orders90: inputs.orders90,
-                        ordersAll: inputs.ordersAll,
-                        score, tier,
-                    });
-                } catch (_) { /* skip on err */ }
+            for (const c of all) {
+                if (c.daysSinceLastOrder == null || c.avgIntervalDays == null) continue;
+                if (c.daysSinceLastOrder <= c.avgIntervalDays * 1.5) continue;
+                const { score } = (0, customer_scoring_js_1.computeCustomerScore)({
+                    orders90: c.orders90, ordersAll: c.ordersAll, items90: 0,
+                    complaintsAll: 0, complaintsOpen: 0,
+                    daysSinceLastOrder: c.daysSinceLastOrder, avgIntervalDays: c.avgIntervalDays,
+                });
+                const tier = (0, customer_scoring_js_1.scoreToTier)(score);
+                rows.push({
+                    id: c.id, name: c.name,
+                    lineGroupId: c.lineGroupId, handoverNotes: c.handoverNotes,
+                    daysSince: c.daysSinceLastOrder,
+                    avg: c.avgIntervalDays,
+                    overdueRatio: c.daysSinceLastOrder / c.avgIntervalDays,
+                    lastOrderDate: c.lastOrderDate,
+                    orders90: c.orders90, ordersAll: c.ordersAll,
+                    score, tier,
+                });
             }
-            // 依「逾期倍數 × 累計訂單分數」排序（讓主力客戶且逾期久的優先）
+            // 依「逾期倍數 × 客戶分」排序（主力客戶且逾期久的優先）
             rows.sort((a, b) => (b.overdueRatio * (b.score / 100)) - (a.overdueRatio * (a.score / 100)));
-            const totalActive = customers.length;
             const groupedSeverity = {
                 critical: rows.filter(r => r.overdueRatio >= 3).length,
                 high: rows.filter(r => r.overdueRatio >= 2 && r.overdueRatio < 3).length,
