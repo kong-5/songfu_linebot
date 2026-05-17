@@ -9526,6 +9526,7 @@ function createAdminRouter() {
         const editLink = fromOrders
             ? `<a href="/admin/customers/${encodeURIComponent(customer.id)}/edit?from=orders">編輯</a>`
             : `<a href="/admin/customers/${encodeURIComponent(customer.id)}/edit">編輯</a>`;
+        const view360Link = `<a href="/admin/customers/${encodeURIComponent(customer.id)}/360" style="margin-left:12px;font-weight:600;color:var(--accent);">📊 360 完整檔案</a>`;
         const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td></tr>`).join("");
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / ${escapeHtml(customer.name)}</div>
@@ -9544,9 +9545,251 @@ function createAdminRouter() {
           <h2>此客戶專用別名</h2>
           <table><thead><tr><th>客戶常叫的名稱</th><th>對應品項</th></tr></thead><tbody>${aliasRows || "<tr><td colspan='2'>尚無</td></tr>"}</tbody></table>
         </div>
-        <p>${editLink}　${backLink}</p>
+        <p>${editLink}　${view360Link}　${backLink}</p>
       `;
         res.type("text/html").send(notionPage("客戶資料", body, "", res));
+    });
+    // === 客戶 360 CRM 完整檔案 ===
+    router.get("/customers/:id/360", async (req, res) => {
+        try {
+            const customer = await db.prepare(
+                "SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active, route_line, crm_handover_notes FROM customers WHERE id = ?"
+            ).get(req.params.id);
+            if (!customer) { res.status(404).send("找不到客戶"); return; }
+            const cid = customer.id;
+            const isPg = Boolean(process.env.DATABASE_URL);
+            // 過去 90 / 30 / 全部 訂單統計
+            const periodSqls = isPg
+                ? {
+                    p90: "AND o.order_date >= (CURRENT_DATE - INTERVAL '90 day')",
+                    p30: "AND o.order_date >= (CURRENT_DATE - INTERVAL '30 day')",
+                }
+                : {
+                    p90: "AND o.order_date >= date('now', '-90 day')",
+                    p30: "AND o.order_date >= date('now', '-30 day')",
+                };
+            async function countOrders(extra) {
+                const sql = "SELECT COUNT(*) AS n FROM orders o WHERE o.customer_id = ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') " + (extra || "");
+                const r = await db.prepare(sql).get(cid);
+                return Number(r?.n) || 0;
+            }
+            const orders90 = await countOrders(periodSqls.p90);
+            const orders30 = await countOrders(periodSqls.p30);
+            const ordersAll = await countOrders("");
+            // 最後一張訂單（含 complaint，看最近一次互動）
+            const lastOrderRow = await db.prepare(
+                "SELECT id, order_no, order_date, status, updated_at FROM orders WHERE customer_id = ? ORDER BY order_date DESC, id DESC LIMIT 1"
+            ).get(cid);
+            // 距上次叫貨天數（不含客訴）
+            const lastNonComplaintRow = await db.prepare(
+                "SELECT order_date FROM orders WHERE customer_id = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_date DESC LIMIT 1"
+            ).get(cid);
+            const todayIso = getTaipeiCalendarDateYYYYMMDD();
+            let daysSinceLastOrder = null;
+            if (lastNonComplaintRow?.order_date) {
+                const last = new Date(String(lastNonComplaintRow.order_date) + "T00:00:00+08:00");
+                const today = new Date(todayIso + "T00:00:00+08:00");
+                daysSinceLastOrder = Math.round((today - last) / 86400000);
+            }
+            // 平均叫貨間隔（過去 90 天）
+            const last90Orders = await db.prepare(
+                "SELECT DISTINCT order_date FROM orders WHERE customer_id = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') " + periodSqls.p90 + " ORDER BY order_date DESC"
+            ).all(cid);
+            let avgIntervalDays = null;
+            if (last90Orders && last90Orders.length >= 2) {
+                const dates = last90Orders.map(r => new Date(String(r.order_date) + "T00:00:00+08:00").getTime()).sort((a, b) => b - a);
+                const gaps = [];
+                for (let i = 1; i < dates.length; i++) gaps.push((dates[i - 1] - dates[i]) / 86400000);
+                avgIntervalDays = Math.round((gaps.reduce((a, b) => a + b, 0) / gaps.length) * 10) / 10;
+            }
+            // 客戶 profile（既有 helper）
+            let profile = null;
+            try { profile = await (0, customer_profile_js_1.computeCustomerProfile)(db, cid); } catch (_) {}
+            // 客訴清單
+            const complaints = await db.prepare(
+                "SELECT o.id, o.order_no, o.order_date, o.raw_message, o.updated_at, COALESCE(ch.handle_status, 'pending') AS handle_status, ch.handler, ch.resolved_at " +
+                "FROM orders o LEFT JOIN complaint_handling ch ON ch.order_id = o.id " +
+                "WHERE o.customer_id = ? AND LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' " +
+                "ORDER BY o.order_date DESC, o.id DESC LIMIT 30"
+            ).all(cid);
+            const openComplaints = complaints.filter(c => String(c.handle_status || "pending") !== "resolved").length;
+            // 客戶手寫 hints（系統學過的對應）
+            let hints = [];
+            try {
+                hints = await db.prepare(
+                    "SELECT raw_name_last, p.name AS product_name, h.hit_count, h.wrong_count, h.last_hit_at " +
+                    "FROM customer_handwriting_hints h LEFT JOIN products p ON p.id = h.product_id " +
+                    "WHERE h.customer_id = ? ORDER BY h.hit_count DESC LIMIT 20"
+                ).all(cid);
+            } catch (_) {}
+            // 最近 5 張訂單
+            const recentOrders = await db.prepare(
+                "SELECT o.id, o.order_no, o.order_date, o.status, o.updated_at, " +
+                "(SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.voided_at IS NULL) AS item_count " +
+                "FROM orders o WHERE o.customer_id = ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted') ORDER BY o.order_date DESC, o.id DESC LIMIT 5"
+            ).all(cid);
+            // 簡單評分（先用既有資料；之後再做正式版）
+            let score = 50;
+            score += Math.min(40, orders90 * 1.0); // 活躍度
+            score += Math.min(10, ordersAll * 0.05); // 長期忠誠
+            score -= Math.min(20, openComplaints * 5); // 未解決客訴扣分
+            score -= Math.min(15, complaints.length * 1.5); // 累計客訴扣分
+            if (daysSinceLastOrder != null && avgIntervalDays != null && daysSinceLastOrder > avgIntervalDays * 2) {
+                score -= 10; // 超過平常 2 倍未叫
+            }
+            score = Math.max(0, Math.min(100, Math.round(score)));
+            const stars = score >= 90 ? "★★★★★" : score >= 70 ? "★★★★" : score >= 50 ? "★★★" : score >= 30 ? "★★" : "★";
+            const tier = score >= 80 ? { label: "主力客戶", color: "var(--ok)", bg: "#d1fae5" }
+                : score >= 60 ? { label: "穩定客戶", color: "#2563eb", bg: "#dbeafe" }
+                : score >= 40 ? { label: "一般客戶", color: "var(--txt-2)", bg: "var(--bg-2)" }
+                : { label: "需關注", color: "var(--bad)", bg: "#fee2e2" };
+            // === HTML ===
+            const okMsg = req.query.ok === "handover_saved" ? `<div class="sf-pill ok" style="align-self:flex-start;">已儲存交接備註</div>` : "";
+            const fmtTs = (s) => String(s || "").replace("T", " ").slice(0, 16);
+            const statusBadge = (s) => {
+                const lc = String(s || "").toLowerCase();
+                if (lc === "approved") return `<span class="sf-pill ok">已確認</span>`;
+                if (lc === "complaint") return `<span class="sf-pill bad">客訴</span>`;
+                if (lc === "deleted") return `<span class="sf-pill">作廢</span>`;
+                return `<span class="sf-pill warn">待確認</span>`;
+            };
+            const rhythmAlert = (daysSinceLastOrder != null && avgIntervalDays != null && daysSinceLastOrder > avgIntervalDays * 1.5)
+                ? `<div style="margin-top:10px;padding:10px 14px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:13px;color:#92400e;">⚠ 已 ${daysSinceLastOrder} 天沒叫貨（平均間隔 ${avgIntervalDays} 天），可能忘記叫貨</div>`
+                : "";
+            const body = `
+              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:1100px;margin:0 auto;">
+                <div>
+                  <div class="sf-breadcrumb" style="margin-bottom:6px;"><a href="/admin/customers">客戶管理</a> / 360 完整檔案</div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+                    <h1 style="margin:0;font-size:24px;font-weight:600;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                      ${escapeHtml(customer.name)}
+                      <span class="sf-pill" style="background:${tier.bg};color:${tier.color};font-weight:600;">${tier.label}</span>
+                      <span style="font-size:18px;color:#f59e0b;">${stars}</span>
+                      <span class="mono" style="font-size:13px;color:var(--txt-3);">${score}/100</span>
+                    </h1>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                      <a class="sf-btn" href="/admin/customers/${encodeURIComponent(cid)}/quick-view">快速檢視</a>
+                      <a class="sf-btn" href="/admin/customers/${encodeURIComponent(cid)}/edit">編輯</a>
+                      <a class="sf-btn ghost" href="/admin/customers">← 回列表</a>
+                    </div>
+                  </div>
+                  ${okMsg}
+                  ${rhythmAlert}
+                </div>
+
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+                  <div class="sf-card" style="padding:14px 18px;">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">過去 90 天訂單</div>
+                    <div class="mono" style="font-size:24px;font-weight:600;">${orders90}</div>
+                    <div style="font-size:12px;color:var(--txt-2);">30 天 ${orders30} · 累計 ${ordersAll}</div>
+                  </div>
+                  <div class="sf-card" style="padding:14px 18px;">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">距上次叫貨</div>
+                    <div class="mono" style="font-size:24px;font-weight:600;color:${daysSinceLastOrder != null && avgIntervalDays != null && daysSinceLastOrder > avgIntervalDays * 1.5 ? "var(--bad)" : "var(--txt-1)"};">${daysSinceLastOrder != null ? daysSinceLastOrder + " 天" : "—"}</div>
+                    <div style="font-size:12px;color:var(--txt-2);">${lastNonComplaintRow?.order_date ? "最後 " + lastNonComplaintRow.order_date : "尚無紀錄"}</div>
+                  </div>
+                  <div class="sf-card" style="padding:14px 18px;">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">平均叫貨間隔</div>
+                    <div class="mono" style="font-size:24px;font-weight:600;">${avgIntervalDays != null ? avgIntervalDays + " 天" : "—"}</div>
+                    <div style="font-size:12px;color:var(--txt-2);">過去 90 天樣本</div>
+                  </div>
+                  <div class="sf-card" style="padding:14px 18px;">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">客訴</div>
+                    <div class="mono" style="font-size:24px;font-weight:600;color:${openComplaints > 0 ? "var(--bad)" : "var(--ok)"};">${complaints.length}</div>
+                    <div style="font-size:12px;color:var(--txt-2);">未解決 <strong style="color:${openComplaints > 0 ? "var(--bad)" : "var(--ok)"};">${openComplaints}</strong></div>
+                  </div>
+                </div>
+
+                <div class="sf-card" style="border-left:4px solid var(--accent);">
+                  <div class="sf-card-head"><div class="sf-card-title">📝 員工交接備註</div><span class="sf-card-sub">換班接手時的關鍵注意事項</span></div>
+                  <form method="post" action="/admin/customers/${encodeURIComponent(cid)}/handover-notes" style="padding:14px;">
+                    <textarea name="crm_handover_notes" rows="4" class="sf-input" style="width:100%;font-family:inherit;" placeholder="例：客戶習慣晚上 10 點叫貨；說話比較急但人很好；曾退過一次貨；地址會變請打電話確認；…">${escapeHtml(customer.crm_handover_notes || "")}</textarea>
+                    <div style="margin-top:10px;display:flex;justify-content:flex-end;"><button type="submit" class="sf-btn primary sm">儲存</button></div>
+                  </form>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                  <div class="sf-card">
+                    <div class="sf-card-head"><div class="sf-card-title">🛒 常買品項 Top ${Math.min(10, (profile?.topItems || []).length)}</div></div>
+                    <div style="padding:8px 16px 14px;">
+                      ${(profile?.topItems || []).slice(0, 10).map((it, i) => `
+                        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:${i < 9 ? '1px dashed var(--line)' : 'none'};font-size:13px;">
+                          <span>${i + 1}. ${escapeHtml(it.name)}</span>
+                          <span class="mono" style="color:var(--txt-2);">${it.count} 次</span>
+                        </div>`).join("") || `<p style="color:var(--txt-3);font-size:13px;margin:8px 0;">尚無資料</p>`}
+                    </div>
+                  </div>
+                  <div class="sf-card">
+                    <div class="sf-card-head"><div class="sf-card-title">📅 叫貨時段／週幾偏好</div></div>
+                    <div style="padding:12px 16px;">
+                      <div style="font-size:12px;color:var(--txt-2);margin-bottom:8px;">常下單週幾</div>
+                      <div style="font-size:13px;margin-bottom:14px;">${(profile?.topWeekdays || []).map(([k, v]) => `<span class="sf-pill" style="margin-right:4px;margin-bottom:4px;">${escapeHtml(k)} ${v}</span>`).join("") || "—"}</div>
+                      <div style="font-size:12px;color:var(--txt-2);margin-bottom:8px;">常見時段</div>
+                      <div style="font-size:13px;">${(profile?.topHours || []).map(([k, v]) => `<span class="sf-pill" style="margin-right:4px;margin-bottom:4px;">${escapeHtml(k)} ${v}</span>`).join("") || "—"}</div>
+                      <div style="margin-top:14px;padding-top:14px;border-top:var(--hairline);font-size:12px;color:var(--txt-3);">圖片訂單比例：${profile?.imageOrderRatio != null ? Math.round(profile.imageOrderRatio * 100) + "%" : "—"}（共 ${profile?.ordersSampledForImageRatio ?? 0} 筆）</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="sf-card">
+                  <div class="sf-card-head"><div class="sf-card-title">📨 客訴歷史 <span class="sf-pill ${openComplaints > 0 ? "bad" : "ok"}" style="margin-left:6px;">${complaints.length} 筆／未解 ${openComplaints}</span></div></div>
+                  <div style="padding:0;">
+                    ${complaints.length ? complaints.slice(0, 10).map(c => {
+                      const stPill = String(c.handle_status||"pending") === "resolved" ? '<span class="sf-pill ok">已解決</span>' : String(c.handle_status||"") === "handling" ? '<span class="sf-pill warn">處理中</span>' : '<span class="sf-pill bad">待處理</span>';
+                      const txt = String(c.raw_message || "").replace(/\[圖片\]/g, "[圖]").trim();
+                      const short = txt.length > 100 ? txt.slice(0, 100) + "…" : txt;
+                      return `<a href="/admin/complaints/${encodeURIComponent(c.id)}" style="display:flex;gap:12px;padding:10px 16px;border-bottom:var(--hairline);text-decoration:none;color:inherit;align-items:flex-start;">
+                        <span class="mono" style="font-size:11px;color:var(--txt-3);white-space:nowrap;">${escapeHtml(c.order_date)}</span>
+                        <span style="flex:1;font-size:13px;">${escapeHtml(short || "（無內容）")}</span>
+                        <span style="display:flex;gap:6px;align-items:center;">${stPill}${c.handler ? `<span style="font-size:11px;color:var(--txt-3);">${escapeHtml(c.handler)}</span>` : ""}</span>
+                      </a>`;
+                    }).join("") : `<p style="padding:18px;color:var(--txt-3);text-align:center;font-size:13px;margin:0;">無客訴紀錄</p>`}
+                  </div>
+                </div>
+
+                <div class="sf-card">
+                  <div class="sf-card-head"><div class="sf-card-title">✍️ 客戶寫法學習</div><span class="sf-card-sub">系統從歷史訂單學到的「客戶寫法 → 標準品項」對應</span></div>
+                  <div style="padding:0;">
+                    ${hints.length ? `<table class="sf-table" style="font-size:13px;"><thead><tr><th>客戶寫法</th><th>對應品項</th><th style="text-align:right;">命中</th><th style="text-align:right;">糾錯</th><th>最後使用</th></tr></thead><tbody>${hints.map(h => `
+                      <tr><td>${escapeHtml(h.raw_name_last || "—")}</td><td>${escapeHtml(h.product_name || "（未對應）")}</td><td style="text-align:right;" class="mono">${h.hit_count || 0}</td><td style="text-align:right;color:${(h.wrong_count||0) > 0 ? 'var(--bad)' : 'var(--txt-3)'};" class="mono">${h.wrong_count || 0}</td><td class="mono" style="font-size:11px;color:var(--txt-3);">${fmtTs(h.last_hit_at)}</td></tr>
+                    `).join("")}</tbody></table>` : `<p style="padding:18px;color:var(--txt-3);text-align:center;font-size:13px;margin:0;">尚未累積學習資料</p>`}
+                  </div>
+                </div>
+
+                <div class="sf-card">
+                  <div class="sf-card-head"><div class="sf-card-title">📋 最近 5 張訂單</div><a href="/admin/orders?customer_id=${encodeURIComponent(cid)}" class="sf-card-sub">查看全部 →</a></div>
+                  <div style="padding:0;">
+                    ${recentOrders.length ? recentOrders.map(o => `
+                      <a href="/admin/orders/${encodeURIComponent(o.id)}" style="display:flex;gap:12px;padding:10px 16px;border-bottom:var(--hairline);text-decoration:none;color:inherit;align-items:center;">
+                        <span class="mono" style="font-size:12px;color:var(--txt-3);white-space:nowrap;">${escapeHtml(o.order_date)}</span>
+                        <span class="mono" style="font-size:12px;">${escapeHtml(o.order_no || o.id.slice(0,8))}</span>
+                        <span style="flex:1;font-size:13px;">${o.item_count} 項</span>
+                        ${statusBadge(o.status)}
+                      </a>
+                    `).join("") : `<p style="padding:18px;color:var(--txt-3);text-align:center;font-size:13px;margin:0;">尚無訂單</p>`}
+                  </div>
+                </div>
+              </div>`;
+            res.type("text/html").send(notionPage("客戶 360：" + customer.name, body, "customers", res));
+        } catch (e) {
+            console.error("[admin] /customers/:id/360 failed", e);
+            res.status(500).send("載入客戶檔案失敗：" + (e?.message || e));
+        }
+    });
+    router.post("/customers/:id/handover-notes", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const cid = String(req.params.id || "").trim();
+        const notes = String(req.body?.crm_handover_notes || "").trim().slice(0, 4000);
+        const customer = await db.prepare("SELECT id, name FROM customers WHERE id = ?").get(cid);
+        if (!customer) { res.status(404).send("找不到客戶"); return; }
+        await db.prepare("UPDATE customers SET crm_handover_notes = ? WHERE id = ?").run(notes || null, cid);
+        await logDataChange(req, {
+            entityType: "customer",
+            entityId: cid,
+            action: "edit_handover_notes",
+            summary: `編輯交接備註（${customer.name}）`,
+            meta: { length: notes.length, source: "360_page" },
+        });
+        res.redirect("/admin/customers/" + encodeURIComponent(cid) + "/360?ok=handover_saved");
     });
     router.get("/customers/:id/edit", async (req, res) => {
         try {
@@ -9757,6 +10000,7 @@ function createAdminRouter() {
             <td style="font-size:12px;color:var(--txt-2);">${escapeHtml(r.contact ?? "")}</td>
             <td style="text-align:right;" class="customer-status-cell">${active ? `<span class="sf-pill ok">啟用</span>` : `<span class="sf-pill">停用</span>`}</td>
             <td>
+              <a class="sf-btn sm" href="/admin/customers/${encodeURIComponent(r.id)}/360" title="客戶完整檔案（CRM）">📊</a>
               <a class="sf-btn sm" href="/admin/customers/${encodeURIComponent(r.id)}/edit">${SF_ICONS.edit}</a>
               <button type="button" class="sf-btn sm customer-toggle-btn" data-id="${escapeAttr(r.id)}" data-active="${active ? "1" : "0"}">${active ? "停用" : "啟用"}</button>
               <a class="sf-btn sm danger" href="/admin/customers/${encodeURIComponent(r.id)}/delete">${SF_ICONS.x}</a>

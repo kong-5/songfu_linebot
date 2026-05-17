@@ -101,6 +101,8 @@ function initSqlite(dbPath) {
         "ALTER TABLE orders ADD COLUMN voided_by TEXT",
         "ALTER TABLE orders ADD COLUMN void_reason TEXT",
         "ALTER TABLE orders ADD COLUMN void_note TEXT",
+        // 客戶 CRM：員工交接備註（顯示在 /customers/:id/360 上方）
+        "ALTER TABLE customers ADD COLUMN crm_handover_notes TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -426,6 +428,8 @@ async function initPg() {
             try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS voided_by TEXT"); } catch (_) {}
             try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS void_reason TEXT"); } catch (_) {}
             try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS void_note TEXT"); } catch (_) {}
+            // CRM 員工交接備註（customers）
+            try { await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS crm_handover_notes TEXT"); } catch (_) {}
             try {
                 await client.query("ALTER TABLE customers ADD COLUMN known_sub_customers TEXT");
             }
