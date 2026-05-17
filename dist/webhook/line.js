@@ -117,6 +117,54 @@ function formatSplitSubNamesForReply(keySet) {
     });
     return arr.map((k) => (k === "" ? "主客戶" : k)).join("、");
 }
+/** 員工關鍵字：觸發回覆功能選單（reply 免費） */
+function isEmployeeMenuKeyword(text) {
+    if (!text) return false;
+    const t = String(text).trim().toLowerCase();
+    return ["選單", "功能", "功能表", "選項", "menu", "liff", "/menu", "/功能"].includes(t);
+}
+/** 組「員工功能選單」Flex Message（依環境變數有設哪些 LIFF 動態列出） */
+function buildEmployeeMenuFlex(employee) {
+    const liffs = [
+        { id: process.env.LIFF_ID_ORDER_REVIEW, label: "📋 訂單審核", subtitle: "查看 / 確認今日訂單" },
+        { id: process.env.LIFF_ID_FREEZER_TEMP, label: "🌡️ 冷凍冷藏溫度", subtitle: "HACCP 日常溫度記錄" },
+        { id: process.env.LIFF_ID_CUSTOMER_LOOKUP, label: "👤 客戶速查", subtitle: "搜尋客戶 360 摘要" },
+        { id: process.env.LIFF_ID_EMPLOYEE_BIND, label: "📱 員工綁定", subtitle: "新員工綁定 LINE 用" },
+    ].filter(x => x.id && String(x.id).trim());
+    const buttons = liffs.map(l => ({
+        type: "box", layout: "vertical", margin: "sm", paddingAll: "10px",
+        backgroundColor: "#f3f6fb", cornerRadius: "8px",
+        action: { type: "uri", uri: `https://liff.line.me/${l.id}` },
+        contents: [
+            { type: "text", text: l.label, weight: "bold", size: "md", color: "#1a7c6e" },
+            { type: "text", text: l.subtitle, size: "xs", color: "#666666", margin: "xs" },
+        ],
+    }));
+    const empName = (employee && (employee.name || employee.username)) || "員工";
+    return {
+        type: "flex",
+        altText: "員工功能選單",
+        contents: {
+            type: "bubble",
+            size: "kilo",
+            header: {
+                type: "box", layout: "vertical", backgroundColor: "#1a7c6e", paddingAll: "16px",
+                contents: [
+                    { type: "text", text: "📋 員工功能選單", color: "#ffffff", size: "lg", weight: "bold" },
+                    { type: "text", text: empName, color: "#b2dfdb", size: "xs", margin: "xs" },
+                ],
+            },
+            body: {
+                type: "box", layout: "vertical", spacing: "sm", paddingAll: "12px",
+                contents: buttons.length ? buttons : [{ type: "text", text: "尚無可用 LIFF（請至後台設定）", size: "sm", color: "#999999" }],
+            },
+            footer: {
+                type: "box", layout: "vertical", paddingAll: "10px",
+                contents: [{ type: "text", text: "點任一按鈕開啟功能", size: "xxs", color: "#aaaaaa", align: "center" }],
+            },
+        },
+    };
+}
 /**
  * 客戶意圖偵測：依關鍵詞判斷訊息類型。
  * 回傳 { intent, keywords }，intent 為：
@@ -596,7 +644,8 @@ function createLineWebhook() {
                     try {
                         const emp = await (0, employee_line_binding_js_1.findEmployeeByLineUserId)(db, senderUserId);
                         if (emp) {
-                            const preview = msgType === "text" ? String(event.message.text || "").slice(0, 200) : `[${msgType}]`;
+                            const textRaw = msgType === "text" ? String(event.message.text || "") : "";
+                            const preview = msgType === "text" ? textRaw.slice(0, 200) : `[${msgType}]`;
                             await (0, line_bot_control_js_1.appendLineBotLog)(db, "internal_employee_message", {
                                 username: emp.username,
                                 title: emp.title,
@@ -605,6 +654,17 @@ function createLineWebhook() {
                                 preview,
                             });
                             console.log("[LINE] 偵測到員工訊息（%s），跳過 AI 解析。msgType=%s", emp.username, msgType);
+                            // 員工關鍵字：選單／功能／menu／liff → 回覆功能選單（reply 免費，不計費）
+                            if (msgType === "text" && isEmployeeMenuKeyword(textRaw)) {
+                                try {
+                                    if (lineClient && event.replyToken) {
+                                        await lineClient.replyMessage(event.replyToken, buildEmployeeMenuFlex(emp));
+                                        console.log("[LINE] 員工功能選單已回覆給 %s", emp.username);
+                                    }
+                                } catch (e) {
+                                    console.warn("[LINE] 員工功能選單回覆失敗:", e?.message || e);
+                                }
+                            }
                             continue;
                         }
                     } catch (e) {
