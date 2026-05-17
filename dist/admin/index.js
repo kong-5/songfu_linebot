@@ -10475,7 +10475,34 @@ function createAdminRouter() {
             summary: `新增俗名「${aliasTrim}」`,
             meta: { alias: aliasTrim },
         });
-        res.redirect("/admin/products/" + encodeURIComponent(productId) + "/edit?ok=alias_add" + qEmbed + qCtx);
+        // 自動套用：找出 raw_name 與此俗名完全相同、尚未對應或待確認的有效訂單品項，自動連結到此品項
+        // 避免覆寫：已有 product_id 且 need_review = 0 的不動（可能是人工指定過的）
+        let autoLinked = 0;
+        try {
+            const isPg = Boolean(process.env.DATABASE_URL);
+            const matchedItems = await db.prepare(
+                "SELECT oi.id, oi.order_id, oi.raw_name, oi.product_id, oi.need_review FROM order_items oi " +
+                "WHERE TRIM(oi.raw_name) = ? AND oi.voided_at IS NULL AND (oi.product_id IS NULL OR oi.need_review = 1)"
+            ).all(aliasTrim);
+            for (const it of matchedItems || []) {
+                await db.prepare("UPDATE order_items SET product_id = ?, need_review = 0 WHERE id = ?").run(productId, it.id);
+                autoLinked++;
+                try {
+                    await logDataChange(req, {
+                        entityType: "order_item",
+                        entityId: it.id,
+                        productId,
+                        action: "auto_link_by_alias",
+                        summary: `俗名「${aliasTrim}」自動套用：對應到品項`,
+                        meta: { order_id: it.order_id, raw_name: it.raw_name, before: { product_id: it.product_id, need_review: it.need_review }, alias_id: paId },
+                    });
+                } catch (_) { /* ignore log error */ }
+            }
+        } catch (e) {
+            console.warn("[alias auto-link] failed:", e?.message || e);
+        }
+        const linkQuery = autoLinked > 0 ? "&auto_linked=" + autoLinked : "";
+        res.redirect("/admin/products/" + encodeURIComponent(productId) + "/edit?ok=alias_add" + qEmbed + qCtx + linkQuery);
     });
     router.get("/products/:id/edit", async (req, res) => {
         const productId = req.params.id;
@@ -10541,8 +10568,9 @@ function createAdminRouter() {
         const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit"${linkTarget}>編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"${embed ? ' target="_parent"' : ""}><button type="submit">刪除</button></form></td></tr>`).join("");
         const logRows = recentLogs.map((l) => `<tr><td style="white-space:nowrap;font-size:12px;">${escapeHtml(String(l.created_at ?? ""))}</td><td>${escapeHtml(String(l.actor_username ?? "—"))}</td><td>${escapeHtml(String(l.action ?? ""))}</td><td>${escapeHtml(String(l.summary ?? "—"))}</td></tr>`).join("");
         const errMsg = req.query.err ? `<div class="notion-msg err">${escapeHtml(String(req.query.err))}</div>` : "";
+        const autoLinkedCount = Math.max(0, parseInt(String(req.query.auto_linked || "0"), 10) || 0);
         const okFlash = req.query.ok === "alias_add"
-            ? `<div class="notion-msg ok">已新增俗名。</div>`
+            ? `<div class="notion-msg ok">已新增俗名${autoLinkedCount > 0 ? `，並自動套用到 <strong>${autoLinkedCount}</strong> 筆既有訂單品項（已自動連結到此品項、移除待確認旗標）` : "（沒有舊訂單需要連動）"}。</div>`
             : req.query.ok === "spec_add"
                 ? `<div class="notion-msg ok">已新增叫貨單位換算。${req.query.sync_line === "1" ? "已更新 <strong>LINE 叫貨單位換算</strong>規則（與進線換算一致）。" : ""}</div>`
                 : req.query.ok === "spec_del"
