@@ -9559,10 +9559,11 @@ function createAdminRouter() {
             const cid = customer.id;
             const isPg = Boolean(process.env.DATABASE_URL);
             // 過去 90 / 30 / 全部 訂單統計
+            // 注意：order_date 在 PG 是 TEXT，需 cast 成 date 比較；或用 to_char 將右邊轉成 'YYYY-MM-DD' 文字
             const periodSqls = isPg
                 ? {
-                    p90: "AND o.order_date >= (CURRENT_DATE - INTERVAL '90 day')",
-                    p30: "AND o.order_date >= (CURRENT_DATE - INTERVAL '30 day')",
+                    p90: "AND o.order_date >= to_char((CURRENT_DATE - INTERVAL '90 day'), 'YYYY-MM-DD')",
+                    p30: "AND o.order_date >= to_char((CURRENT_DATE - INTERVAL '30 day'), 'YYYY-MM-DD')",
                 }
                 : {
                     p90: "AND o.order_date >= date('now', '-90 day')",
