@@ -101,6 +101,9 @@ function initSqlite(dbPath) {
         "ALTER TABLE orders ADD COLUMN voided_by TEXT",
         "ALTER TABLE orders ADD COLUMN void_reason TEXT",
         "ALTER TABLE orders ADD COLUMN void_note TEXT",
+        // 訂單確認者／時間（顯示在訂單列表「已確認」徽章下方）
+        "ALTER TABLE orders ADD COLUMN approved_by TEXT",
+        "ALTER TABLE orders ADD COLUMN approved_at TEXT",
         // 客戶 CRM：員工交接備註（顯示在 /customers/:id/360 上方）
         "ALTER TABLE customers ADD COLUMN crm_handover_notes TEXT",
     ];
@@ -428,6 +431,8 @@ async function initPg() {
             try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS voided_by TEXT"); } catch (_) {}
             try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS void_reason TEXT"); } catch (_) {}
             try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS void_note TEXT"); } catch (_) {}
+            try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS approved_by TEXT"); } catch (_) {}
+            try { await client.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ"); } catch (_) {}
             // CRM 員工交接備註（customers）
             try { await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS crm_handover_notes TEXT"); } catch (_) {}
             try {

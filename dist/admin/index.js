@@ -6294,8 +6294,10 @@ function createAdminRouter() {
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1 AND oi.voided_at IS NULL) AS need_review_count,
         0 AS non_kg_count,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND (oi.include_export IS NULL OR oi.include_export = 1) AND oi.voided_at IS NULL) AS export_item_count,
+        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.voided_at IS NULL) AS total_item_count,
         o.sheet_exported_at, o.lingyue_exported_at,
         o.raw_message AS source_raw_message,
+        o.approved_by, o.approved_at,
         (SELECT COUNT(*) FROM order_attachments oa WHERE oa.order_id = o.id) AS source_attachment_count
       FROM orders o
       LEFT JOIN customers c ON c.id = o.customer_id
@@ -6476,8 +6478,13 @@ function createAdminRouter() {
                     hasText ? `<span class="sf-pill info" title="含文字叫貨">字</span>` : "",
                     hasImg ? `<span class="sf-pill accent" title="含圖片叫貨">圖</span>` : "",
                 ].join(" ");
+                const approvedByShort = (isApproved && o.approved_by) ? String(o.approved_by) : "";
+                const approvedAtShort = (isApproved && o.approved_at) ? String(o.approved_at).replace("T", " ").slice(5, 16) : "";
+                const approvedMeta = isApproved && (approvedByShort || approvedAtShort)
+                    ? `<div style="font-size:10px;color:var(--txt-3);margin-top:2px;line-height:1.2;">${approvedByShort ? "by " + escapeHtml(approvedByShort) : ""}${approvedByShort && approvedAtShort ? " · " : ""}${approvedAtShort ? escapeHtml(approvedAtShort) : ""}</div>`
+                    : "";
                 const statusPill = isApproved
-                    ? `<span class="sf-pill ok">✓ 已確認</span>`
+                    ? `<span class="sf-pill ok">✓ 已確認</span>${approvedMeta}`
                     : (n > 0 ? `<span class="sf-pill warn">${n} 待確認</span>` : `<span class="sf-pill">待簽核</span>`);
                 const expIcons = [
                     o.sheet_exported_at ? `<span class="sf-pill" title="已匯出揀貨單">🖨</span>` : "",
@@ -6492,6 +6499,11 @@ function createAdminRouter() {
                     return `${Number(m[2])}/${Number(m[3])}` + (wd ? `（${wd}）` : "");
                 })();
                 const mobileSrcText = o.is_logistics ? "紙本" : (hasText && hasImg ? "字+圖" : (hasText ? "字" : (hasImg ? "圖" : "")));
+                const mobileItemCountHtml = cnt > 0
+                  ? `<span>· ${cnt} 項</span>`
+                  : ((o.total_item_count ?? 0) > 0
+                    ? `<span style="color:#b45309;font-weight:600;">· ⚠ 無匯出品項</span>`
+                    : `<span style="color:#b91c1c;font-weight:700;">· ⚠ 無品項·可能不是訂單</span>`);
                 const mobileCardHtml = `
               <a href="${detailUrl}" class="order-mobile-card">
                 <div class="row1">
@@ -6501,7 +6513,7 @@ function createAdminRouter() {
                 </div>
                 <div class="row2">
                   <span class="mono">${escapeHtml(o.is_logistics ? "紙本" : (o.order_no || ""))}</span>
-                  <span>· ${cnt} 項</span>
+                  ${mobileItemCountHtml}
                   ${mobileSrcText ? `<span>· ${escapeHtml(mobileSrcText)}</span>` : ""}
                   ${n > 0 ? `<span style="color:var(--bad);font-weight:600;">· ${n} 待確認</span>` : ""}
                 </div>
@@ -6515,7 +6527,12 @@ function createAdminRouter() {
             <td data-label="客戶">${custLink}</td>
             <td style="white-space:nowrap;" data-label="來源">${srcPills}</td>
             <td style="max-width:380px;" data-label="品項">
-              <div style="font-size:12px;color:var(--txt-1);font-weight:500;">${cnt > 0 ? `${cnt} 筆品項` : `<span style="color:var(--txt-3);">無品項</span>`}</div>
+              ${cnt > 0
+                ? `<div style="font-size:12px;color:var(--txt-1);font-weight:500;">${cnt} 筆品項</div>`
+                : ((o.total_item_count ?? 0) > 0
+                  ? `<div style="font-size:12px;color:#b45309;font-weight:600;">⚠ 無匯出品項<span style="font-weight:400;font-size:11px;margin-left:4px;">（共 ${o.total_item_count} 筆全部排除）</span></div>`
+                  : `<div style="font-size:13px;color:#b91c1c;font-weight:700;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;padding:3px 8px;display:inline-block;">⚠ 無品項 · 可能不是訂單</div>`)
+              }
               ${previewShort ? `<div style="font-size:11px;color:var(--txt-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(previewShort)}</div>` : ""}
             </td>
             <td style="white-space:nowrap;" data-label="狀態">${statusPill}${expIcons ? " " + expIcons : ""}</td>
@@ -7229,10 +7246,12 @@ function createAdminRouter() {
             res.redirect("/admin/orders?err=none");
             return;
         }
+        const actor = req.adminUsername || "system";
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
         for (const oid of ids.slice(0, 200)) {
             try {
                 const before = await db.prepare("SELECT order_no, status FROM orders WHERE id = ?").get(oid);
-                await db.prepare("UPDATE orders SET status = ? WHERE id = ?").run("approved", oid);
+                await db.prepare("UPDATE orders SET status = ?, approved_by = ?, approved_at = " + nowSql + " WHERE id = ?").run("approved", actor, oid);
                 await logDataChange(req, {
                     entityType: "order",
                     entityId: oid,
@@ -7726,8 +7745,8 @@ function createAdminRouter() {
         const orderStatusLc = String(order.status || "").toLowerCase();
         const orderStatusDisplay = orderStatusLc === "approved" ? "已確認" : orderStatusLc === "pending" ? "待確認" : orderStatusLc === "deleted" ? "已作廢" : orderStatusLc === "complaint" ? "客訴" : escapeHtml(String(order.status || ""));
         const confirmOrderFormHtml = orderStatusLc === "approved"
-            ? `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/unapprove?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve" title="再按一次可撤銷確認" onclick="return confirm('確定要撤銷確認？訂單將恢復為待確認。');">已確認</button></form>`
-            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}&next=1" style="display:inline;margin:0;flex:0 0 auto;" title="確認後自動跳到下一筆待確認"><button type="submit" class="btn btn-cute-approve">確認 → 下一筆</button></form>`;
+            ? `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/unapprove?back=${encodeURIComponent(backTo)}" id="approveOrderForm" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve" title="再按一次可撤銷確認" onclick="return confirm('確定要撤銷確認？訂單將恢復為待確認。');">已確認</button></form>`
+            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}&next=1" id="approveOrderForm" style="display:inline;margin:0;flex:0 0 auto;" title="確認後自動跳到下一筆待確認"><button type="submit" class="btn btn-cute-approve">確認 → 下一筆</button></form>`;
         const toComplaintFormHtml = orderStatusLc === "complaint" || orderStatusLc === "deleted"
             ? ""
             : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/to-complaint" style="display:inline;margin:0;"><button type="submit" class="sf-btn sm" title="此筆其實是客訴而非訂單，按下將轉入客訴處理流程" onclick="return confirm('確定將此筆轉為客訴？將不再出現在訂單列表，並進入客訴處理流程。');" style="color:#c2410c;border-color:#fed7aa;">⚠ 轉為客訴</button></form>`;
@@ -7851,8 +7870,8 @@ function createAdminRouter() {
             <button type="submit" class="sf-btn" title="依原始文字與 LINE 圖片附件重建明細（覆寫現有品項）" onclick="return confirm('依原始訂單重建明細？將覆寫現有品項。');">${SF_ICONS.refresh}<span>重新辨識</span></button>
           </form>
           <div class="sf-more-dropdown" id="orderMoreDropdown" style="position:relative;display:inline-block;">
-            <button type="button" class="sf-btn" id="btnOrderMoreToggle" aria-haspopup="true" aria-expanded="false" title="更多動作">⋯ 更多</button>
-            <div class="sf-more-menu" id="orderMoreMenu" role="menu" hidden style="position:absolute;top:calc(100% + 4px);left:0;min-width:220px;background:var(--bg-0);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.12);padding:6px;z-index:50;display:flex;flex-direction:column;gap:2px;">
+            <button type="button" class="sf-btn" id="btnOrderMoreToggle" aria-haspopup="true" aria-expanded="false" title="更多動作">更多 ▾</button>
+            <div class="sf-more-menu" id="orderMoreMenu" role="menu" style="position:absolute;top:calc(100% + 4px);left:0;min-width:220px;background:var(--bg-0);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.12);padding:6px;z-index:50;flex-direction:column;gap:2px;display:none;">
               <button type="button" id="btn-save-example" class="sf-more-item" title="將目前畫面上的明細與附件圖存為該客戶 Few-Shot 範例（多張附件時以第一張為準）" ${attachments.length === 0 ? "disabled" : ""}>${SF_ICONS.spark}<span>儲存為 AI 學習範例</span>${attachments.length === 0 ? `<span style="margin-left:auto;font-size:11px;color:var(--txt-3);">（需有附件）</span>` : ""}</button>
               <a href="/admin/orders/batch-lingyue-xlsx?ids=${encodeURIComponent(orderId)}" class="sf-more-item">${SF_ICONS.dl}<span>匯出凌越</span></a>
               <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1" class="sf-more-item">${SF_ICONS.list}<span>預覽訂單</span></a>
@@ -7878,16 +7897,18 @@ function createAdminRouter() {
             const moreMenu = document.getElementById("orderMoreMenu");
             const moreDropdown = document.getElementById("orderMoreDropdown");
             if (!moreToggle || !moreMenu || !moreDropdown) return;
-            function closeMore(){ moreMenu.hidden = true; moreToggle.setAttribute("aria-expanded","false"); }
-            function openMore(){ moreMenu.hidden = false; moreToggle.setAttribute("aria-expanded","true"); }
+            function isOpen(){ return moreMenu.style.display === "flex"; }
+            function closeMore(){ moreMenu.style.display = "none"; moreToggle.setAttribute("aria-expanded","false"); }
+            function openMore(){ moreMenu.style.display = "flex"; moreToggle.setAttribute("aria-expanded","true"); }
+            closeMore();
             moreToggle.addEventListener("click", function(e){
               e.stopPropagation();
-              if (moreMenu.hidden) openMore(); else closeMore();
+              if (isOpen()) closeMore(); else openMore();
             });
             document.addEventListener("click", function(e){
-              if (!moreMenu.hidden && !moreDropdown.contains(e.target)) closeMore();
+              if (isOpen() && !moreDropdown.contains(e.target)) closeMore();
             });
-            document.addEventListener("keydown", function(e){ if (e.key === "Escape" && !moreMenu.hidden) closeMore(); });
+            document.addEventListener("keydown", function(e){ if (e.key === "Escape" && isOpen()) closeMore(); });
             moreMenu.querySelectorAll("a,button").forEach(el => el.addEventListener("click", function(){ setTimeout(closeMore, 0); }));
           })();
           </script>
@@ -8051,7 +8072,10 @@ function createAdminRouter() {
                 <tr><td colspan="10" style="background:var(--bg-2);padding:8px 12px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="sf-btn sm">${SF_ICONS.plus}<span>增加品項</span></a></td></tr>
               </table>
             </div>
-            <div style="padding:12px 14px;border-top:var(--hairline);"><button type="submit" class="sf-btn primary" title="儲存數量、單位、備註與排序">${SF_ICONS.check}<span>儲存明細</span></button></div>
+            <div style="padding:12px 14px;border-top:var(--hairline);display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <button type="submit" class="sf-btn primary" title="儲存數量、單位、備註與排序">${SF_ICONS.check}<span>儲存明細</span></button>
+              ${orderStatusLc === "approved" || orderStatusLc === "deleted" || orderStatusLc === "complaint" ? "" : `<button type="submit" form="approveOrderForm" class="btn btn-cute-approve" title="核對完畢，直接確認並跳到下一筆待確認">確認 → 下一筆</button>`}
+            </div>
           </div>
           ${(voidedItems && voidedItems.length) ? `
           <div class="sf-card" style="margin-top:14px;border-left:3px solid var(--txt-3);">
@@ -9129,7 +9153,9 @@ function createAdminRouter() {
             res.status(404).send("訂單不存在");
             return;
         }
-        await db.prepare("UPDATE orders SET status = ? WHERE id = ?").run("approved", orderId);
+        const actor = req.adminUsername || "system";
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        await db.prepare("UPDATE orders SET status = ?, approved_by = ?, approved_at = " + nowSql + " WHERE id = ?").run("approved", actor, orderId);
         await logDataChange(req, {
             entityType: "order",
             entityId: orderId,
@@ -9208,7 +9234,7 @@ function createAdminRouter() {
             res.status(404).send("訂單不存在");
             return;
         }
-        await db.prepare("UPDATE orders SET status = ? WHERE id = ?").run("pending", orderId);
+        await db.prepare("UPDATE orders SET status = ?, approved_by = NULL, approved_at = NULL WHERE id = ?").run("pending", orderId);
         await logDataChange(req, {
             entityType: "order",
             entityId: orderId,
