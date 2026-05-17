@@ -506,19 +506,22 @@ const NOTION_STYLE = `
     .order-detail-raw-inner { position: static; max-height: 220px; }
     .order-detail-raw-pre-wrap { max-height: min(14vh, 110px); }
     .order-detail-raw-sticky-hint { display: none; }
-    /* 手機版品項卡：3 段式緊湊版型
-       Row1: 料號 + 品項名稱（大字）+ 作廢×（右上）
-       Row2: 子客戶
-       Row3: 數量（大字）+ 單位 + 備註
+    /* 手機版品項卡：5 段式緊湊版型
+       Row1: 原始（灰底）
+       Row2: 料號 + 品項名稱（大字）+ 作廢×
+       Row3: 子客戶（全寬）
+       Row4: 數量（大字）+ 單位
+       Row5: 備註（全寬）
        HTML 欄序：1=cb 2=sort 3=idx 4=erp 5=product 6=sub_customer 7=qty 8=unit 9=remark 10=del */
     table.order-detail-table tbody tr {
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: minmax(40px, auto) minmax(0, 1fr) auto;
       grid-template-areas:
         "orig orig orig"
         "erp product del"
         "subcust subcust subcust"
-        "qty unit remark";
+        "qty unit unit"
+        "remark remark remark";
       gap: 0;
       border: 1px solid var(--notion-border);
       border-radius: 12px;
@@ -526,7 +529,7 @@ const NOTION_STYLE = `
       overflow: hidden;
       background: var(--notion-bg);
     }
-    table.order-detail-table tbody tr td { border-bottom: none; padding: 8px 10px; display:flex; align-items:center; gap:6px; }
+    table.order-detail-table tbody tr td { border-bottom: none; padding: 8px 10px; display:flex; align-items:center; gap:6px; min-width:0; }
     table.order-detail-table tbody tr td::before { content: none; }
     /* 隱藏 cb、sort、idx（手機版多餘） */
     table.order-detail-table tbody tr td:nth-child(1),
@@ -535,36 +538,42 @@ const NOTION_STYLE = `
     /* Row 2: 料號 + 品項 + 作廢 */
     table.order-detail-table tbody tr td:nth-child(4) {
       grid-area: erp;
-      padding: 10px 6px 10px 12px;
+      padding: 10px 4px 10px 12px;
       font-size: 12px;
       color: var(--notion-text-muted);
       font-family: ui-monospace, monospace;
       align-self: center;
       justify-content: flex-start;
+      white-space: nowrap;
     }
     table.order-detail-table tbody tr td:nth-child(5) {
       grid-area: product;
       padding: 10px 6px;
-      font-size: 17px;
+      font-size: 18px;
       font-weight: 600;
       color: var(--notion-text);
       align-self: center;
       min-width: 0;
-      overflow-wrap: break-word;
+      gap: 8px;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+      line-height: 1.2;
     }
     table.order-detail-table tbody tr td:nth-child(5) .order-final-product,
-    table.order-detail-table tbody tr td:nth-child(5) .product-pick { font-size: 17px; font-weight: 600; }
-    table.order-detail-table tbody tr td:nth-child(5) .conf-pill { font-size: 11px; font-weight: 600; }
-    table.order-detail-table tbody tr td:nth-child(5) .product-change { font-size: 12px; font-weight: 400; opacity: 0.7; margin-left:6px; }
+    table.order-detail-table tbody tr td:nth-child(5) .order-final-product a,
+    table.order-detail-table tbody tr td:nth-child(5) .product-pick { font-size: 18px; font-weight: 600; word-break: keep-all; }
+    table.order-detail-table tbody tr td:nth-child(5) .conf-pill { font-size: 11px; font-weight: 600; flex: 0 0 auto; }
+    /* 改品項連結手機版隱藏（直接點品名即可編輯） */
+    table.order-detail-table tbody tr td:nth-child(5) .product-change { display: none; }
     table.order-detail-table tbody tr td:nth-child(10) {
       grid-area: del;
-      padding: 6px 8px;
-      align-self: start;
+      padding: 6px 10px 6px 0;
+      align-self: center;
       justify-self: end;
       justify-content: flex-end;
     }
     table.order-detail-table tbody tr td:nth-child(10) .order-del-btn-icon { min-width: 1.85rem; font-size: 16px; padding: 2px 6px; }
-    /* Row 3: 子客戶 */
+    /* Row 3: 子客戶（全寬） */
     table.order-detail-table tbody tr td:nth-child(6) {
       grid-area: subcust;
       padding: 6px 12px 8px;
@@ -581,49 +590,60 @@ const NOTION_STYLE = `
     table.order-detail-table tbody tr td:nth-child(6) input {
       width: 100% !important;
       max-width: none !important;
-      flex: 1;
+      flex: 1 1 auto;
+      min-width: 0;
       font-size: 13px;
     }
-    /* Row 4: 數量 + 單位 + 備註 */
+    /* Row 4: 數量 + 單位 */
     table.order-detail-table tbody tr td:nth-child(7) {
       grid-area: qty;
       padding: 8px 6px 10px 12px;
       border-top: 1px solid var(--notion-border);
-      gap: 4px;
+      gap: 6px;
     }
     table.order-detail-table tbody tr td:nth-child(7)::before {
       content: "數量";
       color: var(--notion-text-muted);
       font-size: 11px;
-      margin-right: 4px;
+      margin-right: 2px;
       flex: 0 0 auto;
     }
     table.order-detail-table tbody tr td:nth-child(7) input {
-      font-size: 17px !important;
+      font-size: 18px !important;
       font-weight: 600;
-      width: 100% !important;
+      width: 4.5rem !important;
       max-width: 4.5rem !important;
       text-align: center;
       padding: 4px 6px;
     }
     table.order-detail-table tbody tr td:nth-child(8) {
       grid-area: unit;
-      padding: 8px 6px 10px;
-      border-top: 1px solid var(--notion-border);
-      gap: 0;
-    }
-    table.order-detail-table tbody tr td:nth-child(8) select {
-      font-size: 15px;
-      font-weight: 500;
-      width: 100%;
-      max-width: 5.5rem;
-      padding: 4px 6px;
-    }
-    table.order-detail-table tbody tr td:nth-child(9) {
-      grid-area: remark;
       padding: 8px 12px 10px 6px;
       border-top: 1px solid var(--notion-border);
-      gap: 4px;
+      gap: 6px;
+      justify-content: flex-start;
+    }
+    table.order-detail-table tbody tr td:nth-child(8)::before {
+      content: "單位";
+      color: var(--notion-text-muted);
+      font-size: 11px;
+      margin-right: 2px;
+      flex: 0 0 auto;
+    }
+    table.order-detail-table tbody tr td:nth-child(8) select {
+      font-size: 16px;
+      font-weight: 600;
+      width: auto;
+      min-width: 5rem;
+      max-width: none;
+      padding: 4px 8px;
+    }
+    /* Row 5: 備註（全寬） */
+    table.order-detail-table tbody tr td:nth-child(9) {
+      grid-area: remark;
+      padding: 8px 12px 10px;
+      border-top: 1px solid var(--notion-border);
+      gap: 6px;
     }
     table.order-detail-table tbody tr td:nth-child(9)::before {
       content: "備註";
@@ -635,7 +655,8 @@ const NOTION_STYLE = `
     table.order-detail-table tbody tr td:nth-child(9) input {
       width: 100% !important;
       max-width: none !important;
-      flex: 1;
+      flex: 1 1 auto;
+      min-width: 0;
       font-size: 13px;
     }
     /* 第一列：原始 raw_card */
@@ -8796,10 +8817,11 @@ function createAdminRouter() {
                     <h1 style="margin:0;font-size:22px;font-weight:600;">客訴處理</h1>
                   </div>
                   <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    <a class="sf-btn" href="/admin/complaints/new" title="客戶在 LINE 純抱怨沒進訂單時，從這邊建空白客訴單">${SF_ICONS.plus}<span>新增空白客訴</span></a>
                     <a class="sf-btn primary" href="/admin/complaints/export.xlsx${exportQs}" title="依目前篩選匯出 Excel 報表">${SF_ICONS.dl}<span>匯出報表</span></a>
                   </div>
                 </div>
-                <p style="margin:0;color:var(--txt-3);font-size:13px;">由訂單頁「轉為客訴」按鈕送入。客訴不會出現在訂單列表，也不會匯出到凌越。員工在 LINE 群組回覆客戶的訊息會自動串到對話時間軸。</p>
+                <p style="margin:0;color:var(--txt-3);font-size:13px;">三種來源：① 訂單頁「轉為客訴」按鈕 ② 客戶 LINE 訊息含關鍵詞時自動建立 ③「新增空白客訴」手動建立。客訴不會出現在訂單列表，不會匯出到凌越。員工在 LINE 群組回覆客戶的訊息會自動串到對話時間軸。</p>
                 <div class="sf-card">
                   <div class="sf-card-body" style="padding:14px 16px;">
                     <form id="complaintsFilterForm" method="get" action="/admin/complaints" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
@@ -8866,6 +8888,95 @@ function createAdminRouter() {
         } catch (e) {
             console.error("[admin] /complaints", e);
             res.status(500).send("載入客訴列表失敗：" + (e?.message || e));
+        }
+    });
+    router.get("/complaints/new", async (req, res) => {
+        try {
+            const customers = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE active = 1 OR active IS NULL ORDER BY name").all();
+            const today = getTaipeiCalendarDateYYYYMMDD();
+            const errMsg = req.query.err ? `<div class="sf-pill bad" style="align-self:flex-start;margin-bottom:8px;">${escapeHtml(String(req.query.err))}</div>` : "";
+            const body = `
+              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:840px;margin:0 auto;">
+                <div>
+                  <div class="sf-breadcrumb" style="margin-bottom:6px;"><a href="/admin/complaints">客訴處理</a> / 新增空白客訴</div>
+                  <h1 style="margin:0;font-size:22px;font-weight:600;">新增空白客訴</h1>
+                  <p style="color:var(--txt-3);font-size:13px;margin:6px 0 0;">客戶在 LINE 純粹抱怨沒提到具體叫貨內容時用。建立後會出現在客訴清單，後續流程與一般客訴一致。</p>
+                </div>
+                ${errMsg}
+                <form method="post" action="/admin/complaints/new" class="sf-card" style="padding:18px 22px;display:flex;flex-direction:column;gap:14px;">
+                  <label style="font-size:13px;color:var(--txt-2);">客戶 <span style="color:var(--bad);">*</span>
+                    <select name="customer_id" class="sf-input" required style="margin-top:4px;">
+                      <option value="">— 請選擇 —</option>
+                      ${customers.map(c => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}${c.line_group_id ? "" : "（未綁定 LINE）"}</option>`).join("")}
+                    </select>
+                  </label>
+                  <label style="font-size:13px;color:var(--txt-2);">客訴日期
+                    <input type="date" name="order_date" class="sf-input" value="${escapeAttr(today)}" style="margin-top:4px;">
+                  </label>
+                  <label style="font-size:13px;color:var(--txt-2);">客訴內容（客戶原話／員工轉述）<span style="color:var(--bad);">*</span>
+                    <textarea name="raw_message" class="sf-input" rows="6" required placeholder="例：上週送的高麗菜底部有些爛掉，客戶說下次想換廠商。可貼上 LINE 對話截圖文字。" style="margin-top:4px;font-family:inherit;"></textarea>
+                  </label>
+                  <label style="font-size:13px;color:var(--txt-2);">備註（選填）
+                    <input type="text" name="memo" class="sf-input" placeholder="例：經電話確認、來自 LINE 群組對話" style="margin-top:4px;">
+                  </label>
+                  <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
+                    <a class="sf-btn ghost" href="/admin/complaints">取消</a>
+                    <button type="submit" class="sf-btn primary">建立客訴單</button>
+                  </div>
+                </form>
+              </div>`;
+            res.type("text/html").send(notionPage("新增空白客訴", body, "complaints", res));
+        } catch (e) {
+            console.error("[admin] GET /complaints/new", e);
+            res.status(500).send("載入失敗：" + (e?.message || e));
+        }
+    });
+    router.post("/complaints/new", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const customerId = String(req.body?.customer_id || "").trim();
+            const orderDate = String(req.body?.order_date || "").trim();
+            const rawMessage = String(req.body?.raw_message || "").trim();
+            const memo = String(req.body?.memo || "").trim();
+            if (!customerId) {
+                res.redirect("/admin/complaints/new?err=" + encodeURIComponent("請選擇客戶"));
+                return;
+            }
+            if (!rawMessage) {
+                res.redirect("/admin/complaints/new?err=" + encodeURIComponent("請填寫客訴內容"));
+                return;
+            }
+            const customer = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE id = ?").get(customerId);
+            if (!customer) {
+                res.redirect("/admin/complaints/new?err=" + encodeURIComponent("找不到客戶"));
+                return;
+            }
+            const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(orderDate) ? orderDate : getTaipeiCalendarDateYYYYMMDD();
+            const orderId = (0, id_js_1.newId)("ord");
+            const isPg = Boolean(process.env.DATABASE_URL);
+            const nowSql = isPg ? "CURRENT_TIMESTAMP" : "datetime('now')";
+            // 訂單編號用日期+序號（與一般訂單同邏輯，但 status='complaint'）
+            const datePart = dateOk.replace(/-/g, "");
+            const lastNo = await db.prepare("SELECT order_no FROM orders WHERE order_no LIKE ? ORDER BY order_no DESC LIMIT 1").get(datePart + "%");
+            let seq = 1;
+            if (lastNo?.order_no) {
+                const m = String(lastNo.order_no).match(/^\d{8}(\d{3})$/);
+                if (m) seq = parseInt(m[1], 10) + 1;
+            }
+            const orderNo = datePart + String(seq).padStart(3, "0");
+            await db.prepare(
+                "INSERT INTO orders (id, order_no, customer_id, order_date, status, raw_message, remark, line_group_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
+            ).run(orderId, orderNo, customerId, dateOk, "complaint", rawMessage, memo || null, customer.line_group_id || null);
+            await logDataChange(req, {
+                entityType: "order",
+                entityId: orderId,
+                action: "create_complaint",
+                summary: `手動新增空白客訴 ${orderNo}（客戶：${customer.name}）`,
+                meta: { customer_id: customerId, customer_name: customer.name, order_date: dateOk, raw_message: rawMessage, memo, source: "manual_new" },
+            });
+            res.redirect("/admin/complaints/" + encodeURIComponent(orderId));
+        } catch (e) {
+            console.error("[admin] POST /complaints/new", e);
+            res.redirect("/admin/complaints/new?err=" + encodeURIComponent("建立失敗：" + (e?.message || e)));
         }
     });
     router.get("/complaints/export.xlsx", async (req, res) => {
