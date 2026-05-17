@@ -62,6 +62,7 @@ const gemini_prompt_resolve_js_1 = require("../lib/gemini-prompt-resolve.js");
 const gemini_eval_harness_js_1 = require("../lib/gemini-eval-harness.js");
 const unit_spec_learn_js_1 = require("../lib/unit-spec-learn.js");
 const customer_profile_js_1 = require("../lib/customer-profile.js");
+const customer_scoring_js_1 = require("../lib/customer-scoring.js");
 const liff_bind_token_js_1 = require("../lib/liff-bind-token.js");
 const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
 const daily_summary_push_js_1 = require("../lib/daily-summary-push.js");
@@ -1231,6 +1232,7 @@ function sfSidebar(active) {
         ${item("/admin", "dashboard", "spark", "儀表板")}
         ${item("/admin/orders", "orders", "list", "訂單審核")}
         ${item("/admin/complaints", "complaints", "warn", "客訴處理")}
+        ${item("/admin/reminders", "reminders", "bell", "忘記叫貨提醒")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
@@ -3721,6 +3723,123 @@ function createAdminRouter() {
         } catch (e) {
             console.error("[admin] /analytics failed", e);
             res.status(500).send("載入營運分析失敗：" + (e?.message || e));
+        }
+    });
+    // === 忘記叫貨提醒（流失風險清單）===
+    router.get("/reminders", async (req, res) => {
+        try {
+            const todayIso = getTaipeiCalendarDateYYYYMMDD();
+            // 取所有啟用中客戶，計算每位 daysSinceLastOrder vs avgIntervalDays
+            const customers = await db.prepare(
+                "SELECT id, name, line_group_id, crm_handover_notes FROM customers WHERE active = 1 OR active IS NULL ORDER BY name"
+            ).all();
+            const rows = [];
+            for (const c of customers) {
+                try {
+                    const inputs = await (0, customer_scoring_js_1.fetchCustomerScoringInputs)(db, c.id, todayIso);
+                    if (!inputs) continue;
+                    // 提醒條件：曾叫過貨 + 有平均間隔樣本 + 已超過平均 × 1.5
+                    if (inputs.daysSinceLastOrder == null || inputs.avgIntervalDays == null) continue;
+                    if (inputs.daysSinceLastOrder <= inputs.avgIntervalDays * 1.5) continue;
+                    const { score } = (0, customer_scoring_js_1.computeCustomerScore)(inputs);
+                    const tier = (0, customer_scoring_js_1.scoreToTier)(score);
+                    const overdueRatio = inputs.daysSinceLastOrder / inputs.avgIntervalDays;
+                    rows.push({
+                        id: c.id, name: c.name,
+                        lineGroupId: c.line_group_id,
+                        handoverNotes: c.crm_handover_notes,
+                        daysSince: inputs.daysSinceLastOrder,
+                        avg: inputs.avgIntervalDays,
+                        overdueRatio,
+                        lastOrderDate: inputs.lastOrderDate,
+                        orders90: inputs.orders90,
+                        ordersAll: inputs.ordersAll,
+                        score, tier,
+                    });
+                } catch (_) { /* skip on err */ }
+            }
+            // 依「逾期倍數 × 累計訂單分數」排序（讓主力客戶且逾期久的優先）
+            rows.sort((a, b) => (b.overdueRatio * (b.score / 100)) - (a.overdueRatio * (a.score / 100)));
+            const totalActive = customers.length;
+            const groupedSeverity = {
+                critical: rows.filter(r => r.overdueRatio >= 3).length,
+                high: rows.filter(r => r.overdueRatio >= 2 && r.overdueRatio < 3).length,
+                medium: rows.filter(r => r.overdueRatio >= 1.5 && r.overdueRatio < 2).length,
+            };
+            const severityPill = (ratio) => {
+                if (ratio >= 3) return `<span class="sf-pill bad">嚴重</span>`;
+                if (ratio >= 2) return `<span class="sf-pill" style="background:#fee2e2;color:#b91c1c;">高</span>`;
+                return `<span class="sf-pill warn">中</span>`;
+            };
+            const body = `
+              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:1100px;margin:0 auto;">
+                <div>
+                  <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 忘記叫貨提醒</div>
+                  <h1 style="margin:0;font-size:22px;font-weight:600;">忘記叫貨提醒</h1>
+                  <p style="margin:6px 0 0;color:var(--txt-3);font-size:12px;">客戶有平均叫貨節奏、且距上次叫貨已超過平均間隔 1.5 倍以上時列出。優先順序 = 逾期倍數 × 客戶評分。</p>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+                  <div class="sf-card" style="padding:14px 18px;">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">需提醒</div>
+                    <div class="mono" style="font-size:26px;font-weight:600;">${rows.length}</div>
+                    <div style="font-size:12px;color:var(--txt-2);">總啟用客戶 ${totalActive}</div>
+                  </div>
+                  <div class="sf-card" style="padding:14px 18px;border-left:4px solid var(--bad);">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">嚴重（≥3 倍）</div>
+                    <div class="mono" style="font-size:26px;font-weight:600;color:var(--bad);">${groupedSeverity.critical}</div>
+                  </div>
+                  <div class="sf-card" style="padding:14px 18px;border-left:4px solid #f59e0b;">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">高（2–3 倍）</div>
+                    <div class="mono" style="font-size:26px;font-weight:600;color:#b45309;">${groupedSeverity.high}</div>
+                  </div>
+                  <div class="sf-card" style="padding:14px 18px;border-left:4px solid var(--warn);">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">中（1.5–2 倍）</div>
+                    <div class="mono" style="font-size:26px;font-weight:600;color:var(--warn);">${groupedSeverity.medium}</div>
+                  </div>
+                </div>
+                <div class="sf-card">
+                  <div class="sf-card-head"><div class="sf-card-title">📋 提醒清單（依優先順序）</div><span class="sf-card-sub">點客戶名跳客戶 360；點「複製訊息」可貼到 LINE 給客戶</span></div>
+                  <div style="padding:0;">
+                    ${rows.length ? `<table class="sf-table" style="font-size:13px;"><thead><tr><th></th><th>客戶</th><th>最後叫貨</th><th style="text-align:right;">已 N 天</th><th style="text-align:right;">平均間隔</th><th style="text-align:right;">逾期倍數</th><th>客戶分</th><th></th></tr></thead><tbody>${rows.map(r => `
+                      <tr>
+                        <td>${severityPill(r.overdueRatio)}</td>
+                        <td><a href="/admin/customers/${encodeURIComponent(r.id)}/360" style="font-weight:500;">${escapeHtml(r.name)}</a>${r.handoverNotes ? `<div style="font-size:11px;color:var(--txt-3);margin-top:2px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(r.handoverNotes)}">📝 ${escapeHtml(String(r.handoverNotes).slice(0,40))}${String(r.handoverNotes).length>40?"…":""}</div>` : ""}</td>
+                        <td class="mono" style="color:var(--txt-3);">${escapeHtml(r.lastOrderDate || "—")}</td>
+                        <td style="text-align:right;" class="mono"><strong style="color:var(--bad);">${r.daysSince}</strong></td>
+                        <td style="text-align:right;" class="mono" style="color:var(--txt-3);">${r.avg}</td>
+                        <td style="text-align:right;" class="mono">${r.overdueRatio.toFixed(1)}×</td>
+                        <td><span class="sf-pill" style="background:${r.tier.bg};color:${r.tier.color};font-size:11px;">${r.score}</span></td>
+                        <td style="text-align:right;white-space:nowrap;">
+                          <button type="button" class="sf-btn sm copy-reminder-btn" data-name="${escapeAttr(r.name)}" data-days="${r.daysSince}" title="複製提醒訊息">📋 複製</button>
+                        </td>
+                      </tr>`).join("")}</tbody></table>` : `<p style="padding:24px;text-align:center;color:var(--ok);">✓ 目前沒有客戶需要提醒</p>`}
+                  </div>
+                </div>
+              </div>
+              <script>
+              (function(){
+                document.querySelectorAll(".copy-reminder-btn").forEach(btn => {
+                  btn.addEventListener("click", function(){
+                    const name = btn.dataset.name || "客戶";
+                    const days = btn.dataset.days || "";
+                    const msg = name + " 老闆好，您已經 " + days + " 天沒有叫貨了，請問今天需要安排送貨嗎？";
+                    try {
+                      navigator.clipboard.writeText(msg).then(() => {
+                        const orig = btn.textContent;
+                        btn.textContent = "✓ 已複製";
+                        setTimeout(() => btn.textContent = orig, 1500);
+                      });
+                    } catch (e) {
+                      prompt("請手動複製：", msg);
+                    }
+                  });
+                });
+              })();
+              </script>`;
+            res.type("text/html").send(notionPage("忘記叫貨提醒", body, "reminders", res));
+        } catch (e) {
+            console.error("[admin] /reminders failed", e);
+            res.status(500).send("載入提醒清單失敗：" + (e?.message || e));
         }
     });
     router.get("/audit", async (req, res) => {
@@ -7542,7 +7661,7 @@ function createAdminRouter() {
             : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve">確認</button></form>`;
         const toComplaintFormHtml = orderStatusLc === "complaint" || orderStatusLc === "deleted"
             ? ""
-            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/to-complaint" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="sf-btn danger" title="此筆其實是客訴，不是訂單" onclick="return confirm('確定將此筆轉為客訴？將不再出現在訂單列表，並進入客訴處理流程。');">⚠️ 轉為客訴</button></form>`;
+            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/to-complaint" style="display:inline;margin:0;"><button type="submit" class="sf-btn sm" title="此筆其實是客訴而非訂單，按下將轉入客訴處理流程" onclick="return confirm('確定將此筆轉為客訴？將不再出現在訂單列表，並進入客訴處理流程。');" style="color:#c2410c;border-color:#fed7aa;">⚠ 轉為客訴</button></form>`;
         const statusPillCls = orderStatusLc === "approved" ? "ok" : orderStatusLc === "deleted" ? "bad" : orderStatusLc === "complaint" ? "bad" : "warn";
         // 訂貨日（系統紀錄時間） - 取 updated_at 的前 16 字（YYYY-MM-DD HH:mm）
         const orderReceivedAt = order.updated_at ? String(order.updated_at).replace("T", " ").slice(0, 16) : "—";
@@ -7589,14 +7708,17 @@ function createAdminRouter() {
                 <span>· ${escapeHtml(items.length+"")} 項</span>
                 ${attachments.length ? `<span>· 圖 ${attachments.length}</span>` : "<span>· 純文字</span>"}
                 <span>· 訂貨 <span class="mono" style="color:var(--txt-2);">${escapeHtml(orderReceivedAt)}</span></span>
-                <span style="display:inline-flex;align-items:center;gap:4px;">· 出貨
-                  <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/set-date${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" style="display:inline-flex;gap:4px;align-items:center;margin:0;">
-                    <input type="date" name="order_date" id="orderEditDate" value="${escapeAttr(order.order_date || "")}" required style="padding:2px 4px;border:1px solid var(--line);border-radius:4px;font-size:12px;font-family:ui-monospace,monospace;color:var(--txt-1);background:#fff;width:130px;">
-                    <button type="button" class="sf-btn sm ghost" id="orderEditDateTomorrow" title="設為明天" style="padding:1px 6px;font-size:11px;">明</button>
-                    <button type="button" class="sf-btn sm ghost" id="orderEditDateMon" title="設為下週一" style="padding:1px 6px;font-size:11px;">一</button>
-                    <button type="submit" class="sf-btn sm primary" title="儲存出貨日" style="padding:1px 6px;font-size:11px;">存</button>
-                  </form>
-                </span>
+                <span>· 出貨 <strong class="mono" style="color:var(--txt-1);font-size:13px;">${escapeHtml(order.order_date || "—")}</strong></span>
+              </div>
+              <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/set-date${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" style="display:inline-flex;gap:6px;align-items:center;margin:0;padding:6px 10px;background:var(--bg-1);border:1px solid var(--line);border-radius:6px;">
+                  <span style="font-size:12px;color:var(--txt-2);">改出貨日：</span>
+                  <input type="date" name="order_date" id="orderEditDate" value="${escapeAttr(order.order_date || "")}" required style="padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px;font-family:ui-monospace,monospace;width:140px;">
+                  <button type="button" class="sf-btn sm" id="orderEditDateTomorrow" title="自動填入明天">明天</button>
+                  <button type="button" class="sf-btn sm" id="orderEditDateMon" title="自動填入下週一">下週一</button>
+                  <button type="submit" class="sf-btn sm primary" title="儲存新的出貨日">儲存</button>
+                </form>
+                ${toComplaintFormHtml ? `<span style="margin-left:auto;">${toComplaintFormHtml}</span>` : ""}
               </div>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -7666,7 +7788,6 @@ function createAdminRouter() {
           ${isOrderVoided ? "" : `
           <span style="flex:1;"></span>
           <div class="sf-toolbar-danger" style="display:inline-flex;gap:6px;padding:4px;background:rgba(239,68,68,0.06);border:1px dashed rgba(239,68,68,0.3);border-radius:8px;align-items:center;">
-            ${toComplaintFormHtml}
             <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/void${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" id="voidOrderForm" style="display:inline-flex;margin:0;gap:6px;">
               <input type="hidden" name="void_reason" id="voidOrderReason" value="">
               <input type="hidden" name="void_note" id="voidOrderNote" value="">
@@ -9845,21 +9966,22 @@ function createAdminRouter() {
                 "(SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.voided_at IS NULL) AS item_count " +
                 "FROM orders o WHERE o.customer_id = ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted') ORDER BY o.order_date DESC, o.id DESC LIMIT 5"
             ).all(cid);
-            // 簡單評分（先用既有資料；之後再做正式版）
-            let score = 50;
-            score += Math.min(40, orders90 * 1.0); // 活躍度
-            score += Math.min(10, ordersAll * 0.05); // 長期忠誠
-            score -= Math.min(20, openComplaints * 5); // 未解決客訴扣分
-            score -= Math.min(15, complaints.length * 1.5); // 累計客訴扣分
-            if (daysSinceLastOrder != null && avgIntervalDays != null && daysSinceLastOrder > avgIntervalDays * 2) {
-                score -= 10; // 超過平常 2 倍未叫
-            }
-            score = Math.max(0, Math.min(100, Math.round(score)));
-            const stars = score >= 90 ? "★★★★★" : score >= 70 ? "★★★★" : score >= 50 ? "★★★" : score >= 30 ? "★★" : "★";
-            const tier = score >= 80 ? { label: "主力客戶", color: "var(--ok)", bg: "#d1fae5" }
-                : score >= 60 ? { label: "穩定客戶", color: "#2563eb", bg: "#dbeafe" }
-                : score >= 40 ? { label: "一般客戶", color: "var(--txt-2)", bg: "var(--bg-2)" }
-                : { label: "需關注", color: "var(--bad)", bg: "#fee2e2" };
+            // 使用正式版評分演算法
+            let items90 = 0;
+            try {
+                const r = await db.prepare(
+                    "SELECT COUNT(*) AS n FROM order_items oi JOIN orders o ON o.id = oi.order_id " +
+                    "WHERE o.customer_id = ? AND oi.voided_at IS NULL AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') AND o.order_date >= ? AND o.order_date <= ?"
+                ).get(cid, (function(){const d=new Date(todayIso+"T00:00:00+08:00"); d.setDate(d.getDate()-89); return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei"}).format(d);})(), todayIso);
+                items90 = Number(r?.n) || 0;
+            } catch (_) {}
+            const { score, breakdown } = (0, customer_scoring_js_1.computeCustomerScore)({
+                orders90, ordersAll, items90,
+                complaintsAll: complaints.length, complaintsOpen: openComplaints,
+                daysSinceLastOrder, avgIntervalDays,
+            });
+            const tier = (0, customer_scoring_js_1.scoreToTier)(score);
+            const stars = tier.stars;
             // === HTML ===
             const okMsg = req.query.ok === "handover_saved" ? `<div class="sf-pill ok" style="align-self:flex-start;">已儲存交接備註</div>` : "";
             const fmtTs = (s) => String(s || "").replace("T", " ").slice(0, 16);
@@ -10216,11 +10338,11 @@ function createAdminRouter() {
             <td>${codeCell}</td>
             <td style="font-size:12px;color:var(--txt-2);">${escapeHtml(r.contact ?? "")}</td>
             <td style="text-align:right;" class="customer-status-cell">${active ? `<span class="sf-pill ok">啟用</span>` : `<span class="sf-pill">停用</span>`}</td>
-            <td>
-              <a class="sf-btn sm" href="/admin/customers/${encodeURIComponent(r.id)}/360" title="客戶完整檔案（CRM）">📊</a>
-              <a class="sf-btn sm" href="/admin/customers/${encodeURIComponent(r.id)}/edit">${SF_ICONS.edit}</a>
+            <td style="white-space:nowrap;">
+              <a class="sf-btn sm" href="/admin/customers/${encodeURIComponent(r.id)}/360" title="客戶完整檔案">${SF_ICONS.spark}</a>
+              <a class="sf-btn sm" href="/admin/customers/${encodeURIComponent(r.id)}/edit" title="編輯">${SF_ICONS.edit}</a>
               <button type="button" class="sf-btn sm customer-toggle-btn" data-id="${escapeAttr(r.id)}" data-active="${active ? "1" : "0"}">${active ? "停用" : "啟用"}</button>
-              <a class="sf-btn sm danger" href="/admin/customers/${encodeURIComponent(r.id)}/delete">${SF_ICONS.x}</a>
+              <a class="sf-btn sm danger" href="/admin/customers/${encodeURIComponent(r.id)}/delete" title="刪除">${SF_ICONS.x}</a>
             </td>
           </tr>`;
         };

@@ -118,26 +118,99 @@ function formatSplitSubNamesForReply(keySet) {
     return arr.map((k) => (k === "" ? "主客戶" : k)).join("、");
 }
 /**
- * 客訴關鍵詞偵測：訊息含有以下其中一種明確負面信號即視為客訴。
- * 保守策略：只比對清楚的客訴詞，避免「上次叫的菜很好」這類正面引用被誤判。
+ * 客戶意圖偵測：依關鍵詞判斷訊息類型。
+ * 回傳 { intent, keywords }，intent 為：
+ *   - 'complaint'      : 客訴（最高優先級，product issues / 投訴 / refund）
+ *   - 'cancel_order'   : 取消訂單
+ *   - 'modify_order'   : 改訂單（改數量、改品項、改時間）
+ *   - 'return_request' : 退貨／退換貨（與 complaint 重疊度高，retain to keep semantics）
+ *   - 'delivery_inquiry': 詢問送貨時間／到貨進度
+ *   - 'add_to_order'   : 補叫貨（既有訂單上加品項）
+ *   - null             : 無特殊意圖（一般叫貨／問候）
+ *
+ * 多匹配時優先順序：complaint > return_request > cancel_order > modify_order > delivery_inquiry > add_to_order
  */
-function detectComplaintKeywords(text) {
-    if (!text) return { matched: false, keywords: [] };
+function detectCustomerIntent(text) {
+    if (!text) return { intent: null, keywords: [] };
     const t = String(text);
-    const patterns = [
-        /壞掉|壞了|爛掉|爛了|腐爛|發霉|發臭|有蟲|生蟲|長蟲|變質|不新鮮/,
-        /客訴|投訴|抱怨|退錢|退費|退貨|賠償|要賠|理賠/,
-        /送錯|配錯|漏送|少送|多送|送少|送多|寄錯/,
-        /上次.{0,8}(壞|爛|不好|有問題|不新鮮|不對|怪)/,
-        /品質.{0,5}(差|不好|有問題)/,
-        /菜.{0,5}有問題|貨.{0,5}有問題/,
+    // 各意圖的關鍵詞 patterns
+    const intents = [
+        {
+            key: "complaint",
+            patterns: [
+                /壞掉|壞了|爛掉|爛了|腐爛|發霉|發臭|有蟲|生蟲|長蟲|變質|不新鮮/,
+                /客訴|投訴|抱怨|賠償|要賠|理賠/,
+                /送錯|配錯|漏送|少送|多送|送少|送多|寄錯/,
+                /上次.{0,8}(壞|爛|不好|有問題|不新鮮|不對|怪)/,
+                /品質.{0,5}(差|不好|有問題)/,
+                /菜.{0,5}有問題|貨.{0,5}有問題/,
+            ],
+        },
+        {
+            key: "return_request",
+            patterns: [
+                /退錢|退費|退貨|退掉|要退/,
+                /換貨|換新的|重送/,
+            ],
+        },
+        {
+            key: "cancel_order",
+            patterns: [
+                /取消(訂單|這筆|今天|明天)?|不要了|不用送|別送|不出貨/,
+                /(取消|刪|拿掉).{0,5}(這|那|剛剛)?(筆|張|單)/,
+                /先別送|不用了/,
+            ],
+        },
+        {
+            key: "modify_order",
+            patterns: [
+                /改成|改為|更改|修改|想改/,
+                /改.{0,5}(數量|多少|幾)/,
+                /(多|少|加).{0,3}(一|二|三|四|五|六|七|八|九|十|\d)+.{0,5}(把|斤|公斤|包|罐|盒|件)/,
+                /改.{0,5}(明天|後天|今天|送貨日|出貨日|時間)/,
+            ],
+        },
+        {
+            key: "delivery_inquiry",
+            patterns: [
+                /什麼時候(送|到)|何時(送|到)|幾點(送|到)|多久(送|到)|送到了嗎/,
+                /(到|送).{0,4}(了沒|了嗎)/,
+                /進度|還沒到|還沒收|還沒送/,
+                /可以.{0,3}(快點|提前|提早|先送)/,
+            ],
+        },
+        {
+            key: "add_to_order",
+            patterns: [
+                /再加|再多|再來|順便|還要|加買/,
+                /補.{0,3}(訂|單|一|二|三|四|五|六|七|八|九|十|\d)/,
+                /補一(下|份|張)|再補/,
+                /剛剛.{0,5}(漏|忘|沒)/,
+            ],
+        },
     ];
     const matched = [];
-    for (const p of patterns) {
-        const m = t.match(p);
-        if (m && !matched.includes(m[0])) matched.push(m[0]);
+    let primaryIntent = null;
+    for (const { key, patterns } of intents) {
+        for (const p of patterns) {
+            const m = t.match(p);
+            if (m) {
+                matched.push({ intent: key, keyword: m[0] });
+                if (primaryIntent == null) primaryIntent = key;
+                break;
+            }
+        }
     }
-    return { matched: matched.length > 0, keywords: matched };
+    return {
+        intent: primaryIntent,
+        keywords: matched.map(x => x.keyword),
+        allMatches: matched,
+    };
+}
+/** 向後相容：原本只有「客訴」用途的舊函式名 */
+function detectComplaintKeywords(text) {
+    const r = detectCustomerIntent(text);
+    return { matched: r.intent === "complaint", keywords: r.intent === "complaint" ? r.keywords : [] };
 }
 async function insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, { orderDate, customerId, groupId, rawMessage, remark, orderSubSplitKey, lineMessageId, }) {
     const orderId = (0, id_js_1.newId)("ord");
@@ -1030,26 +1103,49 @@ function createLineWebhook() {
                     db,
                     customerId: cid,
                 };
-                // 客訴關鍵詞偵測：命中即把該訂單標為客訴並跳過 AI 解析
-                const complaintHit = detectComplaintKeywords(text);
-                if (complaintHit.matched) {
+                // 客戶意圖偵測（含客訴、退貨、取消、改訂單、詢送貨、補叫貨）
+                const intentHit = detectCustomerIntent(text);
+                if (intentHit.intent === "complaint" || intentHit.intent === "return_request") {
+                    // 客訴 / 退貨：標為 complaint，跳過 AI 解析
                     try {
                         await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("complaint", orderId);
-                        console.log("[LINE] 偵測到客訴關鍵詞 [" + complaintHit.keywords.join(",") + "] → 訂單 " + orderId + " 標為 complaint");
-                        // 寫入稽核軌跡
+                        console.log("[LINE] 偵測到「" + intentHit.intent + "」意圖 [" + intentHit.keywords.join(",") + "] → 訂單 " + orderId + " 標為 complaint");
                         try {
                             const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
                             await db.prepare(
                                 "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
                             ).run(dclId, "order", orderId, "auto_create_complaint",
-                                  `自動偵測客訴關鍵詞 [${complaintHit.keywords.join(",")}]，已標為客訴`,
-                                  JSON.stringify({ matched_keywords: complaintHit.keywords, raw_text: text.slice(0, 500), source: "auto_keyword" }),
-                                  "system:complaint_detector");
-                        } catch (_) { /* ignore log err */ }
+                                  `自動偵測「${intentHit.intent === "return_request" ? "退貨" : "客訴"}」關鍵詞 [${intentHit.keywords.join(",")}]`,
+                                  JSON.stringify({ intent: intentHit.intent, matched_keywords: intentHit.keywords, raw_text: text.slice(0, 500), source: "auto_intent" }),
+                                  "system:intent_detector");
+                        } catch (_) {}
                     } catch (e) {
-                        console.warn("[LINE] 標記客訴失敗:", e?.message || e);
+                        console.warn("[LINE] 標記意圖失敗:", e?.message || e);
                     }
                     continue;
+                }
+                // 取消 / 改訂單 / 詢送貨 / 補叫貨：寫入稽核但仍嘗試 AI 解析（內容可能還含品項）
+                if (intentHit.intent && ["cancel_order", "modify_order", "delivery_inquiry", "add_to_order"].includes(intentHit.intent)) {
+                    try {
+                        const intentLabel = { cancel_order: "取消訂單", modify_order: "改訂單", delivery_inquiry: "詢送貨時間", add_to_order: "補叫貨" }[intentHit.intent] || intentHit.intent;
+                        // 訂單 remark 補上「客戶意圖：…」前綴（保留既有 remark）
+                        const r = await db.prepare("SELECT remark FROM orders WHERE id = ?").get(orderId);
+                        const newPrefix = `[客戶意圖：${intentLabel}]`;
+                        const existing = String(r?.remark || "").trim();
+                        const newRemark = existing.includes(newPrefix) ? existing : (existing ? newPrefix + " " + existing : newPrefix);
+                        await db.prepare("UPDATE orders SET remark = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRemark, orderId);
+                        const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+                        await db.prepare(
+                            "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
+                        ).run(dclId, "order", orderId, "auto_detect_intent",
+                              `自動偵測「${intentLabel}」意圖 [${intentHit.keywords.join(",")}]`,
+                              JSON.stringify({ intent: intentHit.intent, intent_label: intentLabel, matched_keywords: intentHit.keywords, raw_text: text.slice(0, 500), source: "auto_intent" }),
+                              "system:intent_detector");
+                        console.log("[LINE] 偵測到「" + intentLabel + "」意圖 [" + intentHit.keywords.join(",") + "] → 已標註於訂單 " + orderId);
+                    } catch (e) {
+                        console.warn("[LINE] 標記意圖失敗:", e?.message || e);
+                    }
+                    // 不 continue，讓後續 AI 解析仍跑（萬一文中有品項）
                 }
                 // 過短或不含數字的訊息（純 emoji、問候語等）略過 Gemini 解析
                 const looksLikeOrder = text.length >= 4 && /[\d０-９]/.test(text);
