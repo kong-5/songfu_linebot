@@ -162,8 +162,8 @@ function createLiffRouter() {
             const rows = await db.prepare(`
                 SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, o.updated_at,
                        c.name AS customer_name,
-                       (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
-                       (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
+                       (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.voided_at IS NULL) AS item_count,
+                       (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1 AND oi.voided_at IS NULL) AS need_review_count
                 FROM orders o LEFT JOIN customers c ON c.id = o.customer_id
                 WHERE o.order_date = ? ${statusFilter}
                 ORDER BY o.updated_at DESC, o.id DESC
@@ -178,7 +178,7 @@ function createLiffRouter() {
                 const itemRows = await db.prepare(`
                     SELECT oi.order_id, COALESCE(NULLIF(TRIM(p.name), ''), NULLIF(TRIM(oi.raw_name), ''), '—') AS name
                     FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-                    WHERE oi.order_id IN (${ph}) ORDER BY oi.order_id, oi.id
+                    WHERE oi.order_id IN (${ph}) AND oi.voided_at IS NULL ORDER BY oi.order_id, oi.id
                 `).all(...ids);
                 for (const r of itemRows || []) {
                     const arr = previewByOrder.get(r.order_id) || [];
@@ -229,7 +229,7 @@ function createLiffRouter() {
             }
             const o = await db.prepare(`
                 SELECT o.id, o.order_no, o.order_date, o.status, o.updated_at, o.customer_id, c.name AS customer_name,
-                       (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
+                       (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1 AND oi.voided_at IS NULL) AS need_review_count
                 FROM orders o LEFT JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
             `).get(orderId);
             if (!o) {
@@ -240,7 +240,7 @@ function createLiffRouter() {
                 SELECT oi.id, COALESCE(NULLIF(TRIM(p.name), ''), NULLIF(TRIM(oi.raw_name), ''), '—') AS name,
                        oi.quantity, oi.unit, oi.need_review
                 FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-                WHERE oi.order_id = ? ORDER BY oi.id
+                WHERE oi.order_id = ? AND oi.voided_at IS NULL ORDER BY oi.id
             `).all(orderId);
             const rawName = (o.customer_name || "").trim();
             const fallback = o.customer_id ? `客戶 ${String(o.customer_id).slice(0,6)}` : "（未指定客戶）";

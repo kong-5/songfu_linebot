@@ -123,7 +123,7 @@ async function runDailySummaryPush(db, options = {}) {
             const items = await db.prepare(
                 `SELECT oi.raw_name, oi.quantity, oi.unit, p.name AS product_name
                  FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-                 WHERE oi.order_id IN (${placeholders}) ORDER BY oi.order_id, oi.id`
+                 WHERE oi.order_id IN (${placeholders}) AND oi.voided_at IS NULL ORDER BY oi.order_id, oi.id`
             ).all(...orderIds);
             const flex = buildDailySummaryFlex({
                 customerName: c.name,

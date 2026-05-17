@@ -91,6 +91,11 @@ function initSqlite(dbPath) {
         "ALTER TABLE order_items ADD COLUMN confidence_score INTEGER",
         "ALTER TABLE customer_handwriting_hints ADD COLUMN wrong_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE customer_handwriting_hints ADD COLUMN last_hit_at TEXT",
+        // 作廢機制：voided_at 為作廢時間（NULL=有效）；void_reason 例：ai_wrong/customer_changed/duplicate/other；void_note 自由文字；voided_by=員工 username 或 'liff:xxx'
+        "ALTER TABLE order_items ADD COLUMN voided_at TEXT",
+        "ALTER TABLE order_items ADD COLUMN voided_by TEXT",
+        "ALTER TABLE order_items ADD COLUMN void_reason TEXT",
+        "ALTER TABLE order_items ADD COLUMN void_note TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -392,6 +397,11 @@ async function initPg() {
                 }
                 catch (_e) { /* column may exist */ }
             }
+            // 作廢機制欄位
+            try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ"); } catch (_) {}
+            try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_by TEXT"); } catch (_) {}
+            try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS void_reason TEXT"); } catch (_) {}
+            try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS void_note TEXT"); } catch (_) {}
             try {
                 await client.query("ALTER TABLE customers ADD COLUMN known_sub_customers TEXT");
             }

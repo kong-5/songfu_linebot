@@ -2830,7 +2830,7 @@ function createAdminRouter() {
             approvedOrders = Number(r2?.n) || 0;
             const r3 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','approved')").get(today);
             pendingOrders = Number(r3?.n) || 0;
-            const r4 = await db.prepare("SELECT COUNT(*) AS n FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.order_date = ? AND oi.need_review = 1").get(today);
+            const r4 = await db.prepare("SELECT COUNT(*) AS n FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.order_date = ? AND oi.need_review = 1 AND oi.voided_at IS NULL").get(today);
             needReviewCnt = Number(r4?.n) || 0;
         } catch (_) { /* ignore */ }
         let yesterdayOrders = 0;
@@ -5463,7 +5463,7 @@ function createAdminRouter() {
       FROM order_items oi
       JOIN orders o ON o.id = oi.order_id
       JOIN customers c ON c.id = o.customer_id
-      WHERE oi.need_review = 1
+      WHERE oi.need_review = 1 AND oi.voided_at IS NULL
       ORDER BY oi.id
     `).all();
         const rowsHtml = rows.length === 0
@@ -5598,7 +5598,26 @@ function createAdminRouter() {
             res.redirect("/admin/review");
             return;
         }
-        await db.prepare("DELETE FROM order_items WHERE id = ? AND need_review = 1").run(itemId);
+        // 改成作廢（軟刪除）：待對應的品項按「移除」時，視為 AI 辨識錯誤而留檔
+        const isPg = Boolean(process.env.DATABASE_URL);
+        const nowSql = isPg ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        const actor = req.adminUsername || "system";
+        const snap = await db.prepare("SELECT id, order_id, raw_name, quantity, unit, product_id, voided_at FROM order_items WHERE id = ? AND need_review = 1").get(itemId);
+        if (snap && !snap.voided_at) {
+            await db.prepare(
+                "UPDATE order_items SET voided_at = " + nowSql + ", voided_by = ?, void_reason = ?, void_note = ? WHERE id = ? AND need_review = 1"
+            ).run(actor, "ai_wrong", "（從待對應清單作廢）", itemId);
+            try {
+                await logDataChange(req, {
+                    entityType: "order_item",
+                    entityId: itemId,
+                    productId: snap.product_id ?? null,
+                    action: "void",
+                    summary: `從待對應清單作廢品項：${snap.raw_name || "(無品名)"} ${snap.quantity ?? ""}${snap.unit ?? ""}`,
+                    meta: { order_id: snap.order_id, snapshot: snap, void_reason: "ai_wrong", source: "/review/delete-item" },
+                });
+            } catch (_) {}
+        }
         res.redirect("/admin/review?ok=1");
     });
     router.get("/orders", async (req, res) => {
@@ -5615,9 +5634,9 @@ function createAdminRouter() {
                 : today;
             let lineOrders = await db.prepare(`
       SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, c.name AS customer_name,
-        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count,
+        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1 AND oi.voided_at IS NULL) AS need_review_count,
         0 AS non_kg_count,
-        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND (oi.include_export IS NULL OR oi.include_export = 1)) AS export_item_count,
+        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND (oi.include_export IS NULL OR oi.include_export = 1) AND oi.voided_at IS NULL) AS export_item_count,
         o.sheet_exported_at, o.lingyue_exported_at,
         o.raw_message AS source_raw_message,
         (SELECT COUNT(*) FROM order_attachments oa WHERE oa.order_id = o.id) AS source_attachment_count
@@ -5685,7 +5704,7 @@ function createAdminRouter() {
                     const labelRows = await db.prepare(`
       SELECT oi.order_id, COALESCE(NULLIF(TRIM(p.name), ''), NULLIF(TRIM(oi.raw_name), ''), '—') AS label
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-      WHERE oi.order_id IN (${ph})
+      WHERE oi.order_id IN (${ph}) AND oi.voided_at IS NULL
       ORDER BY oi.order_id, oi.id
     `).all(...lineIds);
                     for (const r of labelRows) {
@@ -5867,7 +5886,7 @@ function createAdminRouter() {
             try {
                 const r = await db.prepare(
                     "SELECT COUNT(*) AS c FROM order_items oi JOIN orders o ON o.id = oi.order_id " +
-                    "WHERE oi.need_review = 1 AND COALESCE(LOWER(TRIM(o.status)),'') <> 'deleted'"
+                    "WHERE oi.need_review = 1 AND oi.voided_at IS NULL AND COALESCE(LOWER(TRIM(o.status)),'') <> 'deleted'"
                 ).get();
                 needReviewSum = Number(r?.c) || 0;
             } catch (_) { /* fallback 為 0 */ }
@@ -5897,7 +5916,7 @@ function createAdminRouter() {
           ${orderListDbWarning}
           ${req.query.ok === "log_saved" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已儲存紙本訂單</div>" : ""}
           ${req.query.ok === "seq" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已儲存本日起始編號</div>" : ""}
-          ${req.query.ok === "del" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單移至「已刪除訂單」</div>" : ""}
+          ${req.query.ok === "del" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單作廢（移到「已作廢」清單）</div>" : ""}
           ${req.query.ok === "approved" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單標記為已確認</div>" : ""}
           ${req.query.err === "none" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">請先勾選要處理的訂單</div>" : ""}
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
@@ -5905,7 +5924,7 @@ function createAdminRouter() {
             ${statCard("待簽核", pendingCount, pendingCount>0?"warn":"ok", "#")}
             ${statCard("已確認", approvedCount, "ok", "#")}
             ${statCard("品項待對應", needReviewSum, needReviewSum>0?"warn":"ok", "/admin/review")}
-            ${statCard("已刪除", deletedOrders.length, deletedOrders.length>0?"bad":"info", "#")}
+            ${statCard("已作廢", deletedOrders.length, deletedOrders.length>0?"bad":"info", "#")}
           </div>
           <div class="sf-card">
             <div class="sf-card-body" style="padding:14px 16px;">
@@ -5957,7 +5976,7 @@ function createAdminRouter() {
               <button type="button" class="sf-btn sm primary" id="btnBatchApprove">${SF_ICONS.check}<span>確認</span></button>
               <button type="button" class="sf-btn sm" id="btnBatchOrderSheet">${SF_ICONS.dl}<span>揀貨單</span></button>
               <button type="button" class="sf-btn sm" id="btnBatchLingyueXlsx">${SF_ICONS.dl}<span>凌越 Excel</span></button>
-              <button type="submit" class="sf-btn sm danger" onclick="return confirm('確定要刪除勾選的訂單？');">${SF_ICONS.x}<span>刪除</span></button>
+              <button type="submit" class="sf-btn sm danger" onclick="return confirm('確定要作廢勾選的訂單？訂單會保留稽核紀錄，不會真的刪除。');">${SF_ICONS.x}<span>作廢</span></button>
             </form>
           </div>
           <div class="sf-table-wrap">
@@ -5981,7 +6000,7 @@ function createAdminRouter() {
           ${deletedOrders.length ? `<details class="sf-card">
             <summary style="padding:12px 16px;cursor:pointer;font-size:13px;color:var(--txt-2);list-style:none;display:flex;align-items:center;gap:8px;">
               <span style="font-size:11px;color:var(--txt-3);">▸</span>
-              <span>已刪除訂單（${deletedOrders.length}）</span>
+              <span>已作廢訂單（${deletedOrders.length}）</span>
             </summary>
             <div class="sf-table-wrap" style="border-top:var(--hairline);border-radius:0;">
               <table class="sf-table">
@@ -6518,7 +6537,7 @@ function createAdminRouter() {
             const items = await db.prepare(`
       SELECT oi.quantity, oi.unit, oi.remark, p.erp_code, p.name AS product_name
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-      WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1)
+      WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1) AND oi.voided_at IS NULL
       ORDER BY COALESCE(oi.display_order, 999999), oi.id
     `).all(orderId);
             const orderNoForBc = (order.order_no && String(order.order_no).trim()) ? String(order.order_no).trim() : order.id;
@@ -6710,7 +6729,7 @@ function createAdminRouter() {
                 const items = await db.prepare(`
       SELECT oi.quantity, oi.unit, oi.remark, oi.raw_name, p.erp_code, p.name AS product_name
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-      WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1)
+      WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1) AND oi.voided_at IS NULL
       ORDER BY COALESCE(oi.display_order, 999999), oi.id
     `).all(orderId);
                 for (const it of items) {
@@ -6814,12 +6833,21 @@ function createAdminRouter() {
             res.status(404).send("訂單不存在");
             return;
         }
+        // 只取有效（未作廢）的品項
         const items = await db.prepare(`
       SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.display_order, oi.need_review, oi.sub_customer, oi.confidence_score,
         p.id AS product_id, p.erp_code, p.name AS product_name
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-      WHERE oi.order_id = ?
+      WHERE oi.order_id = ? AND oi.voided_at IS NULL
       ORDER BY COALESCE(oi.display_order, 999999), oi.id
+    `).all(orderId);
+        // 已作廢品項另外列出（供 AI 學習參考與內稽追溯）
+        const voidedItems = await db.prepare(`
+      SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.product_id, oi.voided_at, oi.voided_by, oi.void_reason, oi.void_note,
+        p.name AS product_name, p.erp_code
+      FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
+      WHERE oi.order_id = ? AND oi.voided_at IS NOT NULL
+      ORDER BY oi.voided_at DESC, oi.id
     `).all(orderId);
         const attachments = await db.prepare("SELECT id, line_message_id FROM order_attachments WHERE order_id = ?").all(orderId);
         const needReviewCount = items.filter((i) => i.need_review === 1).length;
@@ -6906,7 +6934,7 @@ function createAdminRouter() {
             <td><input type="number" class="order-detail-qty-input" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0"></td>
             <td>${unitSelectWithVal}</td>
             <td><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:100px;"></td>
-            <td><button type="button" class="btn btn-delete-item order-del-btn order-del-btn-icon" data-item-id="${escapeAttr(i.item_id)}" data-order-id="${escapeAttr(orderId)}" title="刪除此列" aria-label="刪除此列">×</button></td>
+            <td><button type="button" class="btn btn-delete-item order-del-btn order-del-btn-icon" data-item-id="${escapeAttr(i.item_id)}" data-order-id="${escapeAttr(orderId)}" data-raw-name="${escapeAttr(i.raw_name || "")}" title="作廢此列（保留稽核紀錄、可納入 AI 學習）" aria-label="作廢此列">⊘</button></td>
           </tr>`;
         })
             .join("");
@@ -6928,7 +6956,7 @@ function createAdminRouter() {
               <span id="move_items_status" style="font-size:12px;color:var(--notion-text-secondary);"></span>
             </div>`;
         const orderStatusLc = String(order.status || "").toLowerCase();
-        const orderStatusDisplay = orderStatusLc === "approved" ? "已確認" : orderStatusLc === "pending" ? "待確認" : orderStatusLc === "deleted" ? "已刪除" : escapeHtml(String(order.status || ""));
+        const orderStatusDisplay = orderStatusLc === "approved" ? "已確認" : orderStatusLc === "pending" ? "待確認" : orderStatusLc === "deleted" ? "已作廢" : escapeHtml(String(order.status || ""));
         const confirmOrderFormHtml = orderStatusLc === "approved"
             ? `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/unapprove?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve" title="再按一次可撤銷確認" onclick="return confirm('確定要撤銷確認？訂單將恢復為待確認。');">已確認</button></form>`
             : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve">確認</button></form>`;
@@ -7095,13 +7123,40 @@ function createAdminRouter() {
             </div>
             <div class="table-scroll-mobile" style="overflow-x:auto;">
               <table class="order-detail-table sf-table" style="font-size:12px;">
-                <thead><tr><th style="width:2.25rem;"><input type="checkbox" id="select_all_items" title="全選"></th><th class="order-detail-th-sort" title="順序（上移／下移）"></th><th class="order-detail-th-idx">項次</th><th class="order-table-col-system">料號</th><th>品名</th><th>子客戶/分店</th><th style="width:3.5rem;">數量</th><th>單位</th><th>備註</th><th style="width:2.75rem;">刪除</th></tr></thead>
+                <thead><tr><th style="width:2.25rem;"><input type="checkbox" id="select_all_items" title="全選"></th><th class="order-detail-th-sort" title="順序（上移／下移）"></th><th class="order-detail-th-idx">項次</th><th class="order-table-col-system">料號</th><th>品名</th><th>子客戶/分店</th><th style="width:3.5rem;">數量</th><th>單位</th><th>備註</th><th style="width:2.75rem;">作廢</th></tr></thead>
                 <tbody>${itemsRows}</tbody>
                 <tr><td colspan="10" style="background:var(--bg-2);padding:8px 12px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="sf-btn sm">${SF_ICONS.plus}<span>增加品項</span></a></td></tr>
               </table>
             </div>
             <div style="padding:12px 14px;border-top:var(--hairline);"><button type="submit" class="sf-btn primary" title="儲存數量、單位、備註與排序">${SF_ICONS.check}<span>儲存明細</span></button></div>
           </div>
+          ${(voidedItems && voidedItems.length) ? `
+          <div class="sf-card" style="margin-top:14px;border-left:3px solid var(--txt-3);">
+            <div class="sf-card-head">
+              <div class="sf-card-title" style="color:var(--txt-2);">⊘ 已作廢品項 <span class="sf-pill">${voidedItems.length} 筆</span></div>
+              <span class="sf-card-sub" style="font-size:11px;">納入 AI 參考用，不會匯出</span>
+            </div>
+            <div class="table-scroll-mobile" style="overflow-x:auto;">
+              <table class="sf-table" style="font-size:12px;">
+                <thead><tr><th>原始</th><th>對應品項</th><th style="width:5rem;">數量</th><th>原因</th><th>備註</th><th>作廢人</th><th>時間</th></tr></thead>
+                <tbody>
+                  ${voidedItems.map(vi => {
+                    const reasonLabel = { ai_wrong:"AI 辨識錯誤", customer_changed:"客戶更改", duplicate:"重複叫貨", other:"其他" }[vi.void_reason] || (vi.void_reason || "—");
+                    const reasonPill = vi.void_reason === "ai_wrong" ? `<span class="sf-pill warn" style="font-size:10px;">${escapeHtml(reasonLabel)}</span>` : `<span class="sf-pill" style="font-size:10px;">${escapeHtml(reasonLabel)}</span>`;
+                    return `<tr style="color:var(--txt-2);">
+                      <td>${escapeHtml(vi.raw_name || "—")}</td>
+                      <td>${vi.product_name ? escapeHtml(vi.product_name) + (vi.erp_code?` <code style="font-size:10px;color:var(--txt-3);">${escapeHtml(vi.erp_code)}</code>`:"") : `<span style="color:var(--txt-3);">未對應</span>`}</td>
+                      <td>${escapeHtml(String(vi.quantity ?? "—"))}${vi.unit?escapeHtml(vi.unit):""}</td>
+                      <td>${reasonPill}</td>
+                      <td style="font-size:11px;color:var(--txt-3);">${escapeHtml(vi.void_note || "—")}</td>
+                      <td style="font-size:11px;color:var(--txt-3);">${escapeHtml(vi.voided_by || "—")}</td>
+                      <td class="mono" style="font-size:11px;color:var(--txt-3);">${escapeHtml(String(vi.voided_at || "").replace("T", " ").slice(0,16))}</td>
+                    </tr>`;
+                  }).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>` : ""}
         </form>
         </div>
         </div>
@@ -7251,11 +7306,24 @@ function createAdminRouter() {
             if (!btn) return;
             var itemId = btn.getAttribute('data-item-id');
             var ordId = btn.getAttribute('data-order-id');
-            if (!itemId || !ordId || !confirm('確定要刪除此筆明細？')) return;
+            var rawName = btn.getAttribute('data-raw-name') || '此品項';
+            if (!itemId || !ordId) return;
+            // 作廢原因彈窗（用 prompt 簡易選單）
+            var reasonInput = window.prompt('作廢「' + rawName + '」的原因？\\n\\n  1 = AI 辨識錯誤（預設，會回饋給學習庫）\\n  2 = 客戶更改\\n  3 = 重複叫貨\\n  4 = 其他\\n\\n按「取消」放棄作廢。', '1');
+            if (reasonInput === null) return;
+            var reasonMap = { '1':'ai_wrong', '2':'customer_changed', '3':'duplicate', '4':'other' };
+            var reason = reasonMap[String(reasonInput).trim()] || 'ai_wrong';
+            var note = '';
+            if (reason !== 'ai_wrong') {
+              note = window.prompt('備註（可留白）：', '') || '';
+            }
+            var fd = new FormData();
+            fd.append('void_reason', reason);
+            if (note) fd.append('void_note', note);
             var url = '/admin/orders/' + encodeURIComponent(ordId) + '/items/' + encodeURIComponent(itemId) + '/delete';
-            fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept':'application/json' }, body: fd })
               .then(function(r){ return r.json(); })
-              .then(function(data){ if (data && data.ok) { var tr = btn.closest('tr'); if (tr) tr.remove(); } else { alert(data && data.error ? data.error : '刪除失敗'); } })
+              .then(function(data){ if (data && data.ok) { var tr = btn.closest('tr'); if (tr) tr.remove(); } else { alert(data && data.error ? data.error : '作廢失敗'); } })
               .catch(function(){ alert('請求失敗'); });
           });
           var itemsForm = document.getElementById('itemsForm');
@@ -8051,32 +8119,59 @@ function createAdminRouter() {
         }
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=items");
     });
-    router.post("/orders/:orderId/items/:itemId/delete", async (req, res) => {
+    router.post("/orders/:orderId/items/:itemId/delete", express_1.default.urlencoded({ extended: true }), express_1.default.json(), async (req, res) => {
         const { orderId, itemId } = req.params;
-        const order = await db.prepare("SELECT id, order_no FROM orders WHERE id = ?").get(orderId);
+        // 接收作廢原因（dropdown）與備註：預設為 ai_wrong（最常見：AI 辨識錯誤）
+        const reason = String(req.body?.void_reason || "ai_wrong").trim().toLowerCase();
+        const note = String(req.body?.void_note || "").trim().slice(0, 500);
+        const reasonLabel = { ai_wrong: "AI 辨識錯誤", customer_changed: "客戶更改", duplicate: "重複叫貨", other: "其他" }[reason] || reason;
+        const order = await db.prepare("SELECT id, order_no, customer_id FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
             return;
         }
-        // 內稽：先取明細快照，刪除後寫入 data_change_log，必要時可由日誌還原
-        const snap = await db.prepare("SELECT id, raw_name, quantity, unit, product_id, remark, sub_customer, need_review FROM order_items WHERE id = ? AND order_id = ?").get(itemId, orderId);
-        await db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(itemId, orderId);
-        if (snap) {
-            await logDataChange(req, {
-                entityType: "order_item",
-                entityId: itemId,
-                productId: snap.product_id ?? null,
-                action: "delete",
-                summary: `刪除訂單 ${order.order_no || orderId} 的品項：${snap.raw_name || "(無品名)"} ${snap.quantity ?? ""}${snap.unit ?? ""}`,
-                meta: { order_id: orderId, snapshot: snap },
-            });
+        const snap = await db.prepare("SELECT id, raw_name, quantity, unit, product_id, remark, sub_customer, need_review, voided_at FROM order_items WHERE id = ? AND order_id = ?").get(itemId, orderId);
+        if (!snap) {
+            const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest" || req.get("Accept")?.includes("application/json");
+            if (wantsJson) { res.json({ ok: false, error: "品項不存在" }); return; }
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId));
+            return;
         }
-        const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest";
+        if (snap.voided_at) {
+            const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest" || req.get("Accept")?.includes("application/json");
+            if (wantsJson) { res.json({ ok: true, alreadyVoided: true }); return; }
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=already_voided");
+            return;
+        }
+        // 軟刪除：voided_at + voided_by + void_reason + void_note
+        const isPg = Boolean(process.env.DATABASE_URL);
+        const nowSql = isPg ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        const actor = req.adminUsername || "system";
+        await db.prepare(
+            "UPDATE order_items SET voided_at = " + nowSql + ", voided_by = ?, void_reason = ?, void_note = ? WHERE id = ? AND order_id = ?"
+        ).run(actor, reason, note || null, itemId, orderId);
+        // AI 回饋：若是 AI 辨識錯誤且有對應到 product_id，把該 hint 加 wrong_count
+        if (reason === "ai_wrong" && snap.product_id && snap.raw_name && order.customer_id) {
+            try {
+                await (0, customer_handwriting_hints_js_1.recordHandwritingHintWrong)(db, order.customer_id, snap.raw_name, snap.product_id);
+            } catch (e) {
+                console.warn("[void item] recordHandwritingHintWrong failed:", e?.message || e);
+            }
+        }
+        await logDataChange(req, {
+            entityType: "order_item",
+            entityId: itemId,
+            productId: snap.product_id ?? null,
+            action: "void",
+            summary: `作廢訂單 ${order.order_no || orderId} 品項：${snap.raw_name || "(無品名)"} ${snap.quantity ?? ""}${snap.unit ?? ""} · ${reasonLabel}${note ? "（" + note + "）" : ""}`,
+            meta: { order_id: orderId, snapshot: snap, void_reason: reason, void_note: note, ai_feedback: reason === "ai_wrong" && snap.product_id ? "wrong_count++" : null },
+        });
+        const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest" || req.get("Accept")?.includes("application/json");
         if (wantsJson) {
             res.json({ ok: true });
             return;
         }
-        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=del_item#items");
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=void_item#items");
     });
     router.post("/orders/:orderId/approve", async (req, res) => {
         const { orderId } = req.params;
@@ -8284,7 +8379,7 @@ function createAdminRouter() {
         const items = await db.prepare(`
       SELECT oi.quantity, oi.unit, oi.remark, p.erp_code, p.name AS product_name
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-      WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1)
+      WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1) AND oi.voided_at IS NULL
     `).all(orderId);
         const orderNoForBc = (order.order_no && String(order.order_no).trim()) ? String(order.order_no).trim() : order.id;
         const orderBcHeader = orderNoForBc
