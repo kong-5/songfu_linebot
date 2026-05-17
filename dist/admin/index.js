@@ -1062,13 +1062,28 @@ const SF_TOKENS = `
   .sf-table thead th { padding: 8px 10px; font-size: 10px; }
   .sf-table tbody td { padding: 10px; }
 
-  /* sticky 原始訂單欄改非 sticky（會擠到滾動列） */
+  /* 原始訂單欄：手機版改為 sticky 緊湊版（隨滾動跟著、方便對品項） */
   .order-detail-raw-col {
-    position: static !important; flex: none !important; max-width: 100% !important; width: 100% !important;
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 20;
+    flex: none !important; max-width: 100% !important; width: 100% !important;
+    background: var(--bg-0);
   }
   .order-detail-raw-col .sf-card[id="rawOrderBlock"] {
-    position: static !important; max-height: none !important;
+    position: static !important;
+    max-height: 38vh !important;
+    overflow-y: auto !important;
+    margin: 0 !important;
+    border-radius: 0 0 12px 12px !important;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.08);
   }
+  /* 內部 padding 縮一點 */
+  .order-detail-raw-col .sf-card[id="rawOrderBlock"] > div[style*="padding:14px"] { padding: 10px 12px !important; }
+  /* 照片附件縮小 */
+  .order-detail-raw-col .sf-card[id="rawOrderBlock"] img { max-height: 180px !important; }
+  /* 客戶打字內容 pre 字級壓小一點 */
+  .order-detail-raw-col .sf-card[id="rawOrderBlock"] pre { font-size: 12px !important; line-height: 1.5 !important; padding: 8px 10px !important; }
   .order-detail-layout { flex-direction: column !important; }
 
   /* 模態縮 padding */
