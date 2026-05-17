@@ -20,18 +20,22 @@
   .status-bar.err { background:#ffebee; color:#c62828; }
   .status-bar.ok { background:#e7f5e9; color:#2e7d32; }
   .list { padding:8px 12px; }
-  .order { background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:8px 0; cursor:pointer; transition:transform .12s; }
+  .order { background:#fff; border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:8px 0; cursor:pointer; transition:transform .12s; }
   .order:active { transform:scale(0.98); }
   .order.approved { border-left:3px solid var(--ok); opacity:.7; }
   .order.pending { border-left:3px solid var(--warn); }
-  .order .row1 { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
-  .order .name { flex:1; font-weight:600; font-size:15px; }
-  .order .pill { font-size:11px; padding:2px 8px; border-radius:10px; font-weight:500; }
+  /* 3 列：出貨日+客戶+狀態 / 單號+項數 / 品項預覽 */
+  .order .row1 { display:flex; align-items:center; gap:6px; margin-bottom:4px; min-width:0; }
+  .order .delivery { font-weight:700; font-size:15px; color:var(--accent); white-space:nowrap; }
+  .order .name { flex:1; font-weight:600; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .order .name.fallback { font-weight:500; color:var(--txt2); font-style:italic; }
+  .order .pill { font-size:11px; padding:1px 8px; border-radius:10px; font-weight:500; white-space:nowrap; }
   .pill.pending { background:#fef3c7; color:#92400e; }
   .pill.approved { background:#d1fae5; color:#065f46; }
   .pill.review { background:#fee2e2; color:#991b1b; }
-  .order .row2 { font-size:12px; color:var(--txt2); display:flex; gap:10px; }
-  .order .row3 { font-size:12px; color:var(--txt1); margin-top:6px; line-height:1.5; }
+  .order .row2 { font-size:12px; color:var(--txt2); display:flex; gap:8px; flex-wrap:wrap; }
+  .order .row2 .mono { font-family:ui-monospace,monospace; }
+  .order .row3 { font-size:12px; color:var(--txt1); margin-top:4px; line-height:1.4; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
   .empty { text-align:center; padding:40px 20px; color:var(--txt3); font-size:13px; }
   /* 詳細 modal */
   .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:100; display:none; }
@@ -176,11 +180,22 @@
       const isApproved = (o.status||"").toLowerCase() === "approved";
       const cls = isApproved ? "approved" : "pending";
       const pill = isApproved ? '<span class="pill approved">已確認</span>' : '<span class="pill pending">未確認</span>';
-      const reviewPill = (o.need_review_count > 0) ? ' <span class="pill review">' + o.need_review_count + ' 待對應</span>' : '';
+      const reviewPill = (o.need_review_count > 0) ? '<span class="pill review">' + o.need_review_count + ' 待對應</span>' : '';
       const itemsPreview = o.items_preview || "—";
+      const nameClass = o.has_customer_name ? "name" : "name fallback";
+      const deliveryShort = shortDate(o.order_date);
+      const orderNoShort = o.order_no || (o.id ? o.id.slice(0,8) : "");
       return '<div class="order ' + cls + '" data-id="' + o.id + '">' +
-        '<div class="row1"><div class="name">' + escapeHtml(o.customer_name||"—") + '</div>' + pill + reviewPill + '</div>' +
-        '<div class="row2"><span>送貨日 ' + (o.order_date||"") + '</span><span>單號 ' + (o.order_no||o.id.slice(0,8)) + '</span><span>' + o.item_count + ' 項</span></div>' +
+        '<div class="row1">' +
+          '<span class="delivery">出貨 ' + deliveryShort + '</span>' +
+          '<span class="' + nameClass + '">' + escapeHtml(o.customer_name||"—") + '</span>' +
+          pill +
+          (reviewPill ? ' ' + reviewPill : '') +
+        '</div>' +
+        '<div class="row2">' +
+          '<span class="mono">' + escapeHtml(orderNoShort) + '</span>' +
+          '<span>· ' + o.item_count + ' 項</span>' +
+        '</div>' +
         '<div class="row3">' + escapeHtml(itemsPreview) + '</div>' +
       '</div>';
     }).join("");
@@ -216,12 +231,28 @@
     }).join("");
     const meta =
       '<div class="meta">' +
+      '<div>客戶：<strong>' + escapeHtml(o.customer_name||"—") + '</strong>' + (o.has_customer_name ? '' : ' <span style="color:var(--bad);font-size:11px;">⚠ 客戶資料缺名稱</span>') + '</div>' +
       '<div>狀態：<strong>' + (isApproved ? "已確認" : "未確認") + '</strong></div>' +
-      '<div>送貨日：<strong>' + (o.order_date||"—") + '</strong></div>' +
-      (o.updated_at ? '<div>最後更新：' + (o.updated_at||"—").replace("T", " ").slice(0,19) + '</div>' : '') +
-      (o.need_review_count > 0 ? '<div style="color:var(--bad);">⚠ 還有 ' + o.need_review_count + ' 個品項待對應</div>' : '') +
+      '<div>訂貨日（系統紀錄）：' + (o.updated_at||"—").replace("T", " ").slice(0,16) + '</div>' +
+      '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">' +
+        '<span>出貨日：</span>' +
+        '<input type="date" id="edit-order-date" value="' + (o.order_date||"") + '" style="padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:14px;">' +
+        '<button type="button" class="quick-date" data-q="tomorrow" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:12px;">明天</button>' +
+        '<button type="button" class="quick-date" data-q="mon" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:12px;">下週一</button>' +
+        '<button type="button" id="btn-save-date" style="padding:6px 12px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;">儲存</button>' +
+      '</div>' +
+      (o.need_review_count > 0 ? '<div style="color:var(--bad);margin-top:8px;">⚠ 還有 ' + o.need_review_count + ' 個品項待對應</div>' : '') +
       '</div>';
     $("#modal-body").innerHTML = meta + itemsHtml;
+    // 綁定日期快捷與儲存
+    document.querySelectorAll(".quick-date").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const q = btn.dataset.q;
+        const d = computeQuickDate(q);
+        if (d) $("#edit-order-date").value = d;
+      });
+    });
+    $("#btn-save-date").addEventListener("click", () => doSaveDate(o.id));
   }
 
   function closeModal(){
@@ -253,6 +284,53 @@
 
   function escapeHtml(s){
     return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" })[c]);
+  }
+  function shortDate(d){
+    if (!d) return "—";
+    const m = String(d).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return d;
+    // 顯示 M/D（週?）
+    const dt = new Date(d + "T00:00:00+08:00");
+    const wd = "日一二三四五六"[dt.getDay()] || "";
+    return Number(m[2]) + "/" + Number(m[3]) + (wd ? "（" + wd + "）" : "");
+  }
+  function computeQuickDate(q){
+    // 用台北時區計算
+    const fmt = new Intl.DateTimeFormat("en-CA", { timeZone:"Asia/Taipei" });
+    const base = new Date();
+    if (q === "tomorrow") {
+      base.setDate(base.getDate() + 1);
+      return fmt.format(base);
+    }
+    if (q === "mon") {
+      // 找下一個週一（含今天若是週一就跳下週）
+      const today = new Date(fmt.format(base) + "T00:00:00+08:00");
+      const dow = today.getDay();   // 0=Sun, 1=Mon, ..., 6=Sat
+      let addDays = (8 - dow) % 7;  // 若今天是週一(1)，回 0，需要再加 7
+      if (addDays === 0) addDays = 7;
+      const t = new Date(today.getTime() + addDays * 86400000);
+      return fmt.format(t);
+    }
+    return null;
+  }
+  async function doSaveDate(orderId){
+    const v = ($("#edit-order-date").value || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { toast("日期格式錯誤"); return; }
+    const btn = $("#btn-save-date");
+    btn.disabled = true;
+    btn.textContent = "儲存中…";
+    const { status, body } = await api("/liff/api/order-review/set-date", {
+      method: "POST",
+      body: JSON.stringify({ orderId, orderDate: v }),
+    });
+    btn.disabled = false;
+    btn.textContent = "儲存";
+    if (status !== 200 || !body.ok) {
+      toast("儲存失敗：" + (body.error || "HTTP " + status));
+      return;
+    }
+    toast(body.unchanged ? "日期未變動" : "出貨日已更新");
+    await loadList();  // 重整列表，但保留 modal 開著（用戶可能要繼續審核）
   }
 })();
 </script>

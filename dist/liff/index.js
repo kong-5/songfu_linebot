@@ -158,12 +158,13 @@ function createLiffRouter() {
                 ? "AND COALESCE(LOWER(TRIM(o.status)), '') NOT IN ('approved','deleted')"
                 : "AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'";
             // DB-agnostic：訂單清單 + 各自的 count，items_preview 改用第二個 query 後在 JS 聚合
+            // LEFT JOIN customers：即便 customer 缺漏也回傳訂單，後續以 customer_id 作 fallback 顯示
             const rows = await db.prepare(`
-                SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id,
+                SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, o.updated_at,
                        c.name AS customer_name,
                        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
                        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
-                FROM orders o JOIN customers c ON c.id = o.customer_id
+                FROM orders o LEFT JOIN customers c ON c.id = o.customer_id
                 WHERE o.order_date = ? ${statusFilter}
                 ORDER BY o.updated_at DESC, o.id DESC
                 LIMIT 100
@@ -189,16 +190,23 @@ function createLiffRouter() {
                 ok: true,
                 date: d,
                 employee: { username: auth.employee.username, name: auth.employee.name, title: auth.employee.title },
-                orders: orders.map(o => ({
-                    id: o.id,
-                    order_no: o.order_no,
-                    order_date: o.order_date,
-                    status: o.status,
-                    customer_name: o.customer_name,
-                    item_count: Number(o.item_count) || 0,
-                    need_review_count: Number(o.need_review_count) || 0,
-                    items_preview: (previewByOrder.get(o.id) || []).join("、"),
-                })),
+                orders: orders.map(o => {
+                    const rawName = (o.customer_name || "").trim();
+                    const fallback = o.customer_id ? `客戶 ${String(o.customer_id).slice(0,6)}` : "（未指定客戶）";
+                    return {
+                        id: o.id,
+                        order_no: o.order_no,
+                        order_date: o.order_date,
+                        status: o.status,
+                        customer_id: o.customer_id,
+                        customer_name: rawName || fallback,
+                        has_customer_name: rawName !== "",
+                        updated_at: o.updated_at,
+                        item_count: Number(o.item_count) || 0,
+                        need_review_count: Number(o.need_review_count) || 0,
+                        items_preview: (previewByOrder.get(o.id) || []).join("、"),
+                    };
+                }),
             });
         } catch (e) {
             res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
@@ -222,7 +230,7 @@ function createLiffRouter() {
             const o = await db.prepare(`
                 SELECT o.id, o.order_no, o.order_date, o.status, o.updated_at, o.customer_id, c.name AS customer_name,
                        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count
-                FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
+                FROM orders o LEFT JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
             `).get(orderId);
             if (!o) {
                 res.status(404).json({ ok: false, error: "訂單不存在" });
@@ -234,6 +242,8 @@ function createLiffRouter() {
                 FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
                 WHERE oi.order_id = ? ORDER BY oi.id
             `).all(orderId);
+            const rawName = (o.customer_name || "").trim();
+            const fallback = o.customer_id ? `客戶 ${String(o.customer_id).slice(0,6)}` : "（未指定客戶）";
             res.json({
                 ok: true,
                 order: {
@@ -242,7 +252,9 @@ function createLiffRouter() {
                     order_date: o.order_date,
                     status: o.status,
                     updated_at: o.updated_at,
-                    customer_name: o.customer_name,
+                    customer_id: o.customer_id,
+                    customer_name: rawName || fallback,
+                    has_customer_name: rawName !== "",
                     need_review_count: Number(o.need_review_count) || 0,
                     items: (items || []).map(it => ({
                         id: it.id,
@@ -282,6 +294,36 @@ function createLiffRouter() {
                 action: "approve",
                 summary: `[LIFF] ${auth.employee.name || auth.employee.username} 確認訂單 ${order.order_no || orderId}（前狀態：${order.status || "－"}）`,
                 meta: { before: order, source: "liff:order-review" },
+            });
+            res.json({ ok: true });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+
+    // POST /liff/api/order-review/set-date  body: { orderId, orderDate (YYYY-MM-DD) }
+    router.post("/api/order-review/set-date", express_1.json({ limit: "8kb" }), async (req, res) => {
+        try {
+            const db = (0, index_js_1.getDb)(dbPath);
+            const auth = await (0, liff_auth_js_1.authenticateLiffEmployee)(db, req, { roles: ORDER_REVIEW_ROLES });
+            if (!auth.ok) {
+                res.status(auth.status || 401).json({ ok: false, error: auth.error });
+                return;
+            }
+            const orderId = String(req.body?.orderId || "").trim();
+            const newDate = String(req.body?.orderDate || "").trim();
+            if (!orderId) { res.status(400).json({ ok:false, error:"missing orderId" }); return; }
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) { res.status(400).json({ ok:false, error:"orderDate 格式需為 YYYY-MM-DD" }); return; }
+            const order = await db.prepare("SELECT id, order_no, order_date, status FROM orders WHERE id = ?").get(orderId);
+            if (!order) { res.status(404).json({ ok:false, error:"訂單不存在" }); return; }
+            if (order.order_date === newDate) { res.json({ ok: true, unchanged: true }); return; }
+            await db.prepare("UPDATE orders SET order_date = ? WHERE id = ?").run(newDate, orderId);
+            await logFromLiff(db, auth.employee, {
+                entityType: "order",
+                entityId: orderId,
+                action: "edit_order_date",
+                summary: `[LIFF] ${auth.employee.name || auth.employee.username} 修改訂單 ${order.order_no || orderId} 出貨日期：${order.order_date || "—"} → ${newDate}`,
+                meta: { before: { order_date: order.order_date }, after: { order_date: newDate }, source: "liff:order-review" },
             });
             res.json({ ok: true });
         } catch (e) {
