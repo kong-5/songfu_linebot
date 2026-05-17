@@ -529,6 +529,30 @@ const NOTION_STYLE = `
     table.order-detail-table tbody tr td:nth-child(4) { grid-area: product; padding-top: 2px; padding-bottom: 8px; }
     table.order-detail-table tbody tr td:nth-child(5) { grid-area: qty; border-top: 1px solid var(--notion-border); }
     table.order-detail-table tbody tr td:nth-child(6) { grid-area: unit; border-top: 1px solid var(--notion-border); }
+    /* 訂單列表行：手機改用 3 列卡片版型，蓋過上方 td-as-row 的預設行為 */
+    .sf-table tbody tr.order-row > td:not(.order-mobile-only) { display: none !important; }
+    .sf-table tbody tr.order-row > td.order-mobile-only {
+      display: block !important;
+      padding: 0 !important;
+      border-bottom: none !important;
+      text-align: left !important;
+    }
+    .sf-table tbody tr.order-row > td.order-mobile-only::before { display: none !important; content: none !important; }
+    .sf-table tbody tr.order-row { padding: 0 !important; }
+  }
+  /* 訂單列表 mobile 卡片：桌面隱藏 */
+  .order-mobile-only { display: none; }
+  .order-mobile-card { display:block; padding:10px 12px; color:inherit; text-decoration:none; }
+  .order-mobile-card .row1 { display:flex; align-items:center; gap:6px; margin-bottom:4px; min-width:0; }
+  .order-mobile-card .delivery { font-weight:700; color:var(--accent); font-size:14px; white-space:nowrap; }
+  .order-mobile-card .cust { flex:1; font-weight:600; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .order-mobile-card .cust.fallback { font-style:italic; color:var(--txt-3); font-weight:500; }
+  .order-mobile-card .row2 { font-size:12px; color:var(--txt-2); display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .order-mobile-card .row2 .mono { font-family:ui-monospace,monospace; }
+  .order-mobile-card .row3 { font-size:12px; color:var(--txt-1); margin-top:4px; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  /* 隱藏佔位（保留結構完整） */
+  @media (min-width: 761px) {
+    .order-mobile-only { display: none !important; }
     table.order-detail-table tbody tr td:nth-child(7) { grid-area: remark; border-top: 1px solid var(--notion-border); }
     table.order-detail-table tbody tr td:nth-child(8) { grid-area: del; border-top: 1px solid var(--notion-border); justify-content:flex-end; align-items:flex-end; }
     table.order-detail-table tbody tr td:nth-child(3)::before { content: "料號"; color:var(--notion-text-muted); font-size:11px; margin-right:6px; }
@@ -5598,7 +5622,7 @@ function createAdminRouter() {
         o.raw_message AS source_raw_message,
         (SELECT COUNT(*) FROM order_attachments oa WHERE oa.order_id = o.id) AS source_attachment_count
       FROM orders o
-      JOIN customers c ON c.id = o.customer_id
+      LEFT JOIN customers c ON c.id = o.customer_id
       WHERE o.order_date >= ? AND o.order_date <= ? AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
       ORDER BY o.order_date DESC, o.id DESC
       LIMIT 300
@@ -5745,9 +5769,12 @@ function createAdminRouter() {
                 const statusLc = String(o.status || "").toLowerCase();
                 const isApproved = statusLc === "approved";
                 const dotStatus = isApproved ? "ok" : (n > 0 ? "warn" : "info");
-                const custDisp = o.customer_name || "未選客戶";
+                const rawCustName = (o.customer_name && String(o.customer_name).trim()) || "";
+                const custDisp = rawCustName
+                    || (o.customer_id ? `客戶 ${String(o.customer_id).slice(0, 6)}` : "未選客戶");
+                const custFallback = !rawCustName;
                 const custLink = o.customer_id
-                    ? `<a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders" style="color:var(--txt-1);font-weight:500;">${escapeHtml(o.customer_name)}</a>`
+                    ? `<a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders" style="color:var(--txt-1);font-weight:500;${custFallback ? "font-style:italic;color:var(--txt-3);" : ""}">${escapeHtml(custDisp)}</a>${custFallback ? ' <span class="sf-pill bad" style="font-size:10px;padding:0 6px;">缺名</span>' : ""}`
                     : `<span style="color:var(--txt-3);">${escapeHtml(custDisp)}</span>`;
                 const backBase = `/admin/orders?date_from=${encodeURIComponent(filterDateFrom)}&date_to=${encodeURIComponent(filterDateTo)}${onlyNeedReview ? "&need_review=1" : ""}`;
                 const detailUrl = o.is_logistics
@@ -5779,19 +5806,44 @@ function createAdminRouter() {
                     o.sheet_exported_at ? `<span class="sf-pill" title="已匯出揀貨單">🖨</span>` : "",
                     o.lingyue_exported_at ? `<span class="sf-pill" title="已匯出凌越 Excel">▦</span>` : "",
                 ].join(" ");
+                // mobile 3 列卡片
+                const dateShortForCard = (() => {
+                    const m = String(o.order_date || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+                    if (!m) return o.order_date || "—";
+                    const dt = new Date(o.order_date + "T00:00:00+08:00");
+                    const wd = "日一二三四五六"[dt.getDay()] || "";
+                    return `${Number(m[2])}/${Number(m[3])}` + (wd ? `（${wd}）` : "");
+                })();
+                const mobileSrcText = o.is_logistics ? "紙本" : (hasText && hasImg ? "字+圖" : (hasText ? "字" : (hasImg ? "圖" : "")));
+                const mobileCardHtml = `
+              <a href="${detailUrl}" class="order-mobile-card">
+                <div class="row1">
+                  <span class="delivery">${escapeHtml(dateShortForCard)}</span>
+                  <span class="cust${custFallback ? " fallback" : ""}">${escapeHtml(custDisp)}</span>
+                  ${statusPill}
+                </div>
+                <div class="row2">
+                  <span class="mono">${escapeHtml(o.is_logistics ? "紙本" : (o.order_no || ""))}</span>
+                  <span>· ${cnt} 項</span>
+                  ${mobileSrcText ? `<span>· ${escapeHtml(mobileSrcText)}</span>` : ""}
+                  ${n > 0 ? `<span style="color:var(--bad);font-weight:600;">· ${n} 待確認</span>` : ""}
+                </div>
+                <div class="row3">${escapeHtml(previewShort || "—")}</div>
+              </a>`;
                 return `<tr class="order-row" data-cust="${escapeAttr(custDisp)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no ?? ""))}" data-status="${escapeAttr(isApproved ? "approved" : (n>0?"need_review":"pending"))}">
-            <td style="width:36px;">${checkboxCell}</td>
-            <td style="width:24px;"><span class="sf-dot ${dotStatus}"></span></td>
-            <td style="white-space:nowrap;">${orderNoCell}</td>
-            <td class="mono" style="font-size:12px;color:var(--txt-3);white-space:nowrap;">${escapeHtml(o.order_date)}</td>
-            <td>${custLink}</td>
-            <td style="white-space:nowrap;">${srcPills}</td>
-            <td style="max-width:380px;">
+            <td style="width:36px;" data-label="">${checkboxCell}</td>
+            <td style="width:24px;" data-label=""><span class="sf-dot ${dotStatus}"></span></td>
+            <td style="white-space:nowrap;" data-label="單號">${orderNoCell}</td>
+            <td class="mono" style="font-size:12px;color:var(--txt-3);white-space:nowrap;" data-label="出貨日">${escapeHtml(o.order_date)}</td>
+            <td data-label="客戶">${custLink}</td>
+            <td style="white-space:nowrap;" data-label="來源">${srcPills}</td>
+            <td style="max-width:380px;" data-label="品項">
               <div style="font-size:12px;color:var(--txt-1);font-weight:500;">${cnt > 0 ? `${cnt} 筆品項` : `<span style="color:var(--txt-3);">無品項</span>`}</div>
               ${previewShort ? `<div style="font-size:11px;color:var(--txt-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(previewShort)}</div>` : ""}
             </td>
-            <td style="white-space:nowrap;">${statusPill}${expIcons ? " " + expIcons : ""}</td>
-            <td style="text-align:right;white-space:nowrap;"><a class="sf-btn sm" href="${detailUrl}">明細</a></td>
+            <td style="white-space:nowrap;" data-label="狀態">${statusPill}${expIcons ? " " + expIcons : ""}</td>
+            <td style="text-align:right;white-space:nowrap;" data-label=""><a class="sf-btn sm" href="${detailUrl}">明細</a></td>
+            <td class="order-mobile-only">${mobileCardHtml}</td>
           </tr>`;
             })
                 .join("");
@@ -5915,7 +5967,7 @@ function createAdminRouter() {
                   <th style="width:36px;"><input type="checkbox" id="orderSelectAllCb" title="全選"></th>
                   <th style="width:24px;"></th>
                   <th>訂單編號</th>
-                  <th>日期</th>
+                  <th>出貨日</th>
                   <th>客戶</th>
                   <th>來源</th>
                   <th>品項</th>
@@ -6755,8 +6807,8 @@ function createAdminRouter() {
             ? req.query.back
             : "/admin/orders?date_from=" + encodeURIComponent(getTaipeiCalendarDateYYYYMMDD()) + "&date_to=" + encodeURIComponent(getTaipeiCalendarDateYYYYMMDD());
         const order = await db.prepare(`
-      SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code, c.known_sub_customers
-      FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
+      SELECT o.id, o.order_no, o.order_date, o.status, o.updated_at, o.raw_message, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code, c.known_sub_customers
+      FROM orders o LEFT JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
@@ -6881,13 +6933,25 @@ function createAdminRouter() {
             ? `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/unapprove?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve" title="再按一次可撤銷確認" onclick="return confirm('確定要撤銷確認？訂單將恢復為待確認。');">已確認</button></form>`
             : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve">確認</button></form>`;
         const statusPillCls = orderStatusLc === "approved" ? "ok" : orderStatusLc === "deleted" ? "bad" : "warn";
+        // 訂貨日（系統紀錄時間） - 取 updated_at 的前 16 字（YYYY-MM-DD HH:mm）
+        const orderReceivedAt = order.updated_at ? String(order.updated_at).replace("T", " ").slice(0, 16) : "—";
+        // 客戶名 fallback
+        const orderCustomerName = (order.customer_name && String(order.customer_name).trim())
+            || (order.customer_id ? `客戶 ${String(order.customer_id).slice(0, 6)}` : "（未指定客戶）");
+        const hasCustomerName = Boolean(order.customer_name && String(order.customer_name).trim());
+        // 出貨日修改成功/失敗訊息
+        const dateOkBanner = req.query.ok === "date_saved"
+            ? `<div class="sf-pill ok" style="align-self:flex-start;margin-bottom:8px;">✓ 出貨日期已更新</div>`
+            : (req.query.ok === "date_unchanged" ? `<div class="sf-pill info" style="align-self:flex-start;margin-bottom:8px;">日期未變動</div>` : "");
         const body = `
         <div style="padding:20px 24px 0;">
-          <div class="sf-breadcrumb" style="margin-bottom:6px;">訂單 · ${escapeHtml(order.order_date)}</div>
+          <div class="sf-breadcrumb" style="margin-bottom:6px;">訂單 · 出貨日 ${escapeHtml(order.order_date)}</div>
+          ${dateOkBanner}
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;">
             <div>
               <h2 style="margin:0;font-size:20px;font-weight:600;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders" style="color:inherit;">${escapeHtml(order.customer_name)}</a>
+                <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders" style="color:inherit;">${escapeHtml(orderCustomerName)}</a>
+                ${hasCustomerName ? "" : `<span class="sf-pill bad" style="font-weight:400;">⚠ 客戶資料缺名稱</span>`}
                 <span class="sf-pill ${statusPillCls}">${escapeHtml(orderStatusDisplay)}</span>
                 ${needReviewCount > 0 ? `<span class="sf-pill warn">${SF_ICONS.warn}<span>${needReviewCount} 待確認</span></span>` : ""}
                 ${lowConfCount > 0 ? `<span class="sf-pill bad">${SF_ICONS.warn}<span>${lowConfCount} 低信心</span></span>` : ""}
@@ -6896,7 +6960,15 @@ function createAdminRouter() {
                 <span class="mono">${escapeHtml(order.order_no ?? "—")}</span>
                 <span>· ${escapeHtml(items.length+"")} 項</span>
                 ${attachments.length ? `<span>· 圖 ${attachments.length}</span>` : "<span>· 純文字</span>"}
+                <span>· 訂貨日 <span class="mono">${escapeHtml(orderReceivedAt)}</span></span>
               </div>
+              <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/set-date${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--bg-1);border:1px solid var(--line);border-radius:8px;padding:8px 12px;">
+                <span style="font-size:13px;color:var(--txt-2);">出貨日：</span>
+                <input type="date" name="order_date" id="orderEditDate" value="${escapeAttr(order.order_date || "")}" required style="padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:13px;">
+                <button type="button" class="sf-btn sm" id="orderEditDateTomorrow">明天</button>
+                <button type="button" class="sf-btn sm" id="orderEditDateMon">下週一</button>
+                <button type="submit" class="sf-btn sm primary">儲存出貨日</button>
+              </form>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <a class="sf-btn ghost" href="${escapeAttr(backTo)}">← 回列表</a>
@@ -6905,6 +6977,31 @@ function createAdminRouter() {
             </div>
           </div>
         </div>
+        <script>
+        (function(){
+          function fmtDateTaipei(d){
+            const f = new Intl.DateTimeFormat("en-CA", { timeZone:"Asia/Taipei" });
+            return f.format(d);
+          }
+          function nextMonday(){
+            const today = new Date(fmtDateTaipei(new Date()) + "T00:00:00+08:00");
+            const dow = today.getDay();
+            let add = (8 - dow) % 7;
+            if (add === 0) add = 7;
+            return fmtDateTaipei(new Date(today.getTime() + add * 86400000));
+          }
+          function tomorrow(){
+            const d = new Date();
+            d.setDate(d.getDate() + 1);
+            return fmtDateTaipei(d);
+          }
+          const inp = document.getElementById("orderEditDate");
+          const t = document.getElementById("orderEditDateTomorrow");
+          const m = document.getElementById("orderEditDateMon");
+          if (t) t.addEventListener("click", () => { if (inp) inp.value = tomorrow(); });
+          if (m) m.addEventListener("click", () => { if (inp) inp.value = nextMonday(); });
+        })();
+        </script>
         <div class="notion-breadcrumb" style="display:none;"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / 訂單明細</div>
         <p style="margin:0 0 10px;color:var(--notion-text-secondary, #555);font-size:14px;display:none;">${escapeHtml(order.order_no ?? "—")} · ${escapeHtml(order.order_date)} · <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a> · ${orderStatusDisplay}</p>
         <div style="padding:0 32px;">
@@ -8000,6 +8097,35 @@ function createAdminRouter() {
             meta: { before: order },
         });
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=approved" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+    });
+    router.post("/orders/:orderId/set-date", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const { orderId } = req.params;
+        const newDate = String(req.body?.order_date || "").trim();
+        const backTo = (typeof req.query.back === "string" && req.query.back.startsWith("/admin/orders"))
+            ? req.query.back
+            : "";
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent("日期格式錯誤"));
+            return;
+        }
+        const order = await db.prepare("SELECT id, order_no, order_date, status FROM orders WHERE id = ?").get(orderId);
+        if (!order) {
+            res.status(404).send("訂單不存在");
+            return;
+        }
+        if (order.order_date === newDate) {
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=date_unchanged" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+            return;
+        }
+        await db.prepare("UPDATE orders SET order_date = ? WHERE id = ?").run(newDate, orderId);
+        await logDataChange(req, {
+            entityType: "order",
+            entityId: orderId,
+            action: "edit_order_date",
+            summary: `修改訂單 ${order.order_no || orderId} 出貨日期：${order.order_date || "—"} → ${newDate}`,
+            meta: { before: { order_date: order.order_date }, after: { order_date: newDate } },
+        });
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=date_saved" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
     });
     router.post("/orders/:orderId/unapprove", async (req, res) => {
         const { orderId } = req.params;
