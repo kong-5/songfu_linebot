@@ -117,11 +117,20 @@
   }
   async function api(path, opts){
     const init = Object.assign({ headers: {} }, opts || {});
-    init.headers["Authorization"] = "Bearer " + idToken;
+    // 每次取最新 ID Token；若已過期會走下方的 401 處理流程
+    init.headers["Authorization"] = "Bearer " + (liff.getIDToken() || "");
     if (init.body && !(init.headers["Content-Type"])) init.headers["Content-Type"] = "application/json";
     const r = await fetch(path, init);
     let j = null;
     try { j = await r.json(); } catch (_) {}
+    // ID Token 過期 → 重新登入（自動拿到新 token 後重載頁面）
+    if (r.status === 401 && /expired|IdToken/i.test(String(j?.error || ""))) {
+      try {
+        toast("登入逾時，正在更新…", 3000);
+        liff.login({ redirectUri: location.href });
+      } catch (_) {}
+      return new Promise(() => {});
+    }
     return { status: r.status, body: j || {} };
   }
 

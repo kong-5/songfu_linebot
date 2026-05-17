@@ -73,9 +73,13 @@
   function escapeHtml(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]); }
   async function api(path, opts){
     const init = Object.assign({headers:{}}, opts || {});
-    init.headers["Authorization"] = "Bearer " + idToken;
+    init.headers["Authorization"] = "Bearer " + (liff.getIDToken() || "");
     const r = await fetch(path, init);
     let j = null; try { j = await r.json(); } catch(_){}
+    if (r.status === 401 && /expired|IdToken/i.test(String(j?.error || ""))) {
+      try { setStatus("登入逾時，正在更新…"); liff.login({redirectUri:location.href}); } catch(_){}
+      return new Promise(() => {});
+    }
     return { status: r.status, body: j || {} };
   }
 
