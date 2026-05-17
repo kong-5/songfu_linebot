@@ -1244,6 +1244,7 @@ function sfSidebar(active) {
       <div class="sf-nav-group">
         <div class="sf-nav-group-title">稽核與報表</div>
         ${item("/admin/audit", "audit", "history", "稽核軌跡")}
+        ${item("/admin/analytics", "analytics", "spark", "營運分析")}
         ${item("/admin/recognition-stats", "recognition-stats", "spark", "辨識成效")}
         ${item("/admin/broadcast", "broadcast", "bell", "群發訊息")}
       </div>
@@ -3505,6 +3506,221 @@ function createAdminRouter() {
             res.json({ ok: true, line, gemini, generatedAt: new Date().toISOString() });
         } catch (e) {
             res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+    // === 營運分析 ===
+    router.get("/analytics", async (req, res) => {
+        try {
+            const isPg = Boolean(process.env.DATABASE_URL);
+            // 期間（預設 90 天）
+            const periodDays = Math.max(7, Math.min(365, parseInt(String(req.query.period || "90"), 10) || 90));
+            const todayIso = getTaipeiCalendarDateYYYYMMDD();
+            const fromIso = (() => {
+                const d = new Date(todayIso + "T00:00:00+08:00");
+                d.setDate(d.getDate() - periodDays + 1);
+                return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(d);
+            })();
+            // 期間以「文字 YYYY-MM-DD」比較（PG/SQLite 共用）
+            const periodWhere = " AND o.order_date >= ? AND o.order_date <= ?";
+            const notVoidStatus = " AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint')";
+            // ── KPI ──
+            const totalActive = Number((await db.prepare("SELECT COUNT(*) AS n FROM customers WHERE active = 1 OR active IS NULL").get())?.n) || 0;
+            const activeInPeriod = Number((await db.prepare(
+                "SELECT COUNT(DISTINCT o.customer_id) AS n FROM orders o WHERE 1=1" + notVoidStatus + periodWhere
+            ).get(fromIso, todayIso))?.n) || 0;
+            const totalOrdersInPeriod = Number((await db.prepare(
+                "SELECT COUNT(*) AS n FROM orders o WHERE 1=1" + notVoidStatus + periodWhere
+            ).get(fromIso, todayIso))?.n) || 0;
+            const complaintsInPeriod = Number((await db.prepare(
+                "SELECT COUNT(*) AS n FROM orders o WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint'" + periodWhere
+            ).get(fromIso, todayIso))?.n) || 0;
+            const complaintRate = totalOrdersInPeriod > 0 ? Math.round((complaintsInPeriod / totalOrdersInPeriod) * 1000) / 10 : 0;
+            // 本月新客戶（第一張訂單在本月）
+            const monthStart = todayIso.slice(0, 8) + "01";
+            let newCustomersThisMonth = 0;
+            try {
+                const r = await db.prepare(
+                    "SELECT COUNT(*) AS n FROM (SELECT customer_id, MIN(order_date) AS first_d FROM orders WHERE COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY customer_id) sub WHERE sub.first_d >= ?"
+                ).get(monthStart);
+                newCustomersThisMonth = Number(r?.n) || 0;
+            } catch (_) {}
+            // ── 客戶排名 Top 20 ──
+            const topCustomers = await db.prepare(
+                "SELECT c.id, c.name, COUNT(*) AS order_count, " +
+                "SUM((SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.voided_at IS NULL)) AS item_count, " +
+                "MAX(o.order_date) AS last_date " +
+                "FROM orders o JOIN customers c ON c.id = o.customer_id " +
+                "WHERE 1=1" + notVoidStatus + periodWhere + " " +
+                "GROUP BY c.id, c.name ORDER BY order_count DESC LIMIT 20"
+            ).all(fromIso, todayIso);
+            // ── 客戶客訴排名（同期間客訴數最多的）──
+            const topComplainCustomers = await db.prepare(
+                "SELECT c.id, c.name, COUNT(*) AS complaint_count " +
+                "FROM orders o JOIN customers c ON c.id = o.customer_id " +
+                "WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint'" + periodWhere + " " +
+                "GROUP BY c.id, c.name ORDER BY complaint_count DESC LIMIT 10"
+            ).all(fromIso, todayIso);
+            // ── 品項排名 Top 30 ──
+            const topProducts = await db.prepare(
+                "SELECT COALESCE(NULLIF(TRIM(p.name), ''), NULLIF(TRIM(oi.raw_name), ''), '(未對應)') AS name, " +
+                "COUNT(*) AS hit_count, " +
+                "SUM(COALESCE(oi.quantity, 0)) AS total_qty, " +
+                "COUNT(DISTINCT o.customer_id) AS customer_count " +
+                "FROM order_items oi JOIN orders o ON o.id = oi.order_id LEFT JOIN products p ON p.id = oi.product_id " +
+                "WHERE oi.voided_at IS NULL" + notVoidStatus + periodWhere + " " +
+                "GROUP BY COALESCE(NULLIF(TRIM(p.name), ''), NULLIF(TRIM(oi.raw_name), ''), '(未對應)') " +
+                "ORDER BY hit_count DESC LIMIT 30"
+            ).all(fromIso, todayIso);
+            // ── 每日訂單量趨勢 ──
+            const dailyTrend = await db.prepare(
+                "SELECT o.order_date AS d, COUNT(*) AS n FROM orders o " +
+                "WHERE 1=1" + notVoidStatus + periodWhere + " " +
+                "GROUP BY o.order_date ORDER BY o.order_date"
+            ).all(fromIso, todayIso);
+            // ── 週幾分布 ──
+            const weekdayCounts = [0, 0, 0, 0, 0, 0, 0]; // 0=日 ~ 6=六
+            for (const r of dailyTrend) {
+                const d = new Date(String(r.d) + "T00:00:00+08:00");
+                if (!Number.isNaN(d.getTime())) weekdayCounts[d.getDay()] += Number(r.n) || 0;
+            }
+            const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"];
+            // ── 流失風險客戶（超過正常 2 倍間隔還沒叫貨）──
+            const churnRisk = await db.prepare(
+                "SELECT c.id, c.name, MAX(o.order_date) AS last_date, COUNT(*) AS order_count " +
+                "FROM orders o JOIN customers c ON c.id = o.customer_id " +
+                "WHERE (c.active = 1 OR c.active IS NULL)" + notVoidStatus + " " +
+                "GROUP BY c.id, c.name " +
+                "HAVING MAX(o.order_date) < ? " +
+                "ORDER BY order_count DESC LIMIT 15"
+            ).all((() => {
+                // 14 天前的日期（沒叫貨 14 天以上視為流失風險，可後續改成依各客戶平均間隔）
+                const d = new Date(todayIso + "T00:00:00+08:00");
+                d.setDate(d.getDate() - 14);
+                return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(d);
+            })());
+            // ── HTML ──
+            const maxOrderCount = Math.max(1, ...topCustomers.map(c => Number(c.order_count) || 0));
+            const maxProductHit = Math.max(1, ...topProducts.map(p => Number(p.hit_count) || 0));
+            const maxDaily = Math.max(1, ...dailyTrend.map(r => Number(r.n) || 0));
+            const maxWeekday = Math.max(1, ...weekdayCounts);
+            const periodOpts = [7, 14, 30, 60, 90, 180, 365].map(d => `<option value="${d}" ${d === periodDays ? "selected" : ""}>過去 ${d} 天</option>`).join("");
+            const kpi = (label, num, unit, sub, status) => `
+              <div class="sf-card" style="padding:14px 18px;">
+                <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">${label}</div>
+                <div class="mono" style="font-size:26px;font-weight:600;color:${status === "bad" ? "var(--bad)" : status === "warn" ? "var(--warn)" : "var(--txt-1)"};">${num}${unit ? `<span style="font-size:14px;color:var(--txt-3);margin-left:4px;">${unit}</span>` : ""}</div>
+                <div style="font-size:12px;color:var(--txt-2);">${sub || ""}</div>
+              </div>`;
+            const body = `
+              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:1200px;margin:0 auto;">
+                <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+                  <div>
+                    <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核與報表 / 營運分析</div>
+                    <h1 style="margin:0;font-size:22px;font-weight:600;">營運分析</h1>
+                    <p style="margin:6px 0 0;color:var(--txt-3);font-size:12px;">期間：${escapeHtml(fromIso)} ~ ${escapeHtml(todayIso)}（${periodDays} 天）。不含已作廢／客訴訂單。</p>
+                  </div>
+                  <form method="get" action="/admin/analytics" style="display:flex;gap:8px;align-items:center;">
+                    <label style="font-size:13px;color:var(--txt-2);">期間
+                      <select name="period" class="sf-input" style="margin-left:6px;" onchange="this.form.submit()">${periodOpts}</select>
+                    </label>
+                  </form>
+                </div>
+
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+                  ${kpi("活躍客戶", activeInPeriod, "/ " + totalActive, `期間內有叫貨 · 活躍率 ${totalActive > 0 ? Math.round(activeInPeriod * 100 / totalActive) : 0}%`)}
+                  ${kpi("期間訂單數", totalOrdersInPeriod, "張", `平均每天 ${(totalOrdersInPeriod / periodDays).toFixed(1)} 張`)}
+                  ${kpi("客訴率", complaintRate + "%", "", `客訴 ${complaintsInPeriod} 張`, complaintRate > 5 ? "bad" : complaintRate > 2 ? "warn" : "ok")}
+                  ${kpi("本月新客戶", newCustomersThisMonth, "戶", "首張訂單在本月")}
+                </div>
+
+                <div class="sf-card">
+                  <div class="sf-card-head"><div class="sf-card-title">📈 每日訂單量趨勢</div></div>
+                  <div style="padding:14px 16px;">
+                    ${dailyTrend.length ? `<div style="display:flex;align-items:flex-end;gap:2px;height:120px;">${dailyTrend.map(r => {
+                      const h = Math.round((Number(r.n) || 0) / maxDaily * 110);
+                      return `<div title="${escapeAttr(r.d)} · ${r.n} 張" style="flex:1;min-width:6px;background:var(--accent);opacity:.65;height:${h}px;border-radius:2px 2px 0 0;"></div>`;
+                    }).join("")}</div><div style="display:flex;justify-content:space-between;margin-top:6px;font-size:11px;color:var(--txt-3);"><span>${escapeHtml(dailyTrend[0]?.d || "")}</span><span>${escapeHtml(dailyTrend[dailyTrend.length-1]?.d || "")}</span></div>` : `<p style="color:var(--txt-3);text-align:center;margin:0;">期間內無訂單</p>`}
+                  </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                  <div class="sf-card">
+                    <div class="sf-card-head"><div class="sf-card-title">👥 客戶排名 Top 20</div></div>
+                    <div style="padding:0;">
+                      ${topCustomers.length ? topCustomers.map((c, i) => {
+                        const pct = Math.round((Number(c.order_count) || 0) * 100 / maxOrderCount);
+                        return `<a href="/admin/customers/${encodeURIComponent(c.id)}/360" style="display:block;padding:8px 14px;border-bottom:1px solid var(--line);text-decoration:none;color:inherit;">
+                          <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;margin-bottom:4px;">
+                            <span><span class="mono" style="color:var(--txt-3);margin-right:6px;">${String(i+1).padStart(2,"0")}</span>${escapeHtml(c.name)}</span>
+                            <span class="mono"><strong>${c.order_count}</strong> 張 · ${c.item_count || 0} 項</span>
+                          </div>
+                          <div style="height:6px;background:var(--bg-2);border-radius:3px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:var(--accent);"></div></div>
+                        </a>`;
+                      }).join("") : `<p style="padding:18px;color:var(--txt-3);text-align:center;font-size:13px;margin:0;">期間內無訂單</p>`}
+                    </div>
+                  </div>
+                  <div class="sf-card">
+                    <div class="sf-card-head"><div class="sf-card-title">📦 品項排名 Top 30（依被叫次數）</div></div>
+                    <div style="padding:0;max-height:540px;overflow-y:auto;">
+                      ${topProducts.length ? topProducts.map((p, i) => {
+                        const pct = Math.round((Number(p.hit_count) || 0) * 100 / maxProductHit);
+                        const totalQty = Number(p.total_qty) || 0;
+                        const qtyDisp = totalQty % 1 === 0 ? String(totalQty) : totalQty.toFixed(2);
+                        return `<div style="padding:8px 14px;border-bottom:1px solid var(--line);">
+                          <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;margin-bottom:4px;">
+                            <span><span class="mono" style="color:var(--txt-3);margin-right:6px;">${String(i+1).padStart(2,"0")}</span>${escapeHtml(p.name)}</span>
+                            <span class="mono" style="font-size:12px;"><strong>${p.hit_count}</strong> 次 · ${qtyDisp} · ${p.customer_count} 戶</span>
+                          </div>
+                          <div style="height:6px;background:var(--bg-2);border-radius:3px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:var(--ok);"></div></div>
+                        </div>`;
+                      }).join("") : `<p style="padding:18px;color:var(--txt-3);text-align:center;font-size:13px;margin:0;">期間內無品項紀錄</p>`}
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                  <div class="sf-card">
+                    <div class="sf-card-head"><div class="sf-card-title">📅 週幾叫貨分布</div></div>
+                    <div style="padding:14px 16px;">
+                      <div style="display:flex;align-items:flex-end;gap:8px;height:120px;">
+                        ${weekdayCounts.map((n, i) => {
+                          const h = Math.round(n / maxWeekday * 100);
+                          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;">
+                            <span class="mono" style="font-size:11px;color:var(--txt-2);margin-bottom:2px;">${n}</span>
+                            <div style="width:100%;height:${Math.max(h,2)}px;background:var(--accent);opacity:.7;border-radius:3px 3px 0 0;"></div>
+                            <span style="font-size:11px;color:var(--txt-3);margin-top:4px;">週${weekdayLabels[i]}</span>
+                          </div>`;
+                        }).join("")}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="sf-card">
+                    <div class="sf-card-head"><div class="sf-card-title">⚠ 客訴客戶排名（期間）</div></div>
+                    <div style="padding:0;">
+                      ${topComplainCustomers.length ? topComplainCustomers.map((c, i) => `
+                        <a href="/admin/customers/${encodeURIComponent(c.id)}/360" style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);text-decoration:none;color:inherit;font-size:13px;">
+                          <span><span class="mono" style="color:var(--txt-3);margin-right:6px;">${String(i+1).padStart(2,"0")}</span>${escapeHtml(c.name)}</span>
+                          <span class="sf-pill bad">${c.complaint_count} 筆</span>
+                        </a>
+                      `).join("") : `<p style="padding:18px;color:var(--ok);text-align:center;font-size:13px;margin:0;">✓ 期間內無客訴</p>`}
+                    </div>
+                  </div>
+                </div>
+
+                <div class="sf-card">
+                  <div class="sf-card-head"><div class="sf-card-title">🛑 流失風險客戶（超過 14 天未叫貨）</div><span class="sf-card-sub">依累計訂單數排序，優先關心舊客戶</span></div>
+                  <div style="padding:0;">
+                    ${churnRisk.length ? `<table class="sf-table" style="font-size:13px;"><thead><tr><th>客戶</th><th>最後叫貨</th><th style="text-align:right;">累計訂單</th><th></th></tr></thead><tbody>${churnRisk.map(c => {
+                      const last = new Date(String(c.last_date) + "T00:00:00+08:00");
+                      const days = Math.round((new Date(todayIso + "T00:00:00+08:00") - last) / 86400000);
+                      return `<tr><td>${escapeHtml(c.name)}</td><td class="mono">${escapeHtml(c.last_date)} <span style="color:var(--bad);">(${days} 天前)</span></td><td style="text-align:right;" class="mono">${c.order_count}</td><td style="text-align:right;"><a href="/admin/customers/${encodeURIComponent(c.id)}/360" class="sf-btn sm">查看</a></td></tr>`;
+                    }).join("")}</tbody></table>` : `<p style="padding:18px;color:var(--ok);text-align:center;font-size:13px;margin:0;">✓ 沒有客戶超過 14 天未叫貨</p>`}
+                  </div>
+                </div>
+              </div>`;
+            res.type("text/html").send(notionPage("營運分析", body, "analytics", res));
+        } catch (e) {
+            console.error("[admin] /analytics failed", e);
+            res.status(500).send("載入營運分析失敗：" + (e?.message || e));
         }
     });
     router.get("/audit", async (req, res) => {
@@ -9594,7 +9810,7 @@ function createAdminRouter() {
             }
             // 平均叫貨間隔（過去 90 天）
             const last90Orders = await db.prepare(
-                "SELECT DISTINCT order_date FROM orders WHERE customer_id = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') " + periodSqls.p90 + " ORDER BY order_date DESC"
+                "SELECT DISTINCT order_date FROM orders o WHERE o.customer_id = ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') " + periodSqls.p90 + " ORDER BY order_date DESC"
             ).all(cid);
             let avgIntervalDays = null;
             if (last90Orders && last90Orders.length >= 2) {
