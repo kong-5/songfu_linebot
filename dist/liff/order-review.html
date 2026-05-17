@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>訂單審核 · 松富物流</title>
+<style>
+  :root { color-scheme: light; --accent:#1d4ed8; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --line:#e3e2e0; --bg:#f7f6f3; --bg2:#fafafa; --txt1:#37352f; --txt2:#787774; --txt3:#9b9a97; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; }
+  body { font-family: ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif; background:var(--bg); color:var(--txt1); min-height:100vh; padding-bottom:env(safe-area-inset-bottom,0); }
+  header { position:sticky; top:0; z-index:10; background:#fff; border-bottom:1px solid var(--line); padding:14px 16px; display:flex; align-items:center; gap:10px; }
+  header h1 { font-size:16px; margin:0; flex:1; }
+  header .who { font-size:11px; color:var(--txt2); text-align:right; line-height:1.4; }
+  .toolbar { display:flex; gap:8px; padding:10px 16px; background:#fff; border-bottom:1px solid var(--line); align-items:center; }
+  .toolbar input[type="date"] { flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:6px; font-size:14px; background:#fff; }
+  .toolbar button { padding:8px 14px; border:1px solid var(--line); border-radius:6px; background:#fff; font-size:13px; cursor:pointer; min-height:36px; }
+  .toolbar button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .status-bar { padding:8px 16px; font-size:12px; color:var(--txt2); background:#fff; border-bottom:1px solid var(--line); }
+  .status-bar.err { background:#ffebee; color:#c62828; }
+  .status-bar.ok { background:#e7f5e9; color:#2e7d32; }
+  .list { padding:8px 12px; }
+  .order { background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:8px 0; cursor:pointer; transition:transform .12s; }
+  .order:active { transform:scale(0.98); }
+  .order.approved { border-left:3px solid var(--ok); opacity:.7; }
+  .order.pending { border-left:3px solid var(--warn); }
+  .order .row1 { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .order .name { flex:1; font-weight:600; font-size:15px; }
+  .order .pill { font-size:11px; padding:2px 8px; border-radius:10px; font-weight:500; }
+  .pill.pending { background:#fef3c7; color:#92400e; }
+  .pill.approved { background:#d1fae5; color:#065f46; }
+  .pill.review { background:#fee2e2; color:#991b1b; }
+  .order .row2 { font-size:12px; color:var(--txt2); display:flex; gap:10px; }
+  .order .row3 { font-size:12px; color:var(--txt1); margin-top:6px; line-height:1.5; }
+  .empty { text-align:center; padding:40px 20px; color:var(--txt3); font-size:13px; }
+  /* 詳細 modal */
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:100; display:none; }
+  .modal-bg.show { display:block; }
+  .modal { position:fixed; left:0; right:0; bottom:0; background:#fff; z-index:101; border-radius:14px 14px 0 0; max-height:90vh; display:none; flex-direction:column; transform:translateY(100%); transition:transform .2s; }
+  .modal.show { display:flex; transform:translateY(0); }
+  .modal-head { padding:14px 16px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; }
+  .modal-head h2 { font-size:16px; margin:0; flex:1; }
+  .modal-head .close { background:none; border:none; font-size:24px; cursor:pointer; color:var(--txt2); padding:0 4px; min-height:32px; min-width:32px; }
+  .modal-body { flex:1; overflow:auto; padding:14px 16px; }
+  .modal-foot { padding:12px 16px; border-top:1px solid var(--line); display:flex; gap:8px; background:#fff; padding-bottom:calc(12px + env(safe-area-inset-bottom,0)); }
+  .modal-foot button { flex:1; padding:14px; border-radius:8px; border:none; font-size:15px; font-weight:600; cursor:pointer; min-height:48px; }
+  .modal-foot .approve { background:var(--ok); color:#fff; }
+  .modal-foot .unapprove { background:#fff; color:var(--txt1); border:1px solid var(--line); }
+  .modal-foot .approve:disabled, .modal-foot .unapprove:disabled { opacity:.5; cursor:not-allowed; }
+  .item-row { display:flex; padding:10px 0; border-bottom:1px dashed var(--line); font-size:14px; gap:8px; align-items:flex-start; }
+  .item-row:last-child { border-bottom:none; }
+  .item-row .item-name { flex:1; }
+  .item-row .item-qty { font-family:ui-monospace,monospace; color:var(--txt2); white-space:nowrap; }
+  .item-row .review-flag { font-size:10px; padding:1px 6px; border-radius:8px; background:#fee2e2; color:#991b1b; margin-left:6px; vertical-align:middle; }
+  .meta { font-size:12px; color:var(--txt2); margin:6px 0 12px; line-height:1.6; }
+  .meta strong { color:var(--txt1); }
+  .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#37352f; color:#fff; padding:10px 18px; border-radius:8px; font-size:13px; z-index:200; opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>訂單審核</h1>
+  <div class="who" id="me">登入中…</div>
+</header>
+<div class="toolbar">
+  <input type="date" id="date-input">
+  <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--txt2);">
+    <input type="checkbox" id="only-pending" checked>僅未確認
+  </label>
+  <button id="refresh-btn">重整</button>
+</div>
+<div class="status-bar" id="status">載入中…</div>
+<div class="list" id="list"></div>
+
+<div class="modal-bg" id="modal-bg"></div>
+<div class="modal" id="modal">
+  <div class="modal-head">
+    <h2 id="modal-title">訂單明細</h2>
+    <button type="button" class="close" id="modal-close">×</button>
+  </div>
+  <div class="modal-body" id="modal-body"></div>
+  <div class="modal-foot">
+    <button type="button" class="unapprove" id="btn-unapprove" style="display:none;">取消確認</button>
+    <button type="button" class="approve" id="btn-approve">確認此單</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+(function(){
+  const LIFF_ID = window.__LIFF_ID__ || "";
+  const $ = (s) => document.querySelector(s);
+  const statusEl = $("#status");
+  const listEl = $("#list");
+  const toastEl = $("#toast");
+  let idToken = null;
+  let currentDate = "";
+  let currentOrders = [];
+  let activeOrder = null;
+
+  function setStatus(cls, text){ statusEl.className = "status-bar " + cls; statusEl.textContent = text; }
+  function toast(text, ms){
+    toastEl.textContent = text; toastEl.classList.add("show");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => toastEl.classList.remove("show"), ms || 1800);
+  }
+  function todayTaipei() {
+    // 取台北日期 YYYY-MM-DD
+    const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year:"numeric", month:"2-digit", day:"2-digit" });
+    return fmt.format(new Date());
+  }
+  async function api(path, opts){
+    const init = Object.assign({ headers: {} }, opts || {});
+    init.headers["Authorization"] = "Bearer " + idToken;
+    if (init.body && !(init.headers["Content-Type"])) init.headers["Content-Type"] = "application/json";
+    const r = await fetch(path, init);
+    let j = null;
+    try { j = await r.json(); } catch (_) {}
+    return { status: r.status, body: j || {} };
+  }
+
+  if (!LIFF_ID) {
+    setStatus("err", "尚未設定 LIFF_ID_ORDER_REVIEW。");
+    return;
+  }
+
+  liff.init({ liffId: LIFF_ID }).then(async () => {
+    if (!liff.isLoggedIn()) {
+      liff.login({ redirectUri: location.href });
+      return;
+    }
+    const profile = await liff.getProfile();
+    $("#me").innerHTML = '<strong>' + (profile.displayName||"") + '</strong>';
+    idToken = liff.getIDToken();
+    if (!idToken) {
+      setStatus("err", "無法取得 ID Token，請重新開啟此頁。");
+      return;
+    }
+    currentDate = todayTaipei();
+    $("#date-input").value = currentDate;
+    $("#date-input").addEventListener("change", (e) => { currentDate = e.target.value; loadList(); });
+    $("#only-pending").addEventListener("change", () => loadList());
+    $("#refresh-btn").addEventListener("click", loadList);
+    $("#modal-close").addEventListener("click", closeModal);
+    $("#modal-bg").addEventListener("click", closeModal);
+    $("#btn-approve").addEventListener("click", () => doAction("approve"));
+    $("#btn-unapprove").addEventListener("click", () => doAction("unapprove"));
+    await loadList();
+  }).catch((e) => {
+    setStatus("err", "LIFF 初始化失敗：" + (e?.message || e));
+  });
+
+  async function loadList(){
+    setStatus("", "載入中…");
+    listEl.innerHTML = "";
+    const onlyPending = $("#only-pending").checked ? "1" : "0";
+    const { status, body } = await api("/liff/api/order-review/list?date=" + encodeURIComponent(currentDate) + "&only_pending=" + onlyPending);
+    if (status !== 200 || !body.ok) {
+      setStatus("err", body.error || ("HTTP " + status));
+      return;
+    }
+    currentOrders = body.orders || [];
+    const role = body.employee && body.employee.title ? "（" + body.employee.title + "）" : "";
+    setStatus("", "共 " + currentOrders.length + " 單" + role);
+    renderList();
+  }
+
+  function renderList(){
+    if (!currentOrders.length) {
+      listEl.innerHTML = '<div class="empty">沒有符合條件的訂單</div>';
+      return;
+    }
+    listEl.innerHTML = currentOrders.map(o => {
+      const isApproved = (o.status||"").toLowerCase() === "approved";
+      const cls = isApproved ? "approved" : "pending";
+      const pill = isApproved ? '<span class="pill approved">已確認</span>' : '<span class="pill pending">未確認</span>';
+      const reviewPill = (o.need_review_count > 0) ? ' <span class="pill review">' + o.need_review_count + ' 待對應</span>' : '';
+      const itemsPreview = o.items_preview || "—";
+      return '<div class="order ' + cls + '" data-id="' + o.id + '">' +
+        '<div class="row1"><div class="name">' + escapeHtml(o.customer_name||"—") + '</div>' + pill + reviewPill + '</div>' +
+        '<div class="row2"><span>送貨日 ' + (o.order_date||"") + '</span><span>單號 ' + (o.order_no||o.id.slice(0,8)) + '</span><span>' + o.item_count + ' 項</span></div>' +
+        '<div class="row3">' + escapeHtml(itemsPreview) + '</div>' +
+      '</div>';
+    }).join("");
+    listEl.querySelectorAll(".order").forEach(el => {
+      el.addEventListener("click", () => openDetail(el.dataset.id));
+    });
+  }
+
+  async function openDetail(orderId){
+    activeOrder = orderId;
+    $("#modal-title").textContent = "訂單明細";
+    $("#modal-body").innerHTML = '<div class="empty">載入中…</div>';
+    $("#btn-approve").disabled = true;
+    $("#btn-unapprove").disabled = true;
+    $("#modal-bg").classList.add("show");
+    $("#modal").classList.add("show");
+    const { status, body } = await api("/liff/api/order-review/detail?id=" + encodeURIComponent(orderId));
+    if (status !== 200 || !body.ok) {
+      $("#modal-body").innerHTML = '<div class="empty" style="color:var(--bad);">' + (body.error || "載入失敗") + '</div>';
+      return;
+    }
+    const o = body.order;
+    $("#modal-title").textContent = (o.customer_name || "—") + " · " + (o.order_no || o.id.slice(0,8));
+    const isApproved = (o.status||"").toLowerCase() === "approved";
+    $("#btn-approve").style.display = isApproved ? "none" : "block";
+    $("#btn-unapprove").style.display = isApproved ? "block" : "none";
+    $("#btn-approve").disabled = false;
+    $("#btn-unapprove").disabled = false;
+    const itemsHtml = (o.items||[]).map(it => {
+      const flag = it.need_review ? '<span class="review-flag">待對應</span>' : '';
+      const qty = (it.quantity != null ? it.quantity : "—") + (it.unit ? " " + it.unit : "");
+      return '<div class="item-row"><div class="item-name">' + escapeHtml(it.name||"—") + flag + '</div><div class="item-qty">' + escapeHtml(qty) + '</div></div>';
+    }).join("");
+    const meta =
+      '<div class="meta">' +
+      '<div>狀態：<strong>' + (isApproved ? "已確認" : "未確認") + '</strong></div>' +
+      '<div>送貨日：<strong>' + (o.order_date||"—") + '</strong></div>' +
+      (o.updated_at ? '<div>最後更新：' + (o.updated_at||"—").replace("T", " ").slice(0,19) + '</div>' : '') +
+      (o.need_review_count > 0 ? '<div style="color:var(--bad);">⚠ 還有 ' + o.need_review_count + ' 個品項待對應</div>' : '') +
+      '</div>';
+    $("#modal-body").innerHTML = meta + itemsHtml;
+  }
+
+  function closeModal(){
+    $("#modal-bg").classList.remove("show");
+    $("#modal").classList.remove("show");
+    activeOrder = null;
+  }
+
+  async function doAction(action){
+    if (!activeOrder) return;
+    const verb = action === "approve" ? "確認" : "取消確認";
+    if (!confirm(verb + "此訂單？")) return;
+    $("#btn-approve").disabled = true;
+    $("#btn-unapprove").disabled = true;
+    const { status, body } = await api("/liff/api/order-review/" + action, {
+      method: "POST",
+      body: JSON.stringify({ orderId: activeOrder }),
+    });
+    if (status !== 200 || !body.ok) {
+      toast("失敗：" + (body.error || "HTTP " + status));
+      $("#btn-approve").disabled = false;
+      $("#btn-unapprove").disabled = false;
+      return;
+    }
+    toast("已" + verb);
+    closeModal();
+    await loadList();
+  }
+
+  function escapeHtml(s){
+    return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" })[c]);
+  }
+})();
+</script>
+</body>
+</html>

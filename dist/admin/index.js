@@ -2944,6 +2944,7 @@ function createAdminRouter() {
             <div style="display:flex;gap:8px;">
               <a class="sf-btn" href="/admin">${SF_ICONS.refresh}<span>重新整理</span></a>
               <a class="sf-btn" href="/admin/export">${SF_ICONS.dl}<span>當日報表</span></a>
+              ${(process.env.LIFF_ID_ORDER_REVIEW||"").trim() ? `<button type="button" class="sf-btn" onclick="(async()=>{try{await navigator.clipboard.writeText('https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');this.querySelector('span').textContent='已複製，請貼到 LINE';setTimeout(()=>this.querySelector('span').textContent='手機審核連結',2000);}catch(e){prompt('複製失敗，請手動複製：','https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');}})();" title="複製訂單審核 LIFF 連結，貼到 LINE 開啟"><span>📱 手機審核連結</span></button>` : ""}
               <a class="sf-btn primary" href="/admin/orders?need_review=1">${SF_ICONS.check}<span>批次簽核 (${pendingOrders})</span></a>
             </div>
           </div>
