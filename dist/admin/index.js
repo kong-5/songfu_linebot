@@ -6511,6 +6511,34 @@ function createAdminRouter() {
         }
         res.redirect("/admin/orders?ok=del&n=" + ids.length);
     });
+    router.post("/orders/:orderId/void", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const { orderId } = req.params;
+        const backTo = (typeof req.query.back === "string" && req.query.back.startsWith("/admin/orders"))
+            ? req.query.back
+            : "";
+        const validReasons = ["ai_wrong", "customer_complaint", "customer_cancelled", "duplicate", "staff_error", "other"];
+        const rawReason = String(req.body?.void_reason || "other").trim().toLowerCase();
+        const reason = validReasons.includes(rawReason) ? rawReason : "other";
+        const note = String(req.body?.void_note || "").trim().slice(0, 500);
+        const actor = req.adminUsername || "system";
+        const before = await db.prepare("SELECT id, order_no, customer_id, order_date, status, raw_message FROM orders WHERE id = ?").get(orderId);
+        if (!before) { res.status(404).send("訂單不存在"); return; }
+        if (String(before.status||"").toLowerCase() === "deleted") {
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent("此訂單已作廢"));
+            return;
+        }
+        const itemsSnap = await db.prepare("SELECT id, raw_name, quantity, unit, product_id, remark, sub_customer FROM order_items WHERE order_id = ?").all(orderId);
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + ", voided_at = " + nowSql + ", voided_by = ?, void_reason = ?, void_note = ? WHERE id = ?").run("deleted", actor, reason, note || null, orderId);
+        await logDataChange(req, {
+            entityType: "order",
+            entityId: orderId,
+            action: "soft_delete",
+            summary: `作廢訂單 ${before.order_no || orderId}（${reason}）${note ? "備註：" + note : ""}`,
+            meta: { before, items: itemsSnap, source: "detail-page", void_reason: reason, void_note: note },
+        });
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=voided" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+    });
     router.post("/orders/:orderId/unvoid", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { orderId } = req.params;
         const backTo = (typeof req.query.back === "string" && req.query.back.startsWith("/admin/orders"))
@@ -7164,6 +7192,42 @@ function createAdminRouter() {
           <a href="/admin/orders/batch-lingyue-xlsx?ids=${encodeURIComponent(orderId)}" class="sf-btn">${SF_ICONS.dl}<span>匯出凌越</span></a>
           <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?preview=1" class="sf-btn">${SF_ICONS.list}<span>預覽訂單</span></a>
           <a href="/admin/orders/${encodeURIComponent(orderId)}/order-sheet?download=1" class="sf-btn">${SF_ICONS.dl}<span>匯出訂貨單</span></a>
+          ${isOrderVoided ? "" : `
+          <span style="flex:1;"></span>
+          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/void${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" id="voidOrderForm" style="display:inline-flex;margin:0;gap:6px;">
+            <input type="hidden" name="void_reason" id="voidOrderReason" value="">
+            <input type="hidden" name="void_note" id="voidOrderNote" value="">
+            <button type="button" id="btnVoidOrder" class="sf-btn danger" title="作廢整張訂單（會保留稽核紀錄、可由「已作廢訂單」清單恢復）">${SF_ICONS.x}<span>作廢此訂單</span></button>
+          </form>
+          <script>
+          (function(){
+            const btn = document.getElementById("btnVoidOrder");
+            if (!btn) return;
+            btn.addEventListener("click", function(){
+              const r = window.prompt(
+                "作廢此訂單的原因？\\n\\n" +
+                "  1 = AI 辨識整單錯誤（會回饋學習庫）\\n" +
+                "  2 = 客訴問題\\n" +
+                "  3 = 客戶取消\\n" +
+                "  4 = 重複叫貨\\n" +
+                "  5 = 內部錯誤\\n" +
+                "  6 = 其他\\n\\n" +
+                "按「取消」放棄作廢。",
+                "1"
+              );
+              if (r === null) return;
+              const map = { "1":"ai_wrong", "2":"customer_complaint", "3":"customer_cancelled", "4":"duplicate", "5":"staff_error", "6":"other" };
+              const reason = map[String(r).trim()] || "other";
+              let note = "";
+              if (reason !== "ai_wrong") {
+                note = window.prompt("備註（可留白）：", "") || "";
+              }
+              document.getElementById("voidOrderReason").value = reason;
+              document.getElementById("voidOrderNote").value = note;
+              document.getElementById("voidOrderForm").submit();
+            });
+          })();
+          </script>`}
         </div>
         <div class="order-detail-layout">
         <aside class="order-detail-raw-col" aria-label="原始訂單對照" style="flex:0 0 min(320px, 32vw);max-width:360px;">
