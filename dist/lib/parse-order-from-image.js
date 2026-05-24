@@ -125,6 +125,14 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
             ocrText = null;
         }
     }
+    // 早退：偵測「不是訂單」的圖（自家廣播圖、自家銷貨單回傳等），不打 Gemini、回空 items
+    const nonOrder = require("./non-order-image-detector.js").detectNonOrderImage(ocrText);
+    if (nonOrder) {
+        console.log("[parse-order-from-image] non-order detected reason=%s signals=%s — early return", nonOrder.reason, nonOrder.signals.join(","));
+        const skipResult = { parsed: [], ocrText: ocrText || null, _nonOrderReason: nonOrder.reason, _nonOrderSignals: nonOrder.signals };
+        if (cacheKey) cacheSet(cacheKey, skipResult);
+        return skipResult;
+    }
     const template = (0, order_form_templates_js_1.detectOrderFormTemplate)(ocrText);
     const parseText = template
         ? (0, order_form_templates_js_1.preprocessOcrTextByTemplate)(ocrText, template)
