@@ -160,6 +160,11 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
         const lungangLike = /龍港/.test(oc) && /品名/.test(oc) && /數量/.test(oc);
         const lungangSuffix = "（本圖 OCR 含「龍港／品名／數量」）此頁極可能為**多欄印刷品名＋手寫數量**；請再確認依**左欄→中欄→右欄**直向逐列讀取，且手寫「kg」類必拆成數量與單位，勿產生萬位以上離譜數字。";
         const visionParts = [];
+        // 若命中已知預印勾選表，把預印品項清單當 hint 給 vision
+        // (松富 HACCP / 龍港 / 湯蒸 三款 — 治本「普羅蔔=苜蓿芽」這類誤辨)
+        const knownItemsHint = (0, order_form_templates_js_1.buildKnownItemsHintForVision)(template);
+        if (knownItemsHint)
+            visionParts.push(knownItemsHint);
         if (lungangLike)
             visionParts.push(lungangSuffix);
         if (mergedGeminiSuffix)
