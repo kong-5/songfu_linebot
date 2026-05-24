@@ -4,9 +4,10 @@ exports.detectNonOrderImage = detectNonOrderImage;
 /**
  * 偵測「不是訂單」的圖（從 OCR 文字判斷），讓 parse-order-from-image 早退、不打 Gemini。
  *
- * 目前涵蓋兩種高頻誤判：
+ * 目前涵蓋三種高頻誤判：
  *   - broadcast_promotion：松富自己發的「限時優惠」廣播圖被客戶轉回 → 至少 9 個客戶受害
  *   - own_invoice:         松富銷貨單被客戶照相回傳（驗收用）→ 馬偕/桂田/桃源國小
+ *   - crate_label_photo:   容器/菜籃標籤照（瑪沙魯/熊蓋讚/新北斗/大壯板/籃子）
  *
  * 設計原則：
  *   - 保守。寧可漏判也不錯判（漏 → 多花一次 Gemini；錯 → 真訂單被吞掉）
@@ -18,7 +19,7 @@ exports.detectNonOrderImage = detectNonOrderImage;
  */
 function detectNonOrderImage(ocrText) {
     const t = String(ocrText || "");
-    if (!t || t.length < 10) return null;
+    if (!t || t.length < 2) return null;
 
     // === broadcast_promotion ===
     // 你自己發的「限時優惠」廣播圖；客戶轉回後 bot 會誤抓「小黃瓜」等品名為訂單
@@ -51,6 +52,33 @@ function detectNonOrderImage(ocrText) {
     const hasCustCode = invoiceSignals.includes("客戶代碼:XX####");
     if ((hasInvoiceMarker && hasOwnIdentity) || (hasOwnIdentity && hasCustCode)) {
         return { skip: true, reason: "own_invoice", signals: invoiceSignals };
+    }
+
+    // === crate_label_photo ===
+    // 容器/菜籃標籤照（瑪沙魯/熊蓋讚/新北斗/大壯板/籃子 那種）：
+    //   OCR 通常 < 25 chars (壓縮後)、有 1-2 位數字、有中文（客戶名）、但**沒有數量單位**
+    // 判別邏輯（必須全 4 個 signal 命中）：
+    const compact = t.replace(/\s/g, "");
+    const lenSig = compact.length >= 2 && compact.length <= 25;
+    const hasDigit = /\d/.test(t);
+    const hasChinese = /[一-鿿]/.test(t);
+    // 任何訂單一定會出現的單位關鍵字 — 出現任何一個就**不是**運輸照
+    const unitRe = /(公斤|公克|台斤|公兩|kg|KG|Kg|斤|包|盒|個|條|顆|把|份|束|罐|瓶|盤|碗|株|盆|箱|籃|袋)/;
+    const hasUnit = unitRe.test(t);
+    // 真訂單通常多行；運輸照通常 1-3 行短文
+    const lines = t.split(/\n+/).map(x => x.trim()).filter(Boolean);
+    const fewLines = lines.length <= 4;
+    if (lenSig && hasDigit && hasChinese && !hasUnit && fewLines) {
+        return {
+            skip: true,
+            reason: "crate_label_photo",
+            signals: [
+                `text_len=${compact.length}`,
+                `digits=${(t.match(/\d+/g) || []).join(',')}`,
+                `lines=${lines.length}`,
+                "no_unit_keyword",
+            ],
+        };
     }
 
     return null;
