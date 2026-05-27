@@ -353,6 +353,8 @@ function initSqlite(dbPath) {
           prev_picked_up INTEGER,
           new_taken_to INTEGER,
           new_picked_up INTEGER,
+          prev_lines_json TEXT,
+          new_lines_json TEXT,
           actor TEXT,
           reporter_user_id TEXT,
           raw_message TEXT,
@@ -360,6 +362,21 @@ function initSqlite(dbPath) {
           FOREIGN KEY (basket_log_id) REFERENCES basket_logs(id)
         )`);
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_basket_log_hist_log ON basket_log_history(basket_log_id)");
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS basket_log_lines (
+          id TEXT PRIMARY KEY,
+          basket_log_id TEXT NOT NULL,
+          basket_kind TEXT NOT NULL,
+          basket_no INTEGER NOT NULL DEFAULT 0,
+          taken_to INTEGER NOT NULL DEFAULT 0,
+          picked_up INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (basket_log_id) REFERENCES basket_logs(id)
+        )`);
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_basket_log_lines_uniq ON basket_log_lines(basket_log_id, basket_kind, basket_no)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_basket_log_lines_log ON basket_log_lines(basket_log_id)");
+        // 既有 DB 補欄位（不存在才加）
+        try { sqlite.exec("ALTER TABLE basket_log_history ADD COLUMN prev_lines_json TEXT"); } catch (_) {}
+        try { sqlite.exec("ALTER TABLE basket_log_history ADD COLUMN new_lines_json TEXT"); } catch (_) {}
     }
     catch (_) { /* table may already exist */ }
     for (const alt of alters) {
@@ -749,6 +766,20 @@ async function initPg() {
             created_at TIMESTAMPTZ NOT NULL
           )`);
                 await client.query("CREATE INDEX IF NOT EXISTS idx_basket_log_hist_log ON basket_log_history(basket_log_id)");
+                await client.query(`CREATE TABLE IF NOT EXISTS basket_log_lines (
+            id TEXT PRIMARY KEY,
+            basket_log_id TEXT NOT NULL REFERENCES basket_logs(id) ON DELETE CASCADE,
+            basket_kind TEXT NOT NULL,
+            basket_no INTEGER NOT NULL DEFAULT 0,
+            taken_to INTEGER NOT NULL DEFAULT 0,
+            picked_up INTEGER NOT NULL DEFAULT 0,
+            updated_at TIMESTAMPTZ NOT NULL
+          )`);
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_basket_log_lines_uniq ON basket_log_lines(basket_log_id, basket_kind, basket_no)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_basket_log_lines_log ON basket_log_lines(basket_log_id)");
+                // 既有 PG DB 補欄位
+                try { await client.query("ALTER TABLE basket_log_history ADD COLUMN IF NOT EXISTS prev_lines_json TEXT"); } catch (_) {}
+                try { await client.query("ALTER TABLE basket_log_history ADD COLUMN IF NOT EXISTS new_lines_json TEXT"); } catch (_) {}
             }
             catch (_) { /* table may already exist */ }
         }

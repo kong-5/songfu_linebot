@@ -17,6 +17,7 @@ const liff_bind_token_js_1 = require("../lib/liff-bind-token.js");
 const liff_auth_js_1 = require("../lib/liff-auth.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
+const basket_log_js_1 = require("../lib/basket-log.js");
 
 // 訂單審核 LIFF 允許的職稱（之後若要擴可加 "課長"、"行政"）
 const ORDER_REVIEW_ROLES = ["經理", "主任", "課長"];
@@ -70,6 +71,10 @@ function createLiffRouter() {
     // 客戶速查 LIFF 頁
     router.get("/customer-lookup", (_req, res) => {
         serveLiffPage(res, "customer-lookup.html", (process.env.LIFF_ID_CUSTOMER_LOOKUP || "").trim());
+    });
+    // 空籃記帳 LIFF 頁
+    router.get("/basket-log", (_req, res) => {
+        serveLiffPage(res, "basket-log.html", (process.env.LIFF_ID_BASKET_LOG || "").trim());
     });
 
     // 查綁定 token 對應的員工帳號（不直接執行綁定，只用來在頁面顯示要綁誰）
@@ -483,6 +488,98 @@ function createLiffRouter() {
                 recentComplaints,
             });
         } catch (e) {
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+
+    // ===== 空籃記帳 LIFF API =====
+    // GET /liff/api/basket-log/load?customer=&date=&idToken=
+    router.get("/api/basket-log/load", async (req, res) => {
+        try {
+            const idToken = String(req.query?.idToken || "").trim();
+            const customerId = String(req.query?.customer || "").trim();
+            const date = String(req.query?.date || "").trim();
+            if (!idToken || !customerId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+                res.status(400).json({ ok: false, error: "missing or invalid params" });
+                return;
+            }
+            const verified = await (0, liff_verify_js_1.verifyLineIdToken)(idToken);
+            if (!verified.ok) {
+                res.status(401).json({ ok: false, error: verified.error || "ID Token 驗證失敗" });
+                return;
+            }
+            const db = (0, index_js_1.getDb)(dbPath);
+            const customer = await db.prepare("SELECT id, name FROM customers WHERE id = ? AND (active IS NULL OR active = 1)").get(customerId);
+            if (!customer) {
+                res.status(404).json({ ok: false, error: "客戶不存在或已停用" });
+                return;
+            }
+            const lines = await (0, basket_log_js_1.getBasketLinesForDay)(db, customerId, date);
+            res.json({
+                ok: true,
+                customerName: customer.name,
+                date,
+                lines,
+            });
+        } catch (e) {
+            console.error("[liff basket-log load]", e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+
+    // POST /liff/api/basket-log/save  body: { idToken, customerId, date, lines: [{kind,no,takenTo,pickedUp}] }
+    router.post("/api/basket-log/save", express_1.json({ limit: "16kb" }), async (req, res) => {
+        try {
+            const { idToken, customerId, date, lines } = req.body || {};
+            if (!idToken || !customerId || !date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+                res.status(400).json({ ok: false, error: "missing or invalid params" });
+                return;
+            }
+            if (!Array.isArray(lines)) {
+                res.status(400).json({ ok: false, error: "lines must be an array" });
+                return;
+            }
+            const verified = await (0, liff_verify_js_1.verifyLineIdToken)(idToken);
+            if (!verified.ok) {
+                res.status(401).json({ ok: false, error: verified.error || "ID Token 驗證失敗" });
+                return;
+            }
+            const db = (0, index_js_1.getDb)(dbPath);
+            const customer = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE id = ? AND (active IS NULL OR active = 1)").get(customerId);
+            if (!customer) {
+                res.status(404).json({ ok: false, error: "客戶不存在或已停用" });
+                return;
+            }
+            // 寫入
+            await (0, basket_log_js_1.upsertBasketLogLines)(db, {
+                customerId,
+                logDate: date,
+                lines,
+                lineGroupId: customer.line_group_id || null,
+                reporterUserId: verified.sub,
+                reporterDisplayName: verified.name || null,
+                actor: "liff:basket-log",
+                rawMessage: null,
+            });
+            // 取本月合計 + 今日 lines 用於回傳訊息
+            const ym = String(date).slice(0, 7);
+            const monthAgg = await (0, basket_log_js_1.getMonthAggregates)(db, customerId, ym);
+            const todayLinesRaw = await (0, basket_log_js_1.getBasketLinesForDay)(db, customerId, date);
+            const todayLines = (todayLinesRaw || []).map((l) => ({
+                kind: l.basket_kind,
+                no: l.basket_no,
+                takenTo: Number(l.taken_to || 0),
+                pickedUp: Number(l.picked_up || 0),
+            }));
+            const message = (0, basket_log_js_1.formatLiffRecordMessage)({
+                customerName: customer.name,
+                date,
+                todayLines,
+                monthAgg,
+            });
+            res.json({ ok: true, message, monthAgg });
+        } catch (e) {
+            console.error("[liff basket-log save]", e);
             res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
         }
     });

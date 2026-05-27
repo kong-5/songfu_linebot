@@ -3912,7 +3912,7 @@ function createAdminRouter() {
             res.status(500).send("載入提醒清單失敗：" + (e?.message || e));
         }
     });
-    // ── 空籃記帳 ──────────────────────────────────────────────
+    // ── 空籃記帳（v2：多規格分項，司機透過 LIFF 記帳） ─────────────
     function currentTwYM() {
         const tw = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }));
         return tw.toISOString().slice(0, 7);
@@ -3928,6 +3928,11 @@ function createAdminRouter() {
     function escapeHtmlBsk(s) {
         return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
     }
+    function formatBasketLineForCell(line) {
+        const kind = line.basket_kind;
+        const label = kind === "numbered" ? `${line.basket_no}號` : (kind === "square" ? "四角" : "圓");
+        return `${label} 去${line.taken_to}回${line.picked_up}`;
+    }
     router.get("/baskets", async (req, res) => {
         try {
             const ymRaw = typeof req.query.ym === "string" ? req.query.ym.trim() : "";
@@ -3940,6 +3945,20 @@ function createAdminRouter() {
                 "SELECT id, customer_id, log_date, taken_to, picked_up, reporter_display_name, updated_at " +
                 "FROM basket_logs WHERE log_date >= ? AND log_date < ? ORDER BY log_date ASC"
             ).all(start, end);
+            // 一次撈當月所有分項，groupBy log_id
+            const logIds = logs.map(l => l.id);
+            const linesByLogId = new Map();
+            if (logIds.length) {
+                const ph = logIds.map(() => "?").join(",");
+                const allLines = await db.prepare(
+                    `SELECT basket_log_id, basket_kind, basket_no, taken_to, picked_up FROM basket_log_lines WHERE basket_log_id IN (${ph}) ORDER BY basket_kind, basket_no`
+                ).all(...logIds);
+                for (const ln of allLines || []) {
+                    const arr = linesByLogId.get(ln.basket_log_id) || [];
+                    arr.push(ln);
+                    linesByLogId.set(ln.basket_log_id, arr);
+                }
+            }
             // 按月切上下月導覽
             const [y, m] = ym.split("-").map((x) => parseInt(x, 10));
             const prevY = m === 1 ? y - 1 : y;
@@ -3973,31 +3992,35 @@ function createAdminRouter() {
             overviewRows.sort((a, b) => (b.takenTo + b.pickedUp) - (a.takenTo + a.pickedUp));
             const sumAllTo = overviewRows.reduce((s, r) => s + r.takenTo, 0);
             const sumAllPick = overviewRows.reduce((s, r) => s + r.pickedUp, 0);
-            // 客戶明細區（單選客戶時顯示）
+            // 客戶明細區（單選客戶時顯示）：每天列出分項
             let detailHtml = "";
             if (focusCustomerId) {
                 const c = custMap.get(focusCustomerId);
                 const dlogs = logs.filter((l) => l.customer_id === focusCustomerId);
                 const cName = c?.name || focusCustomerId;
-                const detailRows = dlogs.map((l) => `
+                const detailRows = dlogs.map((l) => {
+                    const lines = linesByLogId.get(l.id) || [];
+                    const linesHtml = lines.length ? lines.map(ln => `<span style="display:inline-block;margin:2px 6px 2px 0;padding:2px 8px;background:var(--bg-2);border-radius:4px;font-size:12px;">${escapeHtmlBsk(formatBasketLineForCell(ln))}</span>`).join("") : '<span style="color:var(--txt-3);font-size:12px;">（無分項）</span>';
+                    const net = (l.taken_to ?? 0) - (l.picked_up ?? 0);
+                    return `
                     <tr>
-                      <td class="mono">${escapeHtmlBsk(l.log_date)}</td>
-                      <td class="mono" style="text-align:right;">${l.taken_to ?? "—"}</td>
-                      <td class="mono" style="text-align:right;">${l.picked_up ?? "—"}</td>
-                      <td class="mono" style="text-align:right;color:${(l.taken_to ?? 0) - (l.picked_up ?? 0) >= 0 ? "var(--txt-2)" : "var(--bad)"};">${(l.taken_to ?? 0) - (l.picked_up ?? 0)}</td>
-                      <td>${escapeHtmlBsk(l.reporter_display_name || "")}</td>
-                      <td>
-                        <form method="post" action="/admin/baskets/edit" style="display:flex;gap:6px;align-items:center;">
+                      <td class="mono" style="vertical-align:top;">${escapeHtmlBsk(l.log_date)}</td>
+                      <td style="vertical-align:top;">${linesHtml}</td>
+                      <td class="mono" style="text-align:right;vertical-align:top;">${l.taken_to ?? 0}</td>
+                      <td class="mono" style="text-align:right;vertical-align:top;">${l.picked_up ?? 0}</td>
+                      <td class="mono" style="text-align:right;vertical-align:top;color:${net >= 0 ? "var(--txt-2)" : "var(--bad)"};">${net}</td>
+                      <td style="vertical-align:top;">${escapeHtmlBsk(l.reporter_display_name || "")}</td>
+                      <td style="vertical-align:top;">
+                        <form method="post" action="/admin/baskets/delete-day" onsubmit="return confirm('確定刪除 ${escapeHtmlBsk(l.log_date)} 整天紀錄？');" style="display:inline;">
                           <input type="hidden" name="ym" value="${ym}" />
                           <input type="hidden" name="customer_id" value="${focusCustomerId}" />
                           <input type="hidden" name="log_date" value="${escapeHtmlBsk(l.log_date)}" />
-                          <input type="number" name="taken_to" value="${l.taken_to ?? ""}" min="0" max="9999" style="width:60px;" />
-                          <input type="number" name="picked_up" value="${l.picked_up ?? ""}" min="0" max="9999" style="width:60px;" />
-                          <button type="submit" class="sf-btn sf-btn-sm">儲存</button>
+                          <button type="submit" class="sf-btn sf-btn-sm" style="color:var(--bad);">刪除整天</button>
                         </form>
                       </td>
                     </tr>
-                `).join("");
+                    `;
+                }).join("");
                 const sumTo = dlogs.reduce((s, l) => s + Number(l.taken_to || 0), 0);
                 const sumPick = dlogs.reduce((s, l) => s + Number(l.picked_up || 0), 0);
                 detailHtml = `
@@ -4010,18 +4033,19 @@ function createAdminRouter() {
                       <table class="sf-table" style="font-size:13px;width:100%;">
                         <thead>
                           <tr>
-                            <th>日期</th>
-                            <th style="text-align:right;">去</th>
-                            <th style="text-align:right;">收</th>
-                            <th style="text-align:right;">淨</th>
-                            <th>回報人</th>
-                            <th>編輯（去 / 收）</th>
+                            <th style="width:90px;">日期</th>
+                            <th>分項（號碼籃 / 四角 / 圓）</th>
+                            <th style="text-align:right;width:60px;">去</th>
+                            <th style="text-align:right;width:60px;">回</th>
+                            <th style="text-align:right;width:60px;">淨</th>
+                            <th style="width:100px;">回報人</th>
+                            <th style="width:90px;">動作</th>
                           </tr>
                         </thead>
-                        <tbody>${detailRows || `<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--txt-3);">本月尚無紀錄</td></tr>`}</tbody>
+                        <tbody>${detailRows || `<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--txt-3);">本月尚無紀錄</td></tr>`}</tbody>
                         <tfoot>
                           <tr style="background:var(--bg-1);font-weight:600;">
-                            <td>合計</td>
+                            <td colspan="2">本月合計</td>
                             <td class="mono" style="text-align:right;">${sumTo}</td>
                             <td class="mono" style="text-align:right;">${sumPick}</td>
                             <td class="mono" style="text-align:right;">${sumTo - sumPick}</td>
@@ -4030,18 +4054,8 @@ function createAdminRouter() {
                         </tfoot>
                       </table>
                     </div>
-                    <div style="padding:10px 16px;border-top:1px solid var(--line);background:var(--bg-1);">
-                      <form method="post" action="/admin/baskets/edit" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                        <input type="hidden" name="ym" value="${ym}" />
-                        <input type="hidden" name="customer_id" value="${focusCustomerId}" />
-                        <label style="font-size:13px;">手動補：日期</label>
-                        <input type="date" name="log_date" required />
-                        <label style="font-size:13px;">去</label>
-                        <input type="number" name="taken_to" min="0" max="9999" style="width:70px;" placeholder="可空" />
-                        <label style="font-size:13px;">收</label>
-                        <input type="number" name="picked_up" min="0" max="9999" style="width:70px;" placeholder="可空" />
-                        <button type="submit" class="sf-btn sf-btn-primary sf-btn-sm">新增/覆蓋</button>
-                      </form>
+                    <div style="padding:12px 16px;border-top:1px solid var(--line);background:var(--bg-1);font-size:12px;color:var(--txt-3);">
+                      💡 編輯：請司機在 LINE 群組重新打「<b>空籃</b>」，從 LIFF 重新提交即可覆蓋當天數字。
                     </div>
                   </div>
                 `;
@@ -4060,7 +4074,7 @@ function createAdminRouter() {
                 <div>
                   <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 空籃記帳</div>
                   <h1 style="margin:0;font-size:22px;font-weight:600;">空籃記帳</h1>
-                  <p style="margin:6px 0 0;color:var(--txt-3);font-size:12px;">司機在 LINE 群組打「空籃 去5 收3」自動寫入。同一天再報會覆蓋當天數字。淨值 = 去 − 收（正值代表本月客戶手上多了幾個籃）。</p>
+                  <p style="margin:6px 0 0;color:var(--txt-3);font-size:12px;">司機在 LINE 群組打「<b>空籃</b>」會收到 LIFF 連結，點開填三類規格（號碼籃 1-9 / 四角空籃 / 圓籃）。同一天重新提交會覆蓋當天數字。淨值 = 去 − 回（正值代表本月客戶手上多了幾個籃）。</p>
                 </div>
                 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
                   <a href="/admin/baskets?ym=${prevYm}${focusCustomerId ? `&customer=${encodeURIComponent(focusCustomerId)}` : ""}" class="sf-btn sf-btn-sm">← ${prevYm}</a>
@@ -4083,7 +4097,7 @@ function createAdminRouter() {
                     <div class="mono" style="font-size:26px;font-weight:600;">${sumAllTo}</div>
                   </div>
                   <div class="sf-card" style="padding:14px 18px;">
-                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">本月總計「收」</div>
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">本月總計「回」</div>
                     <div class="mono" style="font-size:26px;font-weight:600;">${sumAllPick}</div>
                   </div>
                   <div class="sf-card" style="padding:14px 18px;border-left:4px solid ${sumAllTo - sumAllPick >= 0 ? "var(--accent)" : "var(--bad)"};">
@@ -4102,8 +4116,8 @@ function createAdminRouter() {
                         <tr>
                           <th>客戶</th>
                           <th style="text-align:right;">合計「去」</th>
-                          <th style="text-align:right;">合計「收」</th>
-                          <th style="text-align:right;">淨值（去 − 收）</th>
+                          <th style="text-align:right;">合計「回」</th>
+                          <th style="text-align:right;">淨值（去 − 回）</th>
                           <th style="text-align:right;">紀錄天數</th>
                         </tr>
                       </thead>
@@ -4120,29 +4134,40 @@ function createAdminRouter() {
             res.status(500).send("載入空籃記帳失敗：" + (e?.message || e));
         }
     });
-    router.post("/baskets/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+    router.post("/baskets/delete-day", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
             const ym = String(req.body.ym || "").trim();
             const customerId = String(req.body.customer_id || "").trim();
             const logDate = String(req.body.log_date || "").trim();
-            const takenToRaw = String(req.body.taken_to ?? "").trim();
-            const pickedUpRaw = String(req.body.picked_up ?? "").trim();
             if (!customerId || !logDate || !/^\d{4}-\d{2}-\d{2}$/.test(logDate)) {
                 return res.status(400).send("參數不正確");
             }
-            const takenTo = takenToRaw === "" ? null : parseInt(takenToRaw, 10);
-            const pickedUp = pickedUpRaw === "" ? null : parseInt(pickedUpRaw, 10);
-            await (0, basket_log_js_1.upsertBasketLog)(db, {
-                customerId, logDate, takenTo, pickedUp,
-                lineGroupId: null, reporterUserId: null, reporterDisplayName: null,
-                rawMessage: "[admin edit]",
-                actor: "admin:" + (res.locals.adminUser || "?"),
-            });
+            // 找到主 log 並刪除其分項；保留 basket_logs 主紀錄但歸零，並寫 history
+            const row = await db.prepare("SELECT id FROM basket_logs WHERE customer_id = ? AND log_date = ?").get(customerId, logDate);
+            if (row) {
+                const prevLines = await db.prepare("SELECT basket_kind, basket_no, taken_to, picked_up FROM basket_log_lines WHERE basket_log_id = ?").all(row.id);
+                await db.prepare("DELETE FROM basket_log_lines WHERE basket_log_id = ?").run(row.id);
+                const nowSql2 = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+                await db.prepare("UPDATE basket_logs SET taken_to = 0, picked_up = 0, updated_at = " + nowSql2 + " WHERE id = ?").run(row.id);
+                try {
+                    const hid = (0, id_js_1.newId)("bskh");
+                    await db.prepare(
+                        "INSERT INTO basket_log_history (id, basket_log_id, customer_id, log_date, prev_taken_to, prev_picked_up, new_taken_to, new_picked_up, prev_lines_json, new_lines_json, actor, raw_message, created_at) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, " + nowSql2 + ")"
+                    ).run(hid, row.id, customerId, logDate,
+                        prevLines.reduce((s, l) => s + Number(l.taken_to || 0), 0),
+                        prevLines.reduce((s, l) => s + Number(l.picked_up || 0), 0),
+                        JSON.stringify(prevLines), "[]",
+                        "admin:" + (res.locals.adminUser || "?"), "[admin delete-day]");
+                } catch (e) {
+                    console.warn("[admin] basket history insert failed", e?.message || e);
+                }
+            }
             const backYm = /^\d{4}-\d{2}$/.test(ym) ? ym : currentTwYM();
             res.redirect(`/admin/baskets?ym=${backYm}&customer=${encodeURIComponent(customerId)}`);
         } catch (e) {
-            console.error("[admin] /baskets/edit failed", e);
-            res.status(500).send("儲存失敗：" + (e?.message || e));
+            console.error("[admin] /baskets/delete-day failed", e);
+            res.status(500).send("刪除失敗：" + (e?.message || e));
         }
     });
     router.get("/baskets/export.xlsx", async (req, res) => {
@@ -4153,11 +4178,24 @@ function createAdminRouter() {
             const customers = await db.prepare("SELECT id, name FROM customers WHERE (active IS NULL OR active = 1) ORDER BY name ASC").all();
             const custMap = new Map(customers.map((c) => [c.id, c.name]));
             const logs = await db.prepare(
-                "SELECT customer_id, log_date, taken_to, picked_up, reporter_display_name " +
+                "SELECT id, customer_id, log_date, taken_to, picked_up, reporter_display_name " +
                 "FROM basket_logs WHERE log_date >= ? AND log_date < ? ORDER BY customer_id ASC, log_date ASC"
             ).all(start, end);
+            const logIds = logs.map(l => l.id);
+            const linesByLog = new Map();
+            if (logIds.length) {
+                const ph = logIds.map(() => "?").join(",");
+                const allLines = await db.prepare(
+                    `SELECT basket_log_id, basket_kind, basket_no, taken_to, picked_up FROM basket_log_lines WHERE basket_log_id IN (${ph})`
+                ).all(...logIds);
+                for (const ln of allLines || []) {
+                    const arr = linesByLog.get(ln.basket_log_id) || [];
+                    arr.push(ln);
+                    linesByLog.set(ln.basket_log_id, arr);
+                }
+            }
             const wb = XLSX.utils.book_new();
-            // Sheet 1：總覽
+            // Sheet 1：月合計（按客戶）
             const byCust = new Map();
             for (const l of logs) {
                 if (!byCust.has(l.customer_id)) byCust.set(l.customer_id, { to: 0, pk: 0, days: 0 });
@@ -4166,18 +4204,30 @@ function createAdminRouter() {
                 acc.pk += Number(l.picked_up || 0);
                 acc.days += 1;
             }
-            const summary = [["客戶", "合計 去", "合計 收", "淨值 (去−收)", "紀錄天數"]];
+            const summary = [["客戶", "合計 去", "合計 回", "淨值 (去−回)", "紀錄天數"]];
             for (const [cid, acc] of byCust) {
                 summary.push([custMap.get(cid) || cid, acc.to, acc.pk, acc.to - acc.pk, acc.days]);
             }
             XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), `${ym} 月合計`);
-            // Sheet 2：每日明細
-            const detail = [["客戶", "日期", "去", "收", "淨", "回報人"]];
+            // Sheet 2：每日總計
+            const detail = [["客戶", "日期", "去", "回", "淨", "回報人"]];
             for (const l of logs) {
                 const t = Number(l.taken_to ?? 0), p = Number(l.picked_up ?? 0);
-                detail.push([custMap.get(l.customer_id) || l.customer_id, l.log_date, l.taken_to ?? "", l.picked_up ?? "", t - p, l.reporter_display_name || ""]);
+                detail.push([custMap.get(l.customer_id) || l.customer_id, l.log_date, l.taken_to ?? 0, l.picked_up ?? 0, t - p, l.reporter_display_name || ""]);
             }
-            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detail), `${ym} 明細`);
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detail), `${ym} 每日總計`);
+            // Sheet 3：每日分項（規格 × 號碼）
+            const itemized = [["客戶", "日期", "規格", "號碼", "去", "回", "淨"]];
+            for (const l of logs) {
+                const lines = linesByLog.get(l.id) || [];
+                for (const ln of lines) {
+                    const kindLabel = ln.basket_kind === "numbered" ? "號碼籃" : (ln.basket_kind === "square" ? "四角空籃" : "圓籃");
+                    const no = ln.basket_kind === "numbered" ? ln.basket_no : "";
+                    const t = Number(ln.taken_to || 0), p = Number(ln.picked_up || 0);
+                    itemized.push([custMap.get(l.customer_id) || l.customer_id, l.log_date, kindLabel, no, t, p, t - p]);
+                }
+            }
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(itemized), `${ym} 每日分項`);
             const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
             res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
             res.setHeader("Content-Disposition", `attachment; filename="basket_${ym}.xlsx"`);

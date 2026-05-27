@@ -324,9 +324,24 @@
     prev_picked_up INTEGER,
     new_taken_to INTEGER,
     new_picked_up INTEGER,
+    prev_lines_json TEXT,
+    new_lines_json TEXT,
     actor TEXT,
     reporter_user_id TEXT,
     raw_message TEXT,
     created_at TIMESTAMPTZ NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_basket_log_hist_log ON basket_log_history(basket_log_id);
+
+  -- 空籃分項（每個規格 × 號碼一筆；號碼籃 basket_no 1-9，其他 basket_no = 0）
+  CREATE TABLE IF NOT EXISTS basket_log_lines (
+    id TEXT PRIMARY KEY,
+    basket_log_id TEXT NOT NULL REFERENCES basket_logs(id) ON DELETE CASCADE,
+    basket_kind TEXT NOT NULL,
+    basket_no INTEGER NOT NULL DEFAULT 0,
+    taken_to INTEGER NOT NULL DEFAULT 0,
+    picked_up INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS ux_basket_log_lines_uniq ON basket_log_lines(basket_log_id, basket_kind, basket_no);
+  CREATE INDEX IF NOT EXISTS idx_basket_log_lines_log ON basket_log_lines(basket_log_id);

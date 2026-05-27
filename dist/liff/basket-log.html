@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>空籃記帳 · 松富物流</title>
+<style>
+  :root { --accent:#1d4ed8; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --line:#e3e2e0; --bg:#f7f6f3; --bg2:#fafafa; --txt1:#37352f; --txt2:#787774; --txt3:#9b9a97; color-scheme:light; }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:var(--bg);color:var(--txt1);min-height:100vh;padding-bottom:env(safe-area-inset-bottom,0);}
+  header{position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--line);padding:14px 16px;}
+  header h1{font-size:16px;margin:0;font-weight:600;}
+  header .sub{font-size:12px;color:var(--txt2);margin-top:2px;}
+  .status{padding:8px 16px;font-size:12px;color:var(--txt2);background:#fff;border-bottom:1px solid var(--line);}
+  .status.err{background:#ffebee;color:#c62828;}
+  .status.ok{background:#e7f5e9;color:#2e7d32;}
+  .section{background:#fff;margin:10px 12px;border:1px solid var(--line);border-radius:12px;padding:14px;}
+  .section h2{margin:0 0 10px;font-size:14px;color:var(--txt1);font-weight:600;}
+  .numbered-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+  .num-btn{background:#fff;border:2px solid var(--line);border-radius:10px;padding:14px 0;font-size:18px;font-weight:700;cursor:pointer;text-align:center;color:var(--txt1);transition:all .15s;min-height:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;}
+  .num-btn:hover{background:var(--bg2);}
+  .num-btn.has-data{border-color:var(--accent);background:#eff6ff;}
+  .num-btn .sub-data{font-size:10px;color:var(--txt2);font-weight:400;line-height:1.2;}
+  .num-btn.has-data .sub-data{color:var(--accent);font-weight:600;}
+  .qty-row{display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;margin-bottom:10px;}
+  .qty-row:last-child{margin-bottom:0;}
+  .qty-row .lbl{font-size:13px;color:var(--txt2);font-weight:600;min-width:32px;}
+  .stepper{display:flex;align-items:center;gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff;}
+  .stepper button{width:44px;height:44px;border:none;background:#fff;font-size:22px;font-weight:600;color:var(--txt1);cursor:pointer;flex-shrink:0;}
+  .stepper button:active{background:var(--bg2);}
+  .stepper .num{flex:1;text-align:center;font-size:20px;font-family:ui-monospace,monospace;font-weight:600;cursor:pointer;padding:8px 0;background:var(--bg2);min-width:60px;}
+  .footer-fixed{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 16px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0));display:flex;gap:8px;}
+  .footer-fixed button{flex:1;padding:14px;border-radius:8px;border:none;font-size:16px;font-weight:700;cursor:pointer;min-height:48px;}
+  .footer-fixed .primary{background:var(--ok);color:#fff;}
+  .footer-fixed .primary:disabled{background:#ccc;cursor:not-allowed;}
+  .footer-fixed .ghost{background:#fff;color:var(--txt2);border:1px solid var(--line);}
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:flex-end;justify-content:center;z-index:100;}
+  .modal-bg.show{display:flex;}
+  .modal{background:#fff;border-radius:16px 16px 0 0;width:100%;max-width:520px;padding:20px 16px calc(20px + env(safe-area-inset-bottom,0));max-height:90vh;overflow-y:auto;}
+  .modal h3{margin:0 0 14px;font-size:18px;font-weight:700;text-align:center;}
+  .modal .actions{display:flex;gap:8px;margin-top:14px;}
+  .modal .actions button{flex:1;padding:12px;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:15px;font-weight:600;cursor:pointer;}
+  .modal .actions .primary{background:var(--accent);color:#fff;border-color:var(--accent);}
+  .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#37352f;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;z-index:200;opacity:0;transition:opacity .2s;pointer-events:none;}
+  .toast.show{opacity:1;}
+  /* 數字輸入彈窗 */
+  .num-pad-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:150;}
+  .num-pad-bg.show{display:flex;}
+  .num-pad{background:#fff;border-radius:14px;padding:18px;width:90vw;max-width:340px;}
+  .num-pad .display{text-align:center;font-size:36px;font-family:ui-monospace,monospace;font-weight:700;padding:14px 10px;background:var(--bg2);border-radius:8px;margin-bottom:14px;}
+  .num-pad .pad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+  .num-pad .pad button{padding:18px 0;font-size:22px;font-weight:600;border:1px solid var(--line);background:#fff;border-radius:8px;cursor:pointer;}
+  .num-pad .pad button:active{background:var(--bg2);}
+  .num-pad .pad .clear{background:#fee2e2;color:var(--bad);}
+  .num-pad .actions{display:flex;gap:8px;margin-top:12px;}
+  .num-pad .actions button{flex:1;padding:12px;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:14px;font-weight:600;cursor:pointer;}
+  .num-pad .actions .ok{background:var(--accent);color:#fff;border-color:var(--accent);}
+</style>
+</head>
+<body>
+<header>
+  <h1>📦 空籃記帳</h1>
+  <div class="sub" id="hdr-sub">載入中…</div>
+</header>
+<div class="status" id="status">載入中…</div>
+
+<div class="section">
+  <h2>🔢 號碼籃</h2>
+  <div class="numbered-grid" id="numbered-grid"></div>
+</div>
+
+<div class="section">
+  <h2>⬜ 四角空籃</h2>
+  <div class="qty-row">
+    <span class="lbl">去</span>
+    <div class="stepper">
+      <button type="button" data-kind="square" data-field="takenTo" data-delta="-1">−</button>
+      <div class="num" data-kind="square" data-field="takenTo">0</div>
+      <button type="button" data-kind="square" data-field="takenTo" data-delta="1">+</button>
+    </div>
+  </div>
+  <div class="qty-row">
+    <span class="lbl">回</span>
+    <div class="stepper">
+      <button type="button" data-kind="square" data-field="pickedUp" data-delta="-1">−</button>
+      <div class="num" data-kind="square" data-field="pickedUp">0</div>
+      <button type="button" data-kind="square" data-field="pickedUp" data-delta="1">+</button>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>⭕ 圓籃</h2>
+  <div class="qty-row">
+    <span class="lbl">去</span>
+    <div class="stepper">
+      <button type="button" data-kind="round" data-field="takenTo" data-delta="-1">−</button>
+      <div class="num" data-kind="round" data-field="takenTo">0</div>
+      <button type="button" data-kind="round" data-field="takenTo" data-delta="1">+</button>
+    </div>
+  </div>
+  <div class="qty-row">
+    <span class="lbl">回</span>
+    <div class="stepper">
+      <button type="button" data-kind="round" data-field="pickedUp" data-delta="-1">−</button>
+      <div class="num" data-kind="round" data-field="pickedUp">0</div>
+      <button type="button" data-kind="round" data-field="pickedUp" data-delta="1">+</button>
+    </div>
+  </div>
+</div>
+
+<div class="footer-fixed">
+  <button type="button" class="ghost" id="cancel-btn">取消</button>
+  <button type="button" class="primary" id="save-btn" disabled>送出記帳</button>
+</div>
+
+<!-- 號碼籃明細彈窗 -->
+<div class="modal-bg" id="num-modal-bg">
+  <div class="modal">
+    <h3 id="num-modal-title">— 號籃</h3>
+    <div class="qty-row">
+      <span class="lbl">去</span>
+      <div class="stepper">
+        <button type="button" id="nm-to-minus">−</button>
+        <div class="num" id="nm-to-val">0</div>
+        <button type="button" id="nm-to-plus">+</button>
+      </div>
+    </div>
+    <div class="qty-row">
+      <span class="lbl">回</span>
+      <div class="stepper">
+        <button type="button" id="nm-pk-minus">−</button>
+        <div class="num" id="nm-pk-val">0</div>
+        <button type="button" id="nm-pk-plus">+</button>
+      </div>
+    </div>
+    <div class="actions">
+      <button type="button" id="nm-cancel">取消</button>
+      <button type="button" class="primary" id="nm-ok">確定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 數字鍵盤彈窗 -->
+<div class="num-pad-bg" id="numpad-bg">
+  <div class="num-pad">
+    <div class="display" id="numpad-display">0</div>
+    <div class="pad">
+      <button type="button" data-key="1">1</button>
+      <button type="button" data-key="2">2</button>
+      <button type="button" data-key="3">3</button>
+      <button type="button" data-key="4">4</button>
+      <button type="button" data-key="5">5</button>
+      <button type="button" data-key="6">6</button>
+      <button type="button" data-key="7">7</button>
+      <button type="button" data-key="8">8</button>
+      <button type="button" data-key="9">9</button>
+      <button type="button" class="clear" data-key="C">C</button>
+      <button type="button" data-key="0">0</button>
+      <button type="button" class="clear" data-key="←">←</button>
+    </div>
+    <div class="actions">
+      <button type="button" id="numpad-cancel">取消</button>
+      <button type="button" class="ok" id="numpad-ok">確定</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+(function(){
+  const LIFF_ID = window.__LIFF_ID__ || "";
+  const NUMBERED = [1,2,3,5,6,7,8,9];
+  const $ = (s) => document.querySelector(s);
+  const statusEl = $("#status");
+  const saveBtn = $("#save-btn");
+  const cancelBtn = $("#cancel-btn");
+  const toastEl = $("#toast");
+  const hdrSub = $("#hdr-sub");
+
+  // 狀態：lines = { numbered: { 1:{to,pk}, ... }, square: {to,pk}, round: {to,pk} }
+  const state = {
+    customerId: "", customerName: "", date: "",
+    idToken: null,
+    numbered: {},
+    square: { to: 0, pk: 0 },
+    round:   { to: 0, pk: 0 },
+  };
+
+  function setStatus(cls, text){ statusEl.className = "status " + cls; statusEl.textContent = text; }
+  function toast(text, ms){
+    toastEl.textContent = text; toastEl.classList.add("show");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => toastEl.classList.remove("show"), ms || 2000);
+  }
+  function getParam(k){
+    const u = new URL(window.location.href);
+    return u.searchParams.get(k) || "";
+  }
+  function todayTaipei(){
+    return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei"}).format(new Date());
+  }
+  function clamp(n){ n = Math.max(0, Math.min(9999, n|0)); return n; }
+  function isDirty(){
+    if (state.square.to || state.square.pk) return true;
+    if (state.round.to || state.round.pk) return true;
+    for (const k of Object.keys(state.numbered)) {
+      const x = state.numbered[k];
+      if (x && (x.to || x.pk)) return true;
+    }
+    return false;
+  }
+  function refreshSaveBtn(){
+    saveBtn.disabled = !isDirty();
+  }
+
+  // ─── 號碼籃網格 ────────────────────────────
+  function renderNumberedGrid(){
+    const grid = $("#numbered-grid");
+    grid.innerHTML = "";
+    for (const n of NUMBERED) {
+      const data = state.numbered[n];
+      const has = data && (data.to || data.pk);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "num-btn" + (has ? " has-data" : "");
+      btn.innerHTML = `<div>${n}號</div>` + (has ? `<div class="sub-data">去${data.to||0}・回${data.pk||0}</div>` : `<div class="sub-data">點此填入</div>`);
+      btn.addEventListener("click", () => openNumberedModal(n));
+      grid.appendChild(btn);
+    }
+  }
+
+  // ─── 號碼籃彈窗 ────────────────────────────
+  let currentNo = null;
+  function openNumberedModal(no){
+    currentNo = no;
+    const data = state.numbered[no] || { to: 0, pk: 0 };
+    $("#num-modal-title").textContent = `${no} 號籃`;
+    $("#nm-to-val").textContent = String(data.to || 0);
+    $("#nm-pk-val").textContent = String(data.pk || 0);
+    $("#num-modal-bg").classList.add("show");
+  }
+  function closeNumberedModal(){ $("#num-modal-bg").classList.remove("show"); currentNo = null; }
+  function bumpNm(field, delta){
+    const el = field === "to" ? $("#nm-to-val") : $("#nm-pk-val");
+    const cur = parseInt(el.textContent, 10) || 0;
+    el.textContent = String(clamp(cur + delta));
+  }
+  $("#nm-to-minus").addEventListener("click", () => bumpNm("to", -1));
+  $("#nm-to-plus").addEventListener("click", () => bumpNm("to", 1));
+  $("#nm-pk-minus").addEventListener("click", () => bumpNm("pk", -1));
+  $("#nm-pk-plus").addEventListener("click", () => bumpNm("pk", 1));
+  $("#nm-to-val").addEventListener("click", () => openNumPad("to"));
+  $("#nm-pk-val").addEventListener("click", () => openNumPad("pk"));
+  $("#nm-cancel").addEventListener("click", closeNumberedModal);
+  $("#nm-ok").addEventListener("click", () => {
+    if (currentNo == null) return;
+    const to = parseInt($("#nm-to-val").textContent, 10) || 0;
+    const pk = parseInt($("#nm-pk-val").textContent, 10) || 0;
+    if (to === 0 && pk === 0) {
+      delete state.numbered[currentNo];
+    } else {
+      state.numbered[currentNo] = { to, pk };
+    }
+    closeNumberedModal();
+    renderNumberedGrid();
+    refreshSaveBtn();
+  });
+
+  // ─── 四角／圓籃 +- 與點數字 ──────────────────
+  function bumpKindField(kind, field, delta){
+    const obj = state[kind];
+    if (field === "takenTo") obj.to = clamp((obj.to || 0) + delta);
+    else obj.pk = clamp((obj.pk || 0) + delta);
+    renderKindField(kind, field);
+    refreshSaveBtn();
+  }
+  function renderKindField(kind, field){
+    const sel = `.num[data-kind="${kind}"][data-field="${field}"]`;
+    const el = document.querySelector(sel);
+    if (!el) return;
+    const obj = state[kind];
+    el.textContent = String(field === "takenTo" ? (obj.to || 0) : (obj.pk || 0));
+  }
+  function renderAllKindFields(){
+    renderKindField("square", "takenTo");
+    renderKindField("square", "pickedUp");
+    renderKindField("round", "takenTo");
+    renderKindField("round", "pickedUp");
+  }
+  document.querySelectorAll(".stepper button[data-kind]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const kind = btn.dataset.kind, field = btn.dataset.field, delta = parseInt(btn.dataset.delta, 10);
+      bumpKindField(kind, field, delta);
+    });
+  });
+  document.querySelectorAll(".num[data-kind]").forEach(el => {
+    el.addEventListener("click", () => {
+      const kind = el.dataset.kind, field = el.dataset.field;
+      openNumPad({ kind, field });
+    });
+  });
+
+  // ─── 數字鍵盤彈窗 ────────────────────────────
+  let numPadCtx = null;  // 'to' / 'pk' (在號碼籃彈窗) 或 {kind, field} (一般)
+  let numPadBuf = "0";
+  function openNumPad(ctx){
+    numPadCtx = ctx;
+    // 取當前值當初始
+    let cur = "0";
+    if (typeof ctx === "string") {
+      cur = (ctx === "to" ? $("#nm-to-val") : $("#nm-pk-val")).textContent || "0";
+    } else {
+      const obj = state[ctx.kind];
+      cur = String((ctx.field === "takenTo" ? obj.to : obj.pk) || 0);
+    }
+    numPadBuf = String(parseInt(cur, 10) || 0);
+    $("#numpad-display").textContent = numPadBuf;
+    $("#numpad-bg").classList.add("show");
+  }
+  function closeNumPad(){ $("#numpad-bg").classList.remove("show"); numPadCtx = null; }
+  document.querySelectorAll("#numpad-bg .pad button").forEach(b => {
+    b.addEventListener("click", () => {
+      const k = b.dataset.key;
+      if (k === "C") numPadBuf = "0";
+      else if (k === "←") numPadBuf = numPadBuf.length <= 1 ? "0" : numPadBuf.slice(0, -1);
+      else {
+        if (numPadBuf === "0") numPadBuf = k;
+        else if (numPadBuf.length < 4) numPadBuf = numPadBuf + k;
+      }
+      $("#numpad-display").textContent = numPadBuf;
+    });
+  });
+  $("#numpad-cancel").addEventListener("click", closeNumPad);
+  $("#numpad-ok").addEventListener("click", () => {
+    const v = clamp(parseInt(numPadBuf, 10) || 0);
+    if (typeof numPadCtx === "string") {
+      (numPadCtx === "to" ? $("#nm-to-val") : $("#nm-pk-val")).textContent = String(v);
+    } else if (numPadCtx) {
+      const obj = state[numPadCtx.kind];
+      if (numPadCtx.field === "takenTo") obj.to = v; else obj.pk = v;
+      renderKindField(numPadCtx.kind, numPadCtx.field);
+      refreshSaveBtn();
+    }
+    closeNumPad();
+  });
+
+  // ─── 取消 / 送出 ───────────────────────────
+  cancelBtn.addEventListener("click", () => {
+    try { liff.closeWindow(); } catch (_) { window.close(); }
+  });
+
+  saveBtn.addEventListener("click", async () => {
+    saveBtn.disabled = true;
+    setStatus("", "送出中…");
+    try {
+      const lines = [];
+      for (const n of NUMBERED) {
+        const x = state.numbered[n];
+        if (x && (x.to || x.pk)) lines.push({ kind: "numbered", no: n, takenTo: x.to||0, pickedUp: x.pk||0 });
+      }
+      if (state.square.to || state.square.pk) lines.push({ kind: "square", no: 0, takenTo: state.square.to||0, pickedUp: state.square.pk||0 });
+      if (state.round.to || state.round.pk) lines.push({ kind: "round", no: 0, takenTo: state.round.to||0, pickedUp: state.round.pk||0 });
+      const resp = await fetch("/liff/api/basket-log/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken: state.idToken, customerId: state.customerId, date: state.date, lines }),
+      });
+      const data = await resp.json();
+      if (!data?.ok) throw new Error(data?.error || "儲存失敗");
+      setStatus("ok", "✅ 已記帳，準備送回群組…");
+      // 用 liff.sendMessages 以司機身份發到群組（免費）
+      try {
+        if (liff.isInClient() && liff.getContext()?.type === "group") {
+          await liff.sendMessages([{ type: "text", text: data.message || "已記帳" }]);
+        }
+      } catch (e) {
+        console.warn("sendMessages 失敗（可能不在群組 context）:", e);
+      }
+      setTimeout(() => {
+        try { liff.closeWindow(); } catch (_) { window.close(); }
+      }, 600);
+    } catch (e) {
+      setStatus("err", "送出失敗：" + (e?.message || e));
+      saveBtn.disabled = false;
+    }
+  });
+
+  // ─── 初始化 ────────────────────────────────
+  async function init(){
+    if (!LIFF_ID) { setStatus("err", "尚未設定 LIFF_ID_BASKET_LOG"); return; }
+    try {
+      await liff.init({ liffId: LIFF_ID });
+      if (!liff.isLoggedIn()) {
+        liff.login({ redirectUri: window.location.href });
+        return;
+      }
+      state.idToken = liff.getIDToken();
+      state.customerId = getParam("customer");
+      state.date = getParam("date") || todayTaipei();
+      if (!state.customerId) { setStatus("err", "缺少 customer 參數（請從群組「空籃」訊息點連結進入）"); return; }
+      setStatus("", "載入今日資料…");
+      // 預載
+      const r = await fetch(`/liff/api/basket-log/load?customer=${encodeURIComponent(state.customerId)}&date=${encodeURIComponent(state.date)}&idToken=${encodeURIComponent(state.idToken)}`);
+      const data = await r.json();
+      if (!data?.ok) throw new Error(data?.error || "載入失敗");
+      state.customerName = data.customerName || state.customerId;
+      hdrSub.textContent = `${state.customerName}　${state.date}`;
+      // 填入既有資料
+      for (const ln of (data.lines || [])) {
+        if (ln.basket_kind === "numbered") state.numbered[ln.basket_no] = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
+        else if (ln.basket_kind === "square") state.square = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
+        else if (ln.basket_kind === "round") state.round = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
+      }
+      renderNumberedGrid();
+      renderAllKindFields();
+      refreshSaveBtn();
+      setStatus("", "請填寫今日空籃進出數，按「送出記帳」覆蓋當天紀錄。");
+    } catch (e) {
+      console.error(e);
+      setStatus("err", "初始化失敗：" + (e?.message || e));
+    }
+  }
+  init();
+})();
+</script>
+</body>
+</html>
