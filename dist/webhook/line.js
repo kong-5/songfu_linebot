@@ -699,14 +699,27 @@ function createLineWebhook() {
                                     rawMessage: textEarly,
                                     actor: "line:driver",
                                 });
+                                // 算本月合計（含今日這筆覆蓋後的值）
+                                let bskMonthSum = { takenTo: 0, pickedUp: 0 };
+                                try {
+                                    const ym = bskLogDate.slice(0, 7);
+                                    const mrows = await (0, basket_log_js_1.listBasketLogsForCustomerMonth)(db, bskCustomer.id, ym);
+                                    for (const r of mrows) {
+                                        bskMonthSum.takenTo += Number(r.taken_to || 0);
+                                        bskMonthSum.pickedUp += Number(r.picked_up || 0);
+                                    }
+                                } catch (e) {
+                                    console.warn("[LINE] 空籃月合計查詢失敗（回覆只顯示今日）:", e?.message || e);
+                                }
                                 if (lineClient && event.replyToken) {
                                     try { await lineClient.replyMessage(event.replyToken, { type: "text", text: (0, basket_log_js_1.formatRecordReply)({
-                                        customerName: bskCustomer.name, date: bskLogDate,
-                                        isNew: result.isNew, prev: result.prev, current: result.current,
+                                        current: result.current,
+                                        monthSum: bskMonthSum,
                                     }) }); } catch (_) {}
                                 }
-                                console.log("[LINE] 空籃記帳 customer=%s date=%s 去=%s 收=%s isNew=%s sender=%s",
-                                    bskCustomer.id, bskLogDate, result.current.takenTo, result.current.pickedUp, result.isNew, senderUserId || "?");
+                                console.log("[LINE] 空籃記帳 customer=%s date=%s 去=%s 回=%s isNew=%s 月累計 去=%s 回=%s sender=%s",
+                                    bskCustomer.id, bskLogDate, result.current.takenTo, result.current.pickedUp, result.isNew,
+                                    bskMonthSum.takenTo, bskMonthSum.pickedUp, senderUserId || "?");
                                 continue;
                             }
                         } catch (e) {

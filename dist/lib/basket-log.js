@@ -49,9 +49,9 @@ function parseBasketCommand(rawText) {
     // 查詢
     if (/^(今日|今天|本日)$/.test(rest)) return { kind: "query_today" };
     if (/^(本月|這個月|當月)$/.test(rest)) return { kind: "query_month" };
-    // 抽取「去N」「收N」（順序可換）
+    // 抽取「去N」「收N」（順序可換）；「回」當作「收」的別名（同義，跟回覆顯示一致）
     const goM = rest.match(/去\s*(\d{1,4})/);
-    const pickM = rest.match(/收\s*(\d{1,4})/);
+    const pickM = rest.match(/[收回]\s*(\d{1,4})/);
     if (!goM && !pickM) return { kind: "help" };
     const takenTo = goM ? parseInt(goM[1], 10) : null;
     const pickedUp = pickM ? parseInt(pickM[1], 10) : null;
@@ -137,17 +137,30 @@ function fmtNum(n) {
     return n == null ? "—" : String(n);
 }
 
-function formatRecordReply({ customerName, date, isNew, prev, current }) {
-    const head = `✅ ${date}　${customerName || ""}`.trim();
-    const cur = `空籃 去 ${fmtNum(current.takenTo)}　收 ${fmtNum(current.pickedUp)}`;
-    if (isNew) return `${head}\n${cur}`;
-    const prevLine = `（原本 去 ${fmtNum(prev.takenTo)}　收 ${fmtNum(prev.pickedUp)}）`;
-    return `${head}\n已更新：${cur}\n${prevLine}`;
+/**
+ * 司機在 LINE 群組記錄空籃後的回覆。
+ * @param {object} args
+ * @param {{takenTo:number|null, pickedUp:number|null}} args.current   今日紀錄（覆蓋後的值）
+ * @param {{takenTo:number, pickedUp:number}} [args.monthSum]            本月合計（含今日）；不傳則只顯示今日值
+ */
+function formatRecordReply({ current, monthSum }) {
+    const t = Number(current.takenTo ?? 0);
+    const p = Number(current.pickedUp ?? 0);
+    const sumT = Number(monthSum?.takenTo ?? t);
+    const sumP = Number(monthSum?.pickedUp ?? p);
+    const net = sumT - sumP;
+    const sign = net >= 0 ? "+" : "";
+    return [
+        "✅ 空籃已記錄",
+        `今日：去 ${t}　回 ${p}`,
+        "================",
+        `本月合計：去 ${sumT}　回 ${sumP}　淨：${sign}${net}`,
+    ].join("\n");
 }
 
 function formatTodayReply({ customerName, date, row }) {
     if (!row) return `${date}　${customerName || ""}\n今日尚無空籃紀錄。`;
-    return `${date}　${customerName || ""}\n空籃 去 ${fmtNum(row.taken_to)}　收 ${fmtNum(row.picked_up)}`;
+    return `${date}　${customerName || ""}\n空籃 去 ${fmtNum(row.taken_to)}　回 ${fmtNum(row.picked_up)}`;
 }
 
 function formatMonthReply({ customerName, ym, rows }) {
@@ -157,19 +170,20 @@ function formatMonthReply({ customerName, ym, rows }) {
         const t = r.taken_to ?? 0, p = r.picked_up ?? 0;
         sumTo += t; sumPick += p;
         const md = String(r.log_date).slice(5); // MM-DD
-        return `${md}　去 ${fmtNum(r.taken_to)}　收 ${fmtNum(r.picked_up)}`;
+        return `${md}　去 ${fmtNum(r.taken_to)}　回 ${fmtNum(r.picked_up)}`;
     });
     const net = sumTo - sumPick;
-    const tail = `\n合計：去 ${sumTo}　收 ${sumPick}　淨值 ${net >= 0 ? "+" : ""}${net}`;
+    const sign = net >= 0 ? "+" : "";
+    const tail = `\n================\n本月合計：去 ${sumTo}　回 ${sumPick}　淨：${sign}${net}`;
     return `${ym}　${customerName || ""}\n` + lines.join("\n") + tail;
 }
 
 function formatHelpReply() {
     return [
         "空籃指令格式：",
-        "  空籃 去5 收3   （帶 5 個過去、收 3 個回來）",
+        "  空籃 去5 回3   （帶 5 個過去、收 3 個回來）",
         "  空籃 去5        （只報帶過去）",
-        "  空籃 收3        （只報收回來）",
+        "  空籃 回3        （只報收回來；打「收」也可以）",
         "  空籃 今日       （查今天紀錄）",
         "  空籃 本月       （查本月明細）",
         "※ 同一天再報會覆蓋當天數字。請報「今日累計總數」，不要分趟報。",
