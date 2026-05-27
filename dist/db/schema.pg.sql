@@ -296,3 +296,37 @@
     updated_at TIMESTAMPTZ NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_complaint_handling_status ON complaint_handling(handle_status);
+
+  -- 空籃記帳（司機在 LINE 群組打「空籃 去5 收3」自動寫入；每客戶每天 UPSERT 覆蓋）
+  CREATE TABLE IF NOT EXISTS basket_logs (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL REFERENCES customers(id),
+    log_date DATE NOT NULL,
+    taken_to INTEGER,
+    picked_up INTEGER,
+    line_group_id TEXT,
+    reporter_user_id TEXT,
+    reporter_display_name TEXT,
+    raw_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS ux_basket_logs_cust_date ON basket_logs(customer_id, log_date);
+  CREATE INDEX IF NOT EXISTS idx_basket_logs_date ON basket_logs(log_date);
+
+  -- 覆蓋歷史（每次重發都記一筆，方便追蹤司機是不是打錯）
+  CREATE TABLE IF NOT EXISTS basket_log_history (
+    id TEXT PRIMARY KEY,
+    basket_log_id TEXT NOT NULL REFERENCES basket_logs(id) ON DELETE CASCADE,
+    customer_id TEXT NOT NULL,
+    log_date DATE NOT NULL,
+    prev_taken_to INTEGER,
+    prev_picked_up INTEGER,
+    new_taken_to INTEGER,
+    new_picked_up INTEGER,
+    actor TEXT,
+    reporter_user_id TEXT,
+    raw_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_basket_log_hist_log ON basket_log_history(basket_log_id);

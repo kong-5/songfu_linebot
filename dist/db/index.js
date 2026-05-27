@@ -328,6 +328,38 @@ function initSqlite(dbPath) {
           FOREIGN KEY (order_id) REFERENCES orders(id)
         )`);
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_complaint_handling_status ON complaint_handling(handle_status)");
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS basket_logs (
+          id TEXT PRIMARY KEY,
+          customer_id TEXT NOT NULL,
+          log_date TEXT NOT NULL,
+          taken_to INTEGER,
+          picked_up INTEGER,
+          line_group_id TEXT,
+          reporter_user_id TEXT,
+          reporter_display_name TEXT,
+          raw_message TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (customer_id) REFERENCES customers(id)
+        )`);
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_basket_logs_cust_date ON basket_logs(customer_id, log_date)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_basket_logs_date ON basket_logs(log_date)");
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS basket_log_history (
+          id TEXT PRIMARY KEY,
+          basket_log_id TEXT NOT NULL,
+          customer_id TEXT NOT NULL,
+          log_date TEXT NOT NULL,
+          prev_taken_to INTEGER,
+          prev_picked_up INTEGER,
+          new_taken_to INTEGER,
+          new_picked_up INTEGER,
+          actor TEXT,
+          reporter_user_id TEXT,
+          raw_message TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (basket_log_id) REFERENCES basket_logs(id)
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_basket_log_hist_log ON basket_log_history(basket_log_id)");
     }
     catch (_) { /* table may already exist */ }
     for (const alt of alters) {
@@ -684,6 +716,39 @@ async function initPg() {
             updated_at TIMESTAMPTZ NOT NULL
           )`);
                 await client.query("CREATE INDEX IF NOT EXISTS idx_complaint_handling_status ON complaint_handling(handle_status)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS basket_logs (
+            id TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL REFERENCES customers(id),
+            log_date DATE NOT NULL,
+            taken_to INTEGER,
+            picked_up INTEGER,
+            line_group_id TEXT,
+            reporter_user_id TEXT,
+            reporter_display_name TEXT,
+            raw_message TEXT,
+            created_at TIMESTAMPTZ NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL
+          )`);
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_basket_logs_cust_date ON basket_logs(customer_id, log_date)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_basket_logs_date ON basket_logs(log_date)");
+                await client.query(`CREATE TABLE IF NOT EXISTS basket_log_history (
+            id TEXT PRIMARY KEY,
+            basket_log_id TEXT NOT NULL REFERENCES basket_logs(id) ON DELETE CASCADE,
+            customer_id TEXT NOT NULL,
+            log_date DATE NOT NULL,
+            prev_taken_to INTEGER,
+            prev_picked_up INTEGER,
+            new_taken_to INTEGER,
+            new_picked_up INTEGER,
+            actor TEXT,
+            reporter_user_id TEXT,
+            raw_message TEXT,
+            created_at TIMESTAMPTZ NOT NULL
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_basket_log_hist_log ON basket_log_history(basket_log_id)");
             }
             catch (_) { /* table may already exist */ }
         }

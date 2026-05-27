@@ -22,6 +22,7 @@ const rebuild_order_from_sources_js_1 = require("../lib/rebuild-order-from-sourc
 const order_parsed_heuristics_js_1 = require("../lib/order-parsed-heuristics.js");
 const cloud_tasks_line_js_1 = require("../lib/cloud-tasks-line.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
+const basket_log_js_1 = require("../lib/basket-log.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
@@ -877,6 +878,69 @@ function createLineWebhook() {
                 }
                 const customerId = customer.id;
                 const orderDate = getTaipeiOrderDate();
+                // ── 空籃指令攔截（司機在群組打「空籃 去5 收3」自動記帳）─────────
+                try {
+                    const cmd = (0, basket_log_js_1.parseBasketCommand)(text);
+                    if (cmd) {
+                        // 用今日台北日期（不是 orderDate 的明日邏輯）
+                        const nowTw = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }));
+                        const logDate = nowTw.toISOString().slice(0, 10);
+                        const reporterUserId = event.source?.userId || null;
+                        let reporterDisplayName = null;
+                        if (lineClient && reporterUserId) {
+                            try {
+                                let prof = null;
+                                if (groupId && sourceType === "group") {
+                                    prof = await lineClient.getGroupMemberProfile(groupId, reporterUserId);
+                                }
+                                if (prof?.displayName) reporterDisplayName = String(prof.displayName);
+                            } catch (_) { /* 取不到名字不影響記錄 */ }
+                        }
+                        if (cmd.kind === "help") {
+                            await reply(lineClient, event.replyToken, (0, basket_log_js_1.formatHelpReply)(), db, { force: true });
+                            continue;
+                        }
+                        if (cmd.kind === "query_today") {
+                            const row = await (0, basket_log_js_1.getBasketLogForCustomerDate)(db, customerId, logDate);
+                            await reply(lineClient, event.replyToken, (0, basket_log_js_1.formatTodayReply)({ customerName: customer.name, date: logDate, row }), db, { force: true });
+                            continue;
+                        }
+                        if (cmd.kind === "query_month") {
+                            const ym = logDate.slice(0, 7);
+                            const rows = await (0, basket_log_js_1.listBasketLogsForCustomerMonth)(db, customerId, ym);
+                            await reply(lineClient, event.replyToken, (0, basket_log_js_1.formatMonthReply)({ customerName: customer.name, ym, rows }), db, { force: true });
+                            continue;
+                        }
+                        if (cmd.kind === "record") {
+                            const result = await (0, basket_log_js_1.upsertBasketLog)(db, {
+                                customerId,
+                                logDate,
+                                takenTo: cmd.takenTo,
+                                pickedUp: cmd.pickedUp,
+                                lineGroupId: groupId,
+                                reporterUserId,
+                                reporterDisplayName,
+                                rawMessage: text,
+                                actor: "line:driver",
+                            });
+                            await reply(lineClient, event.replyToken, (0, basket_log_js_1.formatRecordReply)({
+                                customerName: customer.name,
+                                date: logDate,
+                                isNew: result.isNew,
+                                prev: result.prev,
+                                current: result.current,
+                            }), db, { force: true });
+                            console.log("[LINE] 空籃記帳 customer=%s date=%s 去=%s 收=%s isNew=%s", customerId, logDate, result.current.takenTo, result.current.pickedUp, result.isNew);
+                            continue;
+                        }
+                    }
+                } catch (e) {
+                    console.error("[LINE] 空籃指令處理失敗:", e?.message || e);
+                    try {
+                        await reply(lineClient, event.replyToken, "空籃指令處理失敗，請稍後再試或聯絡管理員。", db, { force: true });
+                    } catch (_) { /* replyToken 可能已逾時 */ }
+                    continue;
+                }
                 const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_start");
                 const startTriggers = (startRow?.value ?? "收單\n開始收單\n訂單\n我要下訂\n明日訂單").split(/\n/).map((s) => s.trim()).filter(Boolean);
                 const intentRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_intent");

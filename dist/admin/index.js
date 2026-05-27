@@ -67,6 +67,7 @@ const liff_bind_token_js_1 = require("../lib/liff-bind-token.js");
 const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
 const daily_summary_push_js_1 = require("../lib/daily-summary-push.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
+const basket_log_js_1 = require("../lib/basket-log.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
@@ -1248,6 +1249,7 @@ function sfSidebar(active) {
         ${item("/admin/orders", "orders", "list", "訂單審核")}
         ${item("/admin/complaints", "complaints", "warn", "客訴處理")}
         ${item("/admin/reminders", "reminders", "bell", "忘記叫貨提醒")}
+        ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
       </details>
       <details class="sf-nav-group" ${["env","inventory","logistics-procurement"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存與物流</div></summary>
@@ -3908,6 +3910,281 @@ function createAdminRouter() {
         } catch (e) {
             console.error("[admin] /reminders failed", e);
             res.status(500).send("載入提醒清單失敗：" + (e?.message || e));
+        }
+    });
+    // ── 空籃記帳 ──────────────────────────────────────────────
+    function currentTwYM() {
+        const tw = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }));
+        return tw.toISOString().slice(0, 7);
+    }
+    function monthRange(ym) {
+        const [y, m] = ym.split("-").map((x) => parseInt(x, 10));
+        const start = `${ym}-01`;
+        const nextY = m === 12 ? y + 1 : y;
+        const nextM = m === 12 ? 1 : m + 1;
+        const end = `${nextY}-${String(nextM).padStart(2, "0")}-01`;
+        return { start, end };
+    }
+    function escapeHtmlBsk(s) {
+        return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+    }
+    router.get("/baskets", async (req, res) => {
+        try {
+            const ymRaw = typeof req.query.ym === "string" ? req.query.ym.trim() : "";
+            const ym = /^\d{4}-\d{2}$/.test(ymRaw) ? ymRaw : currentTwYM();
+            const focusCustomerId = typeof req.query.customer === "string" ? req.query.customer.trim() : "";
+            const { start, end } = monthRange(ym);
+            const customers = await db.prepare("SELECT id, name FROM customers WHERE (active IS NULL OR active = 1) ORDER BY name ASC").all();
+            const custMap = new Map(customers.map((c) => [c.id, c]));
+            const logs = await db.prepare(
+                "SELECT id, customer_id, log_date, taken_to, picked_up, reporter_display_name, updated_at " +
+                "FROM basket_logs WHERE log_date >= ? AND log_date < ? ORDER BY log_date ASC"
+            ).all(start, end);
+            // 按月切上下月導覽
+            const [y, m] = ym.split("-").map((x) => parseInt(x, 10));
+            const prevY = m === 1 ? y - 1 : y;
+            const prevM = m === 1 ? 12 : m - 1;
+            const prevYm = `${prevY}-${String(prevM).padStart(2, "0")}`;
+            const nextY = m === 12 ? y + 1 : y;
+            const nextM = m === 12 ? 1 : m + 1;
+            const nextYm = `${nextY}-${String(nextM).padStart(2, "0")}`;
+            // 總覽：客戶 × 月合計
+            const byCust = new Map();
+            for (const l of logs) {
+                const k = l.customer_id;
+                if (!byCust.has(k)) byCust.set(k, { takenTo: 0, pickedUp: 0, days: 0 });
+                const acc = byCust.get(k);
+                acc.takenTo += Number(l.taken_to || 0);
+                acc.pickedUp += Number(l.picked_up || 0);
+                acc.days += 1;
+            }
+            const overviewRows = [];
+            for (const [cid, acc] of byCust) {
+                const c = custMap.get(cid);
+                overviewRows.push({
+                    id: cid,
+                    name: c?.name || "(已停用/不存在)",
+                    takenTo: acc.takenTo,
+                    pickedUp: acc.pickedUp,
+                    net: acc.takenTo - acc.pickedUp,
+                    days: acc.days,
+                });
+            }
+            overviewRows.sort((a, b) => (b.takenTo + b.pickedUp) - (a.takenTo + a.pickedUp));
+            const sumAllTo = overviewRows.reduce((s, r) => s + r.takenTo, 0);
+            const sumAllPick = overviewRows.reduce((s, r) => s + r.pickedUp, 0);
+            // 客戶明細區（單選客戶時顯示）
+            let detailHtml = "";
+            if (focusCustomerId) {
+                const c = custMap.get(focusCustomerId);
+                const dlogs = logs.filter((l) => l.customer_id === focusCustomerId);
+                const cName = c?.name || focusCustomerId;
+                const detailRows = dlogs.map((l) => `
+                    <tr>
+                      <td class="mono">${escapeHtmlBsk(l.log_date)}</td>
+                      <td class="mono" style="text-align:right;">${l.taken_to ?? "—"}</td>
+                      <td class="mono" style="text-align:right;">${l.picked_up ?? "—"}</td>
+                      <td class="mono" style="text-align:right;color:${(l.taken_to ?? 0) - (l.picked_up ?? 0) >= 0 ? "var(--txt-2)" : "var(--bad)"};">${(l.taken_to ?? 0) - (l.picked_up ?? 0)}</td>
+                      <td>${escapeHtmlBsk(l.reporter_display_name || "")}</td>
+                      <td>
+                        <form method="post" action="/admin/baskets/edit" style="display:flex;gap:6px;align-items:center;">
+                          <input type="hidden" name="ym" value="${ym}" />
+                          <input type="hidden" name="customer_id" value="${focusCustomerId}" />
+                          <input type="hidden" name="log_date" value="${escapeHtmlBsk(l.log_date)}" />
+                          <input type="number" name="taken_to" value="${l.taken_to ?? ""}" min="0" max="9999" style="width:60px;" />
+                          <input type="number" name="picked_up" value="${l.picked_up ?? ""}" min="0" max="9999" style="width:60px;" />
+                          <button type="submit" class="sf-btn sf-btn-sm">儲存</button>
+                        </form>
+                      </td>
+                    </tr>
+                `).join("");
+                const sumTo = dlogs.reduce((s, l) => s + Number(l.taken_to || 0), 0);
+                const sumPick = dlogs.reduce((s, l) => s + Number(l.picked_up || 0), 0);
+                detailHtml = `
+                  <div class="sf-card" style="margin-top:16px;">
+                    <div class="sf-card-head">
+                      <div class="sf-card-title">📋 ${escapeHtmlBsk(cName)}　${ym} 明細</div>
+                      <a href="/admin/baskets?ym=${ym}" class="sf-btn sf-btn-sm">回總覽</a>
+                    </div>
+                    <div style="padding:0;overflow-x:auto;">
+                      <table class="sf-table" style="font-size:13px;width:100%;">
+                        <thead>
+                          <tr>
+                            <th>日期</th>
+                            <th style="text-align:right;">去</th>
+                            <th style="text-align:right;">收</th>
+                            <th style="text-align:right;">淨</th>
+                            <th>回報人</th>
+                            <th>編輯（去 / 收）</th>
+                          </tr>
+                        </thead>
+                        <tbody>${detailRows || `<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--txt-3);">本月尚無紀錄</td></tr>`}</tbody>
+                        <tfoot>
+                          <tr style="background:var(--bg-1);font-weight:600;">
+                            <td>合計</td>
+                            <td class="mono" style="text-align:right;">${sumTo}</td>
+                            <td class="mono" style="text-align:right;">${sumPick}</td>
+                            <td class="mono" style="text-align:right;">${sumTo - sumPick}</td>
+                            <td colspan="2"></td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                    <div style="padding:10px 16px;border-top:1px solid var(--line);background:var(--bg-1);">
+                      <form method="post" action="/admin/baskets/edit" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <input type="hidden" name="ym" value="${ym}" />
+                        <input type="hidden" name="customer_id" value="${focusCustomerId}" />
+                        <label style="font-size:13px;">手動補：日期</label>
+                        <input type="date" name="log_date" required />
+                        <label style="font-size:13px;">去</label>
+                        <input type="number" name="taken_to" min="0" max="9999" style="width:70px;" placeholder="可空" />
+                        <label style="font-size:13px;">收</label>
+                        <input type="number" name="picked_up" min="0" max="9999" style="width:70px;" placeholder="可空" />
+                        <button type="submit" class="sf-btn sf-btn-primary sf-btn-sm">新增/覆蓋</button>
+                      </form>
+                    </div>
+                  </div>
+                `;
+            }
+            const overviewTbody = overviewRows.map((r) => `
+                <tr>
+                  <td><a href="/admin/baskets?ym=${ym}&customer=${encodeURIComponent(r.id)}" style="color:var(--accent);text-decoration:none;">${escapeHtmlBsk(r.name)}</a></td>
+                  <td class="mono" style="text-align:right;">${r.takenTo}</td>
+                  <td class="mono" style="text-align:right;">${r.pickedUp}</td>
+                  <td class="mono" style="text-align:right;color:${r.net >= 0 ? "var(--txt-1)" : "var(--bad)"};font-weight:600;">${r.net >= 0 ? "+" : ""}${r.net}</td>
+                  <td class="mono" style="text-align:right;color:var(--txt-3);">${r.days}</td>
+                </tr>
+            `).join("");
+            const body = `
+              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:1100px;margin:0 auto;">
+                <div>
+                  <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 空籃記帳</div>
+                  <h1 style="margin:0;font-size:22px;font-weight:600;">空籃記帳</h1>
+                  <p style="margin:6px 0 0;color:var(--txt-3);font-size:12px;">司機在 LINE 群組打「空籃 去5 收3」自動寫入。同一天再報會覆蓋當天數字。淨值 = 去 − 收（正值代表本月客戶手上多了幾個籃）。</p>
+                </div>
+                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                  <a href="/admin/baskets?ym=${prevYm}${focusCustomerId ? `&customer=${encodeURIComponent(focusCustomerId)}` : ""}" class="sf-btn sf-btn-sm">← ${prevYm}</a>
+                  <form method="get" action="/admin/baskets" style="display:flex;gap:8px;align-items:center;">
+                    <input type="month" name="ym" value="${ym}" />
+                    ${focusCustomerId ? `<input type="hidden" name="customer" value="${escapeHtmlBsk(focusCustomerId)}" />` : ""}
+                    <button type="submit" class="sf-btn sf-btn-sm">查詢</button>
+                  </form>
+                  <a href="/admin/baskets?ym=${nextYm}${focusCustomerId ? `&customer=${encodeURIComponent(focusCustomerId)}` : ""}" class="sf-btn sf-btn-sm">${nextYm} →</a>
+                  <div style="flex:1;"></div>
+                  <a href="/admin/baskets/export.xlsx?ym=${ym}" class="sf-btn sf-btn-sm">下載 Excel</a>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+                  <div class="sf-card" style="padding:14px 18px;">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">${ym} 客戶數</div>
+                    <div class="mono" style="font-size:26px;font-weight:600;">${overviewRows.length}</div>
+                  </div>
+                  <div class="sf-card" style="padding:14px 18px;">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">本月總計「去」</div>
+                    <div class="mono" style="font-size:26px;font-weight:600;">${sumAllTo}</div>
+                  </div>
+                  <div class="sf-card" style="padding:14px 18px;">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">本月總計「收」</div>
+                    <div class="mono" style="font-size:26px;font-weight:600;">${sumAllPick}</div>
+                  </div>
+                  <div class="sf-card" style="padding:14px 18px;border-left:4px solid ${sumAllTo - sumAllPick >= 0 ? "var(--accent)" : "var(--bad)"};">
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">淨值</div>
+                    <div class="mono" style="font-size:26px;font-weight:600;color:${sumAllTo - sumAllPick >= 0 ? "var(--txt-1)" : "var(--bad)"};">${sumAllTo - sumAllPick >= 0 ? "+" : ""}${sumAllTo - sumAllPick}</div>
+                  </div>
+                </div>
+                <div class="sf-card">
+                  <div class="sf-card-head">
+                    <div class="sf-card-title">📊 各客戶月合計</div>
+                    <span class="sf-card-sub">點客戶名看本月明細／可編輯</span>
+                  </div>
+                  <div style="padding:0;overflow-x:auto;">
+                    <table class="sf-table" style="font-size:13px;width:100%;">
+                      <thead>
+                        <tr>
+                          <th>客戶</th>
+                          <th style="text-align:right;">合計「去」</th>
+                          <th style="text-align:right;">合計「收」</th>
+                          <th style="text-align:right;">淨值（去 − 收）</th>
+                          <th style="text-align:right;">紀錄天數</th>
+                        </tr>
+                      </thead>
+                      <tbody>${overviewTbody || `<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--txt-3);">本月尚無任何空籃紀錄</td></tr>`}</tbody>
+                    </table>
+                  </div>
+                </div>
+                ${detailHtml}
+              </div>
+            `;
+            res.type("text/html").send(notionPage("空籃記帳", body, "baskets", res));
+        } catch (e) {
+            console.error("[admin] /baskets failed", e);
+            res.status(500).send("載入空籃記帳失敗：" + (e?.message || e));
+        }
+    });
+    router.post("/baskets/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const ym = String(req.body.ym || "").trim();
+            const customerId = String(req.body.customer_id || "").trim();
+            const logDate = String(req.body.log_date || "").trim();
+            const takenToRaw = String(req.body.taken_to ?? "").trim();
+            const pickedUpRaw = String(req.body.picked_up ?? "").trim();
+            if (!customerId || !logDate || !/^\d{4}-\d{2}-\d{2}$/.test(logDate)) {
+                return res.status(400).send("參數不正確");
+            }
+            const takenTo = takenToRaw === "" ? null : parseInt(takenToRaw, 10);
+            const pickedUp = pickedUpRaw === "" ? null : parseInt(pickedUpRaw, 10);
+            await (0, basket_log_js_1.upsertBasketLog)(db, {
+                customerId, logDate, takenTo, pickedUp,
+                lineGroupId: null, reporterUserId: null, reporterDisplayName: null,
+                rawMessage: "[admin edit]",
+                actor: "admin:" + (res.locals.adminUser || "?"),
+            });
+            const backYm = /^\d{4}-\d{2}$/.test(ym) ? ym : currentTwYM();
+            res.redirect(`/admin/baskets?ym=${backYm}&customer=${encodeURIComponent(customerId)}`);
+        } catch (e) {
+            console.error("[admin] /baskets/edit failed", e);
+            res.status(500).send("儲存失敗：" + (e?.message || e));
+        }
+    });
+    router.get("/baskets/export.xlsx", async (req, res) => {
+        try {
+            const ymRaw = typeof req.query.ym === "string" ? req.query.ym.trim() : "";
+            const ym = /^\d{4}-\d{2}$/.test(ymRaw) ? ymRaw : currentTwYM();
+            const { start, end } = monthRange(ym);
+            const customers = await db.prepare("SELECT id, name FROM customers WHERE (active IS NULL OR active = 1) ORDER BY name ASC").all();
+            const custMap = new Map(customers.map((c) => [c.id, c.name]));
+            const logs = await db.prepare(
+                "SELECT customer_id, log_date, taken_to, picked_up, reporter_display_name " +
+                "FROM basket_logs WHERE log_date >= ? AND log_date < ? ORDER BY customer_id ASC, log_date ASC"
+            ).all(start, end);
+            const wb = XLSX.utils.book_new();
+            // Sheet 1：總覽
+            const byCust = new Map();
+            for (const l of logs) {
+                if (!byCust.has(l.customer_id)) byCust.set(l.customer_id, { to: 0, pk: 0, days: 0 });
+                const acc = byCust.get(l.customer_id);
+                acc.to += Number(l.taken_to || 0);
+                acc.pk += Number(l.picked_up || 0);
+                acc.days += 1;
+            }
+            const summary = [["客戶", "合計 去", "合計 收", "淨值 (去−收)", "紀錄天數"]];
+            for (const [cid, acc] of byCust) {
+                summary.push([custMap.get(cid) || cid, acc.to, acc.pk, acc.to - acc.pk, acc.days]);
+            }
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), `${ym} 月合計`);
+            // Sheet 2：每日明細
+            const detail = [["客戶", "日期", "去", "收", "淨", "回報人"]];
+            for (const l of logs) {
+                const t = Number(l.taken_to ?? 0), p = Number(l.picked_up ?? 0);
+                detail.push([custMap.get(l.customer_id) || l.customer_id, l.log_date, l.taken_to ?? "", l.picked_up ?? "", t - p, l.reporter_display_name || ""]);
+            }
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detail), `${ym} 明細`);
+            const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+            res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            res.setHeader("Content-Disposition", `attachment; filename="basket_${ym}.xlsx"`);
+            res.send(buf);
+        } catch (e) {
+            console.error("[admin] /baskets/export.xlsx failed", e);
+            res.status(500).send("匯出失敗：" + (e?.message || e));
         }
     });
     router.get("/audit", async (req, res) => {
