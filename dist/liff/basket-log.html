@@ -399,6 +399,10 @@
         return;
       }
       state.idToken = liff.getIDToken();
+      if (!state.idToken) {
+        setStatus("err", "拿不到 ID Token。請聯絡管理員：LIFF Scopes 需要勾「openid」（LINE Developers Console → LIFF → 編輯 → Scopes）");
+        return;
+      }
       state.customerId = getParam("customer");
       state.date = getParam("date") || todayTaipei();
       if (!state.customerId) { setStatus("err", "缺少 customer 參數（請從群組「空籃」訊息點連結進入）"); return; }

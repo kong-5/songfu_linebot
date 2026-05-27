@@ -667,11 +667,36 @@ function createLineWebhook() {
                         const liffUrl = (0, basket_log_js_1.buildLiffEntryUrl)(liffId, { customerId: bskCustomer.id, date: bskLogDate });
                         if (lineClient && event.replyToken) {
                             try {
-                                await lineClient.replyMessage(event.replyToken, {
-                                    type: "text",
-                                    text: `📦 ${bskCustomer.name} 空籃記帳（${bskLogDate}）\n請點下方連結開啟記帳頁：\n${liffUrl}`,
-                                });
-                            } catch (e) { console.warn("[LINE] 空籃 LIFF 連結回覆失敗:", e?.message || e); }
+                                // Flex Message：簡潔卡片，只有一顆大按鈕直接開 LIFF
+                                const flexBubble = {
+                                    type: "flex",
+                                    altText: `${bskCustomer.name} 空籃記帳`,
+                                    contents: {
+                                        type: "bubble",
+                                        size: "kilo",
+                                        body: {
+                                            type: "box",
+                                            layout: "vertical",
+                                            spacing: "sm",
+                                            paddingAll: "20px",
+                                            contents: [
+                                                { type: "text", text: "📦 空籃記帳", weight: "bold", size: "lg", color: "#1d4ed8" },
+                                                { type: "text", text: bskCustomer.name, size: "sm", color: "#37352f", margin: "xs" },
+                                                { type: "text", text: bskLogDate, size: "xs", color: "#9b9a97", margin: "none" },
+                                                {
+                                                    type: "button",
+                                                    style: "primary",
+                                                    color: "#1d4ed8",
+                                                    margin: "lg",
+                                                    height: "md",
+                                                    action: { type: "uri", label: "點此開始記帳", uri: liffUrl },
+                                                },
+                                            ],
+                                        },
+                                    },
+                                };
+                                await lineClient.replyMessage(event.replyToken, flexBubble);
+                            } catch (e) { console.warn("[LINE] 空籃 LIFF 卡片回覆失敗:", e?.message || e); }
                         }
                         console.log("[LINE] 空籃 LIFF 連結已回 customer=%s date=%s", bskCustomer.id, bskLogDate);
                         continue;
