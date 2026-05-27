@@ -390,8 +390,24 @@
   });
 
   // ─── 初始化 ────────────────────────────────
+  // 立刻先把 UI 畫出來（空資料），讓使用者看到頁面，背景再去拿 LIFF token + 今日資料
+  function renderInitialUI(){
+    renderNumberedGrid();
+    renderAllKindFields();
+    refreshSaveBtn();
+  }
+
   async function init(){
+    // 1. 立刻畫 UI（不等任何網路）
+    renderInitialUI();
+    state.date = getParam("date") || todayTaipei();
+    state.customerId = getParam("customer");
+    hdrSub.textContent = state.date;
+    setStatus("", "啟動中…");
+
     if (!LIFF_ID) { setStatus("err", "尚未設定 LIFF_ID_BASKET_LOG"); return; }
+
+    // 2. LIFF init（背景）
     try {
       await liff.init({ liffId: LIFF_ID });
       if (!liff.isLoggedIn()) {
@@ -400,20 +416,33 @@
       }
       state.idToken = liff.getIDToken();
       if (!state.idToken) {
-        setStatus("err", "拿不到 ID Token。請聯絡管理員：LIFF Scopes 需要勾「openid」（LINE Developers Console → LIFF → 編輯 → Scopes）");
+        setStatus("err", "拿不到 ID Token。請聯絡管理員：LIFF Scopes 需要勾「openid」（LINE Console → LIFF → Edit → Scopes）");
         return;
       }
-      state.customerId = getParam("customer");
-      state.date = getParam("date") || todayTaipei();
-      if (!state.customerId) { setStatus("err", "缺少 customer 參數（請從群組「空籃」訊息點連結進入）"); return; }
+      // 若 URL 沒帶 customer，嘗試從 LIFF context 拿 groupId 反查（給 Rich Menu 進入時用）
+      if (!state.customerId) {
+        try {
+          const ctx = liff.getContext();
+          const gid = ctx?.groupId || ctx?.roomId || "";
+          if (gid) {
+            const r0 = await fetch(`/liff/api/basket-log/lookup-by-group?groupId=${encodeURIComponent(gid)}&idToken=${encodeURIComponent(state.idToken)}`);
+            const d0 = await r0.json();
+            if (d0?.ok && d0.customerId) state.customerId = d0.customerId;
+          }
+        } catch (_) { /* lookup 失敗就走原本流程 */ }
+      }
+      if (!state.customerId) {
+        setStatus("err", "缺少 customer 參數，且此群組未綁定客戶。請從群組「空籃」訊息點連結進入。");
+        return;
+      }
+      // 3. 載入今日資料（背景，UI 已可操作但會被覆蓋）
       setStatus("", "載入今日資料…");
-      // 預載
       const r = await fetch(`/liff/api/basket-log/load?customer=${encodeURIComponent(state.customerId)}&date=${encodeURIComponent(state.date)}&idToken=${encodeURIComponent(state.idToken)}`);
       const data = await r.json();
       if (!data?.ok) throw new Error(data?.error || "載入失敗");
       state.customerName = data.customerName || state.customerId;
       hdrSub.textContent = `${state.customerName}　${state.date}`;
-      // 填入既有資料
+      // 填入既有資料（如果司機已經開始填了會覆蓋；通常一進來資料就回了不會打字到一半）
       for (const ln of (data.lines || [])) {
         if (ln.basket_kind === "numbered") state.numbered[ln.basket_no] = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
         else if (ln.basket_kind === "square") state.square = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };

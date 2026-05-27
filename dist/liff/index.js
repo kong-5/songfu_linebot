@@ -493,6 +493,38 @@ function createLiffRouter() {
     });
 
     // ===== 空籃記帳 LIFF API =====
+    // GET /liff/api/basket-log/lookup-by-group?groupId=&idToken=
+    // （給 Rich Menu 等不帶 customer 參數的進入路徑用：用群組 ID 反查 customer）
+    router.get("/api/basket-log/lookup-by-group", async (req, res) => {
+        try {
+            const idToken = String(req.query?.idToken || "").trim();
+            const groupId = String(req.query?.groupId || "").trim();
+            if (!idToken || !groupId) {
+                res.status(400).json({ ok: false, error: "missing params" });
+                return;
+            }
+            const verified = await (0, liff_verify_js_1.verifyLineIdToken)(idToken);
+            if (!verified.ok) {
+                res.status(401).json({ ok: false, error: verified.error || "ID Token 驗證失敗" });
+                return;
+            }
+            const db = (0, index_js_1.getDb)(dbPath);
+            // 大小寫不敏感比對（跟 webhook 一致）
+            const all = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE (active IS NULL OR active = 1)").all();
+            const norm = (s) => (s || "").replace(/\s/g, "").toLowerCase();
+            const needle = norm(groupId);
+            const found = (all || []).find(r => norm(r.line_group_id) === needle);
+            if (!found) {
+                res.status(404).json({ ok: false, error: "此群組尚未綁定客戶" });
+                return;
+            }
+            res.json({ ok: true, customerId: found.id, customerName: found.name });
+        } catch (e) {
+            console.error("[liff basket-log lookup-by-group]", e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+
     // GET /liff/api/basket-log/load?customer=&date=&idToken=
     router.get("/api/basket-log/load", async (req, res) => {
         try {
