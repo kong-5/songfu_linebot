@@ -667,29 +667,26 @@ function createLineWebhook() {
                         const liffUrl = (0, basket_log_js_1.buildLiffEntryUrl)(liffId, { customerId: bskCustomer.id, date: bskLogDate });
                         if (lineClient && event.replyToken) {
                             try {
-                                // Flex Message：簡潔卡片，只有一顆大按鈕直接開 LIFF
+                                // Flex Message：最小化卡片（micro size），只剩客戶名一行 + 按鈕
                                 const flexBubble = {
                                     type: "flex",
                                     altText: `${bskCustomer.name} 空籃記帳`,
                                     contents: {
                                         type: "bubble",
-                                        size: "kilo",
+                                        size: "micro",
                                         body: {
                                             type: "box",
                                             layout: "vertical",
                                             spacing: "sm",
-                                            paddingAll: "20px",
+                                            paddingAll: "10px",
                                             contents: [
-                                                { type: "text", text: "📦 空籃記帳", weight: "bold", size: "lg", color: "#1d4ed8" },
-                                                { type: "text", text: bskCustomer.name, size: "sm", color: "#37352f", margin: "xs" },
-                                                { type: "text", text: bskLogDate, size: "xs", color: "#9b9a97", margin: "none" },
+                                                { type: "text", text: `📦 ${bskCustomer.name}`, size: "sm", weight: "bold", color: "#1d4ed8", wrap: true },
                                                 {
                                                     type: "button",
                                                     style: "primary",
                                                     color: "#1d4ed8",
-                                                    margin: "lg",
-                                                    height: "md",
-                                                    action: { type: "uri", label: "點此開始記帳", uri: liffUrl },
+                                                    height: "sm",
+                                                    action: { type: "uri", label: "點此記帳", uri: liffUrl },
                                                 },
                                             ],
                                         },
