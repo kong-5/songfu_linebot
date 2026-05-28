@@ -3351,11 +3351,11 @@ function createAdminRouter() {
               </div>
               <div id="cost-gemini" style="border:1px solid var(--line);border-radius:var(--radius);padding:14px;background:var(--bg-1);">
                 <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
-                  <strong style="font-size:13px;">Gemini 用量（估算）</strong>
+                  <strong style="font-size:13px;">AI 視覺辨識用量（估算）</strong>
                   <a href="/admin/recognition-stats" class="mono" style="font-size:11px;">辨識成效 →</a>
                 </div>
                 <div id="cost-gemini-body" style="min-height:96px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;">載入中…</div>
-                <div style="margin-top:8px;font-size:11px;color:var(--txt-3);">以 Google 公告單價計算，實際以 GCP 帳單為準</div>
+                <div style="margin-top:8px;font-size:11px;color:var(--txt-3);">含 Gemini + Claude；以各家公告單價估算，實際以 GCP / Anthropic 帳單為準</div>
               </div>
             </div>
           </div>
@@ -3390,14 +3390,38 @@ function createAdminRouter() {
           function renderGemini(g){
             const box = $("#cost-gemini-body");
             if (!g || !g.ok) {
-              box.innerHTML = '<span style="color:var(--warn);">' + (g && g.error ? g.error : "無法統計 Gemini 用量") + '</span>';
+              box.innerHTML = '<span style="color:var(--warn);">' + (g && g.error ? g.error : "無法統計 AI 用量") + '</span>';
               return;
             }
             const t = g.today || { calls:0, tokens:0, usd:0 };
-            const m = g.month || { calls:0, tokens:0, usd:0, byModel:[] };
+            const m = g.month || { calls:0, tokens:0, usd:0, byModel:[], byVendor:{} };
+            // 供應商徽章樣式
+            function vendorBadge(v){
+              const styles = {
+                gemini: 'background:#e8f1ff;color:#1d4ed8;',
+                claude: 'background:#fff0e8;color:#c2410c;',
+                unknown: 'background:#f1f1f1;color:#666;',
+              };
+              const labels = { gemini: 'Gemini', claude: 'Claude', unknown: '?' };
+              const s = styles[v] || styles.unknown;
+              return '<span style="' + s + 'font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;margin-right:4px;">' + (labels[v] || v) + '</span>';
+            }
+            // 模型列：加上供應商徽章
             const modelRows = (m.byModel||[]).map(r =>
-              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--txt-2);padding:2px 0;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;">' + r.model + '</span><span class="mono">' + fmtInt(r.in + r.out) + ' tok · ' + fmtUsd(r.usd) + '</span></div>'
+              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--txt-2);padding:2px 0;align-items:center;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;">' + vendorBadge(r.vendor) + r.model + '</span><span class="mono">' + fmtInt(r.in + r.out) + ' tok · ' + fmtUsd(r.usd) + '</span></div>'
             ).join("");
+            // 供應商小計（本月）
+            const bv = m.byVendor || {};
+            const vendorCells = [];
+            if (bv.gemini && bv.gemini.calls > 0) {
+              vendorCells.push('<div style="font-size:11px;color:var(--txt-2);">' + vendorBadge('gemini') + '<span class="mono">' + fmtUsd(bv.gemini.usd) + ' · ' + fmtInt(bv.gemini.calls) + ' 次</span></div>');
+            }
+            if (bv.claude && bv.claude.calls > 0) {
+              vendorCells.push('<div style="font-size:11px;color:var(--txt-2);">' + vendorBadge('claude') + '<span class="mono">' + fmtUsd(bv.claude.usd) + ' · ' + fmtInt(bv.claude.calls) + ' 次</span></div>');
+            }
+            const vendorRow = vendorCells.length > 1
+              ? '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0;border-top:1px dashed var(--line);padding-top:6px;">' + vendorCells.join("") + '</div>'
+              : '';
             box.innerHTML =
               '<div style="width:100%;">' +
                 '<div style="display:flex;gap:12px;justify-content:space-around;text-align:center;margin-bottom:10px;">' +
@@ -3405,6 +3429,7 @@ function createAdminRouter() {
                   '<div style="border-left:1px solid var(--line);"></div>' +
                   '<div><div style="font-size:11px;color:var(--txt-3);">本月</div><div class="mono" style="font-size:18px;font-weight:600;">' + fmtUsd(m.usd) + '</div><div style="font-size:11px;color:var(--txt-2);">' + fmtInt(m.tokens) + ' tok · ' + fmtInt(m.calls) + ' 次</div></div>' +
                 '</div>' +
+                vendorRow +
                 (modelRows ? '<div style="border-top:1px dashed var(--line);padding-top:6px;">' + modelRows + '</div>' : '') +
               '</div>';
           }
@@ -3469,28 +3494,42 @@ function createAdminRouter() {
             res.status(500).json({ ok: false, error: e?.message || "刪除失敗" });
         }
     });
-    // === 費用概覽 API（LINE 訊息額度 + Gemini token 估算） ===
-    // 註：Gemini 單價依 Google 公告（per 1M tokens, USD），與 GCP 帳單可能略有差異；
+    // === 費用概覽 API（LINE 訊息額度 + AI 視覺辨識 token 估算）===
+    // 註：AI 單價依各家公告（per 1M tokens, USD），與實際帳單可能略有差異；
     //     LINE quota: -1 / type=none 代表無上限方案。
-    const GEMINI_PRICE_PER_M = {
-        "gemini-2.5-flash":      { in: 0.30,  out: 2.50 },
-        "gemini-2.5-flash-lite": { in: 0.10,  out: 0.40 },
-        "gemini-2.5-pro":        { in: 1.25,  out: 10.00 },
-        "gemini-2.0-flash":      { in: 0.10,  out: 0.40 },
-        "gemini-2.0-flash-lite": { in: 0.075, out: 0.30 },
-        "gemini-1.5-flash":      { in: 0.075, out: 0.30 },
-        "gemini-1.5-pro":        { in: 1.25,  out: 5.00 },
+    const AI_PRICE_PER_M = {
+        // Gemini
+        "gemini-2.5-flash":      { in: 0.30,  out: 2.50,  vendor: "gemini" },
+        "gemini-2.5-flash-lite": { in: 0.10,  out: 0.40,  vendor: "gemini" },
+        "gemini-2.5-pro":        { in: 1.25,  out: 10.00, vendor: "gemini" },
+        "gemini-2.0-flash":      { in: 0.10,  out: 0.40,  vendor: "gemini" },
+        "gemini-2.0-flash-lite": { in: 0.075, out: 0.30,  vendor: "gemini" },
+        "gemini-1.5-flash":      { in: 0.075, out: 0.30,  vendor: "gemini" },
+        "gemini-1.5-pro":        { in: 1.25,  out: 5.00,  vendor: "gemini" },
+        // Claude（Anthropic 公告：sonnet-4-5 in $3/out $15、opus-4-5 in $15/out $75、haiku-4-5 in $1/out $5）
+        "claude-sonnet-4-5":     { in: 3.00,  out: 15.00, vendor: "claude" },
+        "claude-opus-4-5":       { in: 15.00, out: 75.00, vendor: "claude" },
+        "claude-haiku-4-5":      { in: 1.00,  out: 5.00,  vendor: "claude" },
+        "claude-sonnet-4":       { in: 3.00,  out: 15.00, vendor: "claude" },
+        "claude-opus-4":         { in: 15.00, out: 75.00, vendor: "claude" },
+        "claude-haiku-4":        { in: 1.00,  out: 5.00,  vendor: "claude" },
     };
-    const GEMINI_PRICE_DEFAULT = { in: 0.30, out: 2.50 };
+    // 向後相容
+    const GEMINI_PRICE_PER_M = AI_PRICE_PER_M;
+    const AI_PRICE_DEFAULT = { in: 0.30, out: 2.50, vendor: "unknown" };
+    const GEMINI_PRICE_DEFAULT = AI_PRICE_DEFAULT;
     function priceForModel(name) {
         const k = String(name || "").toLowerCase().trim();
-        if (!k) return GEMINI_PRICE_DEFAULT;
-        if (GEMINI_PRICE_PER_M[k]) return GEMINI_PRICE_PER_M[k];
+        if (!k) return AI_PRICE_DEFAULT;
+        if (AI_PRICE_PER_M[k]) return AI_PRICE_PER_M[k];
         // 容錯：含關鍵字就比對最相近的
-        for (const key of Object.keys(GEMINI_PRICE_PER_M)) {
-            if (k.startsWith(key)) return GEMINI_PRICE_PER_M[key];
+        for (const key of Object.keys(AI_PRICE_PER_M)) {
+            if (k.startsWith(key)) return AI_PRICE_PER_M[key];
         }
-        return GEMINI_PRICE_DEFAULT;
+        // 完全未知但能辨別供應商
+        if (k.startsWith("claude-")) return { in: 3.00, out: 15.00, vendor: "claude" };
+        if (k.startsWith("gemini-")) return { in: 0.30, out: 2.50, vendor: "gemini" };
+        return AI_PRICE_DEFAULT;
     }
     async function fetchLineQuota() {
         const token = (process.env.LINE_CHANNEL_ACCESS_TOKEN || "").trim();
@@ -3532,18 +3571,26 @@ function createAdminRouter() {
             : "SELECT model_name, SUM(COALESCE(prompt_tokens,0)) AS pin, SUM(COALESCE(candidates_tokens,0)) AS pout, COUNT(*) AS n FROM gemini_usage_log WHERE strftime('%Y-%m', datetime(created_at, '+8 hours')) = strftime('%Y-%m', datetime('now', '+8 hours')) GROUP BY model_name";
         function summarize(rows) {
             const byModel = [];
+            const byVendor = { gemini: { calls: 0, tokens: 0, usd: 0 }, claude: { calls: 0, tokens: 0, usd: 0 }, unknown: { calls: 0, tokens: 0, usd: 0 } };
             let calls = 0, tokens = 0, usd = 0;
             for (const r of (rows || [])) {
                 const pin = Number(r.pin) || 0;
                 const pout = Number(r.pout) || 0;
                 const p = priceForModel(r.model_name);
                 const cost = (pin / 1_000_000) * p.in + (pout / 1_000_000) * p.out;
-                byModel.push({ model: r.model_name || "(unknown)", calls: Number(r.n) || 0, in: pin, out: pout, usd: Math.round(cost * 10000) / 10000 });
+                const vendor = p.vendor || "unknown";
+                byModel.push({ model: r.model_name || "(unknown)", vendor, calls: Number(r.n) || 0, in: pin, out: pout, usd: Math.round(cost * 10000) / 10000 });
                 calls += Number(r.n) || 0;
                 tokens += pin + pout;
                 usd += cost;
+                if (!byVendor[vendor]) byVendor[vendor] = { calls: 0, tokens: 0, usd: 0 };
+                byVendor[vendor].calls += Number(r.n) || 0;
+                byVendor[vendor].tokens += pin + pout;
+                byVendor[vendor].usd += cost;
             }
-            return { calls, tokens, usd: Math.round(usd * 10000) / 10000, byModel };
+            // 圓化 vendor usd
+            for (const k of Object.keys(byVendor)) byVendor[k].usd = Math.round(byVendor[k].usd * 10000) / 10000;
+            return { calls, tokens, usd: Math.round(usd * 10000) / 10000, byModel, byVendor };
         }
         try {
             const [todayRows, monthRows] = await Promise.all([
