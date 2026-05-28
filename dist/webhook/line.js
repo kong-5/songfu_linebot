@@ -667,25 +667,27 @@ function createLineWebhook() {
                         const liffUrl = (0, basket_log_js_1.buildLiffEntryUrl)(liffId, { customerId: bskCustomer.id, date: bskLogDate });
                         if (lineClient && event.replyToken) {
                             try {
-                                // Flex Message：最小化卡片（micro size），只剩客戶名一行 + 按鈕
+                                // Flex Message：精簡卡片（micro size）— 客戶名 + 日期 + 按鈕
                                 const flexBubble = {
                                     type: "flex",
-                                    altText: `${bskCustomer.name} 空籃記帳`,
+                                    altText: `${bskCustomer.name} 空籃記帳 ${bskLogDate}`,
                                     contents: {
                                         type: "bubble",
                                         size: "micro",
                                         body: {
                                             type: "box",
                                             layout: "vertical",
-                                            spacing: "sm",
-                                            paddingAll: "10px",
+                                            spacing: "xs",
+                                            paddingAll: "12px",
                                             contents: [
                                                 { type: "text", text: `📦 ${bskCustomer.name}`, size: "sm", weight: "bold", color: "#1d4ed8", wrap: true },
+                                                { type: "text", text: bskLogDate, size: "xxs", color: "#9b9a97" },
                                                 {
                                                     type: "button",
                                                     style: "primary",
                                                     color: "#1d4ed8",
                                                     height: "sm",
+                                                    margin: "sm",
                                                     action: { type: "uri", label: "點此記帳", uri: liffUrl },
                                                 },
                                             ],
