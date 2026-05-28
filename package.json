@@ -19,6 +19,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.99.0",
     "@google-cloud/tasks": "^5.5.2",
     "@google/generative-ai": "^0.21.0",
     "@line/bot-sdk": "^9.0.0",

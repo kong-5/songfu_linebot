@@ -4702,9 +4702,16 @@ function createAdminRouter() {
             <label style="display:block;margin:8px 0;">模型（留空＝環境變數預設）
               <select name="model_name" style="margin-top:4px;min-width:280px;">
                 <option value="">（GEMINI_MODEL_VISION／GEMINI_MODEL）</option>
-                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-                <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                <optgroup label="Gemini">
+                  <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                  <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                  <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                </optgroup>
+                <optgroup label="Claude（需設定 ANTHROPIC_API_KEY）">
+                  <option value="claude-sonnet-4-5">claude-sonnet-4-5（推薦）</option>
+                  <option value="claude-opus-4-5">claude-opus-4-5（最強）</option>
+                  <option value="claude-haiku-4-5">claude-haiku-4-5（最便宜）</option>
+                </optgroup>
               </select>
             </label>
             <label style="display:block;margin:8px 0;">Few-Shot 策略
