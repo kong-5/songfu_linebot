@@ -320,13 +320,40 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, needReviewFlag, itemRemark, subC, confidence);
     }
 }
+/** raw_message 上限（字元數）：超過時前段截斷，避免整單重辨識送 Gemini 時 token 暴增 */
+const RAW_MESSAGE_MAX_CHARS = Math.max(2000, Number(process.env.LINE_RAW_MESSAGE_MAX_CHARS ?? 20000) | 0);
+/** 已知純聊天／控制詞，不該寫進 raw_message（避免整單重辨識被混淆） */
+const RAW_MESSAGE_SKIP_EXACT = new Set([
+    "謝謝", "謝謝你", "謝謝您", "感謝", "好", "好的", "好喔", "嗯", "ok", "OK", "Ok", "收到", "👌", "🙏", "❤️", "❤", "✅",
+    "改單", "如何改單", "改單說明", "訂單錯誤", "叫貨錯誤",
+    "線上改單", "訂單更正說明",
+    "今天叫了什麼", "今日訂單", "今日叫貨",
+    "取得群組ID", "群組ID",
+]);
+function isRawMessageNoise(line) {
+    const s = String(line ?? "").trim();
+    if (!s) return true;
+    if (RAW_MESSAGE_SKIP_EXACT.has(s)) return true;
+    // 純 emoji／符號（不含中英數）：略過
+    if (!/[\p{L}\p{N}]/u.test(s)) return true;
+    // 線上改單編輯指令（如「改第1項 3 公斤」「刪第2項」）：略過
+    if (/^改第?\d+項?(\s|$)/.test(s) || /^刪第?\d+項?$/.test(s) || /^刪除\s*\d+\s*$/.test(s) || /^更正\s*\d+/.test(s))
+        return true;
+    return false;
+}
 async function appendRawLineToOrders(db, orderIds, lineText, nowSql) {
     const line = String(lineText ?? "").trim();
     if (!line || !orderIds?.length)
         return;
+    if (isRawMessageNoise(line)) return;
     for (const oid of orderIds) {
         const row = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
-        const newRaw = (row?.raw_message ? row.raw_message + "\n" : "") + line;
+        let newRaw = (row?.raw_message ? row.raw_message + "\n" : "") + line;
+        // B5：raw_message 累加上限；超過時前段保留 100 字標記 + 後段保留
+        if (newRaw.length > RAW_MESSAGE_MAX_CHARS) {
+            const tailKeep = Math.floor(RAW_MESSAGE_MAX_CHARS * 0.9);
+            newRaw = "[...前段已截斷以避免 token 暴增...]\n" + newRaw.slice(-tailKeep);
+        }
         await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, oid);
     }
 }
@@ -336,6 +363,27 @@ async function duplicateAttachmentToOrders(db, lineMessageId, orderIds, nowSql) 
     for (const oid of orderIds) {
         const attId = (0, id_js_1.newId)("att");
         await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, oid, lineMessageId);
+    }
+}
+/** B6：客訴／退貨偵測到時推播給管理員 LINE。設定 LINE_MANAGER_USER_ID 才生效。 */
+async function notifyManagerOfComplaint(lineClient, payload) {
+    const managerId = (process.env.LINE_MANAGER_USER_ID || "").trim();
+    if (!managerId || !lineClient) return;
+    try {
+        const lines = [
+            `🚨 偵測到「${payload.intentLabel}」`,
+            payload.customerName ? `客戶：${payload.customerName}` : null,
+            payload.orderNo ? `對應訂單：${payload.orderNo}` : "無對應訂單（已記錄稽核）",
+            `關鍵詞：${(payload.keywords || []).join("、")}`,
+            "",
+            "原訊息：",
+            String(payload.rawText || "").slice(0, 300),
+            "",
+            "請至後台 /admin/audit 處理。",
+        ].filter(Boolean).join("\n");
+        await lineClient.pushMessage(managerId, { type: "text", text: lines });
+    } catch (e) {
+        console.warn("[LINE] 客訴推播管理員失敗:", e?.message || e);
     }
 }
 /** 機器人加入新群組或在未綁定群組收到訊息時，登錄到待綁定清單供後台一鍵串聯 */
@@ -364,18 +412,42 @@ async function upsertPendingLineGroup(db, groupId, sourceType, groupName) {
         console.error("[LINE] 寫入待綁定群組失敗:", e?.message || e);
     }
 }
+/**
+ * 訂單號互斥鎖（依 orderDate）：避免單實例內 SELECT+UPDATE 兩段被交錯導致同號。
+ * Cloud Run 多實例下仍需 DB 層 UNIQUE 約束才能保證；目前依 LINE 流量規模為單實例運行為主。
+ */
+const orderNoLockChain = new Map();
 async function getNextOrderNo(db, orderDate) {
-    const nextKey = "order_seq_next_" + orderDate;
-    const startKey = "order_seq_start_" + orderDate;
-    let row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(nextKey);
-    if (!row || !row.value) {
-        row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
+    const prev = orderNoLockChain.get(orderDate) || Promise.resolve();
+    let resolveOuter;
+    const cur = new Promise((r) => { resolveOuter = r; });
+    orderNoLockChain.set(orderDate, prev.then(() => cur));
+    await prev;
+    try {
+        const nextKey = "order_seq_next_" + orderDate;
+        const startKey = "order_seq_start_" + orderDate;
+        let row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(nextKey);
+        if (!row || !row.value) {
+            row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
+        }
+        const seq = row && row.value ? parseInt(row.value, 10) : 1;
+        const nextSeq = Number.isNaN(seq) ? 1 : Math.max(1, seq);
+        const orderNo = orderDate.replace(/-/g, "") + String(nextSeq).padStart(3, "0");
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(nextKey, String(nextSeq + 1));
+        return orderNo;
+    } finally {
+        resolveOuter();
+        // 清理鏈：當前 promise 結束後若 chain 末端還是自己則移除（避免 leak）
+        queueMicrotask(() => {
+            if (orderNoLockChain.get(orderDate) === cur || orderNoLockChain.size > 64) {
+                // 簡單上限：keep 最近 64 個日期的 chain
+                if (orderNoLockChain.size > 64) {
+                    const firstKey = orderNoLockChain.keys().next().value;
+                    if (firstKey !== undefined && firstKey !== orderDate) orderNoLockChain.delete(firstKey);
+                }
+            }
+        });
     }
-    const seq = row && row.value ? parseInt(row.value, 10) : 1;
-    const nextSeq = Number.isNaN(seq) ? 1 : Math.max(1, seq);
-    const orderNo = orderDate.replace(/-/g, "") + String(nextSeq).padStart(3, "0");
-    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(nextKey, String(nextSeq + 1));
-    return orderNo;
 }
 function createLineWebhook() {
     const router = express_1.default.Router();
@@ -414,10 +486,36 @@ function createLineWebhook() {
                         }
                     }
                 }
-                const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(orderIdsForSession[0]);
+                // B1：30 秒結單前先清掉「完全空白」的訂單（0 品項、無 attachments、raw_message 空）
+                // 避免後台累積一堆空白訂單。若全部訂單都空則直接結束，不發推播。
+                const survivingOrderIds = [];
+                for (const oid of orderIdsForSession) {
+                    try {
+                        const cnt = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(oid);
+                        const attCnt = await db.prepare("SELECT COUNT(*) AS c FROM order_attachments WHERE order_id = ?").get(oid);
+                        const ordRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
+                        const hasItems = Number(cnt?.c || 0) > 0;
+                        const hasAttachments = Number(attCnt?.c || 0) > 0;
+                        const hasRaw = ordRow?.raw_message && String(ordRow.raw_message).trim().length > 0;
+                        if (!hasItems && !hasAttachments && !hasRaw) {
+                            await db.prepare("DELETE FROM orders WHERE id = ?").run(oid);
+                            console.log("[LINE] 結單時清除完全空白訂單 orderId=%s", oid);
+                            continue;
+                        }
+                        survivingOrderIds.push(oid);
+                    } catch (e) {
+                        console.warn("[LINE] 空訂單清理檢查失敗 orderId=%s err=%s（保留訂單）", oid, e?.message || e);
+                        survivingOrderIds.push(oid);
+                    }
+                }
+                if (!survivingOrderIds.length) {
+                    console.log("[LINE] 結單時所有訂單皆為空白，已全部刪除，不發推播。");
+                    return;
+                }
+                const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(survivingOrderIds[0]);
                 const dateStr = order?.order_date || getTaipeiOrderDate();
                 const orderBlocks = [];
-                for (const oid of orderIdsForSession) {
+                for (const oid of survivingOrderIds) {
                     const ord = await db.prepare("SELECT order_no, remark FROM orders WHERE id = ?").get(oid);
                     const items = await db.prepare(`
           SELECT oi.raw_name, oi.quantity, oi.unit, p.name AS product_name, p.erp_code
@@ -435,22 +533,21 @@ function createLineWebhook() {
                     const hdr = ord?.remark ? `${ord.remark}\n` : "";
                     orderBlocks.push(`【${ord?.order_no ?? oid}】\n${hdr}${lines.length ? lines.join("\n") : "（目前尚無可辨識品項）"}`);
                 }
-                const multi = orderIdsForSession.length > 1;
+                const multi = survivingOrderIds.length > 1;
                 const summary = [
-                    multi ? `收到，已收單喔（共 ${orderIdsForSession.length} 張訂單）。` : "收到，已收單喔。",
+                    multi ? `收到，已收單喔（共 ${survivingOrderIds.length} 張訂單）。` : "收到，已收單喔。",
                     `送貨日期為：${dateStr}`,
                     multi ? "各張訂單明細如下：" : "訂購項目如下：",
                     ...orderBlocks,
                     "",
                     "※ 若內容有誤：可傳「線上改單」查看項次，並傳「改第1項 3 公斤」或「刪第1項」修改（數字請自換）；品名錯誤請洽業務或後台改品項。",
-                    "（目前未連動批發行情，僅顯示叫貨數量與單位。）",
                 ].join("\n");
                 if (lineClient) {
                     if (!(await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(db))) {
                         await lineClient.pushMessage(groupId, { type: "text", text: summary });
                     }
                     else {
-                        console.log("[LINE] 已略過 30 秒結單推播（對客戶靜音） orders=%s", orderIdsForSession.join(","));
+                        console.log("[LINE] 已略過 30 秒結單推播（對客戶靜音） orders=%s", survivingOrderIds.join(","));
                     }
                 }
             }
@@ -1182,21 +1279,45 @@ function createLineWebhook() {
                                 }
                             }
                         }
-                        const squareBasket = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get("C0100065");
-                        if (squareBasket) {
-                            for (const oid of doneOrderIds) {
-                                const itemId2 = (0, id_js_1.newId)("item");
-                                await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, 0, ?, 0, 1, NULL)").run(itemId2, oid, squareBasket.id, squareBasket.name, squareBasket.unit || "個");
+                        // 路線 9 的空籃 ERP code 剛好等於 C0100065（圓籃）；避免同一單同 product_id 連插兩列
+                        if (emptyBasketErp !== "C0100065") {
+                            const squareBasket = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get("C0100065");
+                            if (squareBasket) {
+                                for (const oid of doneOrderIds) {
+                                    const itemId2 = (0, id_js_1.newId)("item");
+                                    await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, 0, ?, 0, 1, NULL)").run(itemId2, oid, squareBasket.id, squareBasket.name, squareBasket.unit || "個");
+                                }
                             }
                         }
                         const orderInfo = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId);
-                        const count = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(session.orderId);
-                        const n = count?.c ?? 0;
+                        // 計算所有 doneOrderIds 的品項總數（含空籃；空籃 quantity=0 也計入筆數）
+                        let totalItems = 0;
+                        for (const oid of doneOrderIds) {
+                            const c = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ? AND quantity > 0").get(oid);
+                            totalItems += Number(c?.c || 0);
+                        }
                         const dateStr = orderInfo?.order_date || getTaipeiOrderDate();
                         const weekdays = "日一二三四五六";
                         const dayIdx = new Date(dateStr + "T12:00:00").getDay();
                         const weekday = "星期" + weekdays[dayIdx];
-                        console.log("[LINE] 手動關單完成 date=%s count=%s %s", dateStr, n, weekday);
+                        console.log("[LINE] 手動關單完成 date=%s count=%s %s", dateStr, totalItems, weekday);
+                        // B3：「以上 X 收單」校驗 X vs 實際品項數，差異大則回覆提醒員工
+                        if (aboveMatch && lineClient) {
+                            const claimedRaw = String(aboveMatch[1]).replace(/[０-９]/g, (ch) => String(ch.charCodeAt(0) - 0xff10));
+                            const claimed = parseInt(claimedRaw, 10);
+                            if (Number.isFinite(claimed) && Math.abs(claimed - totalItems) >= 2) {
+                                try {
+                                    if (!(await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(db))) {
+                                        await lineClient.pushMessage(groupId, {
+                                            type: "text",
+                                            text: `提醒：您寫「以上 ${claimed} 收單」，但我們目前辨識到 ${totalItems} 項。請對照 30 秒後的訂單明細確認，有缺漏可傳「線上改單」修改。`,
+                                        });
+                                    }
+                                } catch (e) {
+                                    console.warn("[LINE] 以上X收單 提醒推播失敗:", e?.message || e);
+                                }
+                            }
+                        }
                     }
                     else {
                         console.log("[LINE] 手動關單但目前無 session");
@@ -1208,6 +1329,60 @@ function createLineWebhook() {
                     session.lastActivity = Date.now();
                     scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
+                }
+                // 客訴／退貨：在「自動開單」之前先攔截，避免憑空生出今日 0 品項訂單
+                if (!collectingByGroup.has(groupId)) {
+                    const earlyIntent = detectCustomerIntent(text);
+                    if (earlyIntent.intent === "complaint" || earlyIntent.intent === "return_request") {
+                        try {
+                            const todayDate = getTaipeiOrderDate();
+                            let target = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, todayDate);
+                            if (!target) {
+                                // 沒今天訂單就找該客戶最後一張訂單作為投訴對象（不限日期，避免方言差異）
+                                target = await db.prepare(
+                                    "SELECT id FROM orders WHERE customer_id = ? ORDER BY order_date DESC, updated_at DESC LIMIT 1"
+                                ).get(customerId);
+                            }
+                            const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+                            if (target?.id) {
+                                await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("complaint", target.id);
+                                await db.prepare(
+                                    "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
+                                ).run(dclId, "order", target.id, "auto_create_complaint",
+                                      `自動偵測「${earlyIntent.intent === "return_request" ? "退貨" : "客訴"}」關鍵詞 [${earlyIntent.keywords.join(",")}]（附加到既有訂單，非新建）`,
+                                      JSON.stringify({ intent: earlyIntent.intent, matched_keywords: earlyIntent.keywords, raw_text: text.slice(0, 500), source: "auto_intent_early" }),
+                                      "system:intent_detector");
+                                console.log("[LINE] 早期客訴偵測：附加到既有訂單 " + target.id);
+                                const ordInfo = await db.prepare("SELECT order_no FROM orders WHERE id = ?").get(target.id);
+                                notifyManagerOfComplaint(lineClient, {
+                                    intentLabel: earlyIntent.intent === "return_request" ? "退貨" : "客訴",
+                                    customerName: customer?.name || null,
+                                    orderNo: ordInfo?.order_no || null,
+                                    keywords: earlyIntent.keywords,
+                                    rawText: text,
+                                }).catch(()=>{});
+                            } else {
+                                // 完全找不到歷史訂單：只寫 audit，不建空白訂單
+                                await db.prepare(
+                                    "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
+                                ).run(dclId, "customer", customerId, "complaint_no_target_order",
+                                      `偵測到「${earlyIntent.intent === "return_request" ? "退貨" : "客訴"}」但客戶無近期訂單，僅記錄稽核`,
+                                      JSON.stringify({ intent: earlyIntent.intent, matched_keywords: earlyIntent.keywords, raw_text: text.slice(0, 500), source: "auto_intent_early_no_order" }),
+                                      "system:intent_detector");
+                                console.log("[LINE] 早期客訴偵測：客戶無近期訂單，僅寫稽核");
+                                notifyManagerOfComplaint(lineClient, {
+                                    intentLabel: earlyIntent.intent === "return_request" ? "退貨" : "客訴",
+                                    customerName: customer?.name || null,
+                                    orderNo: null,
+                                    keywords: earlyIntent.keywords,
+                                    rawText: text,
+                                }).catch(()=>{});
+                            }
+                        } catch (e) {
+                            console.warn("[LINE] 早期客訴標記失敗:", e?.message || e);
+                        }
+                        continue;
+                    }
                 }
                 // 不再要求先輸入「收單」；若尚未有 session，收到文字即自動開單
                 if (groupId && !collectingByGroup.has(groupId)) {
@@ -1265,12 +1440,20 @@ function createLineWebhook() {
                                   JSON.stringify({ intent: intentHit.intent, matched_keywords: intentHit.keywords, raw_text: text.slice(0, 500), source: "auto_intent" }),
                                   "system:intent_detector");
                         } catch (_) {}
+                        const ordInfo = await db.prepare("SELECT order_no FROM orders WHERE id = ?").get(orderId);
+                        notifyManagerOfComplaint(lineClient, {
+                            intentLabel: intentHit.intent === "return_request" ? "退貨" : "客訴",
+                            customerName: customer?.name || null,
+                            orderNo: ordInfo?.order_no || null,
+                            keywords: intentHit.keywords,
+                            rawText: text,
+                        }).catch(()=>{});
                     } catch (e) {
                         console.warn("[LINE] 標記意圖失敗:", e?.message || e);
                     }
                     continue;
                 }
-                // 取消 / 改訂單 / 詢送貨 / 補叫貨 / 空籃回收：寫入稽核但仍嘗試 AI 解析（內容可能還含品項）
+                // 取消 / 改訂單 / 詢送貨 / 補叫貨 / 空籃回收：寫入稽核
                 if (intentHit.intent && ["cancel_order", "modify_order", "delivery_inquiry", "add_to_order", "basket_return"].includes(intentHit.intent)) {
                     try {
                         const intentLabel = { cancel_order: "取消訂單", modify_order: "改訂單", delivery_inquiry: "詢送貨時間", add_to_order: "補叫貨", basket_return: "空籃回收" }[intentHit.intent] || intentHit.intent;
@@ -1297,7 +1480,13 @@ function createLineWebhook() {
                     } catch (e) {
                         console.warn("[LINE] 標記意圖失敗:", e?.message || e);
                     }
-                    // 不 continue，讓後續 AI 解析仍跑（萬一文中有品項）
+                    // A5 修：cancel_order / modify_order 不再強行跑 AI 解析（避免「取消+改成 5 斤白菜」這類訊息把新品項加進原訂單）。
+                    // 員工後台會在 audit 看到該訊息並人工處理；其他意圖（詢送貨／補叫貨／空籃）也是保守不解析，避免誤判。
+                    if (intentHit.intent === "cancel_order" || intentHit.intent === "modify_order"
+                        || intentHit.intent === "delivery_inquiry" || intentHit.intent === "basket_return") {
+                        continue;
+                    }
+                    // add_to_order 仍嘗試解析（補叫貨情境下文中常確實有品項要加）
                 }
                 // 過短或不含數字的訊息（純 emoji、問候語等）略過 Gemini 解析
                 const looksLikeOrder = text.length >= 4 && /[\d０-９]/.test(text);
