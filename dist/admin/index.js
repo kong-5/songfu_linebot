@@ -383,6 +383,12 @@ const NOTION_STYLE = `
   tr.order-row-excluded input, tr.order-row-excluded select { opacity: 0.85; }
   /* 訂單明細：待確認列上色（桌面表格式） */
   table.order-detail-table tbody tr.order-item-need-review > td { background: #fff7ed; }
+  /* 訂單明細：產品為「公斤計價」但辨識成非公斤單位 → 黃底警示，員工容易掃到 */
+  table.order-detail-table tbody tr.order-item-unit-mismatch > td { background: #fef9c3; }
+  table.order-detail-table tbody tr.order-item-unit-mismatch > td:first-child { box-shadow: inset 4px 0 0 #ca8a04; }
+  /* 單位不符＋低信心同時發生：黃底為主、紅左邊條（避免互相蓋掉） */
+  table.order-detail-table tbody tr.order-item-unit-mismatch.order-item-low-conf > td { background: #fef9c3; }
+  .unit-mismatch-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
   /* 辨識信心分數小徽章（顯示在品項旁） */
   .conf-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; border: 1px solid transparent; }
   .conf-pill.conf-high { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
@@ -503,6 +509,7 @@ const NOTION_STYLE = `
     table.order-detail-table thead { display: none; }
     table.order-detail-table tbody tr.order-item-need-review { background: #fff7ed; }
     table.order-detail-table tbody tr.order-item-low-conf { background: #fef2f2; }
+    table.order-detail-table tbody tr.order-item-unit-mismatch { background: #fef9c3; border-left: 4px solid #ca8a04; }
     .order-detail-layout { flex-direction: column; flex-wrap: wrap; }
     .order-detail-raw-col { flex: none; width: 100%; min-width: 0; }
     .order-detail-raw-inner { position: static; max-height: 220px; }
@@ -8004,7 +8011,7 @@ function createAdminRouter() {
         // 只取有效（未作廢）的品項
         const items = await db.prepare(`
       SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.display_order, oi.need_review, oi.sub_customer, oi.confidence_score,
-        p.id AS product_id, p.erp_code, p.name AS product_name
+        p.id AS product_id, p.erp_code, p.name AS product_name, p.unit AS product_unit
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = ? AND oi.voided_at IS NULL
       ORDER BY COALESCE(oi.display_order, 999999), oi.id
@@ -8026,11 +8033,27 @@ function createAdminRouter() {
             const c = i.confidence_score;
             return c != null && Number(c) < lowConfThreshold;
         }).length;
+        // G21：產品公斤計價 vs 辨識成非公斤單位的計數
+        const normalizeUnitForKgCheckTop = (u) => {
+            const s = String(u || "").trim().toLowerCase().replace(/\s+/g, "");
+            if (!s) return "";
+            if (s === "公斤" || s === "kg" || s === "k") return "公斤";
+            return s;
+        };
+        const unitMismatchCount = items.filter((i) => {
+            if (i.need_review === 1) return false;
+            const pu = normalizeUnitForKgCheckTop(i.product_unit);
+            const ou = normalizeUnitForKgCheckTop(i.unit);
+            return pu === "公斤" && ou && ou !== "公斤";
+        }).length;
         const needReviewNote = needReviewCount > 0
             ? `<p class="notion-msg err" style="margin:8px 0;"><strong>${needReviewCount}</strong> 項待確認 · <a href="/admin/review">待確認清單</a></p>`
             : "";
         const lowConfNote = lowConfCount > 0
             ? `<p class="notion-msg" style="margin:8px 0;background:#fef2f2;color:#b91c1c;border-color:#fecaca;"><strong>${lowConfCount}</strong> 項辨識信心 &lt; ${lowConfThreshold} 分，建議人工複核（紅色徽章）。</p>`
+            : "";
+        const unitMismatchNote = unitMismatchCount > 0
+            ? `<p class="notion-msg" style="margin:8px 0;background:#fef9c3;color:#854d0e;border-color:#fde047;"><strong>${unitMismatchCount}</strong> 項貨品主檔為「公斤」計價，但這張單辨識成非公斤單位（黃色底色行）。出貨前請確認單位／數量。</p>`
             : "";
         const prevOrder = await db.prepare(`
       SELECT id FROM orders
@@ -8077,15 +8100,30 @@ function createAdminRouter() {
                     confPill = `<span class="conf-pill conf-low" title="辨識信心低（${conf}/100），建議核對">${conf}</span>`;
                 }
             }
+            const unitMismatchBadge = isUnitMismatchKg
+                ? `<span class="unit-mismatch-badge" title="此品項在貨品主檔以「公斤」計價，但這張單辨識成「${escapeHtml(i.unit || "")}」。請確認後修改單位／數量。">⚠ 單位非公斤</span>`
+                : "";
             const productCell = i.need_review === 1
                 ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
-                : `<span class="order-final-product">${nameEditLink}</span>${confPill} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
+                : `<span class="order-final-product">${nameEditLink}</span>${confPill}${unitMismatchBadge} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
             const subCustomerVal = (i.sub_customer && String(i.sub_customer).trim()) ? escapeAttr(String(i.sub_customer).trim()) : "";
             const isLowConf = i.need_review !== 1 && conf != null && conf < lowConfThreshold;
-            const rowClasses = i.need_review === 1
-                ? "order-item-need-review"
-                : (isLowConf ? "order-item-low-conf" : "");
+            // G21：產品本身以「公斤」計價 但辨識成非公斤單位 → 加黃底警示
+            // 正規化：公斤 / kg / KG / Kg / k / K 一律視為公斤；其餘（件/包/條/顆/把/斤/盒/箱/個…）視為非公斤
+            const normalizeUnitForKgCheck = (u) => {
+                const s = String(u || "").trim().toLowerCase().replace(/\s+/g, "");
+                if (!s) return "";
+                if (s === "公斤" || s === "kg" || s === "k") return "公斤";
+                return s;
+            };
+            const productUnitNorm = normalizeUnitForKgCheck(i.product_unit);
+            const itemUnitNorm = normalizeUnitForKgCheck(i.unit);
+            const isUnitMismatchKg = i.need_review !== 1 && productUnitNorm === "公斤" && itemUnitNorm && itemUnitNorm !== "公斤";
+            let rowClasses = "";
+            if (i.need_review === 1) rowClasses = "order-item-need-review";
+            else if (isLowConf) rowClasses = "order-item-low-conf";
+            if (isUnitMismatchKg) rowClasses = rowClasses ? (rowClasses + " order-item-unit-mismatch") : "order-item-unit-mismatch";
             const rawCard = `${idx + 1}. 原始：${String(i.raw_name ?? "").trim() || "—"} ${String(q)}${(i.unit && i.unit.trim()) || ""}`;
             return `<tr data-item-id="${escapeAttr(i.item_id)}" data-raw-name="${escapeAttr(i.raw_name ?? "")}" data-line-unit="${escapeAttr((i.unit && i.unit.trim()) || "")}" data-raw-card="${escapeAttr(rawCard)}" class="${escapeAttr(rowClasses)}">
             <td class="order-detail-col-cb"><input type="checkbox" class="item-select-cb" name="selected_items" value="${escapeAttr(i.item_id)}"></td>
@@ -8226,6 +8264,7 @@ function createAdminRouter() {
         <div style="padding:0 32px;">
           ${needReviewNote}
           ${lowConfNote}
+          ${unitMismatchNote}
           ${req.query.ok === "product" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已更新對應品項</div>" : ""}
           ${req.query.ok === "prod_edit" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已儲存品項</div>" : ""}
           ${req.query.ok === "approved" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已標記為已確認</div>" : ""}
