@@ -31,6 +31,61 @@ const hasLineConfig = Boolean(channelAccessToken && channelSecret);
 const COLLECT_TIMEOUT_MS = (parseInt(process.env.LINE_COLLECT_TIMEOUT_SEC || "30", 10) || 30) * 1000;
 const collectingByGroup = new Map();
 const autoFinalizeTimers = new Map();
+// G15：session 持久化 helpers（讓 Cloud Run 重啟後可恢復未結單）
+async function persistCollectSession(db, groupId, session) {
+    if (!db || !groupId || !session?.orderId) return;
+    try {
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        const allIds = JSON.stringify(Array.isArray(session.allOrderIds) ? session.allOrderIds : [session.orderId]);
+        // 用「先刪後插」做 upsert，避方言相容問題
+        await db.prepare("DELETE FROM line_collect_sessions WHERE group_id = ?").run(groupId);
+        await db.prepare(`INSERT INTO line_collect_sessions
+            (group_id, order_id, customer_id, all_order_ids_json, last_activity_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ` + nowSql + `)`).run(
+            groupId, session.orderId, session.customerId, allIds, Number(session.lastActivity || Date.now())
+        );
+    } catch (e) {
+        console.warn("[session-persist] upsert 失敗 group=%s: %s", groupId, e?.message || e);
+    }
+}
+async function deleteCollectSession(db, groupId) {
+    if (!db || !groupId) return;
+    try {
+        await db.prepare("DELETE FROM line_collect_sessions WHERE group_id = ?").run(groupId);
+    } catch (e) {
+        console.warn("[session-persist] delete 失敗 group=%s: %s", groupId, e?.message || e);
+    }
+}
+async function restoreCollectSessions(db, scheduleAutoFinalize) {
+    if (!db) return;
+    try {
+        const rows = await db.prepare("SELECT group_id, order_id, customer_id, all_order_ids_json, last_activity_at FROM line_collect_sessions").all();
+        const now = Date.now();
+        let restored = 0;
+        let stale = 0;
+        for (const r of rows || []) {
+            let allIds = [r.order_id];
+            try {
+                const parsed = JSON.parse(r.all_order_ids_json || "[]");
+                if (Array.isArray(parsed) && parsed.length) allIds = parsed;
+            } catch (_) { /* 容錯 */ }
+            const lastAct = Number(r.last_activity_at) || 0;
+            const session = { orderId: r.order_id, customerId: r.customer_id, allOrderIds: allIds, lastActivity: lastAct };
+            // 若已超過 COLLECT_TIMEOUT_MS 很久（>10 分鐘），代表機器人 down 太久，直接清；其餘正常重排計時器
+            if (lastAct && now - lastAct > 10 * 60 * 1000) {
+                stale += 1;
+                await deleteCollectSession(db, r.group_id);
+                continue;
+            }
+            collectingByGroup.set(r.group_id, session);
+            scheduleAutoFinalize(r.group_id, session);
+            restored += 1;
+        }
+        console.log("[session-persist] 啟動恢復 sessions: 恢復=%d 過期清除=%d", restored, stale);
+    } catch (e) {
+        console.warn("[session-persist] 啟動恢復失敗:", e?.message || e);
+    }
+}
 /** 10 分鐘訂單確認回覆計時器：groupId -> Timeout（與 30 秒結單獨立） */
 const orderConfirmReplyTimers = new Map();
 /** LINE webhook 偶發重送同一 message.id，避免重複寫入品項／raw_message */
@@ -282,12 +337,29 @@ function detectComplaintKeywords(text) {
 }
 async function insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, { orderDate, customerId, groupId, rawMessage, remark, orderSubSplitKey, lineMessageId, }) {
     const orderId = (0, id_js_1.newId)("ord");
-    const orderNo = await getNextOrderNo(db, orderDate);
     const splitVal = orderSubSplitKey === undefined ? null : orderSubSplitKey;
     const lineMid = lineMessageId != null && String(lineMessageId).trim() !== "" ? String(lineMessageId).trim() : null;
-    await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, line_message_id, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ` + nowSql + `)`).run(orderId, orderNo, customerId, orderDate, groupId ?? null, rawMessage ?? "", remark ?? null, splitVal, lineMid);
-    return orderId;
+    // G13：UNIQUE 約束建立後，多實例同時 INSERT 可能撞 order_no。重試最多 3 次重新取號。
+    const maxAttempts = 3;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const orderNo = await getNextOrderNo(db, orderDate);
+        try {
+            await db.prepare(`INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, line_message_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ` + nowSql + `)`).run(orderId, orderNo, customerId, orderDate, groupId ?? null, rawMessage ?? "", remark ?? null, splitVal, lineMid);
+            return orderId;
+        } catch (e) {
+            lastErr = e;
+            const msg = String(e?.message || e || "");
+            const isUniqueViolation = /UNIQUE constraint failed: orders\.order_no|duplicate key value.*ux_orders_order_no|orders_order_no_key/i.test(msg);
+            if (isUniqueViolation && attempt < maxAttempts) {
+                console.warn("[insertOrder] order_no=%s 撞號（第 %d 次），重新取號重試", orderNo, attempt);
+                continue;
+            }
+            throw e;
+        }
+    }
+    throw lastErr || new Error("insertOrderRowWithSplitMeta: 重試 3 次仍失敗");
 }
 async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fallbackUnit) {
     const rows = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(Array.isArray(parsedRows) ? parsedRows : []);
@@ -467,6 +539,7 @@ function createLineWebhook() {
                     return;
                 collectingByGroup.delete(groupId);
                 autoFinalizeTimers.delete(groupId);
+                deleteCollectSession(db, groupId).catch(()=>{});
                 const orderIdsForSession = (session.allOrderIds && session.allOrderIds.length)
                     ? [...new Set(session.allOrderIds)]
                     : [session.orderId];
@@ -664,6 +737,7 @@ function createLineWebhook() {
                                 const ids = [sess.orderId, ...(sess.allOrderIds || [])].filter(Boolean);
                                 if (ids.some((id) => deletedIds.has(id))) {
                                     collectingByGroup.delete(gid);
+                                    deleteCollectSession(db, gid).catch(()=>{});
                                     const oldT = autoFinalizeTimers.get(gid);
                                     if (oldT)
                                         clearTimeout(oldT);
@@ -715,6 +789,18 @@ function createLineWebhook() {
                 }
                 if (groupId && textEarly && (textEarly === "取得群組ID" || textEarly === "群組ID")) {
                     await reply(lineClient, event.replyToken, `此群組/聊天室 ID：\n${groupId}\n請將此 ID 提供給管理員，在後台「客戶管理」編輯該客戶的「LINE 群組 ID」並儲存。`, db, { force: true });
+                    continue;
+                }
+                // G14：取得自己的 LINE userId（用來填 Cloud Run 的 LINE_MANAGER_USER_ID）
+                if (textEarly && (textEarly === "我的userId" || textEarly === "我的UserId" || textEarly === "我的USERID" || textEarly === "my userId" || textEarly === "myUserId")) {
+                    const uid = event.source?.userId;
+                    if (uid) {
+                        await reply(lineClient, event.replyToken,
+                            `您的 LINE userId：\n${uid}\n\n請複製此 ID 給管理員，在 Cloud Run 設定 LINE_MANAGER_USER_ID 環境變數，未來客訴/退貨偵測會推播給此 userId。`,
+                            db, { force: true });
+                    } else {
+                        await reply(lineClient, event.replyToken, "無法取得您的 userId（請在私訊本機器人時傳此指令）。", db, { force: true });
+                    }
                     continue;
                 }
                 // ── 員工 LINE 綁定指令處理（私訊／群組皆可）──────────────────
@@ -984,6 +1070,7 @@ function createLineWebhook() {
                             if (groupId) {
                                 const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId: customer.id, lastActivity: Date.now() };
                                 collectingByGroup.set(groupId, session);
+                                persistCollectSession(db, groupId, session).catch(()=>{});
                                 scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                             }
@@ -1010,6 +1097,7 @@ function createLineWebhook() {
                             if (groupId) {
                                 const session = { orderId, allOrderIds: [orderId], customerId: customer.id, lastActivity: Date.now() };
                                 collectingByGroup.set(groupId, session);
+                                persistCollectSession(db, groupId, session).catch(()=>{});
                                 scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                             }
@@ -1244,6 +1332,7 @@ function createLineWebhook() {
                     if (groupId && collectingByGroup.has(groupId)) {
                         const session = collectingByGroup.get(groupId);
                         collectingByGroup.delete(groupId);
+                        deleteCollectSession(db, groupId).catch(()=>{});
                         const oldTimer = autoFinalizeTimers.get(groupId);
                         if (oldTimer)
                             clearTimeout(oldTimer);
@@ -1327,6 +1416,7 @@ function createLineWebhook() {
                 if (groupId && collectingByGroup.has(groupId)) {
                     const session = collectingByGroup.get(groupId);
                     session.lastActivity = Date.now();
+                    persistCollectSession(db, groupId, session).catch(()=>{});
                     scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                 }
@@ -1405,6 +1495,7 @@ function createLineWebhook() {
                     }
                     const autoSession = { orderId: autoOrderId, allOrderIds: [autoOrderId], customerId, lastActivity: Date.now() };
                     collectingByGroup.set(groupId, autoSession);
+                    persistCollectSession(db, groupId, autoSession).catch(()=>{});
                     scheduleAutoFinalize(groupId, autoSession);
                     scheduleOrderConfirmReply(groupId, autoSession).catch(()=>{});
                 }
@@ -1585,6 +1676,8 @@ function createLineWebhook() {
         processLineWebhookEvents(events).catch((e) => console.error("[LINE] 背景處理失敗", e));
     });
     exports.processLineWebhookEvents = processLineWebhookEvents;
+    // G15：啟動時恢復未結單 session（讓 Cloud Run 重啟後客戶不用重發）
+    restoreCollectSessions(db, scheduleAutoFinalize).catch((e) => console.warn("[session-persist] restore 例外:", e?.message || e));
     return router;
 }
 async function recordLineReply(db) {
