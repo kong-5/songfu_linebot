@@ -3937,7 +3937,6 @@ function createAdminRouter() {
         try {
             const ymRaw = typeof req.query.ym === "string" ? req.query.ym.trim() : "";
             const ym = /^\d{4}-\d{2}$/.test(ymRaw) ? ymRaw : currentTwYM();
-            const focusCustomerId = typeof req.query.customer === "string" ? req.query.customer.trim() : "";
             const { start, end } = monthRange(ym);
             const customers = await db.prepare("SELECT id, name FROM customers WHERE (active IS NULL OR active = 1) ORDER BY name ASC").all();
             const custMap = new Map(customers.map((c) => [c.id, c]));
@@ -3992,77 +3991,10 @@ function createAdminRouter() {
             overviewRows.sort((a, b) => (b.takenTo + b.pickedUp) - (a.takenTo + a.pickedUp));
             const sumAllTo = overviewRows.reduce((s, r) => s + r.takenTo, 0);
             const sumAllPick = overviewRows.reduce((s, r) => s + r.pickedUp, 0);
-            // 客戶明細區（單選客戶時顯示）：每天列出分項
-            let detailHtml = "";
-            if (focusCustomerId) {
-                const c = custMap.get(focusCustomerId);
-                const dlogs = logs.filter((l) => l.customer_id === focusCustomerId);
-                const cName = c?.name || focusCustomerId;
-                const detailRows = dlogs.map((l) => {
-                    const lines = linesByLogId.get(l.id) || [];
-                    const linesHtml = lines.length ? lines.map(ln => `<span style="display:inline-block;margin:2px 6px 2px 0;padding:2px 8px;background:var(--bg-2);border-radius:4px;font-size:12px;">${escapeHtmlBsk(formatBasketLineForCell(ln))}</span>`).join("") : '<span style="color:var(--txt-3);font-size:12px;">（無分項）</span>';
-                    const net = (l.taken_to ?? 0) - (l.picked_up ?? 0);
-                    return `
-                    <tr>
-                      <td class="mono" style="vertical-align:top;">${escapeHtmlBsk(l.log_date)}</td>
-                      <td style="vertical-align:top;">${linesHtml}</td>
-                      <td class="mono" style="text-align:right;vertical-align:top;">${l.taken_to ?? 0}</td>
-                      <td class="mono" style="text-align:right;vertical-align:top;">${l.picked_up ?? 0}</td>
-                      <td class="mono" style="text-align:right;vertical-align:top;color:${net >= 0 ? "var(--txt-2)" : "var(--bad)"};">${net}</td>
-                      <td style="vertical-align:top;">${escapeHtmlBsk(l.reporter_display_name || "")}</td>
-                      <td style="vertical-align:top;">
-                        <form method="post" action="/admin/baskets/delete-day" onsubmit="return confirm('確定刪除 ${escapeHtmlBsk(l.log_date)} 整天紀錄？');" style="display:inline;">
-                          <input type="hidden" name="ym" value="${ym}" />
-                          <input type="hidden" name="customer_id" value="${focusCustomerId}" />
-                          <input type="hidden" name="log_date" value="${escapeHtmlBsk(l.log_date)}" />
-                          <button type="submit" class="sf-btn sf-btn-sm" style="color:var(--bad);">刪除整天</button>
-                        </form>
-                      </td>
-                    </tr>
-                    `;
-                }).join("");
-                const sumTo = dlogs.reduce((s, l) => s + Number(l.taken_to || 0), 0);
-                const sumPick = dlogs.reduce((s, l) => s + Number(l.picked_up || 0), 0);
-                detailHtml = `
-                  <div class="sf-card" style="margin-top:16px;">
-                    <div class="sf-card-head">
-                      <div class="sf-card-title">📋 ${escapeHtmlBsk(cName)}　${ym} 明細</div>
-                      <a href="/admin/baskets?ym=${ym}" class="sf-btn sf-btn-sm">回總覽</a>
-                    </div>
-                    <div style="padding:0;overflow-x:auto;">
-                      <table class="sf-table" style="font-size:13px;width:100%;">
-                        <thead>
-                          <tr>
-                            <th style="width:90px;">日期</th>
-                            <th>分項（號碼籃 / 四角 / 圓）</th>
-                            <th style="text-align:right;width:60px;">去</th>
-                            <th style="text-align:right;width:60px;">回</th>
-                            <th style="text-align:right;width:60px;">淨</th>
-                            <th style="width:100px;">回報人</th>
-                            <th style="width:90px;">動作</th>
-                          </tr>
-                        </thead>
-                        <tbody>${detailRows || `<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--txt-3);">本月尚無紀錄</td></tr>`}</tbody>
-                        <tfoot>
-                          <tr style="background:var(--bg-1);font-weight:600;">
-                            <td colspan="2">本月合計</td>
-                            <td class="mono" style="text-align:right;">${sumTo}</td>
-                            <td class="mono" style="text-align:right;">${sumPick}</td>
-                            <td class="mono" style="text-align:right;">${sumTo - sumPick}</td>
-                            <td colspan="2"></td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    </div>
-                    <div style="padding:12px 16px;border-top:1px solid var(--line);background:var(--bg-1);font-size:12px;color:var(--txt-3);">
-                      💡 編輯：請司機在 LINE 群組重新打「<b>空籃</b>」，從 LIFF 重新提交即可覆蓋當天數字。
-                    </div>
-                  </div>
-                `;
-            }
+            // 明細改用 JS modal 彈窗（fetch /admin/api/baskets/detail）；不在 server-side render
             const overviewTbody = overviewRows.map((r) => `
                 <tr>
-                  <td><a href="/admin/baskets?ym=${ym}&customer=${encodeURIComponent(r.id)}" style="color:var(--accent);text-decoration:none;">${escapeHtmlBsk(r.name)}</a></td>
+                  <td><button type="button" class="bsk-open-detail" data-cid="${escapeHtmlBsk(r.id)}" data-cname="${escapeHtmlBsk(r.name)}" data-ym="${ym}" style="background:none;border:none;color:var(--accent);text-decoration:underline;cursor:pointer;font-size:13px;padding:0;font-family:inherit;">${escapeHtmlBsk(r.name)}</button></td>
                   <td class="mono" style="text-align:right;">${r.takenTo}</td>
                   <td class="mono" style="text-align:right;">${r.pickedUp}</td>
                   <td class="mono" style="text-align:right;color:${r.net >= 0 ? "var(--txt-1)" : "var(--bad)"};font-weight:600;">${r.net >= 0 ? "+" : ""}${r.net}</td>
@@ -4070,20 +4002,19 @@ function createAdminRouter() {
                 </tr>
             `).join("");
             const body = `
-              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:1100px;margin:0 auto;">
+              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
                 <div>
                   <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 空籃記帳</div>
                   <h1 style="margin:0;font-size:22px;font-weight:600;">空籃記帳</h1>
                   <p style="margin:6px 0 0;color:var(--txt-3);font-size:12px;">司機在 LINE 群組打「<b>空籃</b>」會收到 LIFF 連結，點開填三類規格（號碼籃 1-9 / 四角空籃 / 圓籃）。同一天重新提交會覆蓋當天數字。淨值 = 去 − 回（正值代表本月客戶手上多了幾個籃）。</p>
                 </div>
                 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-                  <a href="/admin/baskets?ym=${prevYm}${focusCustomerId ? `&customer=${encodeURIComponent(focusCustomerId)}` : ""}" class="sf-btn sf-btn-sm">← ${prevYm}</a>
+                  <a href="/admin/baskets?ym=${prevYm}" class="sf-btn sf-btn-sm">← ${prevYm}</a>
                   <form method="get" action="/admin/baskets" style="display:flex;gap:8px;align-items:center;">
                     <input type="month" name="ym" value="${ym}" />
-                    ${focusCustomerId ? `<input type="hidden" name="customer" value="${escapeHtmlBsk(focusCustomerId)}" />` : ""}
                     <button type="submit" class="sf-btn sf-btn-sm">查詢</button>
                   </form>
-                  <a href="/admin/baskets?ym=${nextYm}${focusCustomerId ? `&customer=${encodeURIComponent(focusCustomerId)}` : ""}" class="sf-btn sf-btn-sm">${nextYm} →</a>
+                  <a href="/admin/baskets?ym=${nextYm}" class="sf-btn sf-btn-sm">${nextYm} →</a>
                   <div style="flex:1;"></div>
                   <a href="/admin/baskets/export.xlsx?ym=${ym}" class="sf-btn sf-btn-sm">下載 Excel</a>
                 </div>
@@ -4125,8 +4056,99 @@ function createAdminRouter() {
                     </table>
                   </div>
                 </div>
-                ${detailHtml}
               </div>
+
+              <!-- 明細 modal -->
+              <div id="bsk-modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;padding:20px;" onclick="if(event.target===this)window.bskCloseModal()">
+                <div style="background:#fff;border-radius:12px;max-width:900px;width:100%;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 12px 48px rgba(0,0,0,.2);">
+                  <div style="padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                    <div style="font-size:16px;font-weight:600;" id="bsk-modal-title">客戶明細</div>
+                    <button type="button" onclick="window.bskCloseModal()" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--txt-3);line-height:1;padding:4px 8px;">×</button>
+                  </div>
+                  <div style="padding:0;overflow:auto;flex:1;" id="bsk-modal-body">
+                    <div style="padding:40px;text-align:center;color:var(--txt-3);">載入中…</div>
+                  </div>
+                </div>
+              </div>
+
+              <script>
+              (function(){
+                const modalBg = document.getElementById('bsk-modal-bg');
+                const modalTitle = document.getElementById('bsk-modal-title');
+                const modalBody = document.getElementById('bsk-modal-body');
+                function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}[c])); }
+                window.bskCloseModal = function(){ modalBg.style.display='none'; };
+                window.bskOpenDetail = async function(cid, cname, ym){
+                  modalTitle.textContent = '📋 ' + cname + '　' + ym + ' 明細';
+                  modalBody.innerHTML = '<div style="padding:40px;text-align:center;color:var(--txt-3);">載入中…</div>';
+                  modalBg.style.display = 'flex';
+                  try {
+                    const r = await fetch('/admin/api/baskets/detail?customer=' + encodeURIComponent(cid) + '&ym=' + encodeURIComponent(ym));
+                    const data = await r.json();
+                    if (!data.ok) throw new Error(data.error || 'fail');
+                    let html = '<table class="sf-table" style="font-size:13px;width:100%;">'
+                      + '<thead><tr>'
+                      + '<th style="width:100px;">日期</th>'
+                      + '<th>分項（號碼籃 / 四角 / 圓）</th>'
+                      + '<th style="text-align:right;width:60px;">去</th>'
+                      + '<th style="text-align:right;width:60px;">回</th>'
+                      + '<th style="text-align:right;width:60px;">淨</th>'
+                      + '<th style="width:110px;">回報人</th>'
+                      + '<th style="width:90px;">動作</th>'
+                      + '</tr></thead><tbody>';
+                    if (!data.days.length) {
+                      html += '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--txt-3);">本月尚無紀錄</td></tr>';
+                    } else {
+                      let sumTo=0, sumPk=0;
+                      for (const d of data.days) {
+                        sumTo += d.takenTo; sumPk += d.pickedUp;
+                        const net = d.takenTo - d.pickedUp;
+                        const linesHtml = d.lines.length
+                          ? d.lines.map(ln => '<span style="display:inline-block;margin:2px 6px 2px 0;padding:2px 8px;background:var(--bg-2);border-radius:4px;font-size:12px;">'
+                              + esc(ln.kind === 'numbered' ? (ln.no + '號') : (ln.kind === 'square' ? '四角' : '圓'))
+                              + ' 去' + ln.takenTo + '回' + ln.pickedUp
+                              + '</span>').join('')
+                          : '<span style="color:var(--txt-3);font-size:12px;">（無分項）</span>';
+                        const netColor = net >= 0 ? 'var(--txt-2)' : 'var(--bad)';
+                        html += '<tr>'
+                          + '<td class="mono" style="vertical-align:top;">' + esc(d.date) + '</td>'
+                          + '<td style="vertical-align:top;">' + linesHtml + '</td>'
+                          + '<td class="mono" style="text-align:right;vertical-align:top;">' + d.takenTo + '</td>'
+                          + '<td class="mono" style="text-align:right;vertical-align:top;">' + d.pickedUp + '</td>'
+                          + '<td class="mono" style="text-align:right;vertical-align:top;color:' + netColor + ';">' + net + '</td>'
+                          + '<td style="vertical-align:top;">' + esc(d.reporter || '') + '</td>'
+                          + '<td style="vertical-align:top;">'
+                          + '<form method="post" action="/admin/baskets/delete-day" onsubmit="return confirm(\\'確定刪除 ' + esc(d.date) + ' 整天紀錄？\\');" style="display:inline;">'
+                          + '<input type="hidden" name="ym" value="' + esc(ym) + '" />'
+                          + '<input type="hidden" name="customer_id" value="' + esc(cid) + '" />'
+                          + '<input type="hidden" name="log_date" value="' + esc(d.date) + '" />'
+                          + '<button type="submit" class="sf-btn sf-btn-sm" style="color:var(--bad);">刪除整天</button>'
+                          + '</form>'
+                          + '</td></tr>';
+                      }
+                      const netT = sumTo - sumPk;
+                      html += '</tbody><tfoot><tr style="background:var(--bg-1);font-weight:600;">'
+                        + '<td colspan="2">本月合計</td>'
+                        + '<td class="mono" style="text-align:right;">' + sumTo + '</td>'
+                        + '<td class="mono" style="text-align:right;">' + sumPk + '</td>'
+                        + '<td class="mono" style="text-align:right;">' + netT + '</td>'
+                        + '<td colspan="2"></td></tr></tfoot>';
+                    }
+                    html += '</table>'
+                      + '<div style="padding:12px 16px;border-top:1px solid var(--line);background:var(--bg-1);font-size:12px;color:var(--txt-3);">💡 編輯：請司機在 LINE 群組重新打「<b>空籃</b>」，從 LIFF 重新提交即可覆蓋當天數字。</div>';
+                    modalBody.innerHTML = html;
+                  } catch (e) {
+                    modalBody.innerHTML = '<div style="padding:40px;text-align:center;color:var(--bad);">載入失敗：' + esc(e.message || e) + '</div>';
+                  }
+                };
+                document.querySelectorAll('.bsk-open-detail').forEach(btn => {
+                  btn.addEventListener('click', () => {
+                    window.bskOpenDetail(btn.dataset.cid, btn.dataset.cname, btn.dataset.ym);
+                  });
+                });
+                document.addEventListener('keydown', e => { if (e.key === 'Escape') window.bskCloseModal(); });
+              })();
+              </script>
             `;
             res.type("text/html").send(notionPage("空籃記帳", body, "baskets", res));
         } catch (e) {
@@ -4134,6 +4156,51 @@ function createAdminRouter() {
             res.status(500).send("載入空籃記帳失敗：" + (e?.message || e));
         }
     });
+    router.get("/api/baskets/detail", async (req, res) => {
+        try {
+            const customerId = String(req.query.customer || "").trim();
+            const ymRaw = String(req.query.ym || "").trim();
+            const ym = /^\d{4}-\d{2}$/.test(ymRaw) ? ymRaw : currentTwYM();
+            if (!customerId) {
+                return res.status(400).json({ ok: false, error: "missing customer" });
+            }
+            const { start, end } = monthRange(ym);
+            const logs = await db.prepare(
+                "SELECT id, log_date, taken_to, picked_up, reporter_display_name FROM basket_logs " +
+                "WHERE customer_id = ? AND log_date >= ? AND log_date < ? ORDER BY log_date ASC"
+            ).all(customerId, start, end);
+            const logIds = (logs || []).map(l => l.id);
+            const linesByLog = new Map();
+            if (logIds.length) {
+                const ph = logIds.map(() => "?").join(",");
+                const allLines = await db.prepare(
+                    `SELECT basket_log_id, basket_kind, basket_no, taken_to, picked_up FROM basket_log_lines WHERE basket_log_id IN (${ph}) ORDER BY basket_kind, basket_no`
+                ).all(...logIds);
+                for (const ln of allLines || []) {
+                    const arr = linesByLog.get(ln.basket_log_id) || [];
+                    arr.push(ln);
+                    linesByLog.set(ln.basket_log_id, arr);
+                }
+            }
+            const days = (logs || []).map(l => ({
+                date: l.log_date,
+                takenTo: Number(l.taken_to || 0),
+                pickedUp: Number(l.picked_up || 0),
+                reporter: l.reporter_display_name || "",
+                lines: (linesByLog.get(l.id) || []).map(ln => ({
+                    kind: ln.basket_kind,
+                    no: Number(ln.basket_no) || 0,
+                    takenTo: Number(ln.taken_to || 0),
+                    pickedUp: Number(ln.picked_up || 0),
+                })),
+            }));
+            res.json({ ok: true, customerId, ym, days });
+        } catch (e) {
+            console.error("[admin] /api/baskets/detail failed", e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+
     router.post("/baskets/delete-day", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
             const ym = String(req.body.ym || "").trim();
