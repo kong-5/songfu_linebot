@@ -8100,15 +8100,6 @@ function createAdminRouter() {
                     confPill = `<span class="conf-pill conf-low" title="辨識信心低（${conf}/100），建議核對">${conf}</span>`;
                 }
             }
-            const unitMismatchBadge = isUnitMismatchKg
-                ? `<span class="unit-mismatch-badge" title="此品項在貨品主檔以「公斤」計價，但這張單辨識成「${escapeHtml(i.unit || "")}」。請確認後修改單位／數量。">⚠ 單位非公斤</span>`
-                : "";
-            const productCell = i.need_review === 1
-                ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
-                : `<span class="order-final-product">${nameEditLink}</span>${confPill}${unitMismatchBadge} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
-            const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
-            const subCustomerVal = (i.sub_customer && String(i.sub_customer).trim()) ? escapeAttr(String(i.sub_customer).trim()) : "";
-            const isLowConf = i.need_review !== 1 && conf != null && conf < lowConfThreshold;
             // G21：產品本身以「公斤」計價 但辨識成非公斤單位 → 加黃底警示
             // 正規化：公斤 / kg / KG / Kg / k / K 一律視為公斤；其餘（件/包/條/顆/把/斤/盒/箱/個…）視為非公斤
             const normalizeUnitForKgCheck = (u) => {
@@ -8120,6 +8111,15 @@ function createAdminRouter() {
             const productUnitNorm = normalizeUnitForKgCheck(i.product_unit);
             const itemUnitNorm = normalizeUnitForKgCheck(i.unit);
             const isUnitMismatchKg = i.need_review !== 1 && productUnitNorm === "公斤" && itemUnitNorm && itemUnitNorm !== "公斤";
+            const unitMismatchBadge = isUnitMismatchKg
+                ? `<span class="unit-mismatch-badge" title="此品項在貨品主檔以「公斤」計價，但這張單辨識成「${escapeHtml(i.unit || "")}」。請確認後修改單位／數量。">⚠ 單位非公斤</span>`
+                : "";
+            const productCell = i.need_review === 1
+                ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
+                : `<span class="order-final-product">${nameEditLink}</span>${confPill}${unitMismatchBadge} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
+            const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
+            const subCustomerVal = (i.sub_customer && String(i.sub_customer).trim()) ? escapeAttr(String(i.sub_customer).trim()) : "";
+            const isLowConf = i.need_review !== 1 && conf != null && conf < lowConfThreshold;
             let rowClasses = "";
             if (i.need_review === 1) rowClasses = "order-item-need-review";
             else if (isLowConf) rowClasses = "order-item-low-conf";
