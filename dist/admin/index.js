@@ -1119,6 +1119,8 @@ details.sf-nav-group > summary:hover > .sf-nav-group-title { background: var(--b
 
   /* 行內按鈕擠在一起時自動換行 */
   .sf-root .sf-btn { white-space: nowrap; }
+  /* 安全網：頁首/工具列任何含 sf-btn 的 flex 容器，手機一律允許換行，避免按鈕被切到畫面外 */
+  .sf-root div:has(> .sf-btn) { flex-wrap: wrap; }
 }
 
 /* scrollbars (thin) */
@@ -3233,10 +3235,10 @@ function createAdminRouter() {
                 <span class="mono">作業日 · ${today} (週${weekdayZh})</span>
                 <span class="sf-pill ok"><span class="sf-dot ok"></span>系統正常</span>
                 <span class="sf-pill info">DB · ${process.env.DATABASE_URL?"PostgreSQL":"SQLite"}</span>
-                <span class="sf-pill accent">${SF_ICONS.spark} Gemini 2.5 Flash</span>
+                <span class="sf-pill accent">${SF_ICONS.spark} 視覺 ${escapeHtml((process.env.GEMINI_MODEL_VISION || process.env.GEMINI_MODEL || "gemini-2.5-flash").replace(/^gemini-/, "Gemini ").replace(/^claude-/, "Claude ").replace(/-/g, " ").replace(/\b(pro|flash|lite|sonnet|opus|haiku)\b/gi, (s) => s.charAt(0).toUpperCase() + s.slice(1)))}</span>
               </div>
             </div>
-            <div style="display:flex;gap:8px;">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <a class="sf-btn" href="/admin">${SF_ICONS.refresh}<span>重新整理</span></a>
               <a class="sf-btn" href="/admin/export">${SF_ICONS.dl}<span>當日報表</span></a>
               ${(process.env.LIFF_ID_ORDER_REVIEW||"").trim() ? `<button type="button" class="sf-btn" onclick="(async()=>{try{await navigator.clipboard.writeText('https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');this.querySelector('span').textContent='已複製，請貼到 LINE';setTimeout(()=>this.querySelector('span').textContent='手機審核連結',2000);}catch(e){prompt('複製失敗，請手動複製：','https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');}})();" title="複製訂單審核 LIFF 連結，貼到 LINE 開啟"><span>📱 手機審核連結</span></button>` : ""}
