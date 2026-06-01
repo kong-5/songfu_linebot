@@ -5887,8 +5887,8 @@ function createAdminRouter() {
      * 後台「重新辨識」：文字略過僅含「[圖片]」的行後再解析，並對 order_attachments 逐張向 LINE 取圖，
      * 與 webhook 相同流程（OCR → 規則 → Gemini 文字 → Gemini 視覺）。
      */
-    async function rebuildOrderItemsForReRecognize(orderId, customerId, rawMessage, attachmentRows) {
-        const result = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, orderId, customerId, rawMessage, attachmentRows);
+    async function rebuildOrderItemsForReRecognize(orderId, customerId, rawMessage, attachmentRows, imageExtraOpts) {
+        const result = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, orderId, customerId, rawMessage, attachmentRows, imageExtraOpts);
         if (result.ok)
             return { ok: true };
         return { ok: false, error: result.error || "parse" };
@@ -8467,11 +8467,22 @@ function createAdminRouter() {
                 <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:${order.raw_message && String(order.raw_message).replace(/\[圖片\]/g,"").trim() ? "14px" : "0"};">
                   <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">客戶傳的照片 · ${attachments.length} 張</div>
                   ${attachments.map((a, idx) => `
-                    <a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener" style="display:block;text-decoration:none;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--bg-2);">
-                      <img src="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" alt="附件 ${idx + 1}" loading="lazy" style="display:block;width:100%;height:auto;max-height:480px;object-fit:contain;background:#fff;">
-                      <div style="padding:6px 10px;font-size:11px;color:var(--txt-3);background:var(--bg-2);">圖 ${idx + 1} · 點擊放大</div>
-                    </a>
+                    <div style="border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#fff;">
+                      <div style="overflow:hidden;display:flex;align-items:center;justify-content:center;">
+                        <img class="order-attach-img" src="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" alt="附件 ${idx + 1}" loading="lazy" style="display:block;width:100%;height:auto;max-height:480px;object-fit:contain;background:#fff;transition:transform .15s;">
+                      </div>
+                      <a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener" style="display:block;padding:6px 10px;font-size:11px;color:var(--txt-3);background:var(--bg-2);text-decoration:none;">圖 ${idx + 1} · 點擊放大（新分頁）</a>
+                    </div>
                   `).join("")}
+                  <!-- 人工轉正工具列：自動轉正若判錯，可手動轉到正確角度再重新辨識 -->
+                  <div id="rotateToolbar" style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 10px;background:var(--bg-2);border:var(--hairline);border-radius:var(--radius);">
+                    <span style="font-size:12px;color:var(--txt-2);">圖片歪了？手動轉正：</span>
+                    <button type="button" class="sf-btn sm" id="rotLeftBtn" title="左轉 90°">↺ 左轉</button>
+                    <button type="button" class="sf-btn sm" id="rotRightBtn" title="右轉 90°">↻ 右轉</button>
+                    <span id="rotAngleLabel" style="font-size:12px;color:var(--txt-3);font-family:var(--font-mono);min-width:48px;">0°</span>
+                    <button type="button" class="sf-btn sm primary" id="rotReRecogBtn" disabled title="把照片轉到目前角度後重新辨識（會覆寫明細）">依此角度重新辨識</button>
+                    <span id="rotStatus" style="font-size:12px;color:var(--txt-3);"></span>
+                  </div>
                 </div>
               ` : ""}
               ${(() => {
@@ -8596,6 +8607,37 @@ function createAdminRouter() {
           var orderId = ${JSON.stringify(orderId)};
           var firstAttachmentId = ${JSON.stringify(attachments[0]?.id ?? null)};
           var returnPath = '/admin/orders/' + encodeURIComponent(orderId) + '#items';
+          // ── 人工轉正工具列 ──
+          (function(){
+            var imgs = document.querySelectorAll('.order-attach-img');
+            var leftBtn = document.getElementById('rotLeftBtn');
+            var rightBtn = document.getElementById('rotRightBtn');
+            var label = document.getElementById('rotAngleLabel');
+            var goBtn = document.getElementById('rotReRecogBtn');
+            var statusEl = document.getElementById('rotStatus');
+            if (!imgs.length || !goBtn) return;
+            var deg = 0;
+            function apply(){
+              imgs.forEach(function(im){ im.style.transform = 'rotate(' + deg + 'deg)'; });
+              if (label) label.textContent = deg + '°';
+              goBtn.disabled = (deg % 360 === 0);
+            }
+            if (leftBtn) leftBtn.addEventListener('click', function(){ deg = (deg + 270) % 360; apply(); });
+            if (rightBtn) rightBtn.addEventListener('click', function(){ deg = (deg + 90) % 360; apply(); });
+            if (goBtn) goBtn.addEventListener('click', function(){
+              if (deg % 360 === 0) return;
+              if (!confirm('把照片轉 ' + deg + '° 後重新辨識？將覆寫目前明細。')) return;
+              goBtn.disabled = true;
+              if (statusEl) statusEl.textContent = '辨識中…';
+              var body = 'degrees=' + encodeURIComponent(deg);
+              fetch('/admin/orders/' + encodeURIComponent(orderId) + '/re-recognize-rotated', {
+                method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' }, body: body
+              }).then(function(r){ return r.json(); }).then(function(d){
+                if (d && d.ok) { if (statusEl) statusEl.textContent = '完成，重新整理中…'; location.href = '/admin/orders/' + encodeURIComponent(orderId) + '?ok=rerecog#items'; }
+                else { if (statusEl) statusEl.textContent = ''; goBtn.disabled = false; alert((d && d.error) ? d.error : '辨識失敗'); }
+              }).catch(function(){ if (statusEl) statusEl.textContent = ''; goBtn.disabled = false; alert('請求失敗'); });
+            });
+          })();
           var modal = document.getElementById('productModal');
           var editModal = document.getElementById('productEditModal');
           var editFrame = document.getElementById('productEditFrame');
@@ -9019,6 +9061,28 @@ function createAdminRouter() {
         catch (e) {
             console.error("[admin] re-recognize failed", e?.message || e, e?.stack);
             redirErr("rerecog");
+        }
+    });
+    /** 人工旋轉後重新辨識：把附件圖按指定角度轉正（跳過自動偵測），重跑辨識覆寫明細。回 JSON。 */
+    router.post("/orders/:orderId/re-recognize-rotated", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const { orderId } = req.params;
+        try {
+            const degRaw = parseInt(String(req.body.degrees || "0"), 10);
+            const deg = ((Number.isFinite(degRaw) ? degRaw : 0) % 360 + 360) % 360;
+            const order = await db.prepare("SELECT id, customer_id, raw_message FROM orders WHERE id = ?").get(orderId);
+            if (!order) { res.status(404).json({ ok: false, error: "訂單不存在" }); return; }
+            const attachments = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(orderId);
+            if (!attachments.length) { res.status(400).json({ ok: false, error: "此訂單沒有圖片附件，無法旋轉重新辨識。" }); return; }
+            const result = await rebuildOrderItemsForReRecognize(orderId, order.customer_id, order.raw_message, attachments, { forceRotateDeg: deg, skipAutoOrient: true });
+            if (!result.ok) {
+                res.json({ ok: false, error: "旋轉 " + deg + "° 後仍無法辨識出品項（error=" + (result.error || "parse") + "）。可換個角度再試。" });
+                return;
+            }
+            res.json({ ok: true, degrees: deg });
+        }
+        catch (e) {
+            console.error("[admin] re-recognize-rotated failed", e?.message || e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
         }
     });
     /** 手動將訂單附件圖 + 目前明細存為 Few-Shot 範例（圖檔存於 data/few-shot-examples，DB 僅存 image_path） */

@@ -128,7 +128,12 @@ function isTextResultStrongEnough(parsed) {
  * @param options.subClientId / options.sub_client_id 可選，篩選子客戶歷史品項
  */
 async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
-    const cacheKey = buildCacheKey(buffer, fallbackUnit, options);
+    // 人工指定角度 / 跳過自動轉正時不走快取（同一張原圖在不同角度下結果不同）
+    const forceRotateDeg = Number(options?.forceRotateDeg);
+    const hasForceRotate = Number.isFinite(forceRotateDeg) && (((forceRotateDeg % 360) + 360) % 360) !== 0;
+    const skipAutoOrient = Boolean(options?.skipAutoOrient) || hasForceRotate;
+    const bypassCache = hasForceRotate || Boolean(options?.skipAutoOrient);
+    const cacheKey = bypassCache ? null : buildCacheKey(buffer, fallbackUnit, options);
     if (cacheKey) {
         const hit = cacheGet(cacheKey);
         if (hit) {
@@ -160,10 +165,18 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
     }
     const hasGeminiTextOpts = Object.keys(geminiTextOpts).length > 0;
     // G26：自動轉正。餐飲客戶常把直式訂購單橫拍，影像無 EXIF 方向，送辨識會嚴重對錯行／幻想數量。
-    // 送 OCR/Gemini 前先把圖轉正（偵測失敗回原圖，不阻擋流程）。cacheKey 已用原圖算過，不受影響。
+    // 送 OCR/Gemini 前先把圖轉正（偵測失敗回原圖，不阻擋流程）。
+    // 人工指定 forceRotateDeg → 直接轉該角度、不跑自動偵測；skipAutoOrient → 完全不轉。
     if (buffer?.length) {
         try {
-            buffer = await require("./auto-orient-image.js").autoOrientImageBuffer(buffer);
+            if (hasForceRotate) {
+                const deg = ((forceRotateDeg % 360) + 360) % 360;
+                buffer = await require("sharp")(buffer).rotate(deg).jpeg({ quality: 85 }).toBuffer();
+                console.log("[parse-order-from-image] 人工指定旋轉 %d°", deg);
+            }
+            else if (!skipAutoOrient) {
+                buffer = await require("./auto-orient-image.js").autoOrientImageBuffer(buffer);
+            }
         }
         catch (_) { /* 轉正失敗沿用原圖 */ }
     }

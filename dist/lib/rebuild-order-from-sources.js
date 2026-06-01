@@ -55,7 +55,7 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
 /**
  * 文字（略過「[圖片]」行）+ 附件圖逐張解析，合併為一個 parsed 陣列（不寫庫）。
  */
-async function collectParsedFromOrderSources(db, customerId, rawMessage, attachmentRows) {
+async function collectParsedFromOrderSources(db, customerId, rawMessage, attachmentRows, imageExtraOpts) {
     const custRow = await db.prepare("SELECT default_unit, known_sub_customers FROM customers WHERE id = ?").get(customerId);
     const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
     const knownSub = custRow?.known_sub_customers != null ? String(custRow.known_sub_customers).trim() : "";
@@ -77,6 +77,9 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
         ...(knownSub ? { knownSubCustomers: knownSub } : {}),
         db,
         customerId,
+        // 人工旋轉重新辨識：forceRotateDeg / skipAutoOrient 由呼叫端透傳到圖片解析
+        ...(imageExtraOpts && Number.isFinite(Number(imageExtraOpts.forceRotateDeg)) ? { forceRotateDeg: Number(imageExtraOpts.forceRotateDeg) } : {}),
+        ...(imageExtraOpts && imageExtraOpts.skipAutoOrient ? { skipAutoOrient: true } : {}),
     };
     const textForParse = String(rawMessage || "")
         .split(/\n/)
@@ -147,8 +150,8 @@ function filterParsedRowsForOrderSplit(parsed, orderSubSplitKey) {
     return parsed.filter((p) => String(p.subCustomer || "").trim() === k);
 }
 /** 有解析到至少一筆才覆寫明細；否則保留既有品項 */
-async function rebuildOrderItemsFromOrderSources(db, orderId, customerId, rawMessage, attachmentRows) {
-    const { parsed, error } = await collectParsedFromOrderSources(db, customerId, rawMessage, attachmentRows);
+async function rebuildOrderItemsFromOrderSources(db, orderId, customerId, rawMessage, attachmentRows, imageExtraOpts) {
+    const { parsed, error } = await collectParsedFromOrderSources(db, customerId, rawMessage, attachmentRows, imageExtraOpts);
     if (!parsed.length)
         return { ok: false, error };
     const meta = await db.prepare("SELECT order_sub_split_key FROM orders WHERE id = ?").get(orderId);
