@@ -8859,7 +8859,15 @@ function createAdminRouter() {
                   if (result.ok && result.data && result.data.ok) {
                     formDirty = false;
                     var msg = document.getElementById('itemsFormSavedMsg');
-                    if (!msg) { msg = document.createElement('p'); msg.id = 'itemsFormSavedMsg'; msg.className = 'notion-msg ok'; itemsForm.querySelector('.notion-card').appendChild(msg); }
+                    if (!msg) {
+                      msg = document.createElement('p');
+                      msg.id = 'itemsFormSavedMsg';
+                      msg.className = 'notion-msg ok';
+                      msg.style.cssText = 'margin:8px 0;padding:8px 12px;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:6px;font-size:13px;';
+                      // 頁面已改 SF 設計，不一定有 .notion-card；改用穩健的容器尋找
+                      var container = itemsForm.querySelector('.notion-card') || itemsForm.querySelector('.sf-card') || itemsForm;
+                      container.insertBefore(msg, container.firstChild);
+                    }
                     msg.textContent = '已儲存。';
                     msg.style.display = 'block';
                     setTimeout(function(){ msg.style.display = 'none'; }, 3000);
