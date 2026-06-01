@@ -7507,7 +7507,10 @@ function createAdminRouter() {
         });
         const rawNameTrim = item?.raw_name?.trim();
         if (rawNameTrim) {
-            const existing = await db.prepare("SELECT id FROM product_aliases WHERE alias = ?").get(rawNameTrim);
+            // 全公司俗名別名：UPSERT（以「人工最新校正」為準）。
+            // 修 bug：原本 if(!existing) 只在不存在時插入，導致既有的錯誤別名（例：紅辣椒→綠辣椒）
+            // 永遠不會被修正，改幾次都沒用。改成「已存在但指向不同品項 → 更新」。
+            const existing = await db.prepare("SELECT id, product_id FROM product_aliases WHERE alias = ?").get(rawNameTrim);
             if (!existing) {
                 try {
                     const paId = (0, id_js_1.newId)("pa");
@@ -7515,13 +7518,28 @@ function createAdminRouter() {
                 }
                 catch (_) { /* 可能重複 */ }
             }
-            const existingCpa = await db.prepare("SELECT id FROM customer_product_aliases WHERE customer_id = ? AND alias = ?").get(order.customer_id, rawNameTrim);
+            else if (String(existing.product_id) !== String(productId)) {
+                try {
+                    await db.prepare("UPDATE product_aliases SET product_id = ? WHERE id = ?").run(productId, existing.id);
+                    console.log("[fix-alias] product_aliases 更新對應 alias=%s %s→%s", rawNameTrim, existing.product_id, productId);
+                }
+                catch (_) { /* 更新失敗不阻擋 */ }
+            }
+            // 客戶專用別名：UPSERT（以「此客戶最新校正」為準；resolve 時 cpa 優先級最高）
+            const existingCpa = await db.prepare("SELECT id, product_id FROM customer_product_aliases WHERE customer_id = ? AND alias = ?").get(order.customer_id, rawNameTrim);
             if (!existingCpa) {
                 try {
                     const cpaId = (0, id_js_1.newId)("cpa");
                     await db.prepare("INSERT INTO customer_product_aliases (id, customer_id, product_id, alias) VALUES (?, ?, ?, ?)").run(cpaId, order.customer_id, productId, rawNameTrim);
                 }
                 catch (_) { /* 可能重複 */ }
+            }
+            else if (String(existingCpa.product_id) !== String(productId)) {
+                try {
+                    await db.prepare("UPDATE customer_product_aliases SET product_id = ? WHERE id = ?").run(productId, existingCpa.id);
+                    console.log("[fix-alias] customer_product_aliases 更新對應 cust=%s alias=%s %s→%s", order.customer_id, rawNameTrim, existingCpa.product_id, productId);
+                }
+                catch (_) { /* 更新失敗不阻擋 */ }
             }
             try {
                 // recordHandwritingHint 內部會偵測 product 是否變更：相同 → hit_count++；
