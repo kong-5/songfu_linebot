@@ -159,6 +159,14 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
         geminiTextOpts.customerId = options.customerId;
     }
     const hasGeminiTextOpts = Object.keys(geminiTextOpts).length > 0;
+    // G26：自動轉正。餐飲客戶常把直式訂購單橫拍，影像無 EXIF 方向，送辨識會嚴重對錯行／幻想數量。
+    // 送 OCR/Gemini 前先把圖轉正（偵測失敗回原圖，不阻擋流程）。cacheKey 已用原圖算過，不受影響。
+    if (buffer?.length) {
+        try {
+            buffer = await require("./auto-orient-image.js").autoOrientImageBuffer(buffer);
+        }
+        catch (_) { /* 轉正失敗沿用原圖 */ }
+    }
     let ocrText = null;
     if (buffer?.length && process.env.GOOGLE_CLOUD_VISION_API_KEY) {
         try {
