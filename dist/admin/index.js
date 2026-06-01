@@ -7505,27 +7505,34 @@ function createAdminRouter() {
                 new_product_id: productId,
             },
         });
+        // G25：記憶範圍由前端確認步驟決定。
+        //   scope=none     → 只改這一筆訂單，不寫任何別名/記憶（預設，最保守）
+        //   scope=customer → 記住「此客戶」：客戶別名 + 筆跡記憶（不動全公司）
+        //   scope=global   → 記住「全公司」：全公司別名 + 客戶別名 + 筆跡記憶
+        // 別名一律 UPSERT（已存在但指向不同品項 → 更新），讓「人工最新校正」永遠為準。
+        const learnScopeRaw = String(req.body.scope || "none").trim().toLowerCase();
+        const learnScope = (learnScopeRaw === "customer" || learnScopeRaw === "global") ? learnScopeRaw : "none";
         const rawNameTrim = item?.raw_name?.trim();
-        if (rawNameTrim) {
-            // 全公司俗名別名：UPSERT（以「人工最新校正」為準）。
-            // 修 bug：原本 if(!existing) 只在不存在時插入，導致既有的錯誤別名（例：紅辣椒→綠辣椒）
-            // 永遠不會被修正，改幾次都沒用。改成「已存在但指向不同品項 → 更新」。
-            const existing = await db.prepare("SELECT id, product_id FROM product_aliases WHERE alias = ?").get(rawNameTrim);
-            if (!existing) {
-                try {
-                    const paId = (0, id_js_1.newId)("pa");
-                    await db.prepare("INSERT INTO product_aliases (id, product_id, alias) VALUES (?, ?, ?)").run(paId, productId, rawNameTrim);
+        if (rawNameTrim && learnScope !== "none") {
+            // 全公司俗名別名：僅 scope=global 時寫入/更新
+            if (learnScope === "global") {
+                const existing = await db.prepare("SELECT id, product_id FROM product_aliases WHERE alias = ?").get(rawNameTrim);
+                if (!existing) {
+                    try {
+                        const paId = (0, id_js_1.newId)("pa");
+                        await db.prepare("INSERT INTO product_aliases (id, product_id, alias) VALUES (?, ?, ?)").run(paId, productId, rawNameTrim);
+                    }
+                    catch (_) { /* 可能重複 */ }
                 }
-                catch (_) { /* 可能重複 */ }
-            }
-            else if (String(existing.product_id) !== String(productId)) {
-                try {
-                    await db.prepare("UPDATE product_aliases SET product_id = ? WHERE id = ?").run(productId, existing.id);
-                    console.log("[fix-alias] product_aliases 更新對應 alias=%s %s→%s", rawNameTrim, existing.product_id, productId);
+                else if (String(existing.product_id) !== String(productId)) {
+                    try {
+                        await db.prepare("UPDATE product_aliases SET product_id = ? WHERE id = ?").run(productId, existing.id);
+                        console.log("[learn] product_aliases 更新對應 alias=%s %s→%s", rawNameTrim, existing.product_id, productId);
+                    }
+                    catch (_) { /* 更新失敗不阻擋 */ }
                 }
-                catch (_) { /* 更新失敗不阻擋 */ }
             }
-            // 客戶專用別名：UPSERT（以「此客戶最新校正」為準；resolve 時 cpa 優先級最高）
+            // 客戶專用別名：scope=customer 或 global 都寫（UPSERT；resolve 時 cpa 優先級最高）
             const existingCpa = await db.prepare("SELECT id, product_id FROM customer_product_aliases WHERE customer_id = ? AND alias = ?").get(order.customer_id, rawNameTrim);
             if (!existingCpa) {
                 try {
@@ -7537,16 +7544,17 @@ function createAdminRouter() {
             else if (String(existingCpa.product_id) !== String(productId)) {
                 try {
                     await db.prepare("UPDATE customer_product_aliases SET product_id = ? WHERE id = ?").run(productId, existingCpa.id);
-                    console.log("[fix-alias] customer_product_aliases 更新對應 cust=%s alias=%s %s→%s", order.customer_id, rawNameTrim, existingCpa.product_id, productId);
+                    console.log("[learn] customer_product_aliases 更新對應 cust=%s alias=%s %s→%s", order.customer_id, rawNameTrim, existingCpa.product_id, productId);
                 }
                 catch (_) { /* 更新失敗不阻擋 */ }
             }
             try {
-                // recordHandwritingHint 內部會偵測 product 是否變更：相同 → hit_count++；
-                // 不同 → 重置為 1 並 wrong_count++，分數透過 prev_product_id 比較自動降權。
                 await customer_handwriting_hints_js_1.recordHandwritingHint(db, order.customer_id, rawNameTrim, productId);
             }
             catch (_) { /* 筆跡對照表寫入失敗不阻擋 */ }
+        }
+        else {
+            console.log("[learn] scope=none，只改本筆訂單不記憶 item=%s", itemId);
         }
         const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest";
         if (wantsJson) {
@@ -8550,10 +8558,28 @@ function createAdminRouter() {
         </div>
         <div id="productModal" class="notion-modal-overlay" style="display:none;">
           <div class="notion-modal">
-            <h3>選擇品項（模糊搜尋）</h3>
-            <input type="search" class="notion-modal-search" id="productSearch" placeholder="輸入品名、料號、條碼...">
-            <div class="notion-modal-list" id="productList"></div>
-            <div class="notion-modal-actions"><button type="button" class="btn" onclick="document.getElementById('productModal').style.display='none'">取消</button></div>
+            <div id="productPickView">
+              <h3>選擇品項（模糊搜尋）</h3>
+              <input type="search" class="notion-modal-search" id="productSearch" placeholder="輸入品名、料號、條碼...">
+              <div class="notion-modal-list" id="productList"></div>
+              <div class="notion-modal-actions"><button type="button" class="btn" id="productPickCancel">取消</button></div>
+            </div>
+            <div id="productConfirmView" style="display:none;">
+              <h3 style="margin:0 0 12px;">確認對應與記憶範圍</h3>
+              <div style="background:var(--notion-sidebar,#f7f6f3);border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:15px;line-height:1.6;">
+                <div style="color:var(--notion-text-muted,#787774);font-size:12px;margin-bottom:4px;">原始辨識文字</div>
+                <div id="confirmRawName" style="font-weight:600;">—</div>
+                <div style="text-align:center;color:var(--notion-accent,#2383e2);font-size:18px;margin:4px 0;">↓ 對應到</div>
+                <div id="confirmProductName" style="font-weight:700;font-size:17px;color:var(--notion-accent,#2383e2);">—</div>
+              </div>
+              <p style="font-size:13px;color:var(--notion-text-muted,#787774);margin:0 0 10px;">這次的修正要記住嗎？（記住後，之後相同辨識文字會自動套用）</p>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                <button type="button" class="btn" id="confirmScopeNone" style="text-align:left;padding:10px 12px;">📝 <strong>只改這一筆</strong>　<span style="color:var(--notion-text-muted,#787774);font-size:12px;">不記憶，下次重新辨識</span></button>
+                <button type="button" class="btn btn-primary" id="confirmScopeCustomer" style="text-align:left;padding:10px 12px;">👤 <strong>記住此客戶</strong>　<span style="opacity:.85;font-size:12px;">此客戶以後都這樣對應（推薦）</span></button>
+                <button type="button" class="btn" id="confirmScopeGlobal" style="text-align:left;padding:10px 12px;">🏢 <strong>記住全公司</strong>　<span style="color:var(--notion-text-muted,#787774);font-size:12px;">所有客戶都套用（謹慎使用）</span></button>
+              </div>
+              <div class="notion-modal-actions" style="margin-top:12px;"><button type="button" class="btn" id="confirmBackBtn">← 重新選品項</button></div>
+            </div>
           </div>
         </div>
         <div id="productEditModal" class="notion-modal-overlay" style="display:none;">
@@ -8577,7 +8603,22 @@ function createAdminRouter() {
           var listEl = document.getElementById('productList');
           var searchEl = document.getElementById('productSearch');
           var currentItemId = null;
+          var currentRawName = '';
+          var pendingProductId = null;
+          var pendingProductName = '';
           var formDirty = false;
+          var pickView = document.getElementById('productPickView');
+          var confirmView = document.getElementById('productConfirmView');
+          function showPickView(){ if(pickView) pickView.style.display=''; if(confirmView) confirmView.style.display='none'; }
+          function showConfirmView(){
+            if(pickView) pickView.style.display='none';
+            if(confirmView) confirmView.style.display='';
+            var rn = document.getElementById('confirmRawName');
+            var pn = document.getElementById('confirmProductName');
+            if(rn) rn.textContent = currentRawName || '（無原始文字）';
+            if(pn) pn.textContent = pendingProductName || '';
+          }
+          function closeProductModal(){ modal.style.display='none'; showPickView(); pendingProductId=null; }
           function openProductEdit(productId, ctx){
             if (!productId || !editModal || !editFrame) return;
             var u = '/admin/products/' + encodeURIComponent(productId) + '/edit?embed=1&return=' + encodeURIComponent(returnPath);
@@ -8630,7 +8671,8 @@ function createAdminRouter() {
           function searchProducts(q){
             fetch('/admin/api/products-search?q=' + encodeURIComponent(q)).then(function(r){ return r.json(); }).then(function(arr){
               listEl.innerHTML = arr.map(function(p){
-                return '<div data-product-id="' + (p.id || '') + '" class="product-option">' + (p.name || '') + ' ' + (p.erp_code || '') + ' ' + (p.teraoka_barcode || '') + '</div>';
+                var nm = (p.name || '').replace(/"/g, '&quot;');
+                return '<div data-product-id="' + (p.id || '') + '" data-product-name="' + nm + '" class="product-option">' + (p.name || '') + ' ' + (p.erp_code || '') + ' ' + (p.teraoka_barcode || '') + '</div>';
               }).join('') || '<div>無符合品項</div>';
             });
           }
@@ -8647,29 +8689,61 @@ function createAdminRouter() {
               return;
             }
             var pick = e.target.closest('.product-pick');
-            if (pick) { e.preventDefault(); currentItemId = pick.getAttribute('data-item-id'); modal.style.display = 'flex'; searchEl.value = pick.getAttribute('data-raw') || ''; searchProducts(searchEl.value); }
+            if (pick) {
+              e.preventDefault();
+              currentItemId = pick.getAttribute('data-item-id');
+              var pickTr = pick.closest('tr');
+              // 「改品項」連結無 data-raw，改從該列 data-raw-name 取得原始辨識文字
+              currentRawName = pick.getAttribute('data-raw') || (pickTr && pickTr.getAttribute('data-raw-name')) || '';
+              pendingProductId = null;
+              showPickView();
+              modal.style.display = 'flex';
+              searchEl.value = currentRawName;
+              searchProducts(searchEl.value);
+            }
           });
+          // 步驟一：選品項 → 不立刻存，先進入「確認記憶範圍」步驟
           listEl.addEventListener('click', function(e){
             var div = e.target.closest('.product-option');
             if (!div || !currentItemId) return;
             var productId = div.getAttribute('data-product-id');
             if (!productId) return;
-            modal.style.display = 'none';
-            var url = '/admin/orders/' + encodeURIComponent(orderId) + '/items/' + encodeURIComponent(currentItemId) + '/product';
-            var body = 'product_id=' + encodeURIComponent(productId);
+            pendingProductId = productId;
+            pendingProductName = div.getAttribute('data-product-name') || (div.textContent || '').trim();
+            showConfirmView();
+          });
+          // 步驟二：依使用者選的範圍送出（scope=none/customer/global）
+          function submitProductChange(scope){
+            if (!pendingProductId || !currentItemId) { closeProductModal(); return; }
+            var theItemId = currentItemId;
+            var url = '/admin/orders/' + encodeURIComponent(orderId) + '/items/' + encodeURIComponent(theItemId) + '/product';
+            var body = 'product_id=' + encodeURIComponent(pendingProductId) + '&scope=' + encodeURIComponent(scope);
+            closeProductModal();
             fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' }, body: body })
               .then(function(r){ return r.json(); })
               .then(function(data){
                 if (data && data.ok && data.productName !== undefined) {
-                  var tr = document.querySelector('tr[data-item-id="' + currentItemId.replace(/"/g, '\\"') + '"]');
+                  var tr = document.querySelector('tr[data-item-id="' + theItemId.replace(/"/g, '\\"') + '"]');
                   var pid = (data.productId || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
                   var pnm = (data.productName || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                   var namePart = pid ? ('<a href="#" class="product-name-edit" data-product-id="' + pid + '" title="編輯此品項（俗名、單位等）">' + pnm + '</a>') : pnm;
-                  if (tr && tr.cells[4]) tr.cells[4].innerHTML = namePart + ' <a href="#" class="product-pick product-change" data-item-id="' + currentItemId.replace(/"/g, '&quot;') + '">改品項</a>';
+                  if (tr && tr.cells[4]) tr.cells[4].innerHTML = namePart + ' <a href="#" class="product-pick product-change" data-item-id="' + theItemId.replace(/"/g, '&quot;') + '">改品項</a>';
                 } else { alert(data && data.error ? data.error : '更新失敗'); }
               })
               .catch(function(){ alert('請求失敗'); });
-          });
+          }
+          (function(){
+            var bNone = document.getElementById('confirmScopeNone');
+            var bCust = document.getElementById('confirmScopeCustomer');
+            var bGlob = document.getElementById('confirmScopeGlobal');
+            var bBack = document.getElementById('confirmBackBtn');
+            var bCancel = document.getElementById('productPickCancel');
+            if (bNone) bNone.addEventListener('click', function(){ submitProductChange('none'); });
+            if (bCust) bCust.addEventListener('click', function(){ submitProductChange('customer'); });
+            if (bGlob) bGlob.addEventListener('click', function(){ submitProductChange('global'); });
+            if (bBack) bBack.addEventListener('click', function(){ showPickView(); });
+            if (bCancel) bCancel.addEventListener('click', function(){ closeProductModal(); });
+          })();
           document.addEventListener('click', function(e){
             var up = e.target.closest('.btn-move-up');
             if (up) {
