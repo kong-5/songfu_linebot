@@ -3933,6 +3933,11 @@ function createAdminRouter() {
         const label = kind === "numbered" ? `${line.basket_no}號` : (kind === "square" ? "四角" : "圓");
         return `${label} 去${line.taken_to}回${line.picked_up}`;
     }
+    function safeParseJson(s) {
+        if (!s) return [];
+        try { const v = typeof s === "string" ? JSON.parse(s) : s; return Array.isArray(v) ? v : []; }
+        catch (_) { return []; }
+    }
     router.get("/baskets", async (req, res) => {
         try {
             const ymRaw = typeof req.query.ym === "string" ? req.query.ym.trim() : "";
@@ -4136,6 +4141,58 @@ function createAdminRouter() {
                     }
                     html += '</table>'
                       + '<div style="padding:12px 16px;border-top:1px solid var(--line);background:var(--bg-1);font-size:12px;color:var(--txt-3);">💡 編輯：請司機在 LINE 群組重新打「<b>空籃</b>」，從 LIFF 重新提交即可覆蓋當天數字。</div>';
+                    // 變更紀錄
+                    function fmtTime(iso){ if(!iso) return ''; try { return new Date(iso).toLocaleString('zh-TW',{hour12:false}); } catch(_) { return String(iso); } }
+                    function fmtActor(actor, reporter){
+                      if (!actor) return reporter || '—';
+                      if (actor.indexOf('liff:') === 0) return 'LIFF · 司機 ' + (reporter || '—');
+                      if (actor.indexOf('admin:') === 0) {
+                        const u = actor.slice(6);
+                        return '後台管理員 ' + (u === '?' ? '' : u);
+                      }
+                      return actor;
+                    }
+                    function fmtLines(lines){
+                      if (!Array.isArray(lines) || !lines.length) return '<span style="color:var(--txt-3);">（無）</span>';
+                      return lines.map(ln => {
+                        const lbl = ln.kind === 'numbered' ? (ln.no + '號') : (ln.kind === 'square' ? '四角' : '圓');
+                        return '<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;background:var(--bg-2);border-radius:3px;font-size:11px;">' + esc(lbl) + ' 去' + (ln.takenTo||0) + '回' + (ln.pickedUp||0) + '</span>';
+                      }).join('');
+                    }
+                    const histList = data.history || [];
+                    let histHtml = '<div style="padding:14px 16px 8px;border-top:2px solid var(--line);background:var(--bg-1);"><div style="font-weight:600;font-size:14px;margin-bottom:8px;">📜 變更紀錄（' + histList.length + ' 筆）</div>';
+                    if (!histList.length) {
+                      histHtml += '<div style="color:var(--txt-3);font-size:12px;padding:8px 0;">本月尚無變更紀錄。</div>';
+                    } else {
+                      histHtml += '<table class="sf-table" style="font-size:12px;width:100%;">'
+                        + '<thead><tr>'
+                        + '<th style="width:140px;">時間</th>'
+                        + '<th style="width:160px;">操作者</th>'
+                        + '<th style="width:90px;">資料日期</th>'
+                        + '<th style="text-align:right;width:90px;">總和變化</th>'
+                        + '<th>新的分項</th>'
+                        + '<th>原本分項</th>'
+                        + '</tr></thead><tbody>';
+                      for (const h of histList) {
+                        const sumPrev = (h.prevTo||0) + (h.prevPk||0);
+                        const sumNew = (h.newTo||0) + (h.newPk||0);
+                        const totChg = (h.prevTo == null || h.prevPk == null)
+                          ? '新增'
+                          : ('去 ' + h.prevTo + '→' + h.newTo + '　回 ' + h.prevPk + '→' + h.newPk);
+                        const color = (sumNew > sumPrev) ? 'var(--ok,#16a34a)' : (sumNew < sumPrev ? 'var(--bad)' : 'var(--txt-2)');
+                        histHtml += '<tr>'
+                          + '<td class="mono" style="vertical-align:top;">' + esc(fmtTime(h.at)) + '</td>'
+                          + '<td style="vertical-align:top;">' + esc(fmtActor(h.actor, h.reporter)) + '</td>'
+                          + '<td class="mono" style="vertical-align:top;">' + esc(h.logDate) + '</td>'
+                          + '<td class="mono" style="text-align:right;vertical-align:top;color:' + color + ';">' + esc(totChg) + '</td>'
+                          + '<td style="vertical-align:top;">' + fmtLines(h.newLines) + '</td>'
+                          + '<td style="vertical-align:top;">' + fmtLines(h.prevLines) + '</td>'
+                          + '</tr>';
+                      }
+                      histHtml += '</tbody></table>';
+                    }
+                    histHtml += '</div>';
+                    html += histHtml;
                     modalBody.innerHTML = html;
                   } catch (e) {
                     modalBody.innerHTML = '<div style="padding:40px;text-align:center;color:var(--bad);">載入失敗：' + esc(e.message || e) + '</div>';
@@ -4194,7 +4251,28 @@ function createAdminRouter() {
                     pickedUp: Number(ln.picked_up || 0),
                 })),
             }));
-            res.json({ ok: true, customerId, ym, days });
+            // 變更紀錄（含 LIFF 提交 + 後台刪除）
+            const hist = await db.prepare(
+                "SELECT h.created_at, h.actor, h.log_date, h.prev_taken_to, h.prev_picked_up, " +
+                "h.new_taken_to, h.new_picked_up, h.prev_lines_json, h.new_lines_json, " +
+                "b.reporter_display_name " +
+                "FROM basket_log_history h LEFT JOIN basket_logs b ON b.id = h.basket_log_id " +
+                "WHERE h.customer_id = ? AND h.log_date >= ? AND h.log_date < ? " +
+                "ORDER BY h.created_at DESC"
+            ).all(customerId, start, end);
+            const history = (hist || []).map(h => ({
+                at: h.created_at,
+                actor: h.actor || "",
+                reporter: h.reporter_display_name || "",
+                logDate: h.log_date,
+                prevTo: h.prev_taken_to == null ? null : Number(h.prev_taken_to),
+                prevPk: h.prev_picked_up == null ? null : Number(h.prev_picked_up),
+                newTo: h.new_taken_to == null ? null : Number(h.new_taken_to),
+                newPk: h.new_picked_up == null ? null : Number(h.new_picked_up),
+                prevLines: safeParseJson(h.prev_lines_json),
+                newLines: safeParseJson(h.new_lines_json),
+            }));
+            res.json({ ok: true, customerId, ym, days, history });
         } catch (e) {
             console.error("[admin] /api/baskets/detail failed", e);
             res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
@@ -4276,6 +4354,53 @@ function createAdminRouter() {
                 summary.push([custMap.get(cid) || cid, acc.to, acc.pk, acc.to - acc.pk, acc.days]);
             }
             XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), `${ym} 月合計`);
+            // Sheet 1.5：客戶 × 規格 月合計（矩陣式：每客戶一列，各規格去/回各一欄）
+            // 對每個客戶累加各 kind/no 的 takenTo/pickedUp
+            const NUM_NOS = [1,2,3,5,6,7,8,9];
+            const cxByCust = new Map();
+            for (const l of logs) {
+                if (!cxByCust.has(l.customer_id)) {
+                    cxByCust.set(l.customer_id, { numbered: {}, square: { to: 0, pk: 0 }, round: { to: 0, pk: 0 } });
+                }
+                const slot = cxByCust.get(l.customer_id);
+                const lines = linesByLog.get(l.id) || [];
+                for (const ln of lines) {
+                    const t = Number(ln.taken_to || 0), p = Number(ln.picked_up || 0);
+                    if (ln.basket_kind === "numbered") {
+                        const n = Number(ln.basket_no) || 0;
+                        if (!slot.numbered[n]) slot.numbered[n] = { to: 0, pk: 0 };
+                        slot.numbered[n].to += t; slot.numbered[n].pk += p;
+                    } else if (ln.basket_kind === "square") {
+                        slot.square.to += t; slot.square.pk += p;
+                    } else if (ln.basket_kind === "round") {
+                        slot.round.to += t; slot.round.pk += p;
+                    }
+                }
+            }
+            // 表頭：客戶 | 1號去 | 1號回 | 2號去 | 2號回 | ... | 四角去 | 四角回 | 圓去 | 圓回 | 總去 | 總回 | 淨
+            const cxHeader = ["客戶"];
+            for (const n of NUM_NOS) { cxHeader.push(`${n}號 去`); cxHeader.push(`${n}號 回`); }
+            cxHeader.push("四角 去", "四角 回", "圓 去", "圓 回", "總計 去", "總計 回", "淨值");
+            const cxRows = [cxHeader];
+            // 依客戶名排序，方便看
+            const cxSorted = [...cxByCust.entries()].map(([cid, slot]) => ({
+                cid, name: custMap.get(cid) || cid, slot
+            })).sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
+            for (const { name, slot } of cxSorted) {
+                const row = [name];
+                let totTo = 0, totPk = 0;
+                for (const n of NUM_NOS) {
+                    const x = slot.numbered[n] || { to: 0, pk: 0 };
+                    row.push(x.to, x.pk);
+                    totTo += x.to; totPk += x.pk;
+                }
+                row.push(slot.square.to, slot.square.pk, slot.round.to, slot.round.pk);
+                totTo += slot.square.to + slot.round.to;
+                totPk += slot.square.pk + slot.round.pk;
+                row.push(totTo, totPk, totTo - totPk);
+                cxRows.push(row);
+            }
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cxRows), `${ym} 客戶×規格`);
             // Sheet 2：每日總計
             const detail = [["客戶", "日期", "去", "回", "淨", "回報人"]];
             for (const l of logs) {
