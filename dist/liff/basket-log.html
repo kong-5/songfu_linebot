@@ -2,20 +2,24 @@
 <html lang="zh-TW">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>空籃記帳 · 松富物流</title>
 <style>
   :root { --accent:#1d4ed8; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --line:#e3e2e0; --bg:#f7f6f3; --bg2:#fafafa; --txt1:#37352f; --txt2:#787774; --txt3:#9b9a97; color-scheme:light; }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
-  body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:var(--bg);color:var(--txt1);min-height:100vh;padding:0 max(env(safe-area-inset-left,0px), 8px) env(safe-area-inset-bottom,0) max(env(safe-area-inset-right,0px), 8px);overscroll-behavior-x:none;touch-action:pan-y;}
-  header{position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--line);padding:14px 16px;margin:0 -8px;}
+  body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:var(--bg);color:var(--txt1);min-height:100vh;padding:0 max(env(safe-area-inset-left,0px), 16px) env(safe-area-inset-bottom,0) max(env(safe-area-inset-right,0px), 16px);overscroll-behavior-x:none;touch-action:pan-y;-webkit-text-size-adjust:100%;}
+  *{ -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
+  input{ -webkit-user-select:text; user-select:text; }
+  button{ touch-action:manipulation; }
+  header{position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--line);padding:14px 16px;margin:0 -16px;}
   header h1{font-size:16px;margin:0;font-weight:600;}
   header .sub{font-size:12px;color:var(--txt2);margin-top:2px;}
-  .status{padding:8px 16px;font-size:12px;color:var(--txt2);background:#fff;border-bottom:1px solid var(--line);margin:0 -8px;}
+  .status{padding:8px 16px;font-size:12px;color:var(--txt2);background:#fff;border-bottom:1px solid var(--line);margin:0 -16px;}
   .status.err{background:#ffebee;color:#c62828;}
   .status.ok{background:#e7f5e9;color:#2e7d32;}
-  .section{background:#fff;margin:10px 4px;border:1px solid var(--line);border-radius:12px;padding:14px 18px;}
+  .section{background:#fff;margin:10px 0;border:1px solid var(--line);border-radius:12px;padding:14px 16px;position:relative;}
+  .section.loading::after{content:"載入中…";position:absolute;inset:0;background:rgba(255,255,255,.75);border-radius:12px;z-index:5;display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--txt2);pointer-events:auto;}
   .section h2{margin:0 0 10px;font-size:14px;color:var(--txt1);font-weight:600;}
   .numbered-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
   .num-btn{background:#fff;border:2px solid var(--line);border-radius:10px;padding:14px 0;font-size:18px;font-weight:700;cursor:pointer;text-align:center;color:var(--txt1);transition:all .15s;min-height:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;}
@@ -23,14 +27,14 @@
   .num-btn.has-data{border-color:var(--accent);background:#eff6ff;}
   .num-btn .sub-data{font-size:10px;color:var(--txt2);font-weight:400;line-height:1.2;}
   .num-btn.has-data .sub-data{color:var(--accent);font-weight:600;}
-  .qty-row{display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;margin-bottom:10px;}
+  .qty-row{display:grid;grid-template-columns:40px 1fr;gap:10px 14px;align-items:center;margin-bottom:12px;}
   .qty-row:last-child{margin-bottom:0;}
-  .qty-row .lbl{font-size:13px;color:var(--txt2);font-weight:600;min-width:32px;}
+  .qty-row .lbl{font-size:18px;color:var(--txt1);font-weight:700;text-align:center;}
   .stepper{display:flex;align-items:center;gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff;}
   .stepper button{width:44px;height:44px;border:none;background:#fff;font-size:22px;font-weight:600;color:var(--txt1);cursor:pointer;flex-shrink:0;}
   .stepper button:active{background:var(--bg2);}
   .stepper .num{flex:1;text-align:center;font-size:20px;font-family:ui-monospace,monospace;font-weight:600;cursor:pointer;padding:8px 0;background:var(--bg2);min-width:60px;}
-  .footer-fixed{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 16px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0));display:flex;gap:8px;margin:0 -8px;}
+  .footer-fixed{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 16px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0));display:flex;gap:8px;margin:0 -16px;}
   .footer-fixed button{flex:1;padding:14px;border-radius:8px;border:none;font-size:16px;font-weight:700;cursor:pointer;min-height:48px;}
   .footer-fixed .primary{background:var(--ok);color:#fff;}
   .footer-fixed .primary:disabled{background:#ccc;cursor:not-allowed;}
@@ -390,24 +394,25 @@
   });
 
   // ─── 初始化 ────────────────────────────────
-  // 立刻先把 UI 畫出來（空資料），讓使用者看到頁面，背景再去拿 LIFF token + 今日資料
-  function renderInitialUI(){
-    renderNumberedGrid();
-    renderAllKindFields();
-    refreshSaveBtn();
+  // 預載完成前，所有 section 加「loading 遮罩」，按鈕變灰不可點
+  function setSectionsLoading(loading){
+    document.querySelectorAll(".section").forEach(s => {
+      if (loading) s.classList.add("loading"); else s.classList.remove("loading");
+    });
   }
 
   async function init(){
-    // 1. 立刻畫 UI（不等任何網路）
-    renderInitialUI();
     state.date = getParam("date") || todayTaipei();
     state.customerId = getParam("customer");
     hdrSub.textContent = state.date;
+    // 立刻先把空 UI 畫出來，避免畫面全空白
+    renderNumberedGrid();
+    renderAllKindFields();
+    setSectionsLoading(true);
     setStatus("", "啟動中…");
 
-    if (!LIFF_ID) { setStatus("err", "尚未設定 LIFF_ID_BASKET_LOG"); return; }
+    if (!LIFF_ID) { setStatus("err", "尚未設定 LIFF_ID_BASKET_LOG"); setSectionsLoading(false); return; }
 
-    // 2. LIFF init（背景）
     try {
       await liff.init({ liffId: LIFF_ID });
       if (!liff.isLoggedIn()) {
@@ -435,15 +440,17 @@
         setStatus("err", "缺少 customer 參數，且此群組未綁定客戶。請從群組「空籃」訊息點連結進入。");
         return;
       }
-      // 3. 載入今日資料（背景，UI 已可操作但會被覆蓋）
+      // 載入今日已存在的紀錄
       setStatus("", "載入今日資料…");
       const r = await fetch(`/liff/api/basket-log/load?customer=${encodeURIComponent(state.customerId)}&date=${encodeURIComponent(state.date)}&idToken=${encodeURIComponent(state.idToken)}`);
       const data = await r.json();
       if (!data?.ok) throw new Error(data?.error || "載入失敗");
       state.customerName = data.customerName || state.customerId;
       hdrSub.textContent = `${state.customerName}　${state.date}`;
-      // 填入既有資料（如果司機已經開始填了會覆蓋；通常一進來資料就回了不會打字到一半）
+      // 填入既有資料
+      let hasExisting = false;
       for (const ln of (data.lines || [])) {
+        hasExisting = true;
         if (ln.basket_kind === "numbered") state.numbered[ln.basket_no] = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
         else if (ln.basket_kind === "square") state.square = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
         else if (ln.basket_kind === "round") state.round = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
@@ -451,10 +458,16 @@
       renderNumberedGrid();
       renderAllKindFields();
       refreshSaveBtn();
-      setStatus("", "請填寫今日空籃進出數，按「送出記帳」覆蓋當天紀錄。");
+      setSectionsLoading(false);
+      if (hasExisting) {
+        setStatus("err", "⚠️ 今日已有紀錄（顯示在上方）。重新送出會覆蓋當天數字！");
+      } else {
+        setStatus("", "請填入今日空籃進出數，按「送出記帳」儲存。");
+      }
     } catch (e) {
       console.error(e);
       setStatus("err", "初始化失敗：" + (e?.message || e));
+      setSectionsLoading(false);
     }
   }
   init();
