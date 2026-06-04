@@ -1476,6 +1476,44 @@ function createLineWebhook() {
                         continue;
                     }
                 }
+                // === Feature B：訂單意圖關卡（opt-in，預設關閉）===
+                // 在「自動開單」之前，先用便宜的分類器判斷這則文字是不是真的在叫貨。
+                // 只在「尚未開單」且「關鍵字意圖未命中」時跑；高信心判定為詢問/閒聊才攔下，
+                // 避免憑空開一張 0 品項訂單並在 10 分鐘後回「訂單已成立」。
+                // 安全預設：分類器不確定／失敗一律放行，絕不漏接真訂單。需 LINE_INTENT_GATE=1 啟用。
+                if (process.env.LINE_INTENT_GATE === "1" && groupId && !collectingByGroup.has(groupId)) {
+                    const kwPre = detectCustomerIntent(text);
+                    if (!kwPre.intent) {
+                        let verdict = null;
+                        try {
+                            verdict = await require("../lib/order-intent-gate.js").classifyOrderIntent(text, { db, customerId });
+                        } catch (e) {
+                            console.warn("[LINE] 意圖關卡失敗（放行當訂單）:", e?.message || e);
+                        }
+                        if (verdict && verdict.isOrder === false) {
+                            const kindLabel = verdict.kind === "chat" ? "閒聊" : "詢問";
+                            console.log("[LINE] 意圖關卡：判定為「%s」(信心%s,%s) → 不開單，僅通知/記錄", kindLabel, verdict.confidence, verdict.via);
+                            try {
+                                const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+                                await db.prepare(
+                                    "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
+                                ).run(dclId, "customer", customerId, "intent_gate_non_order",
+                                      `意圖關卡判定「${kindLabel}」(信心${verdict.confidence})，未開單`,
+                                      JSON.stringify({ kind: verdict.kind, confidence: verdict.confidence, via: verdict.via, raw_text: text.slice(0, 500), source: "intent_gate" }),
+                                      "system:intent_gate");
+                            } catch (_) {}
+                            // 通知管理員有一則未處理詢問（沿用客訴推播管道，標籤改為詢問/閒聊；未設 LINE_MANAGER_USER_ID 則自動略過）
+                            notifyManagerOfComplaint(lineClient, {
+                                intentLabel: kindLabel,
+                                customerName: customer?.name || null,
+                                orderNo: null,
+                                keywords: [],
+                                rawText: text,
+                            }).catch(()=>{});
+                            continue;
+                        }
+                    }
+                }
                 // 不再要求先輸入「收單」；若尚未有 session，收到文字即自動開單
                 if (groupId && !collectingByGroup.has(groupId)) {
                     const autoOrderDate = getTaipeiOrderDate();

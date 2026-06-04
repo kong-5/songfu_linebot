@@ -120,6 +120,35 @@ function isTextResultStrongEnough(parsed) {
     }
     return true;
 }
+/**
+ * 目前結果是否「信心偏低」，值得再請 Claude vision 出第二意見（雙模型保險）。
+ *  - 0 筆 → 低（Gemini／文字都沒讀到東西）
+ *  - 任一筆自評信心 < minConf → 低
+ *  - 平均信心 < minConf + 5 → 低
+ * minConf 預設 70，可用 LINE_CLAUDE_FALLBACK_MIN_CONF 覆寫。
+ * 若每一筆都沒有信心分數可判（cnt=0）→ 回 false，避免在無依據下多花一次 Claude 費用。
+ */
+function shouldTryClaudeFallback(parsed) {
+    if (!Array.isArray(parsed) || parsed.length === 0)
+        return true;
+    const minConf = Math.max(0, Math.min(100, Number(process.env.LINE_CLAUDE_FALLBACK_MIN_CONF ?? 70) || 70));
+    let sum = 0, cnt = 0, anyLow = false;
+    for (const p of parsed) {
+        const c = p?.confidenceScore;
+        if (c == null || !Number.isFinite(Number(c)))
+            continue;
+        const n = Number(c);
+        sum += n;
+        cnt += 1;
+        if (n < minConf)
+            anyLow = true;
+    }
+    if (cnt === 0)
+        return false;
+    if (anyLow)
+        return true;
+    return (sum / cnt) < (minConf + 5);
+}
 /** 圖片：OCR → 版型清洗 → Gemini 文字（整段）→ Gemini 視覺（手寫／雙欄）
  * @param options.geminiExtraSuffix 可選，客戶筆跡對照等，併入 Gemini 文字／視覺提示
  * @param options.db 可選，搭配 options.customerId 載入該客戶 Few-Shot 範例
@@ -214,6 +243,8 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
      * 省錢開關（opt-in）：若文字結果已「足夠強」（≥3 筆、皆含中文、數量合理、平均信心 ≥80），
      * 設定 LINE_SKIP_VISION_WHEN_TEXT_STRONG=1 即可略過視覺模型呼叫，省下一次 Gemini 視覺費用與延遲。
      */
+    // 此客戶歷史品名小抄：Gemini 視覺與 Claude 第二意見共用，故提升到外層宣告。
+    let historyItems = [];
     const skipVisionWhenStrong = process.env.LINE_SKIP_VISION_WHEN_TEXT_STRONG === "1";
     const textStrong = skipVisionWhenStrong && isTextResultStrongEnough(parsed);
     if (textStrong) {
@@ -242,7 +273,6 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
         }
         if (knownSub)
             visionOpts.knownSubCustomers = knownSub;
-        let historyItems = [];
         if (options && Object.prototype.hasOwnProperty.call(options, "historyItems") && Array.isArray(options.historyItems)) {
             historyItems = options.historyItems;
         }
@@ -274,6 +304,59 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
             } else if (visionParsed.length > 0) {
                 console.warn("[parse-order-from-image] 視覺結果未通過合理性檢查，沿用 OCR/文字結果（OCR=%s 視覺=%s，理由=%s）", parsed.length, visionParsed.length, adopt.reason);
             }
+        }
+    }
+    // === 雙模型保險（opt-in）===
+    // Gemini／文字結果信心偏低時，再請 Claude vision 出第二意見。最難的潦草手寫常是 Gemini 信心最低的那批。
+    // 預設關閉；需 LINE_CLAUDE_FALLBACK=1 且設定 ANTHROPIC_API_KEY 才會啟用。只在低信心時呼叫，避免每張都加錢。
+    if (buffer?.length && process.env.LINE_CLAUDE_FALLBACK === "1") {
+        try {
+            const claudeMod = require("./claude-vision-parse.js");
+            const claudeKey = claudeMod.getClaudeApiKey();
+            if (claudeKey && shouldTryClaudeFallback(parsed)) {
+                // 若稍早未載入歷史小抄（例如文字結果夠強而略過 Gemini 視覺），這裡補載一次給 Claude。
+                if ((!historyItems || historyItems.length === 0) && options?.db && options?.customerId) {
+                    try {
+                        historyItems = await order_history_items_js_1.loadDistinctOrderItemNamesForCustomer(options.db, options.customerId, options.subClientId ?? options.sub_client_id);
+                    }
+                    catch (_) { /* ignore */ }
+                }
+                const cOpts = { callKind: "vision_claude_fallback", historyItems: historyItems || [] };
+                if (options?.db && options?.customerId) {
+                    cOpts.db = options.db;
+                    cOpts.customerId = options.customerId;
+                }
+                if (knownSub)
+                    cOpts.knownSubCustomers = knownSub;
+                const cModel = process.env.CLAUDE_VISION_MODEL && String(process.env.CLAUDE_VISION_MODEL).trim();
+                if (cModel)
+                    cOpts.modelName = cModel;
+                console.log("[parse-order-from-image] 信心偏低（%d 筆）→ 呼叫 Claude vision 第二意見", parsed.length);
+                const claudeRows = await claudeMod.parseOrderVisionWithClaude(buffer, cOpts);
+                if (claudeRows && claudeRows.length) {
+                    let claudeParsed = claudeRows.map((p) => ({
+                        rawName: p.rawName,
+                        quantity: (0, gemini_order_helpers_js_1.coerceQuantityFromGemini)(p.quantity),
+                        unit: (0, gemini_order_helpers_js_1.coerceUnitFromGemini)(p.unit) || "公斤",
+                        remark: p.remark ?? null,
+                        subCustomer: p.subCustomer != null && String(p.subCustomer).trim() !== "" ? String(p.subCustomer).trim() : null,
+                        confidenceScore: p.confidenceScore != null ? p.confidenceScore : null,
+                    }));
+                    claudeParsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(claudeParsed);
+                    // 沿用與 Gemini 視覺相同的 A4 合理性檢查：Claude 漏看（筆數變少）或疑似幻想品項時不採用，維持原結果。
+                    const adopt = shouldAdoptVisionResult(parsed, claudeParsed);
+                    if (adopt.ok) {
+                        console.log("[parse-order-from-image] 採用 Claude 第二意見（原=%d Claude=%d，原因=%s）", parsed.length, claudeParsed.length, adopt.reason);
+                        parsed = claudeParsed;
+                    }
+                    else {
+                        console.warn("[parse-order-from-image] Claude 第二意見未通過合理性檢查，維持原結果（原=%d Claude=%d，理由=%s）", parsed.length, claudeParsed.length, adopt.reason);
+                    }
+                }
+            }
+        }
+        catch (e) {
+            console.warn("[parse-order-from-image] Claude fallback 失敗（不阻斷）:", e?.message || e);
         }
     }
     parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(parsed);
