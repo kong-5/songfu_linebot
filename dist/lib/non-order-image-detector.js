@@ -81,5 +81,17 @@ function detectNonOrderImage(ocrText) {
         };
     }
 
+    // === app_screenshot ===
+    // 偵測「app 錯誤對話框／網頁截圖」這類非訂單圖（如 ghp-forms 的「顯示...錯誤」對話框）
+    // 必須同時命中：(a) 有 app/web 識別字串 + (b) 有錯誤／提示性技術用詞，且 (c) 不含任何叫貨單位
+    const screenshotSignals = [];
+    if (/\.vercel\.app\s*顯示|\.com\s*顯示|\.tw\s*顯示/.test(t)) screenshotSignals.push("domain+顯示(alert對話框)");
+    if (/Could not find|schema cache|migration|Supabase|SQL Editor/i.test(t)) screenshotSignals.push("tech_jargon");
+    if (/儲存(至)?(雲端)?失敗|請至.{0,10}執行.{0,20}\.sql/.test(t)) screenshotSignals.push("save_failed_dialog");
+    if (/^確定$|按\s*確定|請按.{0,5}確定/m.test(t)) screenshotSignals.push("ok_button");
+    if (screenshotSignals.length >= 2 && !hasUnit) {
+        return { skip: true, reason: "app_screenshot", signals: screenshotSignals };
+    }
+
     return null;
 }

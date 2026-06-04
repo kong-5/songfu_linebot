@@ -383,6 +383,12 @@ const NOTION_STYLE = `
   tr.order-row-excluded input, tr.order-row-excluded select { opacity: 0.85; }
   /* 訂單明細：待確認列上色（桌面表格式） */
   table.order-detail-table tbody tr.order-item-need-review > td { background: #fff7ed; }
+  /* 訂單明細：產品為「公斤計價」但辨識成非公斤單位 → 黃底警示，員工容易掃到 */
+  table.order-detail-table tbody tr.order-item-unit-mismatch > td { background: #fef9c3; }
+  table.order-detail-table tbody tr.order-item-unit-mismatch > td:first-child { box-shadow: inset 4px 0 0 #ca8a04; }
+  /* 單位不符＋低信心同時發生：黃底為主、紅左邊條（避免互相蓋掉） */
+  table.order-detail-table tbody tr.order-item-unit-mismatch.order-item-low-conf > td { background: #fef9c3; }
+  .unit-mismatch-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
   /* 辨識信心分數小徽章（顯示在品項旁） */
   .conf-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; border: 1px solid transparent; }
   .conf-pill.conf-high { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
@@ -503,6 +509,7 @@ const NOTION_STYLE = `
     table.order-detail-table thead { display: none; }
     table.order-detail-table tbody tr.order-item-need-review { background: #fff7ed; }
     table.order-detail-table tbody tr.order-item-low-conf { background: #fef2f2; }
+    table.order-detail-table tbody tr.order-item-unit-mismatch { background: #fef9c3; border-left: 4px solid #ca8a04; }
     .order-detail-layout { flex-direction: column; flex-wrap: wrap; }
     .order-detail-raw-col { flex: none; width: 100%; min-width: 0; }
     .order-detail-raw-inner { position: static; max-height: 220px; }
@@ -1112,6 +1119,8 @@ details.sf-nav-group > summary:hover > .sf-nav-group-title { background: var(--b
 
   /* 行內按鈕擠在一起時自動換行 */
   .sf-root .sf-btn { white-space: nowrap; }
+  /* 安全網：頁首/工具列任何含 sf-btn 的 flex 容器，手機一律允許換行，避免按鈕被切到畫面外 */
+  .sf-root div:has(> .sf-btn) { flex-wrap: wrap; }
 }
 
 /* scrollbars (thin) */
@@ -3226,10 +3235,10 @@ function createAdminRouter() {
                 <span class="mono">作業日 · ${today} (週${weekdayZh})</span>
                 <span class="sf-pill ok"><span class="sf-dot ok"></span>系統正常</span>
                 <span class="sf-pill info">DB · ${process.env.DATABASE_URL?"PostgreSQL":"SQLite"}</span>
-                <span class="sf-pill accent">${SF_ICONS.spark} Gemini 2.5 Flash</span>
+                <span class="sf-pill accent">${SF_ICONS.spark} 視覺 ${escapeHtml((process.env.GEMINI_MODEL_VISION || process.env.GEMINI_MODEL || "gemini-2.5-flash").replace(/^gemini-/, "Gemini ").replace(/^claude-/, "Claude ").replace(/-/g, " ").replace(/\b(pro|flash|lite|sonnet|opus|haiku)\b/gi, (s) => s.charAt(0).toUpperCase() + s.slice(1)))}</span>
               </div>
             </div>
-            <div style="display:flex;gap:8px;">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <a class="sf-btn" href="/admin">${SF_ICONS.refresh}<span>重新整理</span></a>
               <a class="sf-btn" href="/admin/export">${SF_ICONS.dl}<span>當日報表</span></a>
               ${(process.env.LIFF_ID_ORDER_REVIEW||"").trim() ? `<button type="button" class="sf-btn" onclick="(async()=>{try{await navigator.clipboard.writeText('https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');this.querySelector('span').textContent='已複製，請貼到 LINE';setTimeout(()=>this.querySelector('span').textContent='手機審核連結',2000);}catch(e){prompt('複製失敗，請手動複製：','https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');}})();" title="複製訂單審核 LIFF 連結，貼到 LINE 開啟"><span>📱 手機審核連結</span></button>` : ""}
@@ -3351,11 +3360,11 @@ function createAdminRouter() {
               </div>
               <div id="cost-gemini" style="border:1px solid var(--line);border-radius:var(--radius);padding:14px;background:var(--bg-1);">
                 <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
-                  <strong style="font-size:13px;">Gemini 用量（估算）</strong>
+                  <strong style="font-size:13px;">AI 視覺辨識用量（估算）</strong>
                   <a href="/admin/recognition-stats" class="mono" style="font-size:11px;">辨識成效 →</a>
                 </div>
                 <div id="cost-gemini-body" style="min-height:96px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;">載入中…</div>
-                <div style="margin-top:8px;font-size:11px;color:var(--txt-3);">以 Google 公告單價計算，實際以 GCP 帳單為準</div>
+                <div style="margin-top:8px;font-size:11px;color:var(--txt-3);">含 Gemini + Claude；以各家公告單價估算，實際以 GCP / Anthropic 帳單為準</div>
               </div>
             </div>
           </div>
@@ -3390,14 +3399,38 @@ function createAdminRouter() {
           function renderGemini(g){
             const box = $("#cost-gemini-body");
             if (!g || !g.ok) {
-              box.innerHTML = '<span style="color:var(--warn);">' + (g && g.error ? g.error : "無法統計 Gemini 用量") + '</span>';
+              box.innerHTML = '<span style="color:var(--warn);">' + (g && g.error ? g.error : "無法統計 AI 用量") + '</span>';
               return;
             }
             const t = g.today || { calls:0, tokens:0, usd:0 };
-            const m = g.month || { calls:0, tokens:0, usd:0, byModel:[] };
+            const m = g.month || { calls:0, tokens:0, usd:0, byModel:[], byVendor:{} };
+            // 供應商徽章樣式
+            function vendorBadge(v){
+              const styles = {
+                gemini: 'background:#e8f1ff;color:#1d4ed8;',
+                claude: 'background:#fff0e8;color:#c2410c;',
+                unknown: 'background:#f1f1f1;color:#666;',
+              };
+              const labels = { gemini: 'Gemini', claude: 'Claude', unknown: '?' };
+              const s = styles[v] || styles.unknown;
+              return '<span style="' + s + 'font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;margin-right:4px;">' + (labels[v] || v) + '</span>';
+            }
+            // 模型列：加上供應商徽章
             const modelRows = (m.byModel||[]).map(r =>
-              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--txt-2);padding:2px 0;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;">' + r.model + '</span><span class="mono">' + fmtInt(r.in + r.out) + ' tok · ' + fmtUsd(r.usd) + '</span></div>'
+              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--txt-2);padding:2px 0;align-items:center;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;">' + vendorBadge(r.vendor) + r.model + '</span><span class="mono">' + fmtInt(r.in + r.out) + ' tok · ' + fmtUsd(r.usd) + '</span></div>'
             ).join("");
+            // 供應商小計（本月）
+            const bv = m.byVendor || {};
+            const vendorCells = [];
+            if (bv.gemini && bv.gemini.calls > 0) {
+              vendorCells.push('<div style="font-size:11px;color:var(--txt-2);">' + vendorBadge('gemini') + '<span class="mono">' + fmtUsd(bv.gemini.usd) + ' · ' + fmtInt(bv.gemini.calls) + ' 次</span></div>');
+            }
+            if (bv.claude && bv.claude.calls > 0) {
+              vendorCells.push('<div style="font-size:11px;color:var(--txt-2);">' + vendorBadge('claude') + '<span class="mono">' + fmtUsd(bv.claude.usd) + ' · ' + fmtInt(bv.claude.calls) + ' 次</span></div>');
+            }
+            const vendorRow = vendorCells.length > 1
+              ? '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0;border-top:1px dashed var(--line);padding-top:6px;">' + vendorCells.join("") + '</div>'
+              : '';
             box.innerHTML =
               '<div style="width:100%;">' +
                 '<div style="display:flex;gap:12px;justify-content:space-around;text-align:center;margin-bottom:10px;">' +
@@ -3405,6 +3438,7 @@ function createAdminRouter() {
                   '<div style="border-left:1px solid var(--line);"></div>' +
                   '<div><div style="font-size:11px;color:var(--txt-3);">本月</div><div class="mono" style="font-size:18px;font-weight:600;">' + fmtUsd(m.usd) + '</div><div style="font-size:11px;color:var(--txt-2);">' + fmtInt(m.tokens) + ' tok · ' + fmtInt(m.calls) + ' 次</div></div>' +
                 '</div>' +
+                vendorRow +
                 (modelRows ? '<div style="border-top:1px dashed var(--line);padding-top:6px;">' + modelRows + '</div>' : '') +
               '</div>';
           }
@@ -3469,28 +3503,42 @@ function createAdminRouter() {
             res.status(500).json({ ok: false, error: e?.message || "刪除失敗" });
         }
     });
-    // === 費用概覽 API（LINE 訊息額度 + Gemini token 估算） ===
-    // 註：Gemini 單價依 Google 公告（per 1M tokens, USD），與 GCP 帳單可能略有差異；
+    // === 費用概覽 API（LINE 訊息額度 + AI 視覺辨識 token 估算）===
+    // 註：AI 單價依各家公告（per 1M tokens, USD），與實際帳單可能略有差異；
     //     LINE quota: -1 / type=none 代表無上限方案。
-    const GEMINI_PRICE_PER_M = {
-        "gemini-2.5-flash":      { in: 0.30,  out: 2.50 },
-        "gemini-2.5-flash-lite": { in: 0.10,  out: 0.40 },
-        "gemini-2.5-pro":        { in: 1.25,  out: 10.00 },
-        "gemini-2.0-flash":      { in: 0.10,  out: 0.40 },
-        "gemini-2.0-flash-lite": { in: 0.075, out: 0.30 },
-        "gemini-1.5-flash":      { in: 0.075, out: 0.30 },
-        "gemini-1.5-pro":        { in: 1.25,  out: 5.00 },
+    const AI_PRICE_PER_M = {
+        // Gemini
+        "gemini-2.5-flash":      { in: 0.30,  out: 2.50,  vendor: "gemini" },
+        "gemini-2.5-flash-lite": { in: 0.10,  out: 0.40,  vendor: "gemini" },
+        "gemini-2.5-pro":        { in: 1.25,  out: 10.00, vendor: "gemini" },
+        "gemini-2.0-flash":      { in: 0.10,  out: 0.40,  vendor: "gemini" },
+        "gemini-2.0-flash-lite": { in: 0.075, out: 0.30,  vendor: "gemini" },
+        "gemini-1.5-flash":      { in: 0.075, out: 0.30,  vendor: "gemini" },
+        "gemini-1.5-pro":        { in: 1.25,  out: 5.00,  vendor: "gemini" },
+        // Claude（Anthropic 公告：sonnet-4-5 in $3/out $15、opus-4-5 in $15/out $75、haiku-4-5 in $1/out $5）
+        "claude-sonnet-4-5":     { in: 3.00,  out: 15.00, vendor: "claude" },
+        "claude-opus-4-5":       { in: 15.00, out: 75.00, vendor: "claude" },
+        "claude-haiku-4-5":      { in: 1.00,  out: 5.00,  vendor: "claude" },
+        "claude-sonnet-4":       { in: 3.00,  out: 15.00, vendor: "claude" },
+        "claude-opus-4":         { in: 15.00, out: 75.00, vendor: "claude" },
+        "claude-haiku-4":        { in: 1.00,  out: 5.00,  vendor: "claude" },
     };
-    const GEMINI_PRICE_DEFAULT = { in: 0.30, out: 2.50 };
+    // 向後相容
+    const GEMINI_PRICE_PER_M = AI_PRICE_PER_M;
+    const AI_PRICE_DEFAULT = { in: 0.30, out: 2.50, vendor: "unknown" };
+    const GEMINI_PRICE_DEFAULT = AI_PRICE_DEFAULT;
     function priceForModel(name) {
         const k = String(name || "").toLowerCase().trim();
-        if (!k) return GEMINI_PRICE_DEFAULT;
-        if (GEMINI_PRICE_PER_M[k]) return GEMINI_PRICE_PER_M[k];
+        if (!k) return AI_PRICE_DEFAULT;
+        if (AI_PRICE_PER_M[k]) return AI_PRICE_PER_M[k];
         // 容錯：含關鍵字就比對最相近的
-        for (const key of Object.keys(GEMINI_PRICE_PER_M)) {
-            if (k.startsWith(key)) return GEMINI_PRICE_PER_M[key];
+        for (const key of Object.keys(AI_PRICE_PER_M)) {
+            if (k.startsWith(key)) return AI_PRICE_PER_M[key];
         }
-        return GEMINI_PRICE_DEFAULT;
+        // 完全未知但能辨別供應商
+        if (k.startsWith("claude-")) return { in: 3.00, out: 15.00, vendor: "claude" };
+        if (k.startsWith("gemini-")) return { in: 0.30, out: 2.50, vendor: "gemini" };
+        return AI_PRICE_DEFAULT;
     }
     async function fetchLineQuota() {
         const token = (process.env.LINE_CHANNEL_ACCESS_TOKEN || "").trim();
@@ -3532,18 +3580,26 @@ function createAdminRouter() {
             : "SELECT model_name, SUM(COALESCE(prompt_tokens,0)) AS pin, SUM(COALESCE(candidates_tokens,0)) AS pout, COUNT(*) AS n FROM gemini_usage_log WHERE strftime('%Y-%m', datetime(created_at, '+8 hours')) = strftime('%Y-%m', datetime('now', '+8 hours')) GROUP BY model_name";
         function summarize(rows) {
             const byModel = [];
+            const byVendor = { gemini: { calls: 0, tokens: 0, usd: 0 }, claude: { calls: 0, tokens: 0, usd: 0 }, unknown: { calls: 0, tokens: 0, usd: 0 } };
             let calls = 0, tokens = 0, usd = 0;
             for (const r of (rows || [])) {
                 const pin = Number(r.pin) || 0;
                 const pout = Number(r.pout) || 0;
                 const p = priceForModel(r.model_name);
                 const cost = (pin / 1_000_000) * p.in + (pout / 1_000_000) * p.out;
-                byModel.push({ model: r.model_name || "(unknown)", calls: Number(r.n) || 0, in: pin, out: pout, usd: Math.round(cost * 10000) / 10000 });
+                const vendor = p.vendor || "unknown";
+                byModel.push({ model: r.model_name || "(unknown)", vendor, calls: Number(r.n) || 0, in: pin, out: pout, usd: Math.round(cost * 10000) / 10000 });
                 calls += Number(r.n) || 0;
                 tokens += pin + pout;
                 usd += cost;
+                if (!byVendor[vendor]) byVendor[vendor] = { calls: 0, tokens: 0, usd: 0 };
+                byVendor[vendor].calls += Number(r.n) || 0;
+                byVendor[vendor].tokens += pin + pout;
+                byVendor[vendor].usd += cost;
             }
-            return { calls, tokens, usd: Math.round(usd * 10000) / 10000, byModel };
+            // 圓化 vendor usd
+            for (const k of Object.keys(byVendor)) byVendor[k].usd = Math.round(byVendor[k].usd * 10000) / 10000;
+            return { calls, tokens, usd: Math.round(usd * 10000) / 10000, byModel, byVendor };
         }
         try {
             const [todayRows, monthRows] = await Promise.all([
@@ -4894,9 +4950,16 @@ function createAdminRouter() {
             <label style="display:block;margin:8px 0;">模型（留空＝環境變數預設）
               <select name="model_name" style="margin-top:4px;min-width:280px;">
                 <option value="">（GEMINI_MODEL_VISION／GEMINI_MODEL）</option>
-                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-                <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                <optgroup label="Gemini">
+                  <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                  <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                  <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                </optgroup>
+                <optgroup label="Claude（需設定 ANTHROPIC_API_KEY）">
+                  <option value="claude-sonnet-4-5">claude-sonnet-4-5（推薦）</option>
+                  <option value="claude-opus-4-5">claude-opus-4-5（最強）</option>
+                  <option value="claude-haiku-4-5">claude-haiku-4-5（最便宜）</option>
+                </optgroup>
               </select>
             </label>
             <label style="display:block;margin:8px 0;">Few-Shot 策略
@@ -6016,8 +6079,8 @@ function createAdminRouter() {
      * 後台「重新辨識」：文字略過僅含「[圖片]」的行後再解析，並對 order_attachments 逐張向 LINE 取圖，
      * 與 webhook 相同流程（OCR → 規則 → Gemini 文字 → Gemini 視覺）。
      */
-    async function rebuildOrderItemsForReRecognize(orderId, customerId, rawMessage, attachmentRows) {
-        const result = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, orderId, customerId, rawMessage, attachmentRows);
+    async function rebuildOrderItemsForReRecognize(orderId, customerId, rawMessage, attachmentRows, imageExtraOpts) {
+        const result = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, orderId, customerId, rawMessage, attachmentRows, imageExtraOpts);
         if (result.ok)
             return { ok: true };
         return { ok: false, error: result.error || "parse" };
@@ -7634,17 +7697,35 @@ function createAdminRouter() {
                 new_product_id: productId,
             },
         });
+        // G25：記憶範圍由前端確認步驟決定。
+        //   scope=none     → 只改這一筆訂單，不寫任何別名/記憶（預設，最保守）
+        //   scope=customer → 記住「此客戶」：客戶別名 + 筆跡記憶（不動全公司）
+        //   scope=global   → 記住「全公司」：全公司別名 + 客戶別名 + 筆跡記憶
+        // 別名一律 UPSERT（已存在但指向不同品項 → 更新），讓「人工最新校正」永遠為準。
+        const learnScopeRaw = String(req.body.scope || "none").trim().toLowerCase();
+        const learnScope = (learnScopeRaw === "customer" || learnScopeRaw === "global") ? learnScopeRaw : "none";
         const rawNameTrim = item?.raw_name?.trim();
-        if (rawNameTrim) {
-            const existing = await db.prepare("SELECT id FROM product_aliases WHERE alias = ?").get(rawNameTrim);
-            if (!existing) {
-                try {
-                    const paId = (0, id_js_1.newId)("pa");
-                    await db.prepare("INSERT INTO product_aliases (id, product_id, alias) VALUES (?, ?, ?)").run(paId, productId, rawNameTrim);
+        if (rawNameTrim && learnScope !== "none") {
+            // 全公司俗名別名：僅 scope=global 時寫入/更新
+            if (learnScope === "global") {
+                const existing = await db.prepare("SELECT id, product_id FROM product_aliases WHERE alias = ?").get(rawNameTrim);
+                if (!existing) {
+                    try {
+                        const paId = (0, id_js_1.newId)("pa");
+                        await db.prepare("INSERT INTO product_aliases (id, product_id, alias) VALUES (?, ?, ?)").run(paId, productId, rawNameTrim);
+                    }
+                    catch (_) { /* 可能重複 */ }
                 }
-                catch (_) { /* 可能重複 */ }
+                else if (String(existing.product_id) !== String(productId)) {
+                    try {
+                        await db.prepare("UPDATE product_aliases SET product_id = ? WHERE id = ?").run(productId, existing.id);
+                        console.log("[learn] product_aliases 更新對應 alias=%s %s→%s", rawNameTrim, existing.product_id, productId);
+                    }
+                    catch (_) { /* 更新失敗不阻擋 */ }
+                }
             }
-            const existingCpa = await db.prepare("SELECT id FROM customer_product_aliases WHERE customer_id = ? AND alias = ?").get(order.customer_id, rawNameTrim);
+            // 客戶專用別名：scope=customer 或 global 都寫（UPSERT；resolve 時 cpa 優先級最高）
+            const existingCpa = await db.prepare("SELECT id, product_id FROM customer_product_aliases WHERE customer_id = ? AND alias = ?").get(order.customer_id, rawNameTrim);
             if (!existingCpa) {
                 try {
                     const cpaId = (0, id_js_1.newId)("cpa");
@@ -7652,12 +7733,20 @@ function createAdminRouter() {
                 }
                 catch (_) { /* 可能重複 */ }
             }
+            else if (String(existingCpa.product_id) !== String(productId)) {
+                try {
+                    await db.prepare("UPDATE customer_product_aliases SET product_id = ? WHERE id = ?").run(productId, existingCpa.id);
+                    console.log("[learn] customer_product_aliases 更新對應 cust=%s alias=%s %s→%s", order.customer_id, rawNameTrim, existingCpa.product_id, productId);
+                }
+                catch (_) { /* 更新失敗不阻擋 */ }
+            }
             try {
-                // recordHandwritingHint 內部會偵測 product 是否變更：相同 → hit_count++；
-                // 不同 → 重置為 1 並 wrong_count++，分數透過 prev_product_id 比較自動降權。
                 await customer_handwriting_hints_js_1.recordHandwritingHint(db, order.customer_id, rawNameTrim, productId);
             }
             catch (_) { /* 筆跡對照表寫入失敗不阻擋 */ }
+        }
+        else {
+            console.log("[learn] scope=none，只改本筆訂單不記憶 item=%s", itemId);
         }
         const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest";
         if (wantsJson) {
@@ -8142,7 +8231,7 @@ function createAdminRouter() {
         // 只取有效（未作廢）的品項
         const items = await db.prepare(`
       SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.display_order, oi.need_review, oi.sub_customer, oi.confidence_score,
-        p.id AS product_id, p.erp_code, p.name AS product_name
+        p.id AS product_id, p.erp_code, p.name AS product_name, p.unit AS product_unit
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = ? AND oi.voided_at IS NULL
       ORDER BY COALESCE(oi.display_order, 999999), oi.id
@@ -8164,11 +8253,27 @@ function createAdminRouter() {
             const c = i.confidence_score;
             return c != null && Number(c) < lowConfThreshold;
         }).length;
+        // G21：產品公斤計價 vs 辨識成非公斤單位的計數
+        const normalizeUnitForKgCheckTop = (u) => {
+            const s = String(u || "").trim().toLowerCase().replace(/\s+/g, "");
+            if (!s) return "";
+            if (s === "公斤" || s === "kg" || s === "k") return "公斤";
+            return s;
+        };
+        const unitMismatchCount = items.filter((i) => {
+            if (i.need_review === 1) return false;
+            const pu = normalizeUnitForKgCheckTop(i.product_unit);
+            const ou = normalizeUnitForKgCheckTop(i.unit);
+            return pu === "公斤" && ou && ou !== "公斤";
+        }).length;
         const needReviewNote = needReviewCount > 0
             ? `<p class="notion-msg err" style="margin:8px 0;"><strong>${needReviewCount}</strong> 項待確認 · <a href="/admin/review">待確認清單</a></p>`
             : "";
         const lowConfNote = lowConfCount > 0
             ? `<p class="notion-msg" style="margin:8px 0;background:#fef2f2;color:#b91c1c;border-color:#fecaca;"><strong>${lowConfCount}</strong> 項辨識信心 &lt; ${lowConfThreshold} 分，建議人工複核（紅色徽章）。</p>`
+            : "";
+        const unitMismatchNote = unitMismatchCount > 0
+            ? `<p class="notion-msg" style="margin:8px 0;background:#fef9c3;color:#854d0e;border-color:#fde047;"><strong>${unitMismatchCount}</strong> 項貨品主檔為「公斤」計價，但這張單辨識成非公斤單位（黃色底色行）。出貨前請確認單位／數量。</p>`
             : "";
         const prevOrder = await db.prepare(`
       SELECT id FROM orders
@@ -8215,15 +8320,30 @@ function createAdminRouter() {
                     confPill = `<span class="conf-pill conf-low" title="辨識信心低（${conf}/100），建議核對">${conf}</span>`;
                 }
             }
+            // G21：產品本身以「公斤」計價 但辨識成非公斤單位 → 加黃底警示
+            // 正規化：公斤 / kg / KG / Kg / k / K 一律視為公斤；其餘（件/包/條/顆/把/斤/盒/箱/個…）視為非公斤
+            const normalizeUnitForKgCheck = (u) => {
+                const s = String(u || "").trim().toLowerCase().replace(/\s+/g, "");
+                if (!s) return "";
+                if (s === "公斤" || s === "kg" || s === "k") return "公斤";
+                return s;
+            };
+            const productUnitNorm = normalizeUnitForKgCheck(i.product_unit);
+            const itemUnitNorm = normalizeUnitForKgCheck(i.unit);
+            const isUnitMismatchKg = i.need_review !== 1 && productUnitNorm === "公斤" && itemUnitNorm && itemUnitNorm !== "公斤";
+            const unitMismatchBadge = isUnitMismatchKg
+                ? `<span class="unit-mismatch-badge" title="此品項在貨品主檔以「公斤」計價，但這張單辨識成「${escapeHtml(i.unit || "")}」。請確認後修改單位／數量。">⚠ 單位非公斤</span>`
+                : "";
             const productCell = i.need_review === 1
                 ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
-                : `<span class="order-final-product">${nameEditLink}</span>${confPill} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
+                : `<span class="order-final-product">${nameEditLink}</span>${confPill}${unitMismatchBadge} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
             const subCustomerVal = (i.sub_customer && String(i.sub_customer).trim()) ? escapeAttr(String(i.sub_customer).trim()) : "";
             const isLowConf = i.need_review !== 1 && conf != null && conf < lowConfThreshold;
-            const rowClasses = i.need_review === 1
-                ? "order-item-need-review"
-                : (isLowConf ? "order-item-low-conf" : "");
+            let rowClasses = "";
+            if (i.need_review === 1) rowClasses = "order-item-need-review";
+            else if (isLowConf) rowClasses = "order-item-low-conf";
+            if (isUnitMismatchKg) rowClasses = rowClasses ? (rowClasses + " order-item-unit-mismatch") : "order-item-unit-mismatch";
             const rawCard = `${idx + 1}. 原始：${String(i.raw_name ?? "").trim() || "—"} ${String(q)}${(i.unit && i.unit.trim()) || ""}`;
             return `<tr data-item-id="${escapeAttr(i.item_id)}" data-raw-name="${escapeAttr(i.raw_name ?? "")}" data-line-unit="${escapeAttr((i.unit && i.unit.trim()) || "")}" data-raw-card="${escapeAttr(rawCard)}" class="${escapeAttr(rowClasses)}">
             <td class="order-detail-col-cb"><input type="checkbox" class="item-select-cb" name="selected_items" value="${escapeAttr(i.item_id)}"></td>
@@ -8364,6 +8484,7 @@ function createAdminRouter() {
         <div style="padding:0 32px;">
           ${needReviewNote}
           ${lowConfNote}
+          ${unitMismatchNote}
           ${req.query.ok === "product" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已更新對應品項</div>" : ""}
           ${req.query.ok === "prod_edit" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已儲存品項</div>" : ""}
           ${req.query.ok === "approved" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已標記為已確認</div>" : ""}
@@ -8538,11 +8659,22 @@ function createAdminRouter() {
                 <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:${order.raw_message && String(order.raw_message).replace(/\[圖片\]/g,"").trim() ? "14px" : "0"};">
                   <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">客戶傳的照片 · ${attachments.length} 張</div>
                   ${attachments.map((a, idx) => `
-                    <a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener" style="display:block;text-decoration:none;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--bg-2);">
-                      <img src="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" alt="附件 ${idx + 1}" loading="lazy" style="display:block;width:100%;height:auto;max-height:480px;object-fit:contain;background:#fff;">
-                      <div style="padding:6px 10px;font-size:11px;color:var(--txt-3);background:var(--bg-2);">圖 ${idx + 1} · 點擊放大</div>
-                    </a>
+                    <div style="border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#fff;">
+                      <div style="overflow:hidden;display:flex;align-items:center;justify-content:center;">
+                        <img class="order-attach-img" src="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" alt="附件 ${idx + 1}" loading="lazy" style="display:block;width:100%;height:auto;max-height:480px;object-fit:contain;background:#fff;transition:transform .15s;">
+                      </div>
+                      <a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener" style="display:block;padding:6px 10px;font-size:11px;color:var(--txt-3);background:var(--bg-2);text-decoration:none;">圖 ${idx + 1} · 點擊放大（新分頁）</a>
+                    </div>
                   `).join("")}
+                  <!-- 人工轉正工具列：自動轉正若判錯，可手動轉到正確角度再重新辨識 -->
+                  <div id="rotateToolbar" style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 10px;background:var(--bg-2);border:var(--hairline);border-radius:var(--radius);">
+                    <span style="font-size:12px;color:var(--txt-2);">圖片歪了？手動轉正：</span>
+                    <button type="button" class="sf-btn sm" id="rotLeftBtn" title="左轉 90°">↺ 左轉</button>
+                    <button type="button" class="sf-btn sm" id="rotRightBtn" title="右轉 90°">↻ 右轉</button>
+                    <span id="rotAngleLabel" style="font-size:12px;color:var(--txt-3);font-family:var(--font-mono);min-width:48px;">0°</span>
+                    <button type="button" class="sf-btn sm primary" id="rotReRecogBtn" disabled title="把照片轉到目前角度後重新辨識（會覆寫明細）">依此角度重新辨識</button>
+                    <span id="rotStatus" style="font-size:12px;color:var(--txt-3);"></span>
+                  </div>
                 </div>
               ` : ""}
               ${(() => {
@@ -8629,10 +8761,28 @@ function createAdminRouter() {
         </div>
         <div id="productModal" class="notion-modal-overlay" style="display:none;">
           <div class="notion-modal">
-            <h3>選擇品項（模糊搜尋）</h3>
-            <input type="search" class="notion-modal-search" id="productSearch" placeholder="輸入品名、料號、條碼...">
-            <div class="notion-modal-list" id="productList"></div>
-            <div class="notion-modal-actions"><button type="button" class="btn" onclick="document.getElementById('productModal').style.display='none'">取消</button></div>
+            <div id="productPickView">
+              <h3>選擇品項（模糊搜尋）</h3>
+              <input type="search" class="notion-modal-search" id="productSearch" placeholder="輸入品名、料號、條碼...">
+              <div class="notion-modal-list" id="productList"></div>
+              <div class="notion-modal-actions"><button type="button" class="btn" id="productPickCancel">取消</button></div>
+            </div>
+            <div id="productConfirmView" style="display:none;">
+              <h3 style="margin:0 0 12px;">確認對應與記憶範圍</h3>
+              <div style="background:var(--notion-sidebar,#f7f6f3);border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:15px;line-height:1.6;">
+                <div style="color:var(--notion-text-muted,#787774);font-size:12px;margin-bottom:4px;">原始辨識文字</div>
+                <div id="confirmRawName" style="font-weight:600;">—</div>
+                <div style="text-align:center;color:var(--notion-accent,#2383e2);font-size:18px;margin:4px 0;">↓ 對應到</div>
+                <div id="confirmProductName" style="font-weight:700;font-size:17px;color:var(--notion-accent,#2383e2);">—</div>
+              </div>
+              <p style="font-size:13px;color:var(--notion-text-muted,#787774);margin:0 0 10px;">這次的修正要記住嗎？（記住後，之後相同辨識文字會自動套用）</p>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                <button type="button" class="btn" id="confirmScopeNone" style="text-align:left;padding:10px 12px;">📝 <strong>只改這一筆</strong>　<span style="color:var(--notion-text-muted,#787774);font-size:12px;">不記憶，下次重新辨識</span></button>
+                <button type="button" class="btn btn-primary" id="confirmScopeCustomer" style="text-align:left;padding:10px 12px;">👤 <strong>記住此客戶</strong>　<span style="opacity:.85;font-size:12px;">此客戶以後都這樣對應（推薦）</span></button>
+                <button type="button" class="btn" id="confirmScopeGlobal" style="text-align:left;padding:10px 12px;">🏢 <strong>記住全公司</strong>　<span style="color:var(--notion-text-muted,#787774);font-size:12px;">所有客戶都套用（謹慎使用）</span></button>
+              </div>
+              <div class="notion-modal-actions" style="margin-top:12px;"><button type="button" class="btn" id="confirmBackBtn">← 重新選品項</button></div>
+            </div>
           </div>
         </div>
         <div id="productEditModal" class="notion-modal-overlay" style="display:none;">
@@ -8649,6 +8799,37 @@ function createAdminRouter() {
           var orderId = ${JSON.stringify(orderId)};
           var firstAttachmentId = ${JSON.stringify(attachments[0]?.id ?? null)};
           var returnPath = '/admin/orders/' + encodeURIComponent(orderId) + '#items';
+          // ── 人工轉正工具列 ──
+          (function(){
+            var imgs = document.querySelectorAll('.order-attach-img');
+            var leftBtn = document.getElementById('rotLeftBtn');
+            var rightBtn = document.getElementById('rotRightBtn');
+            var label = document.getElementById('rotAngleLabel');
+            var goBtn = document.getElementById('rotReRecogBtn');
+            var statusEl = document.getElementById('rotStatus');
+            if (!imgs.length || !goBtn) return;
+            var deg = 0;
+            function apply(){
+              imgs.forEach(function(im){ im.style.transform = 'rotate(' + deg + 'deg)'; });
+              if (label) label.textContent = deg + '°';
+              goBtn.disabled = (deg % 360 === 0);
+            }
+            if (leftBtn) leftBtn.addEventListener('click', function(){ deg = (deg + 270) % 360; apply(); });
+            if (rightBtn) rightBtn.addEventListener('click', function(){ deg = (deg + 90) % 360; apply(); });
+            if (goBtn) goBtn.addEventListener('click', function(){
+              if (deg % 360 === 0) return;
+              if (!confirm('把照片轉 ' + deg + '° 後重新辨識？將覆寫目前明細。')) return;
+              goBtn.disabled = true;
+              if (statusEl) statusEl.textContent = '辨識中…';
+              var body = 'degrees=' + encodeURIComponent(deg);
+              fetch('/admin/orders/' + encodeURIComponent(orderId) + '/re-recognize-rotated', {
+                method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' }, body: body
+              }).then(function(r){ return r.json(); }).then(function(d){
+                if (d && d.ok) { if (statusEl) statusEl.textContent = '完成，重新整理中…'; location.href = '/admin/orders/' + encodeURIComponent(orderId) + '?ok=rerecog#items'; }
+                else { if (statusEl) statusEl.textContent = ''; goBtn.disabled = false; alert((d && d.error) ? d.error : '辨識失敗'); }
+              }).catch(function(){ if (statusEl) statusEl.textContent = ''; goBtn.disabled = false; alert('請求失敗'); });
+            });
+          })();
           var modal = document.getElementById('productModal');
           var editModal = document.getElementById('productEditModal');
           var editFrame = document.getElementById('productEditFrame');
@@ -8656,7 +8837,22 @@ function createAdminRouter() {
           var listEl = document.getElementById('productList');
           var searchEl = document.getElementById('productSearch');
           var currentItemId = null;
+          var currentRawName = '';
+          var pendingProductId = null;
+          var pendingProductName = '';
           var formDirty = false;
+          var pickView = document.getElementById('productPickView');
+          var confirmView = document.getElementById('productConfirmView');
+          function showPickView(){ if(pickView) pickView.style.display=''; if(confirmView) confirmView.style.display='none'; }
+          function showConfirmView(){
+            if(pickView) pickView.style.display='none';
+            if(confirmView) confirmView.style.display='';
+            var rn = document.getElementById('confirmRawName');
+            var pn = document.getElementById('confirmProductName');
+            if(rn) rn.textContent = currentRawName || '（無原始文字）';
+            if(pn) pn.textContent = pendingProductName || '';
+          }
+          function closeProductModal(){ modal.style.display='none'; showPickView(); pendingProductId=null; }
           function openProductEdit(productId, ctx){
             if (!productId || !editModal || !editFrame) return;
             var u = '/admin/products/' + encodeURIComponent(productId) + '/edit?embed=1&return=' + encodeURIComponent(returnPath);
@@ -8709,7 +8905,8 @@ function createAdminRouter() {
           function searchProducts(q){
             fetch('/admin/api/products-search?q=' + encodeURIComponent(q)).then(function(r){ return r.json(); }).then(function(arr){
               listEl.innerHTML = arr.map(function(p){
-                return '<div data-product-id="' + (p.id || '') + '" class="product-option">' + (p.name || '') + ' ' + (p.erp_code || '') + ' ' + (p.teraoka_barcode || '') + '</div>';
+                var nm = (p.name || '').replace(/"/g, '&quot;');
+                return '<div data-product-id="' + (p.id || '') + '" data-product-name="' + nm + '" class="product-option">' + (p.name || '') + ' ' + (p.erp_code || '') + ' ' + (p.teraoka_barcode || '') + '</div>';
               }).join('') || '<div>無符合品項</div>';
             });
           }
@@ -8726,29 +8923,61 @@ function createAdminRouter() {
               return;
             }
             var pick = e.target.closest('.product-pick');
-            if (pick) { e.preventDefault(); currentItemId = pick.getAttribute('data-item-id'); modal.style.display = 'flex'; searchEl.value = pick.getAttribute('data-raw') || ''; searchProducts(searchEl.value); }
+            if (pick) {
+              e.preventDefault();
+              currentItemId = pick.getAttribute('data-item-id');
+              var pickTr = pick.closest('tr');
+              // 「改品項」連結無 data-raw，改從該列 data-raw-name 取得原始辨識文字
+              currentRawName = pick.getAttribute('data-raw') || (pickTr && pickTr.getAttribute('data-raw-name')) || '';
+              pendingProductId = null;
+              showPickView();
+              modal.style.display = 'flex';
+              searchEl.value = currentRawName;
+              searchProducts(searchEl.value);
+            }
           });
+          // 步驟一：選品項 → 不立刻存，先進入「確認記憶範圍」步驟
           listEl.addEventListener('click', function(e){
             var div = e.target.closest('.product-option');
             if (!div || !currentItemId) return;
             var productId = div.getAttribute('data-product-id');
             if (!productId) return;
-            modal.style.display = 'none';
-            var url = '/admin/orders/' + encodeURIComponent(orderId) + '/items/' + encodeURIComponent(currentItemId) + '/product';
-            var body = 'product_id=' + encodeURIComponent(productId);
+            pendingProductId = productId;
+            pendingProductName = div.getAttribute('data-product-name') || (div.textContent || '').trim();
+            showConfirmView();
+          });
+          // 步驟二：依使用者選的範圍送出（scope=none/customer/global）
+          function submitProductChange(scope){
+            if (!pendingProductId || !currentItemId) { closeProductModal(); return; }
+            var theItemId = currentItemId;
+            var url = '/admin/orders/' + encodeURIComponent(orderId) + '/items/' + encodeURIComponent(theItemId) + '/product';
+            var body = 'product_id=' + encodeURIComponent(pendingProductId) + '&scope=' + encodeURIComponent(scope);
+            closeProductModal();
             fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' }, body: body })
               .then(function(r){ return r.json(); })
               .then(function(data){
                 if (data && data.ok && data.productName !== undefined) {
-                  var tr = document.querySelector('tr[data-item-id="' + currentItemId.replace(/"/g, '\\"') + '"]');
+                  var tr = document.querySelector('tr[data-item-id="' + theItemId.replace(/"/g, '\\"') + '"]');
                   var pid = (data.productId || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
                   var pnm = (data.productName || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                   var namePart = pid ? ('<a href="#" class="product-name-edit" data-product-id="' + pid + '" title="編輯此品項（俗名、單位等）">' + pnm + '</a>') : pnm;
-                  if (tr && tr.cells[4]) tr.cells[4].innerHTML = namePart + ' <a href="#" class="product-pick product-change" data-item-id="' + currentItemId.replace(/"/g, '&quot;') + '">改品項</a>';
+                  if (tr && tr.cells[4]) tr.cells[4].innerHTML = namePart + ' <a href="#" class="product-pick product-change" data-item-id="' + theItemId.replace(/"/g, '&quot;') + '">改品項</a>';
                 } else { alert(data && data.error ? data.error : '更新失敗'); }
               })
               .catch(function(){ alert('請求失敗'); });
-          });
+          }
+          (function(){
+            var bNone = document.getElementById('confirmScopeNone');
+            var bCust = document.getElementById('confirmScopeCustomer');
+            var bGlob = document.getElementById('confirmScopeGlobal');
+            var bBack = document.getElementById('confirmBackBtn');
+            var bCancel = document.getElementById('productPickCancel');
+            if (bNone) bNone.addEventListener('click', function(){ submitProductChange('none'); });
+            if (bCust) bCust.addEventListener('click', function(){ submitProductChange('customer'); });
+            if (bGlob) bGlob.addEventListener('click', function(){ submitProductChange('global'); });
+            if (bBack) bBack.addEventListener('click', function(){ showPickView(); });
+            if (bCancel) bCancel.addEventListener('click', function(){ closeProductModal(); });
+          })();
           document.addEventListener('click', function(e){
             var up = e.target.closest('.btn-move-up');
             if (up) {
@@ -8822,7 +9051,15 @@ function createAdminRouter() {
                   if (result.ok && result.data && result.data.ok) {
                     formDirty = false;
                     var msg = document.getElementById('itemsFormSavedMsg');
-                    if (!msg) { msg = document.createElement('p'); msg.id = 'itemsFormSavedMsg'; msg.className = 'notion-msg ok'; itemsForm.querySelector('.notion-card').appendChild(msg); }
+                    if (!msg) {
+                      msg = document.createElement('p');
+                      msg.id = 'itemsFormSavedMsg';
+                      msg.className = 'notion-msg ok';
+                      msg.style.cssText = 'margin:8px 0;padding:8px 12px;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:6px;font-size:13px;';
+                      // 頁面已改 SF 設計，不一定有 .notion-card；改用穩健的容器尋找
+                      var container = itemsForm.querySelector('.notion-card') || itemsForm.querySelector('.sf-card') || itemsForm;
+                      container.insertBefore(msg, container.firstChild);
+                    }
                     msg.textContent = '已儲存。';
                     msg.style.display = 'block';
                     setTimeout(function(){ msg.style.display = 'none'; }, 3000);
@@ -9024,6 +9261,28 @@ function createAdminRouter() {
         catch (e) {
             console.error("[admin] re-recognize failed", e?.message || e, e?.stack);
             redirErr("rerecog");
+        }
+    });
+    /** 人工旋轉後重新辨識：把附件圖按指定角度轉正（跳過自動偵測），重跑辨識覆寫明細。回 JSON。 */
+    router.post("/orders/:orderId/re-recognize-rotated", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const { orderId } = req.params;
+        try {
+            const degRaw = parseInt(String(req.body.degrees || "0"), 10);
+            const deg = ((Number.isFinite(degRaw) ? degRaw : 0) % 360 + 360) % 360;
+            const order = await db.prepare("SELECT id, customer_id, raw_message FROM orders WHERE id = ?").get(orderId);
+            if (!order) { res.status(404).json({ ok: false, error: "訂單不存在" }); return; }
+            const attachments = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(orderId);
+            if (!attachments.length) { res.status(400).json({ ok: false, error: "此訂單沒有圖片附件，無法旋轉重新辨識。" }); return; }
+            const result = await rebuildOrderItemsForReRecognize(orderId, order.customer_id, order.raw_message, attachments, { forceRotateDeg: deg, skipAutoOrient: true });
+            if (!result.ok) {
+                res.json({ ok: false, error: "旋轉 " + deg + "° 後仍無法辨識出品項（error=" + (result.error || "parse") + "）。可換個角度再試。" });
+                return;
+            }
+            res.json({ ok: true, degrees: deg });
+        }
+        catch (e) {
+            console.error("[admin] re-recognize-rotated failed", e?.message || e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
         }
     });
     /** 手動將訂單附件圖 + 目前明細存為 Few-Shot 範例（圖檔存於 data/few-shot-examples，DB 僅存 image_path） */

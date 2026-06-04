@@ -48,6 +48,49 @@ function cacheSet(key, value) {
         parseCache.delete(oldest);
     }
 }
+/** 把品名標準化以便比對（去除空白、半形化、小寫化） */
+function normNameForCompare(s) {
+    return String(s || "").replace(/\s+/g, "").toLowerCase();
+}
+/**
+ * 視覺結果是否值得採用（A4 合理性檢查）：
+ * - 視覺 0 筆 → 拒絕
+ * - 視覺筆數 < OCR 筆數 → 拒絕（沿用 OCR，視覺可能漏看）
+ * - 視覺筆數 == OCR 筆數 → 採用（手寫辨識較可靠）
+ * - 視覺筆數 > OCR 筆數 →
+ *    - 若 OCR>0 且兩者品名重疊率 < 50% → 拒絕（疑似視覺幻想新品項）
+ *    - 若任一筆 quantity 超過合理門檻（>5000）→ 拒絕（OCR/視覺數字錯位）
+ *    - 否則採用
+ */
+function shouldAdoptVisionResult(ocrParsed, visionParsed) {
+    if (!Array.isArray(visionParsed) || visionParsed.length === 0)
+        return { ok: false, reason: "vision_empty" };
+    // 任一筆數量極端 → 拒絕（手寫 20kg 被讀成 20000 那類）
+    for (const v of visionParsed) {
+        const q = Number(v?.quantity);
+        if (Number.isFinite(q) && q > 5000)
+            return { ok: false, reason: `vision_qty_extreme(${q})` };
+    }
+    const ocrLen = Array.isArray(ocrParsed) ? ocrParsed.length : 0;
+    if (visionParsed.length < ocrLen)
+        return { ok: false, reason: "vision_fewer_than_ocr" };
+    if (visionParsed.length === ocrLen)
+        return { ok: true, reason: "same_count_vision_priority" };
+    // 視覺筆數較多：檢查品名重疊率（OCR 結果應該大致是視覺結果的子集）
+    if (ocrLen >= 3) {
+        const ocrNames = new Set(ocrParsed.map((p) => normNameForCompare(p?.rawName)));
+        let overlap = 0;
+        for (const v of visionParsed) {
+            const n = normNameForCompare(v?.rawName);
+            if (n && ocrNames.has(n))
+                overlap += 1;
+        }
+        const overlapRate = ocrLen ? overlap / ocrLen : 1;
+        if (overlapRate < 0.5)
+            return { ok: false, reason: `low_overlap(${(overlapRate * 100).toFixed(0)}%)` };
+    }
+    return { ok: true, reason: "more_items_passes_check" };
+}
 /** 文字結果是否「強到」可以略過視覺模型？需明確 opt-in（LINE_SKIP_VISION_WHEN_TEXT_STRONG=1）。 */
 function isTextResultStrongEnough(parsed) {
     if (!Array.isArray(parsed) || parsed.length < 3)
@@ -85,7 +128,12 @@ function isTextResultStrongEnough(parsed) {
  * @param options.subClientId / options.sub_client_id 可選，篩選子客戶歷史品項
  */
 async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
-    const cacheKey = buildCacheKey(buffer, fallbackUnit, options);
+    // 人工指定角度 / 跳過自動轉正時不走快取（同一張原圖在不同角度下結果不同）
+    const forceRotateDeg = Number(options?.forceRotateDeg);
+    const hasForceRotate = Number.isFinite(forceRotateDeg) && (((forceRotateDeg % 360) + 360) % 360) !== 0;
+    const skipAutoOrient = Boolean(options?.skipAutoOrient) || hasForceRotate;
+    const bypassCache = hasForceRotate || Boolean(options?.skipAutoOrient);
+    const cacheKey = bypassCache ? null : buildCacheKey(buffer, fallbackUnit, options);
     if (cacheKey) {
         const hit = cacheGet(cacheKey);
         if (hit) {
@@ -116,6 +164,22 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
         geminiTextOpts.customerId = options.customerId;
     }
     const hasGeminiTextOpts = Object.keys(geminiTextOpts).length > 0;
+    // G26：自動轉正。餐飲客戶常把直式訂購單橫拍，影像無 EXIF 方向，送辨識會嚴重對錯行／幻想數量。
+    // 送 OCR/Gemini 前先把圖轉正（偵測失敗回原圖，不阻擋流程）。
+    // 人工指定 forceRotateDeg → 直接轉該角度、不跑自動偵測；skipAutoOrient → 完全不轉。
+    if (buffer?.length) {
+        try {
+            if (hasForceRotate) {
+                const deg = ((forceRotateDeg % 360) + 360) % 360;
+                buffer = await require("sharp")(buffer).rotate(deg).jpeg({ quality: 85 }).toBuffer();
+                console.log("[parse-order-from-image] 人工指定旋轉 %d°", deg);
+            }
+            else if (!skipAutoOrient) {
+                buffer = await require("./auto-orient-image.js").autoOrientImageBuffer(buffer);
+            }
+        }
+        catch (_) { /* 轉正失敗沿用原圖 */ }
+    }
     let ocrText = null;
     if (buffer?.length && process.env.GOOGLE_CLOUD_VISION_API_KEY) {
         try {
@@ -202,14 +266,13 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
                 confidenceScore: p.confidenceScore != null ? p.confidenceScore : null,
             }));
             visionParsed = (0, order_parsed_heuristics_js_1.filterLikelyOcrJunkParsedItems)(visionParsed);
-            if (visionParsed.length > 0 && visionParsed.length >= parsed.length) {
-                if (visionParsed.length > parsed.length) {
-                    console.log("[parse-order-from-image] 採用 Gemini 視覺（規則/OCR 筆數=%s 視覺筆數=%s）", parsed.length, visionParsed.length);
-                }
-                else {
-                    console.log("[parse-order-from-image] Gemini 視覺與 OCR 同筆數（%s 筆），視覺結果優先（手寫辨識較可靠）", visionParsed.length);
-                }
+            // A4 合理性檢查：避免視覺幻想品項或暴增數量直接覆蓋乾淨的 OCR 結果
+            const adopt = shouldAdoptVisionResult(parsed, visionParsed);
+            if (adopt.ok) {
+                console.log("[parse-order-from-image] 採用 Gemini 視覺（OCR=%s 視覺=%s，原因=%s）", parsed.length, visionParsed.length, adopt.reason);
                 parsed = visionParsed;
+            } else if (visionParsed.length > 0) {
+                console.warn("[parse-order-from-image] 視覺結果未通過合理性檢查，沿用 OCR/文字結果（OCR=%s 視覺=%s，理由=%s）", parsed.length, visionParsed.length, adopt.reason);
             }
         }
     }

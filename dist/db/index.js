@@ -115,6 +115,30 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_orders_line_message_id ON orders(line_message_id)");
     }
     catch (_) { /* index may already exist */ }
+    // G13: orders.order_no UNIQUE — 防止多實例 Cloud Run 訂單號競態
+    try {
+        const dups = sqlite.prepare("SELECT order_no, COUNT(*) AS n FROM orders WHERE order_no IS NOT NULL AND order_no <> '' GROUP BY order_no HAVING COUNT(*) > 1").all();
+        if (dups.length) {
+            console.warn("[migration] orders.order_no 發現 %d 組重複，UNIQUE index 暫不建立。請至後台清查：", dups.length);
+            for (const d of dups.slice(0, 10)) console.warn("  order_no=%s 出現 %d 次", d.order_no, d.n);
+        } else {
+            sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_order_no ON orders(order_no) WHERE order_no IS NOT NULL");
+            console.log("[migration] orders.order_no UNIQUE index 已建立（或已存在）");
+        }
+    }
+    catch (e) { console.warn("[migration] orders.order_no UNIQUE 檢查/建立失敗:", e?.message || e); }
+    // G15: LINE 收單 session 持久化（SQLite）
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS line_collect_sessions (
+          group_id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL,
+          customer_id TEXT NOT NULL,
+          all_order_ids_json TEXT,
+          last_activity_at INTEGER NOT NULL,
+          updated_at TEXT NOT NULL
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_line_sessions_last_activity ON line_collect_sessions(last_activity_at)");
+    } catch (e) { console.warn("[migration] line_collect_sessions(SQLite) 建立失敗:", e?.message || e); }
     try {
         sqlite.exec("ALTER TABLE inventory_warehouse_products ADD COLUMN safety_stock REAL NOT NULL DEFAULT 0");
     }
@@ -508,6 +532,31 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_orders_line_message_id ON orders(line_message_id)");
             }
             catch (_) { /* index may already exist */ }
+            // G13: orders.order_no UNIQUE — 防止多實例 Cloud Run 訂單號競態
+            try {
+                const dupRes = await client.query("SELECT order_no, COUNT(*) AS n FROM orders WHERE order_no IS NOT NULL AND order_no <> '' GROUP BY order_no HAVING COUNT(*) > 1");
+                const dups = dupRes.rows || [];
+                if (dups.length) {
+                    console.warn("[migration] orders.order_no 發現 %d 組重複，UNIQUE index 暫不建立。請至後台清查：", dups.length);
+                    for (const d of dups.slice(0, 10)) console.warn("  order_no=%s 出現 %s 次", d.order_no, d.n);
+                } else {
+                    await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_order_no ON orders(order_no) WHERE order_no IS NOT NULL");
+                    console.log("[migration] orders.order_no UNIQUE index 已建立（或已存在）");
+                }
+            }
+            catch (e) { console.warn("[migration] orders.order_no UNIQUE 檢查/建立失敗:", e?.message || e); }
+            // G15: LINE 收單 session 持久化（PostgreSQL）
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS line_collect_sessions (
+                  group_id TEXT PRIMARY KEY,
+                  order_id TEXT NOT NULL,
+                  customer_id TEXT NOT NULL,
+                  all_order_ids_json TEXT,
+                  last_activity_at BIGINT NOT NULL,
+                  updated_at TIMESTAMPTZ NOT NULL
+                )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_line_sessions_last_activity ON line_collect_sessions(last_activity_at)");
+            } catch (e) { console.warn("[migration] line_collect_sessions(PG) 建立失敗:", e?.message || e); }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), line_message_id TEXT NOT NULL, created_at TIMESTAMPTZ)");
             }

@@ -11,6 +11,7 @@ exports.loadGoldenExampleRows = loadGoldenExampleRows;
 exports.runVisionGoldenEval = runVisionGoldenEval;
 const gemini_order_helpers_js_1 = require("./gemini-order-helpers.js");
 const gemini_prompt_resolve_js_1 = require("./gemini-prompt-resolve.js");
+const claude_vision_parse_js_1 = require("./claude-vision-parse.js");
 exports.EVAL_FULL_RUN_DAILY_CAP = 5;
 exports.EVAL_SETTINGS_DATE_KEY = "eval_harness_daily_date";
 exports.EVAL_SETTINGS_COUNT_KEY = "eval_harness_daily_full_count";
@@ -187,18 +188,31 @@ async function runVisionGoldenEval(db, opts) {
         try {
             const img = await gemini_order_helpers_js_1.readImagePathOrBase64(ex.image_path);
             const cust = await db.prepare("SELECT known_sub_customers FROM customers WHERE id = ?").get(ex.customer_id);
-            pred = await gemini_order_helpers_js_1.parseOrderVisionForEval(img.buffer, {
-                db,
-                customerId: ex.customer_id,
-                promptBody,
-                promptVersionId: resolvedPv,
-                modelName: modelName || undefined,
-                fewShotStrategy,
-                exampleLimit,
-                excludeExampleIds: [ex.id],
-                knownSubCustomers: cust?.known_sub_customers ?? "",
-                recordUsage: opts?.recordUsage !== false,
-            });
+            // G17：Claude 模型分流（同 prompt、同 schema，方便雙模型對照）
+            if (claude_vision_parse_js_1.isClaudeModelName(modelName)) {
+                pred = await claude_vision_parse_js_1.parseOrderVisionWithClaude(img.buffer, {
+                    db,
+                    customerId: ex.customer_id,
+                    promptBody,
+                    promptVersionId: resolvedPv,
+                    modelName: modelName,
+                    knownSubCustomers: cust?.known_sub_customers ?? "",
+                    recordUsage: opts?.recordUsage !== false,
+                });
+            } else {
+                pred = await gemini_order_helpers_js_1.parseOrderVisionForEval(img.buffer, {
+                    db,
+                    customerId: ex.customer_id,
+                    promptBody,
+                    promptVersionId: resolvedPv,
+                    modelName: modelName || undefined,
+                    fewShotStrategy,
+                    exampleLimit,
+                    excludeExampleIds: [ex.id],
+                    knownSubCustomers: cust?.known_sub_customers ?? "",
+                    recordUsage: opts?.recordUsage !== false,
+                });
+            }
             if (!pred)
                 apiErrors++;
         }
