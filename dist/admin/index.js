@@ -4485,6 +4485,39 @@ function createAdminRouter() {
             res.status(500).send("匯出失敗：" + (e?.message || e));
         }
     });
+    // 匯出「機器人目前所在的 LINE 群組」清單（已綁定客戶 + 待綁定）
+    router.get("/groups/export.xlsx", async (req, res) => {
+        try {
+            const custs = await db.prepare("SELECT name, line_group_id, active FROM customers ORDER BY name ASC").all();
+            const bound = (custs || []).filter((c) => c.line_group_id && String(c.line_group_id).trim() !== "");
+            let pending = [];
+            try {
+                pending = await db.prepare("SELECT group_id, source_type, group_name, first_seen_at, last_seen_at FROM pending_line_groups ORDER BY last_seen_at DESC").all();
+            }
+            catch (_) { /* 表可能尚未建立 */ }
+            const fmtTs = (s) => s ? String(s).replace("T", " ").replace("Z", "").slice(0, 19) : "";
+            const rows = [["狀態", "客戶 / 群組名稱", "類型", "群組 ID", "啟用中", "最後出現"]];
+            for (const c of bound) {
+                rows.push(["已綁定", c.name || "", "群組", String(c.line_group_id).trim(),
+                    (c.active === 0 ? "否" : "是"), ""]);
+            }
+            for (const g of pending) {
+                const stype = g.source_type === "room" ? "聊天室" : g.source_type === "group" ? "群組" : "";
+                rows.push(["待綁定", g.group_name ? String(g.group_name) : "（未取得名稱）", stype,
+                    String(g.group_id || ""), "", fmtTs(g.last_seen_at)]);
+            }
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "機器人所在群組");
+            const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+            const ymd = new Date().toISOString().slice(0, 10);
+            res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            res.setHeader("Content-Disposition", `attachment; filename="line_groups_${ymd}.xlsx"`);
+            res.send(buf);
+        } catch (e) {
+            console.error("[admin] /groups/export.xlsx failed", e);
+            res.status(500).send("匯出失敗：" + (e?.message || e));
+        }
+    });
     router.get("/audit", async (req, res) => {
         const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
         const action = typeof req.query.action === "string" ? req.query.action.trim() : "";
@@ -11526,6 +11559,7 @@ function createAdminRouter() {
             </div>
             <div style="display:flex;gap:8px;">
               <a class="sf-btn" href="/admin/import-customers">${SF_ICONS.dl}<span>匯入 CSV</span></a>
+              <a class="sf-btn" href="/admin/groups/export.xlsx">${SF_ICONS.dl}<span>下載群組 Excel</span></a>
               <a class="sf-btn" href="/admin/line-binding">${SF_ICONS.link}<span>LINE 綁定檢查</span></a>
               <a class="sf-btn primary" href="/admin/customers/new">${SF_ICONS.plus}<span>新增客戶</span></a>
             </div>
