@@ -121,10 +121,14 @@ async function parseOrderMessage(text, fallbackUnit, options) {
     if (!rows || !rows.length)
         return [];
     const fb = (fallbackUnit && String(fallbackUnit).trim()) || "公斤";
+    // 客戶整段叫貨文字若「數字後面完全沒寫任何單位」，Gemini 仍可能臆測出「份／把」等單位。
+    // 依台東團膳慣例：沒寫單位即視為公斤（fallbackUnit），避免出貨單位錯誤。
+    // 只認「數字緊接單位」的寫法，避免把品名內含的單位字（如「油豆包」的「包」）誤判為有單位。
+    const sourceHasExplicitUnit = /[\d０-９](?:[.．][\d０-９]+)?\s*(公斤|公克|台斤|公兩|kg|KG|Kg|斤|包|盒|個|條|顆|粒|把|份|束|罐|瓶|盤|碗|株|盆|箱|籃|袋|件|[kK])/.test(t);
     const { dedupeParsedOrderRows } = require("./order-parsed-heuristics.js");
     const mapped = rows.map((p) => {
         const q = coerceQuantityFromGemini(p.quantity);
-        const u = coerceUnitFromGemini(p.unit) || fb;
+        const u = sourceHasExplicitUnit ? (coerceUnitFromGemini(p.unit) || fb) : fb;
         const remarkRaw = p.remark != null ? String(p.remark).trim() : "";
         const subRaw = p.subCustomer != null ? String(p.subCustomer).trim() : (p.sub_customer != null ? String(p.sub_customer).trim() : "");
         return {
