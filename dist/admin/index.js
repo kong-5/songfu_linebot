@@ -8692,11 +8692,17 @@ function createAdminRouter() {
                 <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:${order.raw_message && String(order.raw_message).replace(/\[圖片\]/g,"").trim() ? "14px" : "0"};">
                   <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">客戶傳的照片 · ${attachments.length} 張</div>
                   ${attachments.map((a, idx) => `
-                    <div style="border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#fff;">
-                      <div style="overflow:hidden;display:flex;align-items:center;justify-content:center;">
-                        <img class="order-attach-img" src="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" alt="附件 ${idx + 1}" loading="lazy" style="display:block;width:100%;height:auto;max-height:480px;object-fit:contain;background:#fff;transition:transform .15s;">
+                    <div class="order-attach-card" style="border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#fff;">
+                      <div class="order-attach-viewport" style="overflow:auto;max-height:70vh;background:#fff;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;">
+                        <img class="order-attach-img" data-scale="1" src="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" alt="附件 ${idx + 1}" loading="lazy" style="display:block;width:100%;height:auto;max-height:480px;object-fit:contain;background:#fff;transform-origin:top left;cursor:zoom-in;user-select:none;">
                       </div>
-                      <a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener" style="display:block;padding:6px 10px;font-size:11px;color:var(--txt-3);background:var(--bg-2);text-decoration:none;">圖 ${idx + 1} · 點擊放大（新分頁）</a>
+                      <div class="order-attach-zoombar" style="display:flex;align-items:center;gap:4px;padding:5px 8px;background:var(--bg-2);border-top:1px solid var(--line);">
+                        <button type="button" class="sf-btn sm zoom-out" title="縮小">－</button>
+                        <button type="button" class="sf-btn sm zoom-in" title="放大">＋</button>
+                        <span class="zoom-label" style="font-size:11px;color:var(--txt-3);font-family:var(--font-mono);min-width:40px;text-align:center;">100%</span>
+                        <button type="button" class="sf-btn sm zoom-reset" title="重設大小">重設</button>
+                        <a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener" title="另開新分頁看原圖" style="margin-left:auto;font-size:11px;color:var(--txt-3);text-decoration:none;">圖 ${idx + 1} · 新分頁↗</a>
+                      </div>
                     </div>
                   `).join("")}
                   <!-- 人工轉正工具列：自動轉正若判錯，可手動轉到正確角度再重新辨識 -->
@@ -8738,6 +8744,66 @@ function createAdminRouter() {
             </div>
           </div>
         </aside>
+        <script>
+        (function(){
+          var MIN = 1, MAX = 5, STEP = 0.5;
+          function fmt(s){ return Math.round(s*100) + "%"; }
+          document.querySelectorAll(".order-attach-card").forEach(function(card){
+            var img = card.querySelector(".order-attach-img");
+            var vp = card.querySelector(".order-attach-viewport");
+            var label = card.querySelector(".zoom-label");
+            if (!img || !vp) return;
+            function apply(s, cx, cy){
+              s = Math.max(MIN, Math.min(MAX, Math.round(s*100)/100));
+              var prev = parseFloat(img.dataset.scale) || 1;
+              // 以游標位置為中心縮放：保持該點在畫面上的相對位置
+              var rect = vp.getBoundingClientRect();
+              var px = (cx == null ? rect.width/2 : cx - rect.left) + vp.scrollLeft;
+              var py = (cy == null ? rect.height/2 : cy - rect.top) + vp.scrollTop;
+              img.dataset.scale = String(s);
+              img.style.width = (s*100) + "%";
+              img.style.maxHeight = s > 1 ? "none" : "480px";
+              img.style.cursor = s > 1 ? "grab" : "zoom-in";
+              if (label) label.textContent = fmt(s);
+              var ratio = s / prev;
+              vp.scrollLeft = px*ratio - (cx == null ? rect.width/2 : cx - rect.left);
+              vp.scrollTop = py*ratio - (cy == null ? rect.height/2 : cy - rect.top);
+            }
+            var bo = card.querySelector(".zoom-out"), bi = card.querySelector(".zoom-in"), br = card.querySelector(".zoom-reset");
+            if (bo) bo.addEventListener("click", function(){ apply((parseFloat(img.dataset.scale)||1) - STEP); });
+            if (bi) bi.addEventListener("click", function(){ apply((parseFloat(img.dataset.scale)||1) + STEP); });
+            if (br) br.addEventListener("click", function(){ apply(1); vp.scrollLeft = 0; vp.scrollTop = 0; });
+            // 點圖放大一級；放大後可拖曳平移
+            var dragging = false, moved = false, sx = 0, sy = 0, sl = 0, st = 0;
+            img.addEventListener("click", function(e){
+              if (moved) { moved = false; return; }
+              if ((parseFloat(img.dataset.scale)||1) < MAX) apply((parseFloat(img.dataset.scale)||1) + STEP, e.clientX, e.clientY);
+            });
+            img.addEventListener("pointerdown", function(e){
+              if ((parseFloat(img.dataset.scale)||1) <= 1) return;
+              dragging = true; moved = false;
+              sx = e.clientX; sy = e.clientY; sl = vp.scrollLeft; st = vp.scrollTop;
+              img.style.cursor = "grabbing";
+              try { img.setPointerCapture(e.pointerId); } catch(_){}
+            });
+            img.addEventListener("pointermove", function(e){
+              if (!dragging) return;
+              var dx = e.clientX - sx, dy = e.clientY - sy;
+              if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+              vp.scrollLeft = sl - dx; vp.scrollTop = st - dy;
+            });
+            function endDrag(){ if (!dragging) return; dragging = false; img.style.cursor = (parseFloat(img.dataset.scale)||1) > 1 ? "grab" : "zoom-in"; }
+            img.addEventListener("pointerup", endDrag);
+            img.addEventListener("pointercancel", endDrag);
+            // Ctrl/⌘ + 滾輪縮放（一般滾輪維持頁面捲動）
+            vp.addEventListener("wheel", function(e){
+              if (!(e.ctrlKey || e.metaKey)) return;
+              e.preventDefault();
+              apply((parseFloat(img.dataset.scale)||1) + (e.deltaY < 0 ? STEP : -STEP), e.clientX, e.clientY);
+            }, { passive: false });
+          });
+        })();
+        </script>
         <div class="order-detail-main-col">
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items" novalidate>
           <div class="sf-card" id="items">
