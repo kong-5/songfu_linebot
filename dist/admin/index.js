@@ -5539,7 +5539,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 orders.push({
                     order_id: order.id,
                     order_no: order.order_no || null,
-                    order_date: formatOrderDateForLingyue(order.order_date),
+                    order_date: order.order_date,
                     customer_code: customerCode,
                     customer_name: order.customer_name || "",
                     doc_remark: (order.remark && String(order.remark).trim()) || "",
