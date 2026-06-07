@@ -421,10 +421,11 @@ function createLineWebhook() {
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
                             const newOrderIds = [];
+                            await db.transaction(async (tx) => {
                             for (const [subKey, items] of map) {
                                 const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
                                 const splitKey = subKey === "" ? "" : subKey;
-                                const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                                const oid = await insertOrderRowWithSplitMeta(tx, getNextOrderNo, nowSql, {
                                     orderDate: orderDateVal,
                                     customerId: session.customerId,
                                     groupId,
@@ -434,10 +435,11 @@ function createLineWebhook() {
                                     lineMessageId: curLineMessageId,
                                 });
                                 newOrderIds.push(oid);
-                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, oid);
-                                await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
-                                await insertParsedItemsForOrder(db, oid, session.customerId, items, fallbackUnitImg);
+                                await tx.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, oid);
+                                await duplicateAttachmentToOrders(tx, messageId, [oid], nowSql);
+                                await insertParsedItemsForOrder(tx, oid, session.customerId, items, fallbackUnitImg);
                             }
+                            });
                             mergeSessionOrderIds(session, newOrderIds);
                             if (lineClient && newOrderIds.length > 1) {
                                 await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
@@ -462,10 +464,11 @@ function createLineWebhook() {
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
                             const newOrderIds = [];
+                            await db.transaction(async (tx) => {
                             for (const [subKey, items] of map) {
                                 const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
                                 const splitKey = subKey === "" ? "" : subKey;
-                                const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                                const oid = await insertOrderRowWithSplitMeta(tx, getNextOrderNo, nowSql, {
                                     orderDate,
                                     customerId: customer.id,
                                     groupId,
@@ -476,10 +479,11 @@ function createLineWebhook() {
                                 });
                                 newOrderIds.push(oid);
                                 const rawFull = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + ocrLine;
-                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(rawFull, oid);
-                                await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
-                                await insertParsedItemsForOrder(db, oid, customer.id, items, fallbackUnitImg);
+                                await tx.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(rawFull, oid);
+                                await duplicateAttachmentToOrders(tx, messageId, [oid], nowSql);
+                                await insertParsedItemsForOrder(tx, oid, customer.id, items, fallbackUnitImg);
                             }
+                            });
                             if (groupId) {
                                 const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId: customer.id, lastActivity: Date.now() };
                                 collectingByGroup.set(groupId, session);
@@ -593,10 +597,11 @@ function createLineWebhook() {
                     if (mustSplitOrdersBySubCustomer(parsed)) {
                         const map = groupParsedItemsBySubCustomer(parsed);
                         const newOrderIds = [];
+                        await db.transaction(async (tx) => {
                         for (const [subKey, items] of map) {
                             const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
                             const splitKey = subKey === "" ? "" : subKey;
-                            const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                            const oid = await insertOrderRowWithSplitMeta(tx, getNextOrderNo, nowSql, {
                                 orderDate,
                                 customerId,
                                 groupId,
@@ -606,8 +611,9 @@ function createLineWebhook() {
                                 lineMessageId: curLineMessageId,
                             });
                             newOrderIds.push(oid);
-                            await insertParsedItemsForOrder(db, oid, customerId, items, fallbackUnit);
+                            await insertParsedItemsForOrder(tx, oid, customerId, items, fallbackUnit);
                         }
+                        });
                         if (groupId) {
                             const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId, lastActivity: Date.now() };
                             collectingByGroup.set(groupId, session);
@@ -848,10 +854,11 @@ function createLineWebhook() {
                     const map = groupParsedItemsBySubCustomer(parsed);
                     const orderDateVal = (await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(orderId))?.order_date || getTaipeiOrderDate();
                     const newOrderIds = [];
+                    await db.transaction(async (tx) => {
                     for (const [subKey, items] of map) {
                         const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
                         const splitKey = subKey === "" ? "" : subKey;
-                        const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+                        const oid = await insertOrderRowWithSplitMeta(tx, getNextOrderNo, nowSql, {
                             orderDate: orderDateVal,
                             customerId: cid,
                             groupId,
@@ -861,8 +868,9 @@ function createLineWebhook() {
                             lineMessageId: curLineMessageId,
                         });
                         newOrderIds.push(oid);
-                        await insertParsedItemsForOrder(db, oid, cid, items, fallbackUnit);
+                        await insertParsedItemsForOrder(tx, oid, cid, items, fallbackUnit);
                     }
+                    });
                     mergeSessionOrderIds(session, newOrderIds);
                     if (lineClient && newOrderIds.length > 1) {
                         await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
