@@ -38,6 +38,32 @@ function createPgWrapper(pool) {
                 },
             };
         },
+        /** 在單一連線上開啟交易；fn 收到綁定該連線的 tx 包裝，全程 BEGIN…COMMIT，丟例外則 ROLLBACK。 */
+        async transaction(fn) {
+            const client = await pool.connect();
+            const tx = {
+                prepare(sql) {
+                    return {
+                        get(...params) { return client.query(sqlForPg(sql), params).then((r) => r.rows[0] ?? null); },
+                        all(...params) { return client.query(sqlForPg(sql), params).then((r) => r.rows); },
+                        run(...params) { return client.query(sqlForPg(sql), params).then((r) => ({ changes: r.rowCount ?? 0 })); },
+                    };
+                },
+            };
+            try {
+                await client.query("BEGIN");
+                const out = await fn(tx);
+                await client.query("COMMIT");
+                return out;
+            }
+            catch (e) {
+                try { await client.query("ROLLBACK"); } catch (_) { /* 連線可能已斷 */ }
+                throw e;
+            }
+            finally {
+                client.release();
+            }
+        },
     };
 }
 function getDb(dbPath) {
@@ -319,6 +345,19 @@ function initSqlite(dbPath) {
                 all(...params) { return Promise.resolve(stmt.all(...params)); },
                 run(...params) { return Promise.resolve(stmt.run(...params)); },
             };
+        },
+        /** SQLite 為單一同步連線；以 BEGIN…COMMIT 包住 fn，丟例外則 ROLLBACK。tx 即同一包裝（共用連線）。 */
+        async transaction(fn) {
+            sqlite.exec("BEGIN");
+            try {
+                const out = await fn(db);
+                sqlite.exec("COMMIT");
+                return out;
+            }
+            catch (e) {
+                try { sqlite.exec("ROLLBACK"); } catch (_) { /* 可能未真正開啟交易 */ }
+                throw e;
+            }
         },
         close() { sqlite.close(); },
     };
