@@ -175,15 +175,20 @@ async function duplicateAttachmentToOrders(db, lineMessageId, orderIds, nowSql) 
 async function getNextOrderNo(db, orderDate) {
     const nextKey = "order_seq_next_" + orderDate;
     const startKey = "order_seq_start_" + orderDate;
-    let row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(nextKey);
-    if (!row || !row.value) {
-        row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
-    }
-    const seq = row && row.value ? parseInt(row.value, 10) : 1;
-    const nextSeq = Number.isNaN(seq) ? 1 : Math.max(1, seq);
-    const orderNo = orderDate.replace(/-/g, "") + String(nextSeq).padStart(3, "0");
-    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(nextKey, String(nextSeq + 1));
-    return orderNo;
+    // 起始序號（後台可為每日設定；未設預設 1）。僅在 nextKey 尚未建立時作為種子。
+    const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
+    let startSeq = startRow && startRow.value ? parseInt(startRow.value, 10) : 1;
+    if (!Number.isFinite(startSeq) || startSeq < 1)
+        startSeq = 1;
+    // 原子取號：以 INSERT … ON CONFLICT DO UPDATE … RETURNING 一句完成「取號＋遞增」，
+    // 避免並發兩則訊息讀到同一序號而重號。nextKey 沿用舊語意「下一個要用的號」，
+    // 故新碼對既有資料相容、不跳號：插入時種入 startSeq+1，回傳值＝指標−1＝本次使用序號。
+    const row = await db.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) " +
+        "RETURNING CAST(CAST(value AS INTEGER) - 1 AS TEXT) AS used").get(nextKey, String(startSeq + 1));
+    const used = row && row.used != null ? parseInt(row.used, 10) : startSeq;
+    const seq = Number.isFinite(used) ? Math.max(1, used) : startSeq;
+    return orderDate.replace(/-/g, "") + String(seq).padStart(3, "0");
 }
 function createLineWebhook() {
     const router = express_1.default.Router();
