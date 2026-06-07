@@ -106,6 +106,9 @@ function initSqlite(dbPath) {
         "ALTER TABLE orders ADD COLUMN approved_at TEXT",
         // 客戶 CRM：員工交接備註（顯示在 /customers/:id/360 上方）
         "ALTER TABLE customers ADD COLUMN crm_handover_notes TEXT",
+        // 凌越回寫：lingyue_doc_no=凌越配發單據號、lingyue_written_at=回寫時間
+        "ALTER TABLE orders ADD COLUMN lingyue_doc_no TEXT",
+        "ALTER TABLE orders ADD COLUMN lingyue_written_at TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -526,6 +529,14 @@ async function initPg() {
             catch (_) { /* column may already exist */ }
             try {
                 await client.query("ALTER TABLE orders ADD COLUMN line_message_id TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_doc_no TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_written_at TIMESTAMPTZ");
             }
             catch (_) { /* column may already exist */ }
             try {
