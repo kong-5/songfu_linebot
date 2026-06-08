@@ -14,11 +14,19 @@ ly_writeback_bridge.py — 雲端後台 ↔ 凌越 ERP 回寫橋接（內網 age
      （單號 SP_NO 由 ly_datain 依「當日既有單據最大流水 +1」自動順編，不會撞號）
   3. POST {CLOUD}/admin/lingyue-writeback/callback  回填凌越單號
 
-欄位對映（雲端 pending → 凌越）
+目標單別
+--------
+  ※ 應寫入凌越「銷貨訂單（客戶訂單）」，不是銷貨單。
+  ※ 目前 ly_datain.write_invoice 寫的是「銷貨單」(SP_/SD_ 欄位)。改寫銷貨訂單需 Dispatch
+    在 ly_datain.py 提供訂單寫入方法（資料種類代碼 + 訂單主表/明細欄位名稱），確認後改下方 map_order
+    與 write_invoice 呼叫。雲端 /pending 給的是通用欄位（客戶碼/料號/數量/單位），單別切換不需動雲端。
+
+欄位對映（雲端 pending → 凌越，以下為「銷貨單」對映，銷貨訂單欄位待 Dispatch 提供）
 ------------------------------
   主表： customer_code→SP_CTNO  customer_name→SP_CTNAME  order_date→SP_DATE  doc_remark→SP_REM
   明細： product_code→SD_SKNO  product_name→SD_NAME  unit→SD_UNIT  quantity→SD_QTY
-         item_note→SD_REM   SD_WHNO=（預設留空，之後在凌越補）   SD_PRICE=（預設 0）
+         item_note→SD_REM   SD_WHNO=（預設留空，之後在凌越補）
+         SD_PRICE=（預設留空＝不送，讓凌越依客戶售價表自動帶價）
 
 設定（環境變數，或用 CLI 參數覆蓋）
 -----------------------------------
@@ -26,7 +34,8 @@ ly_writeback_bridge.py — 雲端後台 ↔ 凌越 ERP 回寫橋接（內網 age
   LY_WRITEBACK_KEY  與後台環境變數 LINGYUE_WRITEBACK_KEY 相同的金鑰（必填）
   LY_ICPNO          公司代碼，預設 "00"（松富）
   LY_DEFAULT_WHNO   預設倉別 SD_WHNO，預設 ""（留空；若凌越不接受空倉別，改設成如 FN005）
-  LY_DEFAULT_PRICE  預設單價 SD_PRICE，預設 "0"
+  LY_DEFAULT_PRICE  預設單價，預設 ""（留空＝不送單價，讓凌越依客戶售價表自動帶；
+                    只有確實要強制單價時才設，如 LY_DEFAULT_PRICE=0 會強制變 0）
 
 用法
 ----
@@ -104,8 +113,11 @@ def map_order(order: dict, *, whno: str, price: str, rem_prefix: str = "") -> di
             "SD_UNIT": (it.get("unit") or "KG").strip(),
             "SD_WHNO": whno,                       # 預設留空（之後在凌越補倉別）
             "SD_QTY": qty if qty is not None else 0,
-            "SD_PRICE": price,                     # 預設 0（SD_STOT 由 ly_datain 自動算）
         }
+        # 單價：叫貨單無價。留空（不送 SD_PRICE）→ 讓凌越依「客戶售價表」自動帶價。
+        # 只有當明確指定 LY_DEFAULT_PRICE / --price（非空）時才強制覆寫單價。
+        if price not in (None, ""):
+            det["SD_PRICE"] = price
         note = (it.get("item_note") or "").strip()
         if note:
             det["SD_REM"] = note
@@ -134,7 +146,7 @@ def run(args) -> int:
     key = (args.key or os.environ.get("LY_WRITEBACK_KEY") or "").strip()
     icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
     whno = args.warehouse if args.warehouse is not None else os.environ.get("LY_DEFAULT_WHNO", "")
-    price = args.price if args.price is not None else os.environ.get("LY_DEFAULT_PRICE", "0")
+    price = args.price if args.price is not None else os.environ.get("LY_DEFAULT_PRICE", "")
     date_str = args.date or datetime.date.today().strftime("%Y-%m-%d")
 
     if not base or not key:
