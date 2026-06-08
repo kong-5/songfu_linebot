@@ -8,6 +8,8 @@ exports.processLineWebhookEvents = async (_events) => {
     throw new Error("LINE webhook 尚未初始化：請先呼叫 createLineWebhook()");
 };
 exports.runFinalizeSweep = async () => ({ due: 0, finalized: 0, error: "LINE webhook 尚未初始化" });
+exports.distributeParsedToOrdersAtFinalize = (...a) => distributeParsedToOrdersAtFinalize(...a);
+exports.rebuildAndSplitOrderAtFinalize = (...a) => rebuildAndSplitOrderAtFinalize(...a);
 const express_1 = __importDefault(require("express"));
 const bot_sdk_1 = require("@line/bot-sdk");
 const index_js_1 = require("../db/index.js");
@@ -192,6 +194,70 @@ async function getNextOrderNo(db, orderDate) {
     const seq = Number.isFinite(used) ? Math.max(1, used) : startSeq;
     return orderDate.replace(/-/g, "") + String(seq).padStart(3, "0");
 }
+/** order_sub_split_key 篩選（與 rebuild-order 內同義）：null＝全部；空字串＝主客戶桶；非空＝該子客戶 */
+function filterParsedBySplitKey(parsed, splitKey) {
+    if (splitKey === undefined || splitKey === null)
+        return parsed;
+    if (splitKey === "")
+        return parsed.filter((p) => { const sc = p.subCustomer; return sc == null || String(sc).trim() === ""; });
+    const k = String(splitKey);
+    return parsed.filter((p) => String(p.subCustomer || "").trim() === k);
+}
+/**
+ * C4：結單時把整單解析結果寫入；若偵測到多個子客戶且本單尚未拆分，則「就地拆單」——
+ * 主桶留在現有 order，其餘子客戶各開新 order。回傳所有結果 order id。
+ * （供 LINE_PARSE_ONLY_AT_FINALIZE=1 模式取代逐則拆單。）
+ */
+async function distributeParsedToOrdersAtFinalize(db, orderId, customerId, parsed, nowSql) {
+    const meta = await db.prepare("SELECT order_sub_split_key, order_date, line_group_id FROM orders WHERE id = ?").get(orderId);
+    const splitKey = meta && meta.order_sub_split_key !== undefined ? meta.order_sub_split_key : null;
+    // 已是子單：只覆寫屬於自己的品項
+    if (splitKey !== null && splitKey !== undefined) {
+        await rebuild_order_from_sources_js_1.replaceOrderItemsFromParsedRows(db, orderId, customerId, filterParsedBySplitKey(parsed, splitKey));
+        return [orderId];
+    }
+    // 未拆且不需拆：整單覆寫
+    if (!mustSplitOrdersBySubCustomer(parsed)) {
+        await rebuild_order_from_sources_js_1.replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed);
+        return [orderId];
+    }
+    // 需拆：主桶留現有單、其餘開新單（整批交易）
+    const map = groupParsedItemsBySubCustomer(parsed);
+    const ids = [];
+    const orderDate = (meta && meta.order_date) || getTaipeiOrderDate();
+    const groupId = (meta && meta.line_group_id) || null;
+    await db.transaction(async (tx) => {
+        let first = true;
+        for (const [subKey, items] of map) {
+            if (first) {
+                const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
+                await tx.prepare("UPDATE orders SET order_sub_split_key = ?, remark = COALESCE(?, remark), updated_at = " + nowSql + " WHERE id = ?").run(subKey, remark, orderId);
+                await rebuild_order_from_sources_js_1.replaceOrderItemsFromParsedRows(tx, orderId, customerId, items);
+                ids.push(orderId);
+                first = false;
+            }
+            else {
+                const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
+                const oid = await insertOrderRowWithSplitMeta(tx, getNextOrderNo, nowSql, {
+                    orderDate, customerId, groupId,
+                    rawMessage: "", remark, orderSubSplitKey: subKey, lineMessageId: null,
+                });
+                await rebuild_order_from_sources_js_1.replaceOrderItemsFromParsedRows(tx, oid, customerId, items);
+                ids.push(oid);
+            }
+        }
+    });
+    return ids;
+}
+/** C4：對單一 order 收集來源（文字＋附件圖）整單解析一次，再分配/拆單。回傳結果 order id 陣列。 */
+async function rebuildAndSplitOrderAtFinalize(db, orderId, customerId, nowSql) {
+    const meta = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
+    const atts = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(orderId);
+    const { parsed } = await rebuild_order_from_sources_js_1.collectParsedFromOrderSources(db, customerId, meta?.raw_message, atts);
+    if (!parsed || !parsed.length)
+        return [orderId]; // 沒解析到 → 保留現狀，不清空
+    return await distributeParsedToOrdersAtFinalize(db, orderId, customerId, parsed, nowSql);
+}
 function createLineWebhook() {
     const router = express_1.default.Router();
     const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
@@ -223,7 +289,27 @@ function createLineWebhook() {
         if (!orderIdsForSession.length)
             return false;
         const customerId = sessionLike?.customerId;
-        if (process.env.LINE_SKIP_FINALIZE_FULL_REBUILD !== "1") {
+        const parseOnly = process.env.LINE_PARSE_ONLY_AT_FINALIZE === "1";
+        const nowSqlF = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        let finalOrderIds = orderIdsForSession;
+        if (parseOnly) {
+            // C4：逐則未解析，結單時對每張單整單解析一次並就地拆單（拆出的新單併入摘要）
+            const expanded = [];
+            for (const oid of orderIdsForSession) {
+                try {
+                    const ids = await rebuildAndSplitOrderAtFinalize(db, oid, customerId, nowSqlF);
+                    expanded.push(...ids);
+                }
+                catch (e) {
+                    console.error("[LINE] 結單整單解析/拆單例外 orderId=%s:", oid, e?.message || e);
+                    expanded.push(oid);
+                }
+            }
+            const uniq = [...new Set(expanded.filter(Boolean))];
+            if (uniq.length)
+                finalOrderIds = uniq;
+        }
+        else if (process.env.LINE_SKIP_FINALIZE_FULL_REBUILD !== "1") {
             for (const oid of orderIdsForSession) {
                 try {
                     const rawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
@@ -239,10 +325,10 @@ function createLineWebhook() {
                 }
             }
         }
-        const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(orderIdsForSession[0]);
+        const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(finalOrderIds[0]);
         const dateStr = order?.order_date || getTaipeiOrderDate();
         const orderBlocks = [];
-        for (const oid of orderIdsForSession) {
+        for (const oid of finalOrderIds) {
             const ord = await db.prepare("SELECT order_no, remark FROM orders WHERE id = ?").get(oid);
             const items = await db.prepare(`
           SELECT oi.raw_name, oi.quantity, oi.unit, p.name AS product_name, p.erp_code
@@ -260,9 +346,9 @@ function createLineWebhook() {
             const hdr = ord?.remark ? `${ord.remark}\n` : "";
             orderBlocks.push(`【${ord?.order_no ?? oid}】\n${hdr}${lines.length ? lines.join("\n") : "（目前尚無可辨識品項）"}`);
         }
-        const multi = orderIdsForSession.length > 1;
+        const multi = finalOrderIds.length > 1;
         const summary = [
-            multi ? `收到，已收單喔（共 ${orderIdsForSession.length} 張訂單）。` : "收到，已收單喔。",
+            multi ? `收到，已收單喔（共 ${finalOrderIds.length} 張訂單）。` : "收到，已收單喔。",
             `送貨日期為：${dateStr}`,
             multi ? "各張訂單明細如下：" : "訂購項目如下：",
             ...orderBlocks,
@@ -275,7 +361,7 @@ function createLineWebhook() {
                 await lineClient.pushMessage(groupId, { type: "text", text: summary });
             }
             else {
-                console.log("[LINE] 已略過結單推播（對客戶靜音） orders=%s", orderIdsForSession.join(","));
+                console.log("[LINE] 已略過結單推播（對客戶靜音） orders=%s", finalOrderIds.join(","));
             }
         }
         return true;
@@ -480,7 +566,16 @@ function createLineWebhook() {
                         db,
                         customerId: customer.id,
                     };
-                    const { parsed: parsedFromImg, ocrText } = await (0, parse_order_from_image_js_1.parseOrderItemsFromImageBuffer)(imageBuf, fallbackUnitImg, imgParseOpts);
+                    let parsedFromImg = [];
+                    let ocrText = null;
+                    if (process.env.LINE_PARSE_ONLY_AT_FINALIZE !== "1") {
+                        const imgRes = await (0, parse_order_from_image_js_1.parseOrderItemsFromImageBuffer)(imageBuf, fallbackUnitImg, imgParseOpts);
+                        parsedFromImg = imgRes.parsed;
+                        ocrText = imgRes.ocrText;
+                    }
+                    else {
+                        console.log("[LINE] 圖片逐則僅存附件（LINE_PARSE_ONLY_AT_FINALIZE=1），結單時整單辨識");
+                    }
                     if (inCollecting) {
                         const session = collectingByGroup.get(groupId);
                         const ocrLine = ocrText || "[圖片]";
@@ -626,7 +721,8 @@ function createLineWebhook() {
                     else
                         console.log("[LINE] 進入收單流程 customerId=%s orderDate=%s rest=%s", customerId, orderDate, rest.slice(0, 50));
                     const lineForRaw = String(text || "").trim();
-                    if (!rest) {
+                    // C4：只在結單整單解析一次（LINE_PARSE_ONLY_AT_FINALIZE=1）時，起單僅存原文、不逐則打 AI
+                    if (!rest || process.env.LINE_PARSE_ONLY_AT_FINALIZE === "1") {
                         let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
                         let orderId;
                         if (orderRow) {
@@ -917,6 +1013,11 @@ function createLineWebhook() {
                 const looksLikeOrder = text.length >= 4 && /[\d０-９]/.test(text);
                 if (!looksLikeOrder) {
                     console.log("[LINE] 訊息不含數字或過短，略過 Gemini 解析");
+                    continue;
+                }
+                // C4：只在結單整單解析一次時，逐則僅累加原文（前面 appendRawLineToOrders 已存），不打 AI
+                if (process.env.LINE_PARSE_ONLY_AT_FINALIZE === "1") {
+                    console.log("[LINE] 逐則僅存原文（LINE_PARSE_ONLY_AT_FINALIZE=1），結單時整單解析");
                     continue;
                 }
                 const parsed = await (0, parse_order_message_js_1.parseOrderMessage)(text, fallbackUnit, parseOpts2);
