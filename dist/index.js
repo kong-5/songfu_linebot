@@ -181,6 +181,25 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 400) });
         }
     });
+    /** 結單 sweep：結掉逾時（last_activity ≤ now − 收單窗）的收單 session。
+     *  建議 Cloud Scheduler 每 30~60 秒打一次，確保 Cloud Run 休眠/回收時仍可靠結單（取代純記憶體 timer）。
+     *  可加 X-Finalize-Job-Secret 限制（沿用 FINALIZE_JOB_SECRET / LINE_WORKER_SECRET / RHYTHM_JOB_SECRET）。 */
+    app.post("/api/jobs/finalize-due", async (req, res) => {
+        try {
+            if (!dbReady) { res.status(503).json({ ok: false, error: "db not ready" }); return; }
+            const secret = (process.env.FINALIZE_JOB_SECRET || process.env.LINE_WORKER_SECRET || process.env.RHYTHM_JOB_SECRET || "").trim();
+            if (secret) {
+                const got = String(req.headers["x-finalize-job-secret"] || req.headers["x-rhythm-job-secret"] || "").trim();
+                if (got !== secret) { res.status(401).type("text/plain").send("Unauthorized"); return; }
+            }
+            const out = await line_js_1.runFinalizeSweep();
+            res.json({ ok: true, ...out });
+        }
+        catch (e) {
+            console.error("[finalize-due]", e?.message || e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 400) });
+        }
+    });
     app.get("/", (_req, res) => {
         res.redirect(302, "/admin");
     });
@@ -238,6 +257,21 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         }
         catch (e) {
             console.error("[rhythm] auto schedule", e?.message || e);
+        }
+    }, 60000);
+    /** 結單 sweep 程序內後備：暖實例每 60 秒掃一次逾時 session 並結單。
+     *  注意：Cloud Run 閒置時 CPU 被節流、此 interval 不保證觸發；可靠路徑請用 Cloud Scheduler 打 /api/jobs/finalize-due。
+     *  設 FINALIZE_SWEEP_INTERVAL_DISABLE=1 可關閉。 */
+    setInterval(async () => {
+        if (!dbReady || process.env.FINALIZE_SWEEP_INTERVAL_DISABLE === "1")
+            return;
+        try {
+            const out = await line_js_1.runFinalizeSweep();
+            if (out && out.finalized)
+                console.log("[finalize-sweep] interval 結單 %d 張群組", out.finalized);
+        }
+        catch (e) {
+            console.error("[finalize-sweep] interval", e?.message || e);
         }
     }, 60000);
 })().catch((e) => {
