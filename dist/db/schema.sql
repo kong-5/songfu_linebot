@@ -361,3 +361,13 @@ CREATE TABLE IF NOT EXISTS rhythm_daily_signals (
 CREATE INDEX IF NOT EXISTS idx_rhythm_sig_date ON rhythm_daily_signals(signal_date);
 CREATE INDEX IF NOT EXISTS idx_rhythm_sig_cust ON rhythm_daily_signals(customer_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_rhythm_sig_unique ON rhythm_daily_signals(signal_date, customer_id, product_id, signal_type);
+
+-- 收單 session 狀態（耐久化，取代純記憶體 Map；供結單 sweep 用，Cloud Run 重啟/多實例皆可靠）
+CREATE TABLE IF NOT EXISTS order_collecting_sessions (
+  group_id TEXT PRIMARY KEY,
+  customer_id TEXT NOT NULL,
+  order_ids_json TEXT NOT NULL,
+  last_activity_ms INTEGER NOT NULL,
+  created_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_collecting_sessions_activity ON order_collecting_sessions(last_activity_ms);
