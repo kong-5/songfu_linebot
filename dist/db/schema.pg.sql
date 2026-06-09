@@ -333,3 +333,13 @@
   );
   CREATE INDEX IF NOT EXISTS idx_company_calendar_date ON company_calendar(date);
   CREATE INDEX IF NOT EXISTS idx_company_calendar_kind ON company_calendar(kind);
+
+  -- 收單 session 狀態（耐久化，取代純記憶體 Map；供結單 sweep 用，Cloud Run 重啟/多實例皆可靠）
+  CREATE TABLE IF NOT EXISTS order_collecting_sessions (
+    group_id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    order_ids_json TEXT NOT NULL,
+    last_activity_ms BIGINT NOT NULL,
+    created_ms BIGINT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_collecting_sessions_activity ON order_collecting_sessions(last_activity_ms);
