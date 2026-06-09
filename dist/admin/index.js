@@ -273,6 +273,7 @@ const NOTION_STYLE = `
   .order-status-icons .osi-warn { background:#fff3e0; color:#e65100; }
   .order-status-icons .osi-sheet { background:#e3f2fd; color:#1565c0; font-size:11px; }
   .order-status-icons .osi-xlsx { background:#f3e5f5; color:#6a1b9a; font-size:11px; }
+  .order-status-icons .osi-lywb { background:#e0f2f1; color:#00695c; font-size:11px; gap:2px; padding:0 5px; }
   .admin-info-icon {
     display:inline-flex; align-items:center; justify-content:center;
     width:1.25em; height:1.25em; margin-left:6px; border-radius:50%;
@@ -1199,6 +1200,21 @@ function createAdminRouter() {
     });
     router.use(async (req, res, next) => {
         const pathname = req.path || "/";
+        // 凌越回寫：機器對機器端點（內網 agent 拉資料／回寫單據號），用 API 金鑰而非 cookie session
+        if (pathname.startsWith("/lingyue-writeback/")) {
+            const expected = String(process.env.LINGYUE_WRITEBACK_KEY || "").trim();
+            const provided = String(req.headers["x-writeback-key"] || "").trim();
+            if (!expected) {
+                res.status(503).json({ error: "LINGYUE_WRITEBACK_KEY 未設定（請於 Cloud Run 環境變數設定後再用）" });
+                return;
+            }
+            if (!provided || provided !== expected) {
+                res.status(401).json({ error: "unauthorized" });
+                return;
+            }
+            req.adminUsername = "lingyue-writeback-agent";
+            return next();
+        }
         if (pathname === "/login" && req.method === "GET")
             return next();
         if (pathname === "/setup" && req.method === "GET")
@@ -4412,7 +4428,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1) AS need_review_count,
         0 AS non_kg_count,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND (oi.include_export IS NULL OR oi.include_export = 1)) AS export_item_count,
-        o.sheet_exported_at, o.lingyue_exported_at,
+        o.sheet_exported_at, o.lingyue_exported_at, o.lingyue_doc_no, o.lingyue_written_at,
         o.raw_message AS source_raw_message,
         (SELECT COUNT(*) FROM order_attachments oa WHERE oa.order_id = o.id) AS source_attachment_count
       FROM orders o
@@ -4458,6 +4474,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 export_item_count: o.export_item_count,
                 sheet_exported_at: null,
                 lingyue_exported_at: null,
+                lingyue_doc_no: null,
+                lingyue_written_at: null,
                 is_logistics: true,
             }));
             let orders = [...lineOrders, ...logOrders].sort((a, b) => {
@@ -4525,6 +4543,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 }
                 if (o.lingyue_exported_at) {
                     pieces.push(`<span class="osi osi-xlsx" title="已匯出凌越 Excel">▦</span>`);
+                }
+                if (o.lingyue_doc_no) {
+                    pieces.push(`<span class="osi osi-lywb" title="已回寫凌越，單據號 ${escapeAttr(String(o.lingyue_doc_no))}">↩${escapeHtml(String(o.lingyue_doc_no))}</span>`);
                 }
                 return `<div class="order-status-icons">${pieces.join("")}</div>`;
             };
@@ -4658,7 +4679,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             .order-src-t{background:#e8f4fc;color:#0369a1;border-color:#93c5fd;}
             .order-src-i{background:#faf5ff;color:#7e22ce;border-color:#d8b4fe;}
           </style>
-          <p class="notion-hint" style="margin-top:0;margin-bottom:10px;">狀態圖示：<span class="osi osi-approve" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">✓</span> 已確認、<span class="osi osi-warn" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">!</span> 待確認、<span class="osi osi-sheet" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">🖨</span> 已匯出揀貨單、<span class="osi osi-xlsx" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">▦</span> 已匯出凌越。<br>
+          <p class="notion-hint" style="margin-top:0;margin-bottom:10px;">狀態圖示：<span class="osi osi-approve" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">✓</span> 已確認、<span class="osi osi-warn" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">!</span> 待確認、<span class="osi osi-sheet" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">🖨</span> 已匯出揀貨單、<span class="osi osi-xlsx" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;">▦</span> 已匯出凌越、<span class="osi osi-lywb" style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:4px;padding:0 5px;">↩號</span> 已回寫凌越（顯示凌越單據號）。<br>
           來源標籤（LINE）：<span class="order-src-icon order-src-t">字</span> 原始對話含文字叫貨、<span class="order-src-icon order-src-i">圖</span> 曾附圖片；兩者皆有則並列。（紙本後台訂單不顯示）</p>
           <form id="batchOrderActionsForm" method="post" action="/admin/orders/batch-delete" style="margin-bottom:12px;">
           <p style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
@@ -5469,13 +5490,123 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
         await sendMergedLingyueXlsx(res, ids);
     });
+    /**
+     * 凌越回寫 — 機器對機器端點（內網 agent 用）。
+     * 認證：HTTP 標頭 X-Writeback-Key 需等於環境變數 LINGYUE_WRITEBACK_KEY。
+     *
+     * GET /admin/lingyue-writeback/pending?date=YYYY-MM-DD
+     *   回傳該日「尚未回寫」（lingyue_written_at 為空）且有可匯出明細的訂單，JSON 格式。
+     *   欄位沿用凌越 Excel 匯出邏輯（CustomerCode、ProductCode=凌越料號…）。
+     *   注意：單據號（DocNo）由凌越端配發／內網 agent 依該日既有單據順編，雲端不指定；
+     *         agent 寫入成功後再用下方 callback 把凌越實際單據號回填。
+     */
+    router.get("/lingyue-writeback/pending", async (req, res) => {
+        try {
+            const dateParam = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
+                ? req.query.date.trim()
+                : getTaipeiCalendarDateYYYYMMDD();
+            const orderRows = await db.prepare(`
+        SELECT o.id, o.order_no, o.order_date, o.remark, c.name AS customer_name, c.hq_cust_code, c.teraoka_code
+        FROM orders o JOIN customers c ON c.id = o.customer_id
+        WHERE o.order_date = ?
+          AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
+          AND o.lingyue_written_at IS NULL
+        ORDER BY o.order_date ASC, o.order_no ASC, o.id ASC
+      `).all(dateParam);
+            const orders = [];
+            for (const order of orderRows || []) {
+                const customerCode = (order.hq_cust_code && String(order.hq_cust_code).trim())
+                    || (order.teraoka_code && String(order.teraoka_code).trim()) || "";
+                const itemRows = await db.prepare(`
+        SELECT oi.quantity, oi.unit, oi.remark, oi.raw_name, p.erp_code, p.name AS product_name
+        FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1)
+        ORDER BY COALESCE(oi.display_order, 999999), oi.id
+      `).all(order.id);
+                const items = (itemRows || []).map((it) => {
+                    const qtyNum = it.quantity != null ? Number(it.quantity) : NaN;
+                    return {
+                        product_code: (it.erp_code && String(it.erp_code).trim()) || "",
+                        product_name: (it.product_name && String(it.product_name).trim())
+                            || (it.raw_name && String(it.raw_name).trim()) || "",
+                        unit: (it.unit && String(it.unit).trim()) || "公斤",
+                        quantity: Number.isFinite(qtyNum) ? qtyNum : null,
+                        item_note: (it.remark && String(it.remark).trim()) || "",
+                    };
+                });
+                if (!items.length)
+                    continue;
+                orders.push({
+                    order_id: order.id,
+                    order_no: order.order_no || null,
+                    order_date: order.order_date,
+                    customer_code: customerCode,
+                    customer_name: order.customer_name || "",
+                    doc_remark: (order.remark && String(order.remark).trim()) || "",
+                    items,
+                });
+            }
+            res.json({ date: dateParam, count: orders.length, orders });
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/pending", e?.message || e);
+            res.status(500).json({ error: "pending 取得失敗", detail: String(e?.message || e) });
+        }
+    });
+    /**
+     * POST /admin/lingyue-writeback/callback
+     *   body: { "results": [ { "order_id": "...", "doc_no": "凌越單據號", "ok": true, "error": "" }, ... ] }
+     *   把凌越寫入後回傳的單據號回填到 orders.lingyue_doc_no，並記錄 lingyue_written_at。
+     *   ok=false 或缺 doc_no 的項目視為失敗，不標記為已回寫（會在下次 pending 再次出現）。
+     */
+    router.post("/lingyue-writeback/callback", async (req, res) => {
+        try {
+            const results = Array.isArray(req.body?.results) ? req.body.results : null;
+            if (!results) {
+                res.status(400).json({ error: "缺少 results 陣列" });
+                return;
+            }
+            const now = new Date().toISOString();
+            const updated = [];
+            const failed = [];
+            for (const r of results) {
+                const orderId = String(r?.order_id || "").trim();
+                const docNo = r?.doc_no != null ? String(r.doc_no).trim() : "";
+                const ok = r?.ok !== false;
+                if (!orderId) {
+                    failed.push({ order_id: r?.order_id ?? null, reason: "缺少 order_id" });
+                    continue;
+                }
+                if (!ok || !docNo) {
+                    failed.push({ order_id: orderId, reason: r?.error ? String(r.error) : "寫入未成功或缺少 doc_no" });
+                    continue;
+                }
+                try {
+                    const ret = await db.prepare("UPDATE orders SET lingyue_doc_no = ?, lingyue_written_at = ? WHERE id = ?").run(docNo, now, orderId);
+                    if (ret && (ret.changes === 0)) {
+                        failed.push({ order_id: orderId, reason: "查無此訂單" });
+                        continue;
+                    }
+                    updated.push({ order_id: orderId, doc_no: docNo });
+                }
+                catch (e) {
+                    failed.push({ order_id: orderId, reason: String(e?.message || e) });
+                }
+            }
+            res.json({ updated_count: updated.length, failed_count: failed.length, updated, failed });
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/callback", e?.message || e);
+            res.status(500).json({ error: "callback 失敗", detail: String(e?.message || e) });
+        }
+    });
     router.get("/orders/:orderId", async (req, res) => {
         const { orderId } = req.params;
         const backTo = (typeof req.query.back === "string" && req.query.back.startsWith("/admin/orders"))
             ? req.query.back
             : "/admin/orders?date_from=" + encodeURIComponent(getTaipeiCalendarDateYYYYMMDD()) + "&date_to=" + encodeURIComponent(getTaipeiCalendarDateYYYYMMDD());
         const order = await db.prepare(`
-      SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code, c.known_sub_customers
+      SELECT o.id, o.order_no, o.order_date, o.status, o.raw_message, o.customer_id, o.lingyue_doc_no, o.lingyue_written_at, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code, c.known_sub_customers
       FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
         if (!order) {
@@ -5603,7 +5734,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單查詢</a> / 訂單明細</div>
         <h1 class="notion-page-title" style="margin-bottom:6px;">訂單明細</h1>
-        <p style="margin:0 0 10px;color:var(--notion-text-secondary, #555);font-size:14px;">${escapeHtml(order.order_no ?? "—")} · ${escapeHtml(order.order_date)} · <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a> · ${orderStatusDisplay}</p>
+        <p style="margin:0 0 10px;color:var(--notion-text-secondary, #555);font-size:14px;">${escapeHtml(order.order_no ?? "—")} · ${escapeHtml(order.order_date)} · <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders">${escapeHtml(order.customer_name)}</a> · ${orderStatusDisplay}${order.lingyue_doc_no ? ` · <span style="background:#e0f2f1;color:#00695c;padding:1px 8px;border-radius:4px;font-weight:700;">凌越單據號 ${escapeHtml(String(order.lingyue_doc_no))}</span>` : ""}</p>
         ${needReviewNote}
         ${lowConfNote}
         ${req.query.ok === "product" ? "<p class=\"notion-msg ok\">已更新。</p>" : ""}

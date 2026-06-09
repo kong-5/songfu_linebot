@@ -117,6 +117,8 @@ function initSqlite(dbPath) {
         "ALTER TABLE order_items ADD COLUMN confidence_score INTEGER",
         "ALTER TABLE customer_handwriting_hints ADD COLUMN wrong_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE customer_handwriting_hints ADD COLUMN last_hit_at TEXT",
+        "ALTER TABLE orders ADD COLUMN lingyue_doc_no TEXT",
+        "ALTER TABLE orders ADD COLUMN lingyue_written_at TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -453,6 +455,14 @@ async function initPg() {
             catch (_) { /* column may already exist */ }
             try {
                 await client.query("ALTER TABLE orders ADD COLUMN line_message_id TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_doc_no TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_written_at TIMESTAMPTZ");
             }
             catch (_) { /* column may already exist */ }
             try {
