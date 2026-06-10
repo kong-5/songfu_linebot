@@ -345,3 +345,50 @@
   );
   CREATE UNIQUE INDEX IF NOT EXISTS ux_basket_log_lines_uniq ON basket_log_lines(basket_log_id, basket_kind, basket_no);
   CREATE INDEX IF NOT EXISTS idx_basket_log_lines_log ON basket_log_lines(basket_log_id);
+  -- 公告管理：模板化群發訊息（取代/擴充原 broadcast 即時填表）
+  CREATE TABLE IF NOT EXISTS announcements (
+    id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    rendered_image_path TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ,
+    sent_at TIMESTAMPTZ,
+    sent_to_groups_json TEXT,
+    created_by TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_announcements_status ON announcements(status);
+  CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at);
+
+  -- 大宗原物料行情：豬肉、雞肉、雞蛋等
+  CREATE TABLE IF NOT EXISTS commodity_prices (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    source TEXT,
+    record_date TEXT NOT NULL,
+    unit TEXT,
+    spec TEXT,
+    price DOUBLE PRECISION,
+    high_price DOUBLE PRECISION,
+    mid_price DOUBLE PRECISION,
+    low_price DOUBLE PRECISION,
+    note TEXT,
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_commodity_prices_date ON commodity_prices(record_date);
+  CREATE INDEX IF NOT EXISTS idx_commodity_prices_cat ON commodity_prices(category);
+
+  -- 公司行事曆：國定假日／公司公休／加班／自訂事件
+  CREATE TABLE IF NOT EXISTS company_calendar (
+    id TEXT PRIMARY KEY,
+    date TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    note TEXT,
+    created_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_company_calendar_date ON company_calendar(date);
+  CREATE INDEX IF NOT EXISTS idx_company_calendar_kind ON company_calendar(kind);

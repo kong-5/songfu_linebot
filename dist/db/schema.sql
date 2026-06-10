@@ -300,6 +300,54 @@ CREATE TABLE IF NOT EXISTS freezer_fridge_daily (
   resolve_note TEXT
 );
 
+-- 公告管理：模板化群發訊息（取代/擴充原 broadcast 即時填表）。可存草稿、重發、PNG 渲染快照
+CREATE TABLE IF NOT EXISTS announcements (
+  id TEXT PRIMARY KEY,
+  template_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  rendered_image_path TEXT,
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT,
+  updated_at TEXT,
+  sent_at TEXT,
+  sent_to_groups_json TEXT,
+  created_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_announcements_status ON announcements(status);
+CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at);
+
+-- 大宗原物料行情：豬肉、雞肉、雞蛋等。手動輸入為主（無公開 API）；保留 source / spec 以便未來爬蟲擴充
+CREATE TABLE IF NOT EXISTS commodity_prices (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  source TEXT,
+  record_date TEXT NOT NULL,
+  unit TEXT,
+  spec TEXT,
+  price REAL,
+  high_price REAL,
+  mid_price REAL,
+  low_price REAL,
+  note TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_commodity_prices_date ON commodity_prices(record_date);
+CREATE INDEX IF NOT EXISTS idx_commodity_prices_cat ON commodity_prices(category);
+
+-- 公司行事曆：國定假日／公司公休／加班／自訂事件，供公告模板與戰情室異常判斷共用
+CREATE TABLE IF NOT EXISTS company_calendar (
+  id TEXT PRIMARY KEY,
+  date TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_company_calendar_date ON company_calendar(date);
+CREATE INDEX IF NOT EXISTS idx_company_calendar_kind ON company_calendar(kind);
+
 -- 週期分析：客戶×品項訂單節律（純 SQL 排程產生，零 AI）
 CREATE TABLE IF NOT EXISTS rhythm_daily_signals (
   id TEXT PRIMARY KEY,

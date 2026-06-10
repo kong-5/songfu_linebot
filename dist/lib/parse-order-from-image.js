@@ -362,7 +362,9 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
     parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(parsed);
     // 訂單 raw_message 保留完整 OCR，解析仍用 parseText（版型清洗後）
     const result = { parsed, ocrText: ocrText || parseText || null };
-    if (cacheKey)
+    // 只有真的解析到品項才快取；空結果（API 失敗、DB 失敗、429、配額用盡等）不快取，
+    // 避免下次按「重新辨識」一直命中壞快取拿不到東西。
+    if (cacheKey && Array.isArray(parsed) && parsed.length > 0)
         cacheSet(cacheKey, result);
     return result;
 }

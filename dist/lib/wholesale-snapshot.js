@@ -33,22 +33,45 @@ async function loadWholesaleMarketSnapshot(db, recordDate) {
 }
 /**
  * 優先向農業部 API 取價；無資料時改讀本地快照。僅顯示「青菜／葉菜」篩選後結果，並寫入快照供隔日查閱。
+ *
+ * 回傳的 status：
+ *   'ok'              - 從 API 拿到資料且通過篩選
+ *   'snapshot'        - API 失敗/空，改用本地快照
+ *   'network_error'   - API 連不上、本地也沒快照
+ *   'empty_holiday'   - API 通了但 0 筆（多為休市／當日尚未更新）
+ *   'filter_empty'    - API 有資料但篩選後 0 筆
  */
 async function loadOrFetchWholesaleMarketPrices(db, dateStr) {
-    let raw = await (0, wholesale_price_js_1.fetchTaipeiWholesalePrices)(dateStr);
+    const apiResult = await (0, wholesale_price_js_1.fetchTaipeiWholesalePricesDetailed)(dateStr);
+    let raw = apiResult.prices;
     let source = "api";
+    let detailedStatus = apiResult.status;
+    let apiErrors = apiResult.errors;
     if (!raw || raw.length === 0) {
         raw = await loadWholesaleMarketSnapshot(db, dateStr);
-        source = raw.length ? "snapshot" : "empty";
+        if (raw.length) {
+            source = "snapshot";
+            detailedStatus = "snapshot";
+        } else {
+            source = "empty";
+        }
     }
     const filt = (0, wholesale_price_js_1.filterWholesaleGreenVegetables)(raw);
     if (source === "api" && filt.prices.length > 0) {
         await saveWholesaleMarketSnapshot(db, dateStr, filt.prices);
+    }
+    // 修正：source=api 但 filt 篩出 0 筆 → filter_empty；source=empty 且 API 失敗 → network_error
+    let finalStatus = detailedStatus;
+    if (source === "api" && raw.length > 0 && filt.prices.length === 0) {
+        finalStatus = "filter_empty";
     }
     return {
         prices: filt.prices,
         hint: filt.hint,
         usedFallback: filt.usedFallback,
         source,
+        status: finalStatus,
+        apiErrors,
+        rawCount: raw.length,
     };
 }

@@ -120,6 +120,11 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         adminRouter = express_1.default.Router();
         adminRouter.use((_req, res) => res.status(503).type("html").send(dbDownHtml));
     }
+    // 後台靜態檔（logo、模板背景、icon sprite 等）— 必須在 /admin 路由前掛載
+    app.use("/admin/assets", express_1.default.static((0, path_1.join)(__dirname, "admin", "assets"), {
+        maxAge: "1d",
+        fallthrough: true,
+    }));
     app.use("/admin", adminRouter);
     // LIFF 路由（員工綁定等內部 LIFF 頁面 + API）
     try {
@@ -159,6 +164,37 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             res.status(500).type("text/plain").send("internal error");
         }
     });
+    const wholesale_snapshot_js_1 = require("./lib/wholesale-snapshot.js");
+    /** Cloud Scheduler 預抓北農行情：建議每日 06:00 / 10:00 / 14:00 各打一次。
+     *  ?date=YYYY-MM-DD（預設今日）；可加 X-Wholesale-Job-Secret 限制。 */
+    app.post("/api/jobs/wholesale-prefetch", async (req, res) => {
+        try {
+            if (!dbReady) { res.status(503).json({ ok: false, error: "db not ready" }); return; }
+            const secret = (process.env.WHOLESALE_JOB_SECRET || process.env.RHYTHM_JOB_SECRET || process.env.LINE_WORKER_SECRET || "").trim();
+            if (secret) {
+                const got = String(req.headers["x-wholesale-job-secret"] || req.headers["x-rhythm-job-secret"] || "").trim();
+                if (got !== secret) { res.status(401).type("text/plain").send("Unauthorized"); return; }
+            }
+            const dateStr = String(req.query.date || req.body?.date || "").trim() || new Date().toISOString().slice(0, 10);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).json({ ok: false, error: "invalid date" }); return; }
+            const db = (0, index_js_1.getDb)(dbPath);
+            const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
+            res.json({
+                ok: true,
+                date: dateStr,
+                source: snap.source,
+                status: snap.status,
+                count: (snap.prices || []).length,
+                rawCount: snap.rawCount || 0,
+                apiErrors: snap.apiErrors || [],
+            });
+        }
+        catch (e) {
+            console.error("[wholesale-prefetch]", e?.message || e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 400) });
+        }
+    });
+
     const rhythm_analysis_js_1 = require("./lib/rhythm-analysis.js");
     app.post("/api/jobs/rhythm-daily", async (_req, res) => {
         try {

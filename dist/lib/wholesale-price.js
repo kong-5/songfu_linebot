@@ -61,30 +61,43 @@ function toRepublicDate(isoDate) {
     return `${republicYear}.${m[2]}.${m[3]}`;
 }
 
+exports.fetchTaipeiWholesalePricesDetailed = fetchTaipeiWholesalePricesDetailed;
 /**
  * 取得台北果菜市場（台北一、台北二）當日批發行情。
- * 資料來自農業部農產品交易行情開放資料（與臺北農產官網
- * https://www.tapmc.com.tw/Pages/Trans/Price1 所呈現之「場內拍賣／全場交易」為同一批發市場之統計基礎；官網另有下載 Excel／PDF 與註記說明）。
- * @param dateStr - 西元日期 YYYY-MM-DD
- * @returns { cropName, avgPrice, highPrice, midPrice, lowPrice, marketName }[] 或 null
+ * 資料來自農業部農產品交易行情開放資料。
+ * @returns { prices: [...], status, errors }
+ *   status: 'ok'（兩市場至少一個有資料）/ 'network_error'（兩個都拿不到）/ 'empty'（API 回應正常但 0 筆）
  */
-async function fetchTaipeiWholesalePrices(dateStr) {
+async function fetchTaipeiWholesalePricesDetailed(dateStr) {
     const repDate = toRepublicDate(dateStr);
     if (!repDate) {
-        console.warn("[wholesale-price] 無效日期:", dateStr);
-        return null;
+        return { prices: [], status: "invalid_date", errors: [`無效日期：${dateStr}`] };
     }
     const markets = ["台北一", "台北二"];
     const all = [];
+    const errors = [];
+    let networkOk = false;
     for (const market of markets) {
         try {
             const url = `${MOA_API}?StartDate=${encodeURIComponent(repDate)}&EndDate=${encodeURIComponent(repDate)}&Market=${encodeURIComponent(market)}&$top=9999`;
-            const resp = await fetch(url);
-            if (!resp.ok)
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 15000);
+            let resp;
+            try {
+                resp = await fetch(url, { signal: ctrl.signal });
+            } finally {
+                clearTimeout(timer);
+            }
+            if (!resp.ok) {
+                errors.push(`${market}: HTTP ${resp.status}`);
                 continue;
+            }
+            networkOk = true;
             const data = await resp.json();
-            if (!Array.isArray(data))
+            if (!Array.isArray(data)) {
+                errors.push(`${market}: 回應格式異常（非陣列）`);
                 continue;
+            }
             for (const row of data) {
                 all.push({
                     cropName: (row["作物名稱"] ?? "").toString().trim(),
@@ -98,10 +111,23 @@ async function fetchTaipeiWholesalePrices(dateStr) {
             }
         }
         catch (e) {
-            console.warn("[wholesale-price] 取得市場", market, "失敗:", e?.message || e);
+            const isTimeout = e?.name === "AbortError";
+            errors.push(`${market}: ${isTimeout ? "連線逾時 15s" : (e?.message || String(e))}`);
         }
     }
-    return all.length > 0 ? all : null;
+    let status;
+    if (all.length > 0) status = "ok";
+    else if (!networkOk) status = "network_error";
+    else status = "empty";
+    return { prices: all, status, errors };
+}
+
+/**
+ * 舊版 API（保留向下相容）— 內部呼叫 detailed 版本。
+ */
+async function fetchTaipeiWholesalePrices(dateStr) {
+    const r = await fetchTaipeiWholesalePricesDetailed(dateStr);
+    return r.prices.length > 0 ? r.prices : null;
 }
 
 /**

@@ -68,6 +68,10 @@ const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
 const daily_summary_push_js_1 = require("../lib/daily-summary-push.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
+const announcement_templates_js_1 = require("../lib/announcement-templates.js");
+const announcement_image_js_1 = require("../lib/announcement-image.js");
+const calendar_holidays_js_1 = require("../lib/calendar-holidays.js");
+const route_war_room_js_1 = require("../lib/route-war-room.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
@@ -119,12 +123,67 @@ const NOTION_STYLE = `
     --notion-border-strong: rgba(55, 53, 47, 0.16);
     --notion-text: #37352f;
     --notion-text-muted: #787774;
-    --notion-accent: #2383e2;
-    --notion-hover: rgba(55, 53, 47, 0.08);
+    --notion-accent: #3b82c4;
+    --notion-accent-warm: #c4783b;
+    --notion-hover: rgba(55, 53, 47, 0.06);
     --notion-radius: 4px;
-    --notion-radius-lg: 6px;
-    --notion-shadow: 0 1px 3px rgba(15, 15, 15, 0.06);
+    --notion-radius-lg: 8px;
+    --notion-shadow: 0 1px 3px rgba(15, 15, 15, 0.05);
+    --notion-shadow-soft: 0 2px 12px rgba(55, 53, 47, 0.06);
     --notion-header-h: 48px;
+  }
+  /* === Lucide-style 行內 icon utility === */
+  .lc-icon {
+    display: inline-block;
+    width: 1em; height: 1em;
+    vertical-align: -0.15em;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    fill: none;
+  }
+  .lc-icon-lg { width: 1.25em; height: 1.25em; }
+  /* === 通用 info popover：hover 標題旁的 (i) icon 顯示說明 === */
+  .info-pop {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px; height: 16px;
+    margin-left: 4px;
+    border-radius: 50%;
+    background: rgba(55,53,47,0.08);
+    color: #787774;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: help;
+    user-select: none;
+    transition: background .12s, color .12s;
+    vertical-align: middle;
+  }
+  .info-pop:hover { background: rgba(59,130,196,0.15); color: #3b82c4; }
+  .info-pop[data-tip]:hover::after,
+  .info-pop[data-tip]:focus::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 6px);
+    transform: translateX(-50%);
+    padding: 8px 10px;
+    background: #1f2937;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.5;
+    white-space: pre-line;
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    z-index: 100;
+    min-width: 200px;
+    max-width: 320px;
+    pointer-events: none;
+    text-align: left;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; width: 100%; max-width: 100vw; min-height: 100vh; }
@@ -164,16 +223,24 @@ const NOTION_STYLE = `
     cursor: pointer;
   }
   .notion-app-logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     font-size: 15px;
     font-weight: 600;
     letter-spacing: -0.02em;
     color: var(--notion-text);
     text-decoration: none;
-    padding: 6px 8px;
+    padding: 4px 8px;
     margin-left: -8px;
     border-radius: var(--notion-radius);
   }
   .notion-app-logo:hover { background: var(--notion-hover); color: var(--notion-text); text-decoration: none; }
+  .notion-app-logo img { height: 26px; width: 26px; display: block; }
+  @media (max-width: 480px) {
+    .notion-app-logo img { height: 22px; width: 22px; }
+    .notion-app-logo .logo-text { display: none; }
+  }
   .notion-app-header-sep { color: var(--notion-border-strong); font-weight: 300; user-select: none; }
   .notion-app-header-title {
     font-size: 14px;
@@ -1342,11 +1409,12 @@ const NOTION_SIDEBAR = (active) => `
         <a href="/admin/inventory/manager" class="${active === "inv-manager" ? "active" : ""}">管理人設定</a>
       </div>
     </details>
-    <details class="sidebar-group" ${active === "logistics" || active === "logistics-procurement" || active === "logistics-market" ? "open" : ""}>
+    <details class="sidebar-group" ${active === "logistics" || active === "logistics-procurement" || active === "logistics-market" || active === "logistics-commodities" ? "open" : ""}>
       <summary class="sidebar-group-title">物流工具</summary>
       <div class="sidebar-links">
         <a href="/admin/logistics/procurement" class="${active === "logistics-procurement" ? "active" : ""}">採購分析</a>
         <a href="/admin/logistics/market" class="${active === "logistics-market" ? "active" : ""}">北農行情</a>
+        <a href="/admin/logistics/commodities" class="${active === "logistics-commodities" ? "active" : ""}">原物料行情</a>
       </div>
     </details>
     <details class="sidebar-group" ${active === "env" ? "open" : ""}>
@@ -1355,10 +1423,12 @@ const NOTION_SIDEBAR = (active) => `
         <a href="/admin/freezer-fridge" class="${active === "env" ? "active" : ""}">冷凍庫冷藏庫檢查表</a>
       </div>
     </details>
-    <details class="sidebar-group" ${active === "broadcast" ? "open" : ""}>
-      <summary class="sidebar-group-title">群發訊息</summary>
+    <details class="sidebar-group" ${active === "broadcast" || active === "announcements" || active === "calendar" ? "open" : ""}>
+      <summary class="sidebar-group-title">公告與訊息</summary>
       <div class="sidebar-links">
-        <a href="/admin/broadcast" class="${active === "broadcast" ? "active" : ""}">傳送訊息</a>
+        <a href="/admin/announcements" class="${active === "announcements" ? "active" : ""}">公告管理</a>
+        <a href="/admin/calendar" class="${active === "calendar" ? "active" : ""}">行事曆</a>
+        <a href="/admin/broadcast" class="${active === "broadcast" ? "active" : ""}">即時群發</a>
       </div>
     </details>
   </nav>
@@ -1490,7 +1560,10 @@ function renderNotionAppHeader(username, pageTitle, opts = {}) {
     <header class="notion-app-header no-print">
       <div class="notion-app-header-left">
         ${showSidebarToggle ? `<button type="button" class="sidebar-toggle" id="sidebarToggleBtn" aria-label="切換側邊欄">☰</button>` : ""}
-        <a href="/admin" class="notion-app-logo">松富物流</a>
+        <a href="/admin" class="notion-app-logo" title="松富物流">
+          <img src="/admin/assets/logo.svg" alt="松富物流 logo">
+          <span class="logo-text">松富物流</span>
+        </a>
         <span class="notion-app-header-sep">/</span>
         <span class="notion-app-header-title">${t}</span>
       </div>
@@ -3080,401 +3153,250 @@ function createAdminRouter() {
         }
     });
     router.get("/", async (req, res) => {
-        const today = getTaipeiCalendarDateYYYYMMDD();
-        const todayDate = new Date(today + "T12:00:00");
-        const weekdayZh = ["日","一","二","三","四","五","六"][todayDate.getDay()];
-        // ── KPI 資料 ──────────────────────────────────────────────
-        let totalOrders = 0, pendingOrders = 0, approvedOrders = 0;
-        let needReviewCnt = 0;
+        const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+        const qDate = String(req.query.date || "").trim();
+        const today = dateRe.test(qDate) ? qDate : getTaipeiCalendarDateYYYYMMDD();
+        let warRoom;
         try {
-            const r1 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')").get(today);
-            totalOrders = Number(r1?.n) || 0;
-            const r2 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') = 'approved'").get(today);
-            approvedOrders = Number(r2?.n) || 0;
-            const r3 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','approved','complaint')").get(today);
-            pendingOrders = Number(r3?.n) || 0;
-            const r4 = await db.prepare("SELECT COUNT(*) AS n FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.order_date = ? AND oi.need_review = 1 AND oi.voided_at IS NULL").get(today);
-            needReviewCnt = Number(r4?.n) || 0;
-        } catch (_) { /* ignore */ }
-        let yesterdayOrders = 0;
-        try {
-            const yesterday = new Date(todayDate.getTime() - 86400000).toISOString().slice(0,10);
-            const r = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')").get(yesterday);
-            yesterdayOrders = Number(r?.n) || 0;
-        } catch (_) {}
-        const deltaOrders = totalOrders - yesterdayOrders;
-        // ── 客訴：今日新增 + 未解決總數 + 今日明細 ─────────────────
-        let complaintsTodayNew = 0, complaintsOpenTotal = 0, complaintsTodayOpen = [];
-        try {
-            const r1 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND LOWER(TRIM(COALESCE(status,''))) = 'complaint'").get(today);
-            complaintsTodayNew = Number(r1?.n) || 0;
-            const r2 = await db.prepare("SELECT COUNT(*) AS n FROM orders o LEFT JOIN complaint_handling ch ON ch.order_id = o.id WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND COALESCE(ch.handle_status, 'pending') <> 'resolved'").get();
-            complaintsOpenTotal = Number(r2?.n) || 0;
-            complaintsTodayOpen = await db.prepare(
-                "SELECT o.id, o.order_no, o.order_date, c.name AS customer_name, o.raw_message, COALESCE(ch.handle_status, 'pending') AS handle_status, ch.handler " +
-                "FROM orders o JOIN customers c ON c.id = o.customer_id LEFT JOIN complaint_handling ch ON ch.order_id = o.id " +
-                "WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND COALESCE(ch.handle_status, 'pending') <> 'resolved' " +
-                "ORDER BY o.order_date DESC, o.id DESC LIMIT 6"
-            ).all();
-        } catch (e) { console.warn("[admin] dashboard complaints query failed:", e?.message || e); }
-        // ── 提醒叫貨：用 bulk helper 取得「逾期未叫貨」客戶數（速度 < 1 秒）──
-        let reminderTotal = 0, reminderCritical = 0, reminderTop = [];
-        try {
-            const reminderStats = await (0, customer_scoring_js_1.fetchAllCustomerReminderStats)(db, today);
-            const overdueList = (reminderStats || [])
-                .filter(c => c.daysSinceLastOrder != null && c.avgIntervalDays != null && c.daysSinceLastOrder > c.avgIntervalDays * 1.5)
-                .map(c => ({ ...c, overdueRatio: c.daysSinceLastOrder / c.avgIntervalDays }));
-            reminderTotal = overdueList.length;
-            reminderCritical = overdueList.filter(c => c.overdueRatio >= 3).length;
-            overdueList.sort((a, b) => b.overdueRatio - a.overdueRatio);
-            reminderTop = overdueList.slice(0, 5);
-        } catch (e) { console.warn("[admin] dashboard reminder query failed:", e?.message || e); }
-        // ── 警示來源：data_change_log 最近 30 筆異常 ──────────────
-        let alerts = [];
-        try {
-            alerts = await db.prepare(
-                "SELECT created_at, actor_username, action, summary, entity_type, entity_id " +
-                "FROM data_change_log WHERE action IN ('soft_delete','delete','unapprove','approve') " +
-                "ORDER BY created_at DESC LIMIT 12"
-            ).all();
-        } catch (_) {}
-        const alertStatusFor = (a) => {
-            if (a.action === "soft_delete" || a.action === "delete") return "bad";
-            if (a.action === "unapprove") return "warn";
-            return "info";
-        };
-        const alertLabelFor = (a) => ({
-            soft_delete: "訂單作廢",
-            delete: "刪除品項",
-            unapprove: "取消確認",
-            approve: "已確認",
-        })[a.action] || a.action;
-        // ── 訂單流量 24h：依 updated_at 台北日期 = 今日，按台北小時聚合 ──
-        // 註：order_date 是送貨日（06:00 後叫的貨會跳到隔天），不適合作為「今日活動」篩選。
-        //     orders 沒有 created_at 欄位，但訂單建立時會寫 updated_at，後續編輯也會更新。
-        //     用 updated_at 的台北日期做近似「今日活動」。
-        const hourBars = new Array(24).fill(0);
-        let chartTotal = 0;
-        try {
-            const isPg = Boolean(process.env.DATABASE_URL);
-            const rows = isPg
-                ? await db.prepare("SELECT EXTRACT(HOUR FROM (updated_at AT TIME ZONE 'Asia/Taipei'))::int AS h, COUNT(*) AS n FROM orders WHERE (updated_at AT TIME ZONE 'Asia/Taipei')::date = ?::date AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY h").all(today)
-                : await db.prepare("SELECT CAST(strftime('%H', datetime(updated_at, '+8 hours')) AS INTEGER) AS h, COUNT(*) AS n FROM orders WHERE date(datetime(updated_at, '+8 hours')) = date(?) AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY h").all(today);
-            for (const r of rows || []) {
-                const h = Number(r.h);
-                const n = Number(r.n) || 0;
-                if (Number.isFinite(h) && h >= 0 && h < 24) {
-                    hourBars[h] = n;
-                    chartTotal += n;
-                }
-            }
-        } catch (e) { console.warn("[admin] dashboard hour bars query failed:", e?.message || e); }
-        const hoursWindow = hourBars.slice(6, 22); // 6:00 ~ 21:00
-        const hourMax = Math.max(1, ...hoursWindow);
-        const peakH = 6 + hoursWindow.indexOf(hourMax);
-        const flowBarsHtml = hoursWindow.map((v, i) => {
-            const hour = 6 + i;
-            const isPeak = v === hourMax && v > 0;
-            const barH = Math.round((v / hourMax) * 110);
-            return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;">
-                <span class="mono" style="font-size:9px;color:${v?"var(--txt-2)":"transparent"};margin-bottom:2px;">${v || "·"}</span>
-                <div style="width:100%;height:${v?Math.max(barH,2):0}px;background:var(--accent);opacity:${isPeak?1:0.45};border-radius:2px 2px 0 0;"></div>
-                <span class="mono" style="font-size:9px;color:var(--txt-3);margin-top:4px;">${hour}</span>
-              </div>`;
-        }).join("");
-        // ── 客戶綁定情況 ────────────────────────────────────────
-        let custTotal = 0, custBound = 0;
-        try {
-            const r = await db.prepare("SELECT COUNT(*) AS n FROM customers").get();
-            custTotal = Number(r?.n) || 0;
-            const r2 = await db.prepare("SELECT COUNT(*) AS n FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != ''").get();
-            custBound = Number(r2?.n) || 0;
-        } catch (_) {}
-        // ── 冷凍冷藏 / 盤點 ──────────────────────────────────────
-        let freezerRows = [];
-        try {
-            freezerRows = await db.prepare("SELECT name, freezer_type FROM freezer_fridge_warehouses ORDER BY name LIMIT 8").all();
-        } catch (_) {}
+            warRoom = await route_war_room_js_1.getRouteWarRoomData(db, today);
+        } catch (e) {
+            console.error("[dashboard] war room", e?.message || e);
+            warRoom = { today, todayIsHoliday: false, routes: [], unrouted: [], totals: { ordered: 0, missing: 0, abnormal: 0, total: 0 } };
+        }
         const tapmc = wholesale_price_js_1.TAPMC_PRICE_URL;
-        const kpiCard = (label, num, unit, sub, status, delta, href) => `
-          <a href="${href || "#"}" class="sf-kpi ${status?"status-"+status:""}" style="text-decoration:none;color:inherit;display:block;transition:transform .12s,box-shadow .12s;cursor:pointer;">
-            <div class="sf-kpi-head">
-              <span class="sf-kpi-label">${label}</span>
-              ${status?`<span class="sf-dot ${status}"></span>`:""}
-            </div>
-            <div class="sf-kpi-value">
-              <span class="sf-kpi-num">${num}</span>
-              ${unit?`<span class="sf-kpi-unit">${unit}</span>`:""}
-            </div>
-            <div class="sf-kpi-foot">
-              ${delta?`<span class="mono">${delta}</span>`:""}
-              ${sub?`<span>${sub}</span>`:""}
-            </div>
-          </a>`;
-        const alertsRows = alerts.length
-            ? alerts.map(a => {
-                const s = alertStatusFor(a);
-                return `<div style="padding:12px 16px;border-bottom:var(--hairline);display:flex;gap:10px;${s==="bad"?"background:var(--bad-soft);":""}">
-                  <div style="padding-top:4px;"><span class="sf-dot ${s}"></span></div>
-                  <div style="flex:1;min-width:0;">
-                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
-                      <span class="mono" style="font-size:11px;color:var(--txt-3);">${escapeHtml(String(a.created_at||"").slice(11,19))}</span>
-                      <span style="font-size:13px;font-weight:500;color:var(--txt-1);">${escapeHtml(alertLabelFor(a))}</span>
-                      <span class="sf-pill">${escapeHtml(a.actor_username||"system")}</span>
-                    </div>
-                    <div style="font-size:12px;color:var(--txt-2);line-height:1.5;">${escapeHtml(a.summary||"")}</div>
-                  </div>
-                </div>`;
-              }).join("")
-            : `<div style="padding:24px;text-align:center;color:var(--txt-3);font-size:13px;">尚無稽核事件</div>`;
-        const checklistCard = (title, head, items, href) => `
-          <a href="${href || "#"}" class="sf-card" style="text-decoration:none;color:inherit;display:block;transition:transform .12s,border-color .12s;">
-            <div class="sf-card-head">
-              <div class="sf-card-title">${title}</div>
-              <span class="mono" style="font-size:11px;color:var(--txt-3);">${head} ›</span>
-            </div>
-            <div style="padding:12px 16px;display:flex;flex-direction:column;gap:6px;">
-              ${items.map((it, idx) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:12px;border-bottom:${idx<items.length-1?"1px dashed var(--line)":"none"};">
-                <span class="sf-dot ${it.status||""}"></span>
-                <span style="color:var(--txt-2);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${escapeHtml(it.name)}</span>
-                <span class="mono" style="color:${it.status==="bad"?"var(--bad)":it.status==="warn"?"var(--warn)":"var(--txt-1)"};">${escapeHtml(it.val||"")}</span>
-              </div>`).join("")}
-            </div>
-          </a>`;
-        const body = `
-        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:20px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
-          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-            <div>
-              <div class="sf-breadcrumb" style="margin-bottom:6px;">儀表板 / 今日營運</div>
-              <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em;">松富物流 · HACCP 監控中心</h1>
-              <div style="margin-top:6px;font-size:12px;color:var(--txt-3);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                <span class="mono">作業日 · ${today} (週${weekdayZh})</span>
-                <span class="sf-pill ok"><span class="sf-dot ok"></span>系統正常</span>
-                <span class="sf-pill info">DB · ${process.env.DATABASE_URL?"PostgreSQL":"SQLite"}</span>
-                <span class="sf-pill accent">${SF_ICONS.spark} 視覺 ${escapeHtml((process.env.GEMINI_MODEL_VISION || process.env.GEMINI_MODEL || "gemini-2.5-flash").replace(/^gemini-/, "Gemini ").replace(/^claude-/, "Claude ").replace(/-/g, " ").replace(/\b(pro|flash|lite|sonnet|opus|haiku)\b/gi, (s) => s.charAt(0).toUpperCase() + s.slice(1)))}</span>
-              </div>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <a class="sf-btn" href="/admin">${SF_ICONS.refresh}<span>重新整理</span></a>
-              <a class="sf-btn" href="/admin/export">${SF_ICONS.dl}<span>當日報表</span></a>
-              ${(process.env.LIFF_ID_ORDER_REVIEW||"").trim() ? `<button type="button" class="sf-btn" onclick="(async()=>{try{await navigator.clipboard.writeText('https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');this.querySelector('span').textContent='已複製，請貼到 LINE';setTimeout(()=>this.querySelector('span').textContent='手機審核連結',2000);}catch(e){prompt('複製失敗，請手動複製：','https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');}})();" title="複製訂單審核 LIFF 連結，貼到 LINE 開啟"><span>📱 手機審核連結</span></button>` : ""}
-              <a class="sf-btn primary" href="/admin/orders?need_review=1">${SF_ICONS.check}<span>批次簽核 (${pendingOrders})</span></a>
-            </div>
-          </div>
-          <div style="display:flex;gap:12px;flex-wrap:wrap;">
-            ${kpiCard("今日訂單", totalOrders, "單", deltaOrders>=0?`vs 昨日 ${yesterdayOrders}`:"", "ok", deltaOrders>0?`↑ +${deltaOrders}`:deltaOrders<0?`↓ ${deltaOrders}`:"· 持平", "/admin/orders")}
-            ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"", pendingOrders>5?"warn":"ok", null, "/admin/orders?need_review=1")}
-            ${kpiCard("已確認", approvedOrders, "單", totalOrders?`完成 ${Math.round(approvedOrders*100/totalOrders)}%`:"", "ok", null, "/admin/orders")}
-            ${kpiCard("客訴", complaintsOpenTotal, "未解決", complaintsTodayNew>0?`今日新增 ${complaintsTodayNew}`:"今日無新客訴", complaintsOpenTotal>0?"bad":"ok", null, "/admin/complaints")}
-            ${kpiCard("提醒叫貨", reminderTotal, "戶", reminderCritical > 0 ? `嚴重逾期 ${reminderCritical} 戶` : reminderTotal > 0 ? "逾期未叫貨" : "全部準時", reminderCritical > 0 ? "bad" : reminderTotal > 0 ? "warn" : "ok", null, "/admin/reminders")}
-          </div>
-          ${reminderTop.length ? `
-          <div class="sf-card" style="border-left:4px solid #f59e0b;">
-            <div class="sf-card-head">
-              <a href="/admin/reminders" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
-                <div class="sf-card-title">🔔 提醒叫貨 Top ${reminderTop.length}（共 ${reminderTotal} 戶）</div>
-              </a>
-              <a href="/admin/reminders" class="sf-card-sub">完整清單 →</a>
-            </div>
-            <div style="padding:0;">
-              ${reminderTop.map(c => {
-                const tagCls = c.overdueRatio >= 3 ? "bad" : c.overdueRatio >= 2 ? "warn" : "info";
-                const tagLabel = c.overdueRatio >= 3 ? "嚴重" : c.overdueRatio >= 2 ? "高" : "中";
-                return `<a href="/admin/customers/${encodeURIComponent(c.id)}/360" style="display:flex;gap:12px;padding:10px 16px;border-bottom:var(--hairline);text-decoration:none;color:inherit;align-items:center;">
-                  <span class="sf-pill ${tagCls}">${tagLabel}</span>
-                  <span style="flex:1;font-size:13px;">${escapeHtml(c.name)}</span>
-                  <span style="font-size:12px;color:var(--txt-3);">最後 ${escapeHtml(c.lastOrderDate || "—")}</span>
-                  <span class="mono" style="font-size:12px;"><strong style="color:var(--bad);">${c.daysSinceLastOrder} 天</strong> / 平均 ${c.avgIntervalDays} 天</span>
-                </a>`;
-              }).join("")}
-            </div>
-          </div>` : ""}
-          ${complaintsTodayOpen.length ? `
-          <div class="sf-card" style="border-left:4px solid #ef4444;">
-            <div class="sf-card-head">
-              <a href="/admin/complaints" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
-                <div class="sf-card-title">⚠️ 未解決客訴（${complaintsOpenTotal}）</div>
-              </a>
-              <a href="/admin/complaints" class="sf-card-sub">前往處理 →</a>
-            </div>
-            <div>
-              ${complaintsTodayOpen.map(c => {
-                const t = String(c.raw_message || "").replace(/\[圖片\]/g, "[圖]").trim();
-                const preview = t.length > 80 ? t.slice(0, 80) + "…" : t;
-                const statusPill = c.handle_status === "handling"
-                  ? `<span class="sf-pill warn">處理中</span>`
-                  : `<span class="sf-pill bad">待處理</span>`;
-                return `<a href="/admin/complaints/${encodeURIComponent(c.id)}" style="display:flex;gap:12px;padding:10px 16px;border-bottom:var(--hairline);text-decoration:none;color:inherit;align-items:flex-start;">
-                  <div style="min-width:80px;font-size:12px;color:var(--txt-3);">${escapeHtml(c.order_date)}</div>
-                  <div style="min-width:120px;font-size:13px;font-weight:500;">${escapeHtml(c.customer_name)}</div>
-                  <div style="flex:1;font-size:12px;color:var(--txt-2);">${escapeHtml(preview) || "<span style='color:var(--txt-3);'>—</span>"}</div>
-                  <div style="display:flex;gap:6px;align-items:center;">${statusPill}${c.handler ? `<span style="font-size:12px;color:var(--txt-3);">${escapeHtml(c.handler)}</span>` : ""}</div>
-                </a>`;
-              }).join("")}
-            </div>
-          </div>` : ""}
-          <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;">
-            <div class="sf-card">
-              <div class="sf-card-head">
-                <div class="sf-card-title">${SF_ICONS.list} 今日叫貨流量 · 06:00–21:00</div>
-                <span class="sf-card-sub">${chartTotal>0?`尖峰 ${peakH}:00 · 共 ${chartTotal} 單`:"今日尚未收到訂單"}</span>
-              </div>
-              <div style="padding:16px;">
-                ${chartTotal>0
-                  ? `<div style="display:flex;align-items:flex-end;gap:4px;height:140px;">${flowBarsHtml}</div>`
-                  : `<div style="height:140px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;border:1px dashed var(--line);border-radius:var(--radius);background:var(--bg-2);">📊 今日（依收單時間）尚未收到訂單</div>`}
-                <div style="margin-top:16px;padding-top:14px;border-top:var(--hairline);display:flex;gap:24px;font-size:12px;color:var(--txt-2);flex-wrap:wrap;">
-                  ${chartTotal>0?`<span>尖峰 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${peakH}:00</strong></span>`:""}
-                  <span>今日收單 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${chartTotal}</strong></span>
-                  <span>送貨日 ${today} 訂單 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${totalOrders}</strong></span>
-                  <span>待確認 <strong class="mono" style="color:${needReviewCnt?"var(--warn)":"var(--ok)"};margin-left:6px;">${needReviewCnt}/${totalOrders||"-"}</strong></span>
-                  <a href="/admin/orders" style="margin-left:auto;font-size:12px;">前往訂單管理 →</a>
-                </div>
-              </div>
-            </div>
-            <div class="sf-card" style="display:flex;flex-direction:column;">
-              <div class="sf-card-head">
-                <a href="/admin/audit" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
-                  <div class="sf-card-title">${SF_ICONS.bell} 即時稽核事件</div>
-                </a>
-                <a href="/admin/audit" style="text-decoration:none;"><span class="sf-pill ${alerts.filter(a=>alertStatusFor(a)==="bad").length?"bad":"info"}">${alerts.length} 筆 ›</span></a>
-              </div>
-              <div style="flex:1;overflow:auto;max-height:380px;">${alertsRows}</div>
-            </div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
-            ${checklistCard("冷凍／冷藏庫", `${freezerRows.length} 個庫房`, freezerRows.slice(0,4).map(r => ({ name: r.name, val: r.freezer_type || "—", status: "info" })), "/admin/freezer-fridge")}
-            ${checklistCard("每日盤點", `${today}`, [{ name: "前往盤點作業", val: "→", status: "info" }, { name: "盤差報表", val: "→", status: "info" }, { name: "庫房管理", val: "→", status: "info" }, { name: "ERP 匯入", val: "→", status: "info" }], "/admin/inventory")}
-            ${checklistCard("LINE 綁定", `${custBound} / ${custTotal} 戶`, [{ name: "已綁定客戶", val: custBound + " 戶", status: "ok" }, { name: "未綁定客戶", val: (custTotal-custBound) + " 戶", status: custBound===custTotal?"ok":"warn" }, { name: "群發訊息", val: "→", status: "info" }, { name: "綁定檢查", val: "→", status: "info" }], "/admin/customers")}
-          </div>
-          <div class="sf-card">
-            <div class="sf-card-head">
-              <div class="sf-card-title">${SF_ICONS.spark} 北農行情</div>
-              <a href="${tapmc}" target="_blank" rel="noopener" class="sf-card-sub">前往臺北農產 →</a>
-            </div>
-            <div style="padding:14px 16px;display:flex;gap:12px;align-items:center;">
-              <span style="font-size:12px;color:var(--txt-3);">即時行情請至臺北農產官網查詢。</span>
-              <a href="/admin/logistics/market" class="sf-btn sm">系統整理版</a>
-            </div>
-          </div>
-          <div class="sf-card" id="cost-card">
-            <div class="sf-card-head">
-              <div class="sf-card-title">${SF_ICONS.spark} 費用概覽</div>
-              <span class="sf-card-sub">
-                <button type="button" id="cost-refresh-btn" class="sf-btn sm" style="margin-right:8px;">重新整理</button>
-                <span class="mono" id="cost-updated" style="font-size:11px;color:var(--txt-3);">載入中…</span>
-              </span>
-            </div>
-            <div style="padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-              <div id="cost-line" style="border:1px solid var(--line);border-radius:var(--radius);padding:14px;background:var(--bg-1);">
-                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
-                  <strong style="font-size:13px;">LINE 訊息額度（本月）</strong>
-                  <span class="mono" id="cost-line-status" style="font-size:11px;color:var(--txt-3);">—</span>
-                </div>
-                <div id="cost-line-body" style="min-height:96px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;">載入中…</div>
-                <div style="margin-top:8px;font-size:11px;color:var(--txt-3);">含 broadcast / push / multicast；reply 不計費</div>
-              </div>
-              <div id="cost-gemini" style="border:1px solid var(--line);border-radius:var(--radius);padding:14px;background:var(--bg-1);">
-                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
-                  <strong style="font-size:13px;">AI 視覺辨識用量（估算）</strong>
-                  <a href="/admin/recognition-stats" class="mono" style="font-size:11px;">辨識成效 →</a>
-                </div>
-                <div id="cost-gemini-body" style="min-height:96px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;">載入中…</div>
-                <div style="margin-top:8px;font-size:11px;color:var(--txt-3);">含 Gemini + Claude；以各家公告單價估算，實際以 GCP / Anthropic 帳單為準</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <script>
-        (function(){
-          const $ = (s) => document.querySelector(s);
-          const fmtInt = (n) => Number(n||0).toLocaleString();
-          const fmtUsd = (n) => "US$" + (Number(n||0)).toFixed(4);
-          function renderLine(line){
-            const box = $("#cost-line-body");
-            const status = $("#cost-line-status");
-            if (!line || !line.ok) {
-              status.textContent = "未連線";
-              box.innerHTML = '<span style="color:var(--warn);">' + (line && line.error ? line.error : "無法取得 LINE 額度") + '</span>';
-              return;
+        const view = String(req.query.view || "compact").trim() === "detailed" ? "detailed" : "compact";
+        const sevColor = (s) => s === "danger" ? "background:#fef2f2;color:#b91c1c;border-color:#fecaca;" :
+            s === "warn" ? "background:#fffbeb;color:#b45309;border-color:#fde68a;" :
+            "background:#eff6ff;color:#1e40af;border-color:#bfdbfe;";
+
+        // 客戶分類（決定卡片底色／點點顏色）
+        const classifyCustomer = (c) => {
+            if (c.hasOrderedToday) return c.totalNeedReview > 0 ? "review" : "ok";
+            if (c.anomalies.some((a) => a.severity === "danger")) return "danger";
+            if (c.anomalies.length) return "warn";
+            return "muted";
+        };
+
+        const linkTargetFor = (c) => c.hasOrderedToday && c.todayOrders[0]
+            ? `/admin/orders/${encodeURIComponent(c.todayOrders[0].orderId)}`
+            : `/admin/customers/${encodeURIComponent(c.id)}/quick-view`;
+
+        const buildTipText = (c) => {
+            const parts = [c.name || "—"];
+            if (c.hasOrderedToday) {
+                parts.push(`✓ 已叫 ${c.totalItems} 項 · 量 ${Math.round(c.totalQtyToday)}`);
+                if (c.totalNeedReview > 0) parts.push(`⚠ 待確認 ${c.totalNeedReview} 項`);
+            } else {
+                if (c.lastOrderDate) parts.push(`上次叫貨：${c.lastOrderDate}（${c.daysSinceLast} 天前）`);
+                else parts.push(`— 無歷史 —`);
             }
-            if (line.unlimited) {
-              status.textContent = "無上限方案";
-              box.innerHTML = '<div style="text-align:center;"><div style="font-size:28px;font-weight:600;font-family:var(--mono,monospace);">' + fmtInt(line.used) + '</div><div style="font-size:12px;color:var(--txt-2);">本月已送出（無上限）</div></div>';
-              return;
-            }
-            const pct = Math.min(100, Math.max(0, Number(line.percent)||0));
-            const color = pct > 90 ? "var(--bad)" : pct > 70 ? "var(--warn)" : "var(--ok)";
-            status.textContent = pct + "% 已用";
-            box.innerHTML =
-              '<div style="width:100%;">' +
-                '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px;"><span>已用 <strong class="mono">' + fmtInt(line.used) + '</strong></span><span>剩餘 <strong class="mono" style="color:' + color + ';">' + fmtInt(line.remaining) + '</strong> / ' + fmtInt(line.quota) + '</span></div>' +
-                '<div style="height:10px;background:var(--bg-2);border-radius:5px;overflow:hidden;border:1px solid var(--line);"><div style="height:100%;width:' + pct + '%;background:' + color + ';"></div></div>' +
-              '</div>';
-          }
-          function renderGemini(g){
-            const box = $("#cost-gemini-body");
-            if (!g || !g.ok) {
-              box.innerHTML = '<span style="color:var(--warn);">' + (g && g.error ? g.error : "無法統計 AI 用量") + '</span>';
-              return;
-            }
-            const t = g.today || { calls:0, tokens:0, usd:0 };
-            const m = g.month || { calls:0, tokens:0, usd:0, byModel:[], byVendor:{} };
-            // 供應商徽章樣式
-            function vendorBadge(v){
-              const styles = {
-                gemini: 'background:#e8f1ff;color:#1d4ed8;',
-                claude: 'background:#fff0e8;color:#c2410c;',
-                unknown: 'background:#f1f1f1;color:#666;',
-              };
-              const labels = { gemini: 'Gemini', claude: 'Claude', unknown: '?' };
-              const s = styles[v] || styles.unknown;
-              return '<span style="' + s + 'font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;margin-right:4px;">' + (labels[v] || v) + '</span>';
-            }
-            // 模型列：加上供應商徽章
-            const modelRows = (m.byModel||[]).map(r =>
-              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--txt-2);padding:2px 0;align-items:center;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;">' + vendorBadge(r.vendor) + r.model + '</span><span class="mono">' + fmtInt(r.in + r.out) + ' tok · ' + fmtUsd(r.usd) + '</span></div>'
-            ).join("");
-            // 供應商小計（本月）
-            const bv = m.byVendor || {};
-            const vendorCells = [];
-            if (bv.gemini && bv.gemini.calls > 0) {
-              vendorCells.push('<div style="font-size:11px;color:var(--txt-2);">' + vendorBadge('gemini') + '<span class="mono">' + fmtUsd(bv.gemini.usd) + ' · ' + fmtInt(bv.gemini.calls) + ' 次</span></div>');
-            }
-            if (bv.claude && bv.claude.calls > 0) {
-              vendorCells.push('<div style="font-size:11px;color:var(--txt-2);">' + vendorBadge('claude') + '<span class="mono">' + fmtUsd(bv.claude.usd) + ' · ' + fmtInt(bv.claude.calls) + ' 次</span></div>');
-            }
-            const vendorRow = vendorCells.length > 1
-              ? '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0;border-top:1px dashed var(--line);padding-top:6px;">' + vendorCells.join("") + '</div>'
-              : '';
-            box.innerHTML =
-              '<div style="width:100%;">' +
-                '<div style="display:flex;gap:12px;justify-content:space-around;text-align:center;margin-bottom:10px;">' +
-                  '<div><div style="font-size:11px;color:var(--txt-3);">今日</div><div class="mono" style="font-size:18px;font-weight:600;">' + fmtUsd(t.usd) + '</div><div style="font-size:11px;color:var(--txt-2);">' + fmtInt(t.tokens) + ' tok · ' + fmtInt(t.calls) + ' 次</div></div>' +
-                  '<div style="border-left:1px solid var(--line);"></div>' +
-                  '<div><div style="font-size:11px;color:var(--txt-3);">本月</div><div class="mono" style="font-size:18px;font-weight:600;">' + fmtUsd(m.usd) + '</div><div style="font-size:11px;color:var(--txt-2);">' + fmtInt(m.tokens) + ' tok · ' + fmtInt(m.calls) + ' 次</div></div>' +
-                '</div>' +
-                vendorRow +
-                (modelRows ? '<div style="border-top:1px dashed var(--line);padding-top:6px;">' + modelRows + '</div>' : '') +
-              '</div>';
-          }
-          async function loadCost(){
-            try {
-              const r = await fetch("/admin/api/cost-summary", { credentials: "same-origin" });
-              const j = await r.json();
-              renderLine(j.line);
-              renderGemini(j.gemini);
-              const t = j.generatedAt ? new Date(j.generatedAt) : new Date();
-              $("#cost-updated").textContent = "更新於 " + t.toLocaleTimeString("zh-TW", { hour12: false });
-            } catch (e) {
-              $("#cost-updated").textContent = "讀取失敗";
-            }
-          }
-          document.getElementById("cost-refresh-btn").addEventListener("click", loadCost);
-          loadCost();
+            for (const a of c.anomalies) parts.push(`• ${a.label}`);
+            return parts.join("\n");
+        };
+
+        const renderCardDetailed = (c) => {
+            const status = c.hasOrderedToday
+                ? `<span class="wr-status wr-status-ok">✓ 已叫貨</span>`
+                : (c.anomalies.some((a) => a.severity === "danger")
+                    ? `<span class="wr-status wr-status-danger">⚠ 注意</span>`
+                    : c.anomalies.length
+                        ? `<span class="wr-status wr-status-warn">⚠</span>`
+                        : `<span class="wr-status wr-status-muted">— 未叫</span>`);
+            const orderInfo = c.hasOrderedToday
+                ? `<div class="wr-meta">${c.totalItems} 項 · 量 ${Math.round(c.totalQtyToday)}</div>`
+                : (c.lastOrderDate ? `<div class="wr-meta wr-muted">上次 ${c.lastOrderDate}（${c.daysSinceLast} 天前）</div>` : `<div class="wr-meta wr-muted">— 無歷史 —</div>`);
+            const tags = c.anomalies.map((a) => `<span class="wr-tag" style="${sevColor(a.severity)}" title="${escapeAttr(a.label)}">${escapeHtml(a.label)}</span>`).join("");
+            return `<a href="${linkTargetFor(c)}" class="wr-card wr-card-${classifyCustomer(c)}">
+<div class="wr-card-head">
+  <div class="wr-name">${escapeHtml(c.name || "—")}</div>
+  ${status}
+</div>
+${orderInfo}
+${tags ? `<div class="wr-tags">${tags}</div>` : ""}
+</a>`;
+        };
+
+        const renderTileCompact = (c) => {
+            const klass = classifyCustomer(c);
+            const dotIcon = c.hasOrderedToday
+                ? (c.totalNeedReview > 0 ? "⚠" : "✓")
+                : (c.anomalies.some((a) => a.severity === "danger") ? "!" : (c.anomalies.length ? "⚠" : "·"));
+            const badge = c.anomalies.length ? `<span class="wr-tile-badge">${c.anomalies.length}</span>` : "";
+            return `<a href="${linkTargetFor(c)}" class="wr-tile wr-tile-${klass}" data-tip="${escapeAttr(buildTipText(c))}">
+<span class="wr-tile-dot">${dotIcon}</span>
+<span class="wr-tile-name">${escapeHtml(c.name || "—")}</span>
+${badge}
+</a>`;
+        };
+
+        const renderCard = view === "detailed" ? renderCardDetailed : renderTileCompact;
+
+        const renderRouteBlock = (route) => {
+            const cards = route.customers.map(renderCard).join("");
+            const summary = `<span class="wr-route-summary">${route.stats.ordered}/${route.stats.total} 已叫${route.stats.abnormal ? ` · ${route.stats.abnormal} 異常` : ""}</span>`;
+            const containerClass = view === "detailed" ? "wr-cards" : "wr-tiles";
+            return `<section class="wr-route">
+<header class="wr-route-head">
+  <h2 class="wr-route-title">${escapeHtml(route.routeLabel)}</h2>
+  ${summary}
+</header>
+<div class="${containerClass}">${cards}</div>
+</section>`;
+        };
+        const routesHtml = warRoom.routes.map(renderRouteBlock).join("");
+        const unroutedHtml = warRoom.unrouted.length
+            ? renderRouteBlock({ routeLabel: "未分線客戶", customers: warRoom.unrouted, stats: { total: warRoom.unrouted.length, ordered: warRoom.unrouted.filter(c => c.hasOrderedToday).length, missing: warRoom.unrouted.filter(c => !c.hasOrderedToday).length, abnormal: warRoom.unrouted.filter(c => c.anomalies.length).length } })
+            : "";
+        const dateLabel = (() => {
+            const d = new Date(warRoom.today + "T12:00:00");
+            return Number.isNaN(d.getTime()) ? warRoom.today : d.toLocaleDateString("zh-TW", { month: "2-digit", day: "2-digit", weekday: "long" });
         })();
-        </script>`;
-        res.type("text/html").send(notionPage("儀表板", body, "dashboard", res));
+        const body = `<style>
+.wr-toolbar { display:flex; align-items:center; gap:14px; margin-bottom:14px; flex-wrap:wrap; }
+.wr-toolbar form { display:inline-flex; gap:6px; align-items:center; margin:0; }
+.wr-summary { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
+.wr-stat-card { flex:1; min-width:140px; padding:14px 18px; background:#fff; border:1px solid var(--notion-border); border-radius:10px; }
+.wr-stat-num { font-size:28px; font-weight:700; line-height:1; }
+.wr-stat-label { font-size:12px; color:var(--notion-text-muted); margin-top:4px; }
+.wr-stat-card.wr-stat-ok .wr-stat-num { color:#047857; }
+.wr-stat-card.wr-stat-missing .wr-stat-num { color:#787774; }
+.wr-stat-card.wr-stat-abnormal .wr-stat-num { color:#b91c1c; }
+.wr-route { margin-bottom:20px; }
+.wr-route-head { display:flex; align-items:center; gap:12px; margin-bottom:10px; padding-bottom:6px; border-bottom:1px solid var(--notion-border); }
+.wr-route-title { font-size:16px; font-weight:600; margin:0; color:var(--notion-text); }
+.wr-route-summary { font-size:12px; color:var(--notion-text-muted); }
+.wr-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; }
+.wr-card { display:block; padding:10px 12px; background:#fff; border:1.5px solid var(--notion-border); border-radius:8px; text-decoration:none; color:var(--notion-text); transition:transform .15s,border-color .15s,box-shadow .15s; }
+.wr-card:hover { transform:translateY(-2px); border-color:#3b82c4; box-shadow:0 4px 12px rgba(59,130,196,0.1); text-decoration:none; }
+.wr-card-ok { border-color:#a7f3d0; background:#f0fdf4; }
+.wr-card-review { border-color:#fde68a; background:#fffbeb; }
+.wr-card-warn { border-color:#fde68a; background:#fffbeb; }
+.wr-card-danger { border-color:#fecaca; background:#fef2f2; }
+.wr-card-muted { background:#fafafa; }
+.wr-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px; }
+.wr-name { font-weight:600; font-size:14px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wr-status { font-size:11px; padding:2px 6px; border-radius:8px; flex-shrink:0; }
+.wr-status-ok { background:#dcfce7; color:#047857; }
+.wr-status-warn { background:#fef3c7; color:#b45309; }
+.wr-status-danger { background:#fee2e2; color:#b91c1c; }
+.wr-status-muted { background:#f4f4f0; color:#787774; }
+.wr-meta { font-size:12px; color:#37352f; margin:2px 0; }
+.wr-meta.wr-muted { color:var(--notion-text-muted); }
+.wr-tags { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+.wr-tag { font-size:11px; padding:2px 6px; border-radius:4px; border:1px solid; line-height:1.4; }
+.wr-empty { color:var(--notion-text-muted); padding:30px; text-align:center; font-size:14px; background:#fafafa; border-radius:8px; }
+.wr-secondary { margin-top:30px; padding-top:18px; border-top:1px solid var(--notion-border); }
+
+/* === 緊湊瓦片模式：~10 個/行，hover 看詳細 === */
+.wr-tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(108px,1fr)); gap:5px; }
+@media (min-width:1280px) { .wr-tiles { grid-template-columns:repeat(auto-fill,minmax(100px,1fr)); } }
+@media (max-width:760px) { .wr-tiles { grid-template-columns:repeat(auto-fill,minmax(95px,1fr)); } }
+.wr-tile {
+  position:relative;
+  display:flex; align-items:center; gap:5px;
+  padding:5px 8px;
+  background:#fff;
+  border:1px solid var(--notion-border);
+  border-left:3px solid var(--notion-border-strong);
+  border-radius:4px;
+  text-decoration:none; color:var(--notion-text);
+  font-size:12px; line-height:1.3;
+  transition:transform .12s, border-color .12s, box-shadow .12s;
+  min-height:28px;
+  cursor:pointer;
+}
+.wr-tile:hover {
+  transform:translateY(-1px);
+  border-color:#3b82c4;
+  box-shadow:0 2px 8px rgba(59,130,196,0.18);
+  text-decoration:none;
+  z-index:5;
+}
+.wr-tile-dot {
+  flex:0 0 auto;
+  display:inline-flex; align-items:center; justify-content:center;
+  width:14px; height:14px;
+  border-radius:50%;
+  font-size:9px; font-weight:700; line-height:1;
+}
+.wr-tile-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+.wr-tile-badge {
+  flex:0 0 auto;
+  background:#b91c1c; color:#fff;
+  font-size:9px; font-weight:700;
+  padding:1px 5px;
+  border-radius:8px;
+  min-width:14px;
+  text-align:center;
+  line-height:1.3;
+}
+.wr-tile-ok      { border-left-color:#10b981; }
+.wr-tile-ok      .wr-tile-dot { background:#dcfce7; color:#047857; }
+.wr-tile-review  { border-left-color:#f59e0b; background:#fffbeb; }
+.wr-tile-review  .wr-tile-dot { background:#fef3c7; color:#b45309; }
+.wr-tile-warn    { border-left-color:#f59e0b; background:#fffbeb; }
+.wr-tile-warn    .wr-tile-dot { background:#fef3c7; color:#b45309; }
+.wr-tile-danger  { border-left-color:#dc2626; background:#fef2f2; }
+.wr-tile-danger  .wr-tile-dot { background:#fee2e2; color:#b91c1c; }
+.wr-tile-muted   { border-left-color:#d1d5db; background:#fafafa; }
+.wr-tile-muted   .wr-tile-dot { background:#f4f4f0; color:#787774; }
+
+/* CSS-only tooltip：hover 顯示完整資訊（多行） */
+.wr-tile[data-tip]:hover::after {
+  content: attr(data-tip);
+  position:absolute;
+  left:0; top:100%;
+  margin-top:4px;
+  padding:8px 10px;
+  background:#1f2937;
+  color:#fff;
+  font-size:12px; line-height:1.5;
+  white-space:pre-line;
+  border-radius:6px;
+  box-shadow:0 4px 16px rgba(0,0,0,0.25);
+  z-index:50;
+  min-width:180px; max-width:260px;
+  pointer-events:none;
+}
+
+.wr-view-switch { display:inline-flex; gap:0; border:1px solid var(--notion-border-strong); border-radius:6px; overflow:hidden; }
+.wr-view-switch a { padding:6px 12px; font-size:12px; text-decoration:none; color:#666; background:#fff; border-right:1px solid var(--notion-border); }
+.wr-view-switch a:last-child { border-right:none; }
+.wr-view-switch a.active { background:#3b82c4; color:#fff; }
+.wr-view-switch a:hover:not(.active) { background:#f4f4f0; }
+</style>
+<div class="notion-page-content">
+<div class="wr-toolbar">
+  <h1 class="notion-page-title" style="margin:0;">路線戰情室</h1>
+  <span style="color:var(--notion-text-muted);font-size:13px;">${escapeHtml(dateLabel)}${warRoom.todayIsHoliday ? " · 公休日（不判斷未叫貨異常）" : ""}</span>
+  <form method="get" action="/admin">
+    <input type="date" name="date" value="${escapeAttr(warRoom.today)}">
+    <input type="hidden" name="view" value="${escapeAttr(view)}">
+    <button type="submit" class="btn">看其他日期</button>
+  </form>
+  <a href="/admin?date=${escapeAttr(getTaipeiCalendarDateYYYYMMDD())}&view=${escapeAttr(view)}" class="btn">回今日</a>
+  <span class="wr-view-switch" title="切換顯示密度">
+    <a href="/admin?date=${escapeAttr(warRoom.today)}&view=compact" class="${view === "compact" ? "active" : ""}">緊湊</a>
+    <a href="/admin?date=${escapeAttr(warRoom.today)}&view=detailed" class="${view === "detailed" ? "active" : ""}">詳細</a>
+  </span>
+</div>
+
+<div class="wr-summary">
+  <div class="wr-stat-card wr-stat-ok"><div class="wr-stat-num">${warRoom.totals.ordered}</div><div class="wr-stat-label">已叫貨 / 全 ${warRoom.totals.total}</div></div>
+  <div class="wr-stat-card wr-stat-missing"><div class="wr-stat-num">${warRoom.totals.missing}</div><div class="wr-stat-label">未叫貨${warRoom.todayIsHoliday ? "（公休日不視為異常）" : ""}</div></div>
+  <div class="wr-stat-card wr-stat-abnormal"><div class="wr-stat-num">${warRoom.totals.abnormal}</div><div class="wr-stat-label">異常需關注 <span class="info-pop" tabindex="0" data-tip="異常包含 4 種訊號：&#10;• 待確認：今天有訂單但有 OCR 待人工核對品項&#10;• 預期應叫：依過去節律應該叫貨但還沒叫&#10;• 已超期：上次叫貨距今 > 平均週期 × 2 倍&#10;• 量異常：今天總量偏離 30 日均量 > 50%">i</span></div></div>
+</div>
+
+${routesHtml || (unroutedHtml ? "" : `<div class="wr-empty">尚無啟用客戶。請先到「客戶管理」新增。</div>`)}
+${unroutedHtml}
+
+<div class="wr-secondary">
+  <h3 style="margin:0 0 10px;font-size:14px;color:var(--notion-text-muted);font-weight:500;">外部行情參考</h3>
+  <a href="${tapmc}" target="_blank" rel="noopener" class="btn">臺北農產 — 單日交易行情</a>
+  <a href="/admin/logistics/market" class="btn">系統內 北農行情</a>
+</div>
+</div>`;
+        res.type("text/html").send(notionPage("路線戰情室", body, "dashboard", res));
     });
     // === 行事曆事件 API ===
     router.get("/api/dashboard-events", async (req, res) => {
@@ -6043,19 +5965,25 @@ function createAdminRouter() {
         let msg = "";
         let snapHint = "";
         let snapSource = "";
+        let statusCode = "";
+        let apiErrors = [];
         if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
             try {
                 const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
                 prices = snap.prices || [];
                 snapHint = snap.hint || "";
                 snapSource = snap.source || "";
-                if (!prices.length)
-                    msg = snapSource === "empty"
-                        ? "該日尚無台北果菜市場行情，且本地無快照。"
-                        : "該日無符合「青菜／葉菜」篩選之資料。";
+                statusCode = snap.status || "";
+                apiErrors = Array.isArray(snap.apiErrors) ? snap.apiErrors : [];
+                if (!prices.length) {
+                    if (statusCode === "network_error") msg = `❌ 連不上農業部 API（無本地快照可用）。${apiErrors.length ? "詳細：" + apiErrors.join(" / ") : ""}`;
+                    else if (statusCode === "filter_empty") msg = `📭 API 回 ${snap.rawCount || 0} 筆但全不在「青菜／葉菜／包葉」分類；可能 API 種類欄位異動。`;
+                    else if (statusCode === "empty") msg = "📭 該日 API 0 筆 — 多為休市或資料尚未更新。";
+                    else msg = "❌ 讀取行情失敗（不明原因）。";
+                }
             }
             catch (e) {
-                msg = "讀取行情失敗，請稍後再試。";
+                msg = "❌ 讀取行情例外：" + (e?.message || String(e)).slice(0, 200);
             }
         }
         else {
@@ -6064,21 +5992,26 @@ function createAdminRouter() {
         const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_price_prefix_rules");
         const rulesText = row?.value || JSON.stringify({ "*": 2, LM: 10 }, null, 2);
         const rows = prices.slice(0, 300).map((p) => `<tr><td>${escapeHtml(p.marketName || "")}</td><td>${escapeHtml(p.category || "")}</td><td>${escapeHtml(p.cropName || "")}</td><td>${p.highPrice ?? "—"}</td><td>${p.midPrice ?? "—"}</td><td>${p.lowPrice ?? "—"}</td></tr>`).join("");
+        const sourceTag = snapSource === "api" ? `<span style="background:#dcfce7;color:#047857;padding:2px 8px;border-radius:10px;font-size:11px;">即時 API</span>`
+            : snapSource === "snapshot" ? `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:10px;font-size:11px;">本地快照</span>`
+            : "";
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 北農行情</div>
         <h1 class="notion-page-title">北農行情（台北一、台北二）— 青菜／葉菜</h1>
-        <p class="notion-hint">僅顯示作物種類為青菜／葉菜／包葉等；欄位為<strong>上／中／下價</strong>（元／公斤）。API 有資料時會自動寫入本地每日快照。與<a href="${wholesale_price_js_1.TAPMC_PRICE_URL}" target="_blank" rel="noopener">臺北農產運銷「單日交易行情查詢」</a>為同一市場；若需與官網逐筆核對請至該頁下載檔案。</p>
-        ${snapSource === "snapshot" && prices.length ? `<p class="notion-msg warn">本日資料來自<strong>本地快照</strong>（農業部 API 暫無該日資料）。</p>` : ""}
+        <p class="notion-hint">僅顯示作物種類為青菜／葉菜／包葉等；欄位為<strong>上／中／下價</strong>（元／公斤）。API 有資料時會自動寫入本地每日快照。與<a href="${wholesale_price_js_1.TAPMC_PRICE_URL}" target="_blank" rel="noopener">臺北農產運銷「單日交易行情查詢」</a>為同一市場。</p>
+        ${snapSource === "snapshot" && prices.length ? `<p class="notion-msg warn">本日資料來自<strong>本地快照</strong>（農業部 API 此刻無該日資料）。</p>` : ""}
         ${snapHint ? `<p class="notion-hint">${escapeHtml(snapHint)}</p>` : ""}
         ${req.query.ok === "1" ? '<p class="notion-msg ok">已儲存加價規則。</p>' : ""}
         ${req.query.err === "rules" ? '<p class="notion-msg err">規則格式錯誤，請輸入 JSON 物件。</p>' : ""}
-        <form method="get" action="/admin/logistics/market" style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+        <form method="get" action="/admin/logistics/market" style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
           <label>日期 <input type="date" name="date" value="${escapeAttr(dateStr)}"></label>
           <button type="submit" class="btn">查詢</button>
+          ${prices.length ? `<a href="/admin/logistics/market/export.csv?date=${escapeAttr(dateStr)}" class="btn">下載 CSV</a><a href="/admin/logistics/market/export.xlsx?date=${escapeAttr(dateStr)}" class="btn">下載 Excel</a>` : ""}
+          ${sourceTag}
         </form>
-        ${msg ? `<p class="notion-msg warn">${escapeHtml(msg)}</p>` : ""}
+        ${msg ? `<p class="notion-msg warn" style="margin:8px 0;padding:8px 12px;border-radius:6px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;">${escapeHtml(msg)}</p>` : ""}
         <div class="notion-card">
-          <table><thead><tr><th>市場</th><th>種類</th><th>作物</th><th>上價</th><th>中價</th><th>下價</th></tr></thead><tbody>${rows || "<tr><td colspan='6'>無資料</td></tr>"}</tbody></table>
+          <table><thead><tr><th>市場</th><th>種類</th><th>作物</th><th>上價</th><th>中價</th><th>下價</th></tr></thead><tbody>${rows || "<tr><td colspan='6' style='color:#999;text-align:center;padding:24px;'>無資料</td></tr>"}</tbody></table>
         </div>
         <div class="notion-card" style="margin-top:16px;">
           <h2 style="margin-top:0;">LINE 報價加價規則</h2>
@@ -6090,6 +6023,198 @@ function createAdminRouter() {
         </div>
       `;
         res.type("text/html").send(notionPage("北農行情", body, "logistics-market", res));
+    });
+
+    router.get("/logistics/market/export.csv", async (req, res) => {
+        const dateStr = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).send("date 格式錯誤"); return; }
+        const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
+        const lines = ["日期,市場,種類,作物,上價,中價,下價"];
+        for (const p of (snap.prices || [])) {
+            const cells = [dateStr, p.marketName || "", p.category || "", p.cropName || "", p.highPrice ?? "", p.midPrice ?? "", p.lowPrice ?? ""].map((v) => {
+                const s = String(v ?? "");
+                return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+            });
+            lines.push(cells.join(","));
+        }
+        res.set("Content-Type", "text/csv; charset=utf-8");
+        res.set("Content-Disposition", `attachment; filename="wholesale_${dateStr}.csv"`);
+        res.send("﻿" + lines.join("\n"));
+    });
+
+    router.get("/logistics/market/export.xlsx", async (req, res) => {
+        const dateStr = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).send("date 格式錯誤"); return; }
+        const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
+        const data = [["日期", "市場", "種類", "作物", "上價", "中價", "下價"]];
+        for (const p of (snap.prices || [])) {
+            data.push([dateStr, p.marketName || "", p.category || "", p.cropName || "", p.highPrice ?? null, p.midPrice ?? null, p.lowPrice ?? null]);
+        }
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        XLSX.utils.book_append_sheet(wb, ws, "北農行情");
+        const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+        res.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.set("Content-Disposition", `attachment; filename="wholesale_${dateStr}.xlsx"`);
+        res.send(buf);
+    });
+
+    // ============================================================
+    // 原物料行情：豬肉、雞肉、雞蛋等（手動輸入；無公開 API）
+    // ============================================================
+    const COMMODITY_CATEGORIES = [
+        { value: "egg", label: "🥚 雞蛋", source: "中央畜產會 NAIF / 自查" },
+        { value: "pork", label: "🐖 豬肉", source: "台灣區肉品市場 / 自查" },
+        { value: "chicken", label: "🐓 雞肉", source: "屠宰場 / 自查" },
+        { value: "beef", label: "🐄 牛肉", source: "自查" },
+        { value: "fish", label: "🐟 海鮮水產", source: "自查" },
+        { value: "other", label: "其他", source: "自查" },
+    ];
+
+    router.get("/logistics/commodities", async (req, res) => {
+        const filterCat = String(req.query.category || "").trim();
+        const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+        const today = getTaipeiCalendarDateYYYYMMDD();
+        const fromQ = String(req.query.from || "").trim();
+        const toQ = String(req.query.to || "").trim();
+        const dateFrom = dateRe.test(fromQ) ? fromQ : (() => { const d = new Date(today + "T12:00:00"); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
+        const dateTo = dateRe.test(toQ) ? toQ : today;
+        let sql = "SELECT id, category, source, record_date, unit, spec, price, high_price, mid_price, low_price, note, updated_at FROM commodity_prices WHERE record_date >= ? AND record_date <= ?";
+        const params = [dateFrom, dateTo];
+        if (filterCat) { sql += " AND category = ?"; params.push(filterCat); }
+        sql += " ORDER BY record_date DESC, category, spec LIMIT 500";
+        const rows = await db.prepare(sql).all(...params);
+        const catMap = Object.fromEntries(COMMODITY_CATEGORIES.map((c) => [c.value, c]));
+        const tableRows = rows.length
+            ? rows.map((r) => {
+                const cat = catMap[r.category] || { label: r.category };
+                const priceCell = r.price != null ? Number(r.price).toFixed(2) :
+                    (r.mid_price != null ? Number(r.mid_price).toFixed(2) : (r.high_price != null ? `${r.high_price} / ${r.low_price ?? "—"}` : "—"));
+                return `<tr>
+<td style="font-size:12px;color:#787774;">${escapeHtml(r.record_date)}</td>
+<td>${escapeHtml(cat.label)}</td>
+<td>${escapeHtml(r.spec || "—")}</td>
+<td style="text-align:right;font-weight:600;">${priceCell}</td>
+<td style="text-align:right;font-size:12px;color:#787774;">${r.high_price ?? "—"} / ${r.mid_price ?? "—"} / ${r.low_price ?? "—"}</td>
+<td>${escapeHtml(r.unit || "—")}</td>
+<td style="font-size:12px;color:#787774;">${escapeHtml(r.source || "—")}</td>
+<td style="font-size:12px;color:#787774;">${escapeHtml(r.note || "")}</td>
+<td><form method="post" action="/admin/logistics/commodities/${encodeURIComponent(r.id)}/delete" style="display:inline;" onsubmit="return confirm('刪除此筆？');"><button type="submit" class="btn" style="padding:2px 8px;font-size:11px;">刪除</button></form></td>
+</tr>`;
+            }).join("")
+            : `<tr><td colspan="9" style="text-align:center;color:#999;padding:24px;">區間內尚無資料。在下方表單新增第一筆。</td></tr>`;
+        const okMsg = req.query.ok === "added" ? "已新增" : (req.query.ok === "deleted" ? "已刪除" : "");
+        const catFilterLinks = [
+            { v: "", l: "全部" },
+            ...COMMODITY_CATEGORIES.map((c) => ({ v: c.value, l: c.label })),
+        ].map((x) => `<a href="/admin/logistics/commodities?category=${encodeURIComponent(x.v)}&from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}" style="margin-right:6px;padding:4px 10px;border-radius:6px;${filterCat === x.v ? "background:#3b82c4;color:#fff;" : "color:#666;background:#f4f4f0;"}">${escapeHtml(x.l)}</a>`).join("");
+        const body = `<style>
+.cm-table { width:100%; border-collapse:collapse; }
+.cm-table th { padding:8px 10px; font-size:12px; color:#666; font-weight:500; text-align:left; border-bottom:1px solid var(--notion-border); background:#f7f6f3; }
+.cm-table td { padding:8px 10px; border-bottom:1px solid var(--notion-border); font-size:13px; }
+.cm-form { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }
+.cm-form label { font-size:12px; color:#666; }
+.cm-form input, .cm-form select, .cm-form textarea { width:100%; padding:6px 8px; border:1px solid var(--notion-border-strong); border-radius:5px; font-size:13px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
+</style>
+<div class="notion-page-content">
+<div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 原物料行情</div>
+<h1 class="notion-page-title" style="margin-bottom:6px;">大宗原物料行情</h1>
+<p class="notion-hint" style="margin:0 0 14px;">豬肉 / 雞肉 / 雞蛋 等。目前無穩定公開 API，先以手動每日輸入為主，留歷史紀錄供比價判斷。</p>
+${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding:8px 12px;border-radius:6px;border:1px solid #a7f3d0;font-size:13px;">✓ ${escapeHtml(okMsg)}</p>` : ""}
+
+<div class="notion-card" style="padding:18px;margin-bottom:14px;">
+  <h3 style="margin:0 0 12px;font-size:14px;">新增一筆行情</h3>
+  <form method="post" action="/admin/logistics/commodities" class="cm-form">
+    <div><label>日期 *</label><input type="date" name="record_date" value="${escapeAttr(today)}" required></div>
+    <div><label>類別 *</label><select name="category" required>${COMMODITY_CATEGORIES.map((c) => `<option value="${escapeAttr(c.value)}">${escapeHtml(c.label)}</option>`).join("")}</select></div>
+    <div><label>品項規格</label><input type="text" name="spec" placeholder="例：紅羽土雞 / 帶骨梅花"></div>
+    <div><label>單位</label><input type="text" name="unit" placeholder="元/公斤" value="元/公斤"></div>
+    <div><label>主價（單一）</label><input type="number" step="0.01" name="price" placeholder="如：85"></div>
+    <div><label>上價</label><input type="number" step="0.01" name="high_price" placeholder=""></div>
+    <div><label>中價</label><input type="number" step="0.01" name="mid_price" placeholder=""></div>
+    <div><label>下價</label><input type="number" step="0.01" name="low_price" placeholder=""></div>
+    <div><label>來源</label><input type="text" name="source" placeholder="NAIF / 業者報價 / 媒體"></div>
+    <div style="grid-column:span 2;"><label>備註</label><input type="text" name="note" placeholder="例：颱風後價格上揚"></div>
+    <div style="grid-column:1/-1;"><button type="submit" class="btn btn-primary">＋ 新增</button></div>
+  </form>
+</div>
+
+<div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+  <form method="get" action="/admin/logistics/commodities" style="display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <input type="hidden" name="category" value="${escapeAttr(filterCat)}">
+    <label style="font-size:12px;color:#666;">區間：</label>
+    <input type="date" name="from" value="${escapeAttr(dateFrom)}">
+    <span>~</span>
+    <input type="date" name="to" value="${escapeAttr(dateTo)}">
+    <button type="submit" class="btn">查詢</button>
+    <a href="/admin/logistics/commodities/export.csv?category=${encodeURIComponent(filterCat)}&from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}" class="btn">下載 CSV</a>
+  </form>
+</div>
+<div style="margin-bottom:10px;">${catFilterLinks}</div>
+
+<div class="notion-card" style="padding:0;">
+  <table class="cm-table">
+    <thead><tr><th>日期</th><th>類別</th><th>規格</th><th style="text-align:right;">主價</th><th style="text-align:right;">上/中/下</th><th>單位</th><th>來源</th><th>備註</th><th></th></tr></thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</div>
+</div>`;
+        res.type("text/html").send(notionPage("原物料行情", body, "logistics-commodities", res));
+    });
+
+    router.post("/logistics/commodities", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const recordDate = String(req.body.record_date || "").trim();
+        const category = String(req.body.category || "").trim();
+        const spec = String(req.body.spec || "").trim() || null;
+        const unit = String(req.body.unit || "").trim() || null;
+        const source = String(req.body.source || "").trim() || null;
+        const note = String(req.body.note || "").trim() || null;
+        const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+        const price = num(req.body.price);
+        const hi = num(req.body.high_price);
+        const mid = num(req.body.mid_price);
+        const lo = num(req.body.low_price);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(recordDate) || !category) {
+            res.redirect("/admin/logistics/commodities?err=bad_input");
+            return;
+        }
+        const id = (0, id_js_1.newId)("cmd");
+        const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+        await db.prepare(`INSERT INTO commodity_prices (id, category, source, record_date, unit, spec, price, high_price, mid_price, low_price, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${nowSql}, ${nowSql})`)
+            .run(id, category, source, recordDate, unit, spec, price, hi, mid, lo, note);
+        res.redirect("/admin/logistics/commodities?ok=added");
+    });
+
+    router.post("/logistics/commodities/:id/delete", async (req, res) => {
+        await db.prepare("DELETE FROM commodity_prices WHERE id = ?").run(req.params.id);
+        res.redirect("/admin/logistics/commodities?ok=deleted");
+    });
+
+    router.get("/logistics/commodities/export.csv", async (req, res) => {
+        const cat = String(req.query.category || "").trim();
+        const from = String(req.query.from || "").trim();
+        const to = String(req.query.to || "").trim();
+        const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+        let sql = "SELECT record_date, category, spec, unit, price, high_price, mid_price, low_price, source, note FROM commodity_prices WHERE 1=1";
+        const params = [];
+        if (dateRe.test(from)) { sql += " AND record_date >= ?"; params.push(from); }
+        if (dateRe.test(to)) { sql += " AND record_date <= ?"; params.push(to); }
+        if (cat) { sql += " AND category = ?"; params.push(cat); }
+        sql += " ORDER BY record_date DESC, category, spec";
+        const rows = await db.prepare(sql).all(...params);
+        const catLabel = Object.fromEntries(COMMODITY_CATEGORIES.map((c) => [c.value, c.label.replace(/^[\u{1F300}-\u{1FAFF}☀-➿]\s*/u, "")]));
+        const lines = ["日期,類別,規格,單位,主價,上價,中價,下價,來源,備註"];
+        for (const r of rows) {
+            const cells = [r.record_date, catLabel[r.category] || r.category, r.spec || "", r.unit || "", r.price ?? "", r.high_price ?? "", r.mid_price ?? "", r.low_price ?? "", r.source || "", r.note || ""].map((v) => {
+                const s = String(v ?? "");
+                return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+            });
+            lines.push(cells.join(","));
+        }
+        const fname = `commodities_${from || "all"}_${to || "all"}.csv`;
+        res.set("Content-Type", "text/csv; charset=utf-8");
+        res.set("Content-Disposition", `attachment; filename="${fname}"`);
+        res.send("﻿" + lines.join("\n"));
     });
     router.post("/logistics/market/rules", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const txt = String(req.body?.rules_json || "").trim();
@@ -14281,6 +14406,663 @@ YY小吃, C5678...,</pre>
         } catch (_) { /* ignore audit failure */ }
         res.json({ ok: true, sent, errors });
     });
+
+    // ============================================================
+    // 公告管理：模板化群發系統（取代/擴充 broadcast 即時填表）
+    // ============================================================
+    const ANN_CSS = `<style>
+.ann-tpl-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:14px; margin-top:14px; }
+.ann-tpl-card { display:block; padding:18px 20px; background:#fff; border:1px solid var(--notion-border); border-radius:10px; text-decoration:none; color:var(--notion-text); transition:border-color .15s,transform .15s,box-shadow .15s; }
+.ann-tpl-card:hover { border-color:#3b82c4; transform:translateY(-2px); box-shadow:0 4px 16px rgba(59,130,196,0.12); text-decoration:none; }
+.ann-tpl-icon { font-size:32px; line-height:1; margin-bottom:8px; }
+.ann-tpl-name { font-size:16px; font-weight:600; margin-bottom:4px; }
+.ann-tpl-desc { font-size:12px; color:var(--notion-text-muted); line-height:1.45; }
+.ann-form { max-width:760px; }
+.ann-form .field { margin-bottom:18px; }
+.ann-form label.fl { display:block; font-size:13px; font-weight:500; color:#444; margin-bottom:5px; }
+.ann-form .hint { font-size:12px; color:var(--notion-text-muted); margin-top:3px; }
+.ann-form input[type=text], .ann-form input[type=date], .ann-form textarea { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
+.ann-form textarea { min-height:96px; resize:vertical; }
+.ann-item-rows .row { display:flex; gap:6px; margin-bottom:6px; }
+.ann-item-rows .row input { flex:1; padding:6px 8px; border:1px solid var(--notion-border-strong); border-radius:5px; font-size:13px; }
+.ann-item-rows .row .col-price { flex:0 0 80px; }
+.ann-item-rows .row .col-unit { flex:0 0 60px; }
+.ann-item-rows .row .col-market { flex:0 0 80px; }
+.ann-item-rows .row .col-rm { flex:0 0 26px; background:none; border:none; cursor:pointer; color:#bbb; }
+.ann-add-row { background:none; border:1px dashed #bbb; border-radius:6px; padding:5px 12px; cursor:pointer; font-size:12px; color:#777; }
+.ann-add-row:hover { border-color:#3b82c4; color:#3b82c4; }
+.ann-list-table { width:100%; border-collapse:collapse; }
+.ann-list-table th { text-align:left; padding:10px 12px; font-size:12px; color:#666; border-bottom:1px solid var(--notion-border); font-weight:500; }
+.ann-list-table td { padding:12px; border-bottom:1px solid var(--notion-border); font-size:13px; }
+.ann-list-table tr:hover td { background:#fafafa; }
+.ann-status { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+.ann-status.draft { background:#f4f4f0; color:#666; }
+.ann-status.sent { background:#ecfdf5; color:#047857; }
+
+/* === 公告卡片：節日紅底 === */
+.ann-card { padding:24px; border-radius:14px; max-width:540px; font-family:'Noto Serif TC','PingFang TC','Microsoft JhengHei',serif; }
+.ann-holiday-red { background:linear-gradient(180deg,#a82323,#7a1717); color:#fff; }
+.ann-holiday-red .ann-title { font-size:32px; font-weight:800; text-align:center; margin-bottom:18px; }
+.ann-week-strip { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin:16px 0; }
+.ann-week-cell { padding:8px 4px; border-radius:6px; border:1.5px solid; text-align:center; font-size:13px; }
+.ann-week-day { font-weight:700; }
+.ann-week-date { font-size:18px; font-weight:700; margin-top:2px; }
+.ann-week-tag { font-size:10px; margin-top:2px; }
+.ann-body { margin-top:14px; }
+.ann-line { font-size:15px; line-height:1.7; margin-bottom:6px; color:#fff8e1; }
+.ann-line-no { font-weight:700; color:#ffd6c4; margin-right:4px; }
+.ann-footer { font-size:20px; text-align:center; margin-top:18px; font-weight:700; color:#fff; }
+.ann-brand { font-size:11px; text-align:center; margin-top:14px; opacity:0.7; letter-spacing:2px; }
+.ann-brand-light { color:#787774; opacity:1; }
+
+/* 限時優惠黃 */
+.ann-promo-yellow { background:#fffaeb; border:2px solid #f5b800; color:#3d2c00; }
+.ann-promo-header { display:flex; gap:10px; align-items:flex-start; margin-bottom:10px; }
+.ann-promo-bolt { font-size:32px; }
+.ann-promo-titles { flex:1; }
+.ann-promo-yellow .ann-title { font-size:24px; font-weight:800; color:#3d2c00; }
+.ann-promo-sub { font-size:13px; color:#5c4400; margin-top:2px; }
+.ann-promo-date { font-size:14px; font-weight:700; color:#a8540a; margin-bottom:12px; }
+.ann-promo-items { display:flex; flex-direction:column; gap:6px; }
+.ann-promo-item { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:#fff; border:1px solid #f5d97e; border-radius:6px; }
+.ann-promo-item-name { font-weight:700; flex:1; }
+.ann-promo-price-now { font-size:20px; font-weight:800; color:#a8540a; }
+.ann-promo-unit { font-size:12px; color:#9a7b3a; margin-left:2px; }
+.ann-promo-item-market { font-size:11px; color:#9a7b3a; margin-left:8px; }
+.ann-promo-note { margin-top:10px; font-size:12px; color:#5c4400; padding:8px; background:#fff5d6; border-radius:6px; }
+
+/* 通知深色 */
+.ann-notice-dark { background:#fafafa; border:1px solid var(--notion-border); }
+.ann-notice-header { background:#2c3e50; padding:14px 18px; margin:-24px -24px 14px; border-radius:12px 12px 0 0; }
+.ann-notice-icon { color:#90b8d8; font-size:13px; }
+.ann-notice-title { display:block; color:#fff; font-size:20px; font-weight:700; margin-top:4px; }
+.ann-notice-body p { font-size:14px; line-height:1.7; margin:0 0 10px; color:#37352f; }
+
+/* 新品綠 */
+.ann-new-arrival-green { background:#f4faf6; border:2px solid #1e7a5e; color:#37352f; }
+.ann-new-tag { display:inline-block; padding:2px 10px; background:#1e7a5e; color:#cdebd9; font-size:11px; font-weight:600; border-radius:10px; margin-bottom:10px; }
+.ann-new-arrival-green .ann-title { font-size:24px; font-weight:800; color:#1e7a5e; }
+.ann-new-tagline { font-size:14px; color:#5c7a6e; margin-top:4px; margin-bottom:14px; }
+.ann-new-highlights { display:flex; flex-direction:column; gap:6px; margin:14px 0; }
+.ann-new-bullet { font-size:14px; color:#37352f; }
+.ann-new-price { font-size:18px; font-weight:700; color:#1e7a5e; margin:10px 0; }
+.ann-new-cta { font-size:14px; font-weight:600; color:#fff; background:#1e7a5e; padding:8px 16px; border-radius:6px; display:inline-block; margin-top:8px; }
+
+.ann-empty { color:#999; text-align:center; padding:24px; font-size:13px; }
+.ann-preview-pane { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:18px; }
+@media (max-width:880px) { .ann-preview-pane { grid-template-columns:1fr; } }
+.ann-preview-col h3 { font-size:13px; color:#666; margin:0 0 8px; font-weight:500; }
+.ann-preview-col img { max-width:100%; border:1px solid var(--notion-border); border-radius:8px; }
+</style>`;
+
+    function nowSqlExpr() {
+        return process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+    }
+
+    function statusBadge(status) {
+        const s = String(status || "draft").toLowerCase();
+        const label = s === "sent" ? "已送" : "草稿";
+        return `<span class="ann-status ${s}">${label}</span>`;
+    }
+
+    function renderAnnouncementFormFields(template, data) {
+        const out = [];
+        for (const f of template.fields) {
+            const v = data && Object.prototype.hasOwnProperty.call(data, f.name) ? data[f.name] : "";
+            const id = `f_${f.name}`;
+            if (f.type === "textarea") {
+                out.push(`<div class="field"><label class="fl" for="${id}">${escapeHtml(f.label)}${f.required ? " *" : ""}</label><textarea id="${id}" name="${f.name}" placeholder="${escapeAttr(f.placeholder || "")}"${f.required ? " required" : ""}>${escapeHtml(String(v || ""))}</textarea>${f.hint ? `<div class="hint">${escapeHtml(f.hint)}</div>` : ""}</div>`);
+            } else if (f.type === "items") {
+                const items = Array.isArray(v) ? v : [{ name: "", price: "", unit: "斤", market: "" }];
+                const rowsHtml = items.map((it) => `<div class="row">
+<input type="text" placeholder="品名" name="item_name" value="${escapeAttr(it?.name || "")}">
+<input type="text" placeholder="價格" class="col-price" name="item_price" value="${escapeAttr(it?.price || "")}">
+<input type="text" placeholder="單位" class="col-unit" name="item_unit" value="${escapeAttr(it?.unit || "斤")}">
+<input type="text" placeholder="行情" class="col-market" name="item_market" value="${escapeAttr(it?.market || "")}">
+<button type="button" class="col-rm" onclick="this.parentElement.remove()" title="刪除">×</button>
+</div>`).join("");
+                out.push(`<div class="field"><label class="fl">${escapeHtml(f.label)}</label><div id="${id}" class="ann-item-rows">${rowsHtml}</div><button type="button" class="ann-add-row" onclick="annAddItemRow('${id}')">＋ 新增品項</button></div>`);
+            } else {
+                const t = f.type === "date" ? "date" : "text";
+                out.push(`<div class="field"><label class="fl" for="${id}">${escapeHtml(f.label)}${f.required ? " *" : ""}</label><input type="${t}" id="${id}" name="${f.name}" value="${escapeAttr(String(v || ""))}" placeholder="${escapeAttr(f.placeholder || "")}"${f.required ? " required" : ""}>${f.hint ? `<div class="hint">${escapeHtml(f.hint)}</div>` : ""}</div>`);
+            }
+        }
+        return out.join("\n");
+    }
+
+    function parseFormBody(template, body) {
+        const out = {};
+        for (const f of template.fields) {
+            if (f.type === "items") {
+                const names = [].concat(body.item_name || []);
+                const prices = [].concat(body.item_price || []);
+                const units = [].concat(body.item_unit || []);
+                const markets = [].concat(body.item_market || []);
+                const arr = [];
+                for (let i = 0; i < names.length; i++) {
+                    const n = String(names[i] || "").trim();
+                    if (!n) continue;
+                    arr.push({ name: n, price: String(prices[i] || "").trim(), unit: String(units[i] || "").trim() || "斤", market: String(markets[i] || "").trim() });
+                }
+                out[f.name] = arr;
+            } else {
+                out[f.name] = String(body[f.name] || "").trim();
+            }
+        }
+        return out;
+    }
+
+    router.get("/announcements", async (req, res) => {
+        const filterStatus = String(req.query.status || "").trim().toLowerCase();
+        let sql = "SELECT id, template_id, title, status, created_at, sent_at FROM announcements";
+        const params = [];
+        if (filterStatus === "draft" || filterStatus === "sent") {
+            sql += " WHERE status = ?";
+            params.push(filterStatus);
+        }
+        sql += " ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 200";
+        const rows = await db.prepare(sql).all(...params);
+        const tmplMap = Object.fromEntries(announcement_templates_js_1.listTemplates().map((t) => [t.id, t]));
+        const tableRows = rows.length
+            ? rows.map((r) => {
+                const t = tmplMap[r.template_id];
+                const tplLabel = t ? `${t.icon} ${t.label}` : r.template_id;
+                const created = r.created_at ? String(r.created_at).slice(0, 16).replace("T", " ") : "—";
+                const sent = r.sent_at ? String(r.sent_at).slice(0, 16).replace("T", " ") : "—";
+                return `<tr>
+<td><a href="/admin/announcements/${encodeURIComponent(r.id)}">${escapeHtml(r.title || "(未命名)")}</a></td>
+<td>${escapeHtml(tplLabel)}</td>
+<td>${statusBadge(r.status)}</td>
+<td style="color:#787774;font-size:12px;">${created}</td>
+<td style="color:#787774;font-size:12px;">${sent}</td>
+</tr>`;
+            }).join("")
+            : `<tr><td colspan="5" style="text-align:center;padding:24px;color:#999;">尚無公告，點右上「＋ 新增公告」開始</td></tr>`;
+        const filterLink = (s, label) => `<a href="/admin/announcements${s ? `?status=${s}` : ""}" style="margin-right:8px;padding:4px 10px;border-radius:6px;${filterStatus === s ? "background:#3b82c4;color:#fff;" : "color:#666;"}">${escapeHtml(label)}</a>`;
+        const body = `${ANN_CSS}
+<div class="notion-page-content">
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+  <h1 class="notion-h1" style="margin:0;">公告管理</h1>
+  <a href="/admin/announcements/new" class="btn btn-primary">＋ 新增公告</a>
+</div>
+<p style="color:#888;font-size:13px;margin-bottom:14px;">挑選模板、填寫內容、預覽 → 傳送到 LINE 或下載 PNG。可重複發送與保留歷史紀錄。</p>
+<div style="margin-bottom:12px;">${filterLink("", "全部")}${filterLink("draft", "草稿")}${filterLink("sent", "已送")}</div>
+<div class="notion-card" style="padding:0;">
+  <table class="ann-list-table">
+    <thead><tr><th>標題</th><th>模板</th><th>狀態</th><th>建立時間</th><th>送出時間</th></tr></thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</div>
+</div>`;
+        res.type("text/html").send(notionPage("公告管理", body, "announcements", res));
+    });
+
+    router.get("/announcements/new", async (req, res) => {
+        const templateId = String(req.query.template || "").trim();
+        if (!templateId) {
+            const cards = announcement_templates_js_1.listTemplates().map((t) =>
+                `<a href="/admin/announcements/new?template=${encodeURIComponent(t.id)}" class="ann-tpl-card">
+<div class="ann-tpl-icon">${t.icon}</div>
+<div class="ann-tpl-name">${escapeHtml(t.label)}</div>
+<div class="ann-tpl-desc">${escapeHtml(t.description)}</div>
+</a>`).join("");
+            const body = `${ANN_CSS}
+<div class="notion-page-content">
+<p style="margin:0 0 6px;"><a href="/admin/announcements">← 公告管理</a></p>
+<h1 class="notion-h1" style="margin:0 0 8px;">挑選模板</h1>
+<p style="color:#888;font-size:13px;">每個模板都會生成 LINE Flex Message + 可下載的 PNG 圖片，挑一個開始。</p>
+<div class="ann-tpl-grid">${cards}</div>
+</div>`;
+            res.type("text/html").send(notionPage("挑選模板", body, "announcements", res));
+            return;
+        }
+        const tpl = announcement_templates_js_1.getTemplate(templateId);
+        if (!tpl) { res.redirect("/admin/announcements/new"); return; }
+
+        // 從行事曆帶資料：?from_calendar=YYYY-MM-DD → 自動填入 holiday_red 表單
+        let initialData = {};
+        const fromCal = String(req.query.from_calendar || "").trim();
+        if (templateId === "holiday_red" && /^\d{4}-\d{2}-\d{2}$/.test(fromCal)) {
+            try {
+                // 找該日的 calendar event（取假日／公休的 label 當標題）
+                const event = await db.prepare(
+                    "SELECT date, kind, label FROM company_calendar WHERE date = ? AND kind IN ('national_holiday', 'company_off') ORDER BY kind LIMIT 1"
+                ).get(fromCal);
+                // 算當週週一（公告週曆從週一開始）
+                const d = new Date(fromCal + "T12:00:00");
+                if (!Number.isNaN(d.getTime())) {
+                    const dow = d.getDay(); // 0=Sun..6=Sat
+                    const daysToMon = dow === 0 ? 6 : dow - 1;
+                    const monday = new Date(d.getTime() - daysToMon * 86400000);
+                    const weekStart = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, "0")}-${String(monday.getDate()).padStart(2, "0")}`;
+                    const sunday = new Date(monday.getTime() + 6 * 86400000);
+                    const weekEnd = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, "0")}-${String(sunday.getDate()).padStart(2, "0")}`;
+                    // 撈該週所有公休／假日
+                    const weekEvents = await db.prepare(
+                        "SELECT date, kind, label FROM company_calendar WHERE date >= ? AND date <= ? AND kind IN ('national_holiday', 'company_off') ORDER BY date"
+                    ).all(weekStart, weekEnd);
+                    // 撈該週所有加班日（覆蓋預設）
+                    const onDays = await db.prepare(
+                        "SELECT date FROM company_calendar WHERE date >= ? AND date <= ? AND kind = 'company_on' ORDER BY date"
+                    ).all(weekStart, weekEnd);
+                    const offDates = weekEvents.map((e) => e.date);
+                    const workDates = onDays.map((e) => e.date);
+                    const titleBase = event?.label || "節日";
+                    const lines = [];
+                    if (offDates.length) {
+                        const offFmt = offDates.map((iso) => {
+                            const dd = new Date(iso + "T12:00:00");
+                            const wd = ["日", "一", "二", "三", "四", "五", "六"][dd.getDay()];
+                            return `${iso.slice(0, 4)}/${iso.slice(5, 7)}/${iso.slice(8, 10)}（${wd}）`;
+                        }).join("、");
+                        lines.push(`${offFmt} 為本公司休假日，請預估使用量提前叫貨喔～`);
+                    }
+                    if (workDates.length) {
+                        const onFmt = workDates.map((iso) => {
+                            const dd = new Date(iso + "T12:00:00");
+                            const wd = ["日", "一", "二", "三", "四", "五", "六"][dd.getDay()];
+                            return `${iso.slice(0, 4)}/${iso.slice(5, 7)}/${iso.slice(8, 10)}（${wd}）`;
+                        }).join("、");
+                        lines.push(`${onFmt} 公司正常上班。`);
+                    }
+                    initialData = {
+                        title: `${titleBase}休假公告`,
+                        week_start: weekStart,
+                        off_dates: offDates.join(","),
+                        work_dates: workDates.join(","),
+                        lines: lines.join("\n"),
+                        footer: "祝 佳節愉快",
+                    };
+                }
+            } catch (e) {
+                console.warn("[announcements/new from_calendar]", e?.message || e);
+            }
+        }
+
+        const fieldsHtml = renderAnnouncementFormFields(tpl, initialData);
+        const body = `${ANN_CSS}
+<div class="notion-page-content">
+<p style="margin:0 0 6px;"><a href="/admin/announcements/new">← 重選模板</a></p>
+<h1 class="notion-h1" style="margin:0 0 4px;">${tpl.icon} ${escapeHtml(tpl.label)}</h1>
+<p style="color:#888;font-size:13px;margin-bottom:14px;">${escapeHtml(tpl.description)}</p>
+<form method="post" action="/admin/announcements" class="ann-form notion-card" style="padding:20px;">
+<input type="hidden" name="template_id" value="${escapeAttr(tpl.id)}">
+${fieldsHtml}
+<div style="display:flex;gap:10px;margin-top:18px;">
+  <button type="submit" class="btn btn-primary">儲存草稿</button>
+  <a href="/admin/announcements" class="btn">取消</a>
+</div>
+</form>
+</div>
+<script>
+function annAddItemRow(id){
+  const wrap=document.getElementById(id);
+  const div=document.createElement('div');
+  div.className='row';
+  div.innerHTML='<input type="text" placeholder="品名" name="item_name"><input type="text" placeholder="價格" class="col-price" name="item_price"><input type="text" placeholder="單位" class="col-unit" name="item_unit" value="斤"><input type="text" placeholder="行情" class="col-market" name="item_market"><button type="button" class="col-rm" onclick="this.parentElement.remove()" title="刪除">×</button>';
+  wrap.appendChild(div);
+}
+</script>`;
+        res.type("text/html").send(notionPage("新增公告", body, "announcements", res));
+    });
+
+    router.post("/announcements", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const templateId = String(req.body.template_id || "").trim();
+        const tpl = announcement_templates_js_1.getTemplate(templateId);
+        if (!tpl) { res.status(400).send("未知的模板"); return; }
+        const payload = parseFormBody(tpl, req.body);
+        const title = String(payload.title || "(未命名)").trim() || "(未命名)";
+        const id = (0, id_js_1.newId)("ann");
+        await db.prepare(`INSERT INTO announcements (id, template_id, title, payload_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', ${nowSqlExpr()}, ${nowSqlExpr()})`)
+            .run(id, templateId, title, JSON.stringify(payload));
+        res.redirect(`/admin/announcements/${encodeURIComponent(id)}?ok=created`);
+    });
+
+    router.get("/announcements/:id", async (req, res) => {
+        const id = req.params.id;
+        const row = await db.prepare("SELECT id, template_id, title, payload_json, status, created_at, sent_at, sent_to_groups_json FROM announcements WHERE id = ?").get(id);
+        if (!row) { res.status(404).send("公告不存在"); return; }
+        const tpl = announcement_templates_js_1.getTemplate(row.template_id);
+        if (!tpl) { res.status(500).send("模板不存在：" + row.template_id); return; }
+        const data = JSON.parse(row.payload_json || "{}");
+        const previewHtml = announcement_templates_js_1.renderHtmlPreview(row.template_id, data);
+        const customers = await db.prepare("SELECT id, name FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != '' ORDER BY name ASC").all();
+        const okMsg = req.query.ok === "created" ? "已建立草稿" : (req.query.ok === "sent" ? `已成功送出至 ${req.query.n || "?"} 個群組` : "");
+        const errMsg = req.query.err ? decodeURIComponent(String(req.query.err)) : "";
+        const sentGroups = row.sent_to_groups_json ? JSON.parse(row.sent_to_groups_json) : null;
+        const sentInfo = sentGroups && Array.isArray(sentGroups) && sentGroups.length
+            ? `<p style="color:#047857;font-size:13px;margin:8px 0 0;">✓ 已送至 ${sentGroups.length} 個群組（最後送出：${row.sent_at ? String(row.sent_at).slice(0, 16).replace("T", " ") : "—"}）</p>` : "";
+        const body = `${ANN_CSS}
+<div class="notion-page-content">
+<p style="margin:0 0 6px;"><a href="/admin/announcements">← 公告管理</a></p>
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+  <h1 class="notion-h1" style="margin:0;">${escapeHtml(row.title)} ${statusBadge(row.status)}</h1>
+  <div style="display:flex;gap:8px;">
+    <a href="/admin/announcements/${encodeURIComponent(id)}/image.png" download="${escapeAttr(row.title || "announcement")}.png" class="btn">下載 PNG</a>
+    <form method="post" action="/admin/announcements/${encodeURIComponent(id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除？');"><button type="submit" class="btn">刪除</button></form>
+  </div>
+</div>
+<p style="color:#888;font-size:13px;">模板：${tpl.icon} ${escapeHtml(tpl.label)} · 建立：${row.created_at ? String(row.created_at).slice(0, 16).replace("T", " ") : "—"}</p>
+${okMsg ? `<p class="notion-msg ok" style="background:#ecfdf5;color:#047857;padding:8px 12px;border-radius:6px;border:1px solid #a7f3d0;">✓ ${escapeHtml(okMsg)}</p>` : ""}
+${errMsg ? `<p class="notion-msg err" style="background:#fef2f2;color:#b91c1c;padding:8px 12px;border-radius:6px;border:1px solid #fecaca;">✗ ${escapeHtml(errMsg)}</p>` : ""}
+${sentInfo}
+
+<div class="ann-preview-pane">
+  <div class="ann-preview-col">
+    <h3>HTML 預覽（送 LINE 用）</h3>
+    ${previewHtml}
+  </div>
+  <div class="ann-preview-col">
+    <h3>PNG 圖片預覽（下載分享用）</h3>
+    <img src="/admin/announcements/${encodeURIComponent(id)}/image.png" alt="PNG 預覽">
+  </div>
+</div>
+
+<div class="notion-card" style="margin-top:24px;padding:20px;max-width:760px;">
+  <h3 style="margin:0 0 12px;font-size:15px;">傳送至 LINE 群組</h3>
+  <form method="post" action="/admin/announcements/${encodeURIComponent(id)}/send" onsubmit="return confirm('確定傳送至選定的 LINE 群組？');">
+    <div class="field" style="margin-bottom:14px;">
+      <label class="fl">傳送對象</label>
+      <select name="recipients" style="width:100%;max-width:340px;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:6px;background:#fafafa;">
+        <option value="all">全部客戶（${customers.length} 個 LINE 群組）</option>
+        ${customers.map((c) => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join("")}
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary">傳送</button>
+  </form>
+</div>
+</div>`;
+        res.type("text/html").send(notionPage(row.title, body, "announcements", res));
+    });
+
+    router.post("/announcements/:id/delete", async (req, res) => {
+        await db.prepare("DELETE FROM announcements WHERE id = ?").run(req.params.id);
+        res.redirect("/admin/announcements");
+    });
+
+    router.get("/announcements/:id/image.png", async (req, res) => {
+        const row = await db.prepare("SELECT template_id, payload_json FROM announcements WHERE id = ?").get(req.params.id);
+        if (!row) { res.status(404).send("not found"); return; }
+        try {
+            const data = JSON.parse(row.payload_json || "{}");
+            const buf = await announcement_image_js_1.renderAnnouncementPng(row.template_id, data);
+            if (!buf) { res.status(404).send("此模板不支援 PNG 渲染"); return; }
+            res.set("Content-Type", "image/png");
+            res.set("Cache-Control", "private, max-age=60");
+            res.send(buf);
+        } catch (e) {
+            console.error("[announcement-image]", e?.message || e);
+            res.status(500).send("PNG 渲染失敗：" + (e?.message || "unknown"));
+        }
+    });
+
+    router.post("/announcements/:id/send", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const id = req.params.id;
+        const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+        const row = await db.prepare("SELECT template_id, title, payload_json FROM announcements WHERE id = ?").get(id);
+        if (!row) { res.status(404).send("公告不存在"); return; }
+        if (!token) { res.redirect(`/admin/announcements/${encodeURIComponent(id)}?err=${encodeURIComponent("未設定 LINE_CHANNEL_ACCESS_TOKEN")}`); return; }
+        let lineMsg;
+        try {
+            const data = JSON.parse(row.payload_json || "{}");
+            lineMsg = announcement_templates_js_1.buildFlexMessage(row.template_id, data);
+        } catch (e) {
+            res.redirect(`/admin/announcements/${encodeURIComponent(id)}?err=${encodeURIComponent("Flex Message 建立失敗：" + (e?.message || ""))}`);
+            return;
+        }
+        const recipients = String(req.body.recipients || "all");
+        let targets = [];
+        if (recipients !== "all") {
+            const cust = await db.prepare("SELECT id, line_group_id, name FROM customers WHERE id = ? AND line_group_id IS NOT NULL AND line_group_id != ''").get(recipients);
+            if (cust) targets = [cust];
+        } else {
+            targets = await db.prepare("SELECT id, line_group_id, name FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != '' ORDER BY name ASC").all();
+        }
+        let sent = 0;
+        const errors = [];
+        const sentGroupIds = [];
+        for (const t of targets) {
+            try {
+                const resp = await fetch("https://api.line.me/v2/bot/message/push", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ to: t.line_group_id, messages: [lineMsg] }),
+                });
+                if (resp.ok) { sent++; sentGroupIds.push(t.id); }
+                else { errors.push(`${t.name}: ${resp.status} ${(await resp.text().catch(() => "")).slice(0, 100)}`); }
+            } catch (e) {
+                errors.push(`${t.name}: ${e?.message || e}`);
+            }
+        }
+        if (errors.length) console.warn("[announcement-send]", errors.join(" | "));
+        await db.prepare(`UPDATE announcements SET status = 'sent', sent_at = ${nowSqlExpr()}, sent_to_groups_json = ?, updated_at = ${nowSqlExpr()} WHERE id = ?`)
+            .run(JSON.stringify(sentGroupIds), id);
+        if (sent === 0 && errors.length) {
+            res.redirect(`/admin/announcements/${encodeURIComponent(id)}?err=${encodeURIComponent("全部失敗：" + errors[0])}`);
+            return;
+        }
+        res.redirect(`/admin/announcements/${encodeURIComponent(id)}?ok=sent&n=${sent}`);
+    });
+
+    // ============================================================
+    // 行事曆：國定假日、公司公休、加班、自訂事件
+    // ============================================================
+    router.get("/calendar", async (req, res) => {
+        const today = getTaipeiCalendarDateYYYYMMDD();
+        const yParam = parseInt(String(req.query.y || ""), 10);
+        const mParam = parseInt(String(req.query.m || ""), 10);
+        const year = Number.isFinite(yParam) && yParam >= 2020 && yParam <= 2100 ? yParam : Number(today.slice(0, 4));
+        const month = Number.isFinite(mParam) && mParam >= 1 && mParam <= 12 ? mParam : Number(today.slice(5, 7));
+        const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
+        const nextM = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, "0")}-01`;
+        const events = await db.prepare("SELECT id, date, kind, label, note FROM company_calendar WHERE date >= ? AND date < ? ORDER BY date ASC").all(monthStart, nextM);
+        const eventsByDate = {};
+        for (const e of events) {
+            if (!eventsByDate[e.date]) eventsByDate[e.date] = [];
+            eventsByDate[e.date].push(e);
+        }
+        const grid = calendar_holidays_js_1.buildMonthGrid(year, month, eventsByDate);
+        const prevY = month === 1 ? year - 1 : year;
+        const prevM = month === 1 ? 12 : month - 1;
+        const nextY = month === 12 ? year + 1 : year;
+        const nextMM = month === 12 ? 1 : month + 1;
+        const okMsg = req.query.ok === "imported" ? `已匯入 ${req.query.n || "?"} 筆 ${req.query.y || ""} 年國定假日` : (req.query.ok === "added" ? "已新增" : (req.query.ok === "deleted" ? "已刪除" : ""));
+
+        const kindColor = (k) => {
+            if (k === "national_holiday") return "background:#fee2e2;color:#b91c1c;";
+            if (k === "company_off") return "background:#fed7aa;color:#9a3412;";
+            if (k === "company_on") return "background:#bbf7d0;color:#166534;";
+            return "background:#dbeafe;color:#1e40af;";
+        };
+        const kindLabel = (k) => k === "national_holiday" ? "國定假日" : k === "company_off" ? "公司公休" : k === "company_on" ? "公司加班" : "事件";
+
+        const cellsHtml = grid.map((row) =>
+            `<tr>${row.map((c) => {
+                if (c.filler) return `<td class="cal-cell cal-filler"></td>`;
+                const isToday = c.iso === today;
+                const isWeekend = c.dow === 5 || c.dow === 6;
+                const evs = c.events || [];
+                const hasHoliday = evs.some((e) => e.kind === "national_holiday" || e.kind === "company_off");
+                const evHtml = evs.map((e) => `<div class="cal-event" style="${kindColor(e.kind)}" title="${escapeAttr(e.note || e.label)}">
+<span>${escapeHtml(e.label)}</span>
+<a href="javascript:void(0)" class="cal-event-del" onclick="if(confirm('刪除此事件？'))document.getElementById('del-${e.id}').submit()">×</a>
+<form id="del-${e.id}" method="post" action="/admin/calendar/${encodeURIComponent(e.id)}/delete?back=${encodeURIComponent(`/admin/calendar?y=${year}&m=${month}`)}" style="display:none;"></form>
+</div>`).join("");
+                const quickAnnLink = hasHoliday
+                    ? `<a href="/admin/announcements/new?template=holiday_red&from_calendar=${encodeURIComponent(c.iso)}" class="cal-make-ann" title="一鍵建立節日休假公告">📢 公告</a>`
+                    : "";
+                return `<td class="cal-cell${isToday ? " cal-today" : ""}${isWeekend ? " cal-weekend" : ""}">
+<div class="cal-day">${c.day}</div>
+${evHtml}
+${quickAnnLink}
+<a href="javascript:void(0)" onclick="openCalEventModal('${c.iso}')" class="cal-add" title="新增事件">＋</a>
+</td>`;
+            }).join("")}</tr>`).join("");
+
+        const body = `<style>
+.cal-table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--notion-border); border-radius:8px; overflow:hidden; }
+.cal-table th { padding:8px; font-size:12px; font-weight:500; color:#666; background:#f7f6f3; border-bottom:1px solid var(--notion-border); }
+.cal-cell { vertical-align:top; padding:6px 6px 28px; height:96px; width:14.28%; border:1px solid var(--notion-border); position:relative; }
+.cal-cell.cal-filler { background:#fbfbfa; }
+.cal-cell.cal-today { background:#eff6ff; }
+.cal-cell.cal-weekend .cal-day { color:#c0392b; }
+.cal-day { font-size:14px; font-weight:600; color:#37352f; margin-bottom:4px; }
+.cal-event { display:flex; align-items:center; gap:4px; font-size:11px; padding:2px 6px; border-radius:4px; margin-bottom:3px; line-height:1.4; }
+.cal-event > span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cal-event-del { color:inherit; opacity:0.5; text-decoration:none; padding:0 2px; cursor:pointer; }
+.cal-event-del:hover { opacity:1; }
+.cal-add { position:absolute; right:4px; bottom:4px; font-size:11px; color:#bbb; padding:2px 6px; text-decoration:none; opacity:0; transition:opacity .15s; }
+.cal-cell:hover .cal-add { opacity:1; }
+.cal-add:hover { background:#f0f0f0; color:#3b82c4; }
+.cal-make-ann { position:absolute; left:4px; bottom:4px; font-size:11px; padding:2px 6px; background:#fef3c7; color:#92400e; border-radius:4px; text-decoration:none; }
+.cal-make-ann:hover { background:#fde68a; text-decoration:none; }
+.cal-toolbar { display:flex; align-items:center; gap:14px; margin-bottom:14px; flex-wrap:wrap; }
+.cal-month-title { font-size:22px; font-weight:700; }
+.cal-legend { display:flex; gap:10px; font-size:12px; color:#666; flex-wrap:wrap; }
+.cal-legend span { padding:2px 8px; border-radius:10px; }
+.cal-modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.4); z-index:1000; align-items:center; justify-content:center; padding:20px; }
+.cal-modal-overlay.is-open { display:flex; }
+.cal-modal { background:#fff; border-radius:10px; padding:24px; max-width:440px; width:100%; box-shadow:0 8px 32px rgba(0,0,0,0.2); }
+.cal-modal h2 { margin:0 0 6px; font-size:18px; }
+.cal-modal .cal-modal-date { color:var(--notion-text-muted); font-size:13px; margin-bottom:14px; }
+.cal-modal label { display:block; font-size:13px; color:#444; margin:10px 0 4px; }
+.cal-modal input, .cal-modal select { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
+.cal-modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:18px; }
+</style>
+<div class="notion-page-content">
+<h1 class="notion-h1" style="margin:0 0 8px;">行事曆</h1>
+<p style="color:#888;font-size:13px;">國定假日／公司公休／加班／事件。公告模板的日期選擇器會讀此資料來源。</p>
+${okMsg ? `<p style="background:#ecfdf5;color:#047857;padding:8px 12px;border-radius:6px;border:1px solid #a7f3d0;font-size:13px;">✓ ${escapeHtml(okMsg)}</p>` : ""}
+<div class="cal-toolbar">
+  <a href="/admin/calendar?y=${prevY}&m=${prevM}" class="btn">← 上月</a>
+  <div class="cal-month-title">${year} 年 ${month} 月</div>
+  <a href="/admin/calendar?y=${nextY}&m=${nextMM}" class="btn">下月 →</a>
+  <a href="/admin/calendar" class="btn">本月</a>
+  <form method="post" action="/admin/calendar/import-holidays" style="display:inline;" onsubmit="return confirm('匯入 ${year} 年國定假日？已存在的不會重複加入');">
+    <input type="hidden" name="year" value="${year}">
+    <button type="submit" class="btn">匯入 ${year} 年國定假日</button>
+  </form>
+  <a href="/admin/calendar/export.csv?year=${year}" class="btn">下載 ${year} 年 CSV</a>
+  <div class="cal-legend">
+    <span style="background:#fee2e2;color:#b91c1c;">國定假日</span>
+    <span style="background:#fed7aa;color:#9a3412;">公司公休</span>
+    <span style="background:#bbf7d0;color:#166534;">公司加班</span>
+    <span style="background:#dbeafe;color:#1e40af;">事件</span>
+    <span class="info-pop" tabindex="0" data-tip="• 國定假日：政府公告假日（一鍵匯入內建表）&#10;• 公司公休：公司自訂休息日（戰情室不算未叫貨異常）&#10;• 公司加班：原本休假但公司決定上班的日子&#10;• 事件：自訂提醒（盤點、會議等）&#10;&#10;公告模板選日期時會自動讀此資料源，假日列出在週曆中。">i</span>
+  </div>
+</div>
+<table class="cal-table">
+  <thead><tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr></thead>
+  <tbody>${cellsHtml}</tbody>
+</table>
+<div id="calEventModal" class="cal-modal-overlay" role="dialog" aria-modal="true">
+  <div class="cal-modal">
+    <h2>新增事件</h2>
+    <div class="cal-modal-date" id="calModalDateLabel">—</div>
+    <form method="post" action="/admin/calendar" id="calEventForm">
+      <input type="hidden" name="date" id="calModalDate">
+      <input type="hidden" name="back" value="/admin/calendar?y=${year}&m=${month}">
+      <label for="calModalLabel">事件標題 *</label>
+      <input type="text" id="calModalLabel" name="label" placeholder="例：勞動節休假" required autofocus>
+      <label for="calModalKind">類型</label>
+      <select id="calModalKind" name="kind">
+        <option value="company_off">公司公休</option>
+        <option value="company_on">公司加班</option>
+        <option value="event" selected>事件 / 提醒</option>
+        <option value="national_holiday">國定假日</option>
+      </select>
+      <label for="calModalNote">備註（選填）</label>
+      <input type="text" id="calModalNote" name="note" placeholder="例：客戶端提前告知">
+      <div class="cal-modal-actions">
+        <button type="button" class="btn" onclick="closeCalEventModal()">取消</button>
+        <button type="submit" class="btn btn-primary">新增</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script>
+function openCalEventModal(iso){
+  document.getElementById('calModalDate').value=iso;
+  document.getElementById('calModalDateLabel').textContent=iso;
+  document.getElementById('calModalLabel').value='';
+  document.getElementById('calModalKind').value='event';
+  document.getElementById('calModalNote').value='';
+  document.getElementById('calEventModal').classList.add('is-open');
+  setTimeout(()=>document.getElementById('calModalLabel').focus(),50);
+}
+function closeCalEventModal(){
+  document.getElementById('calEventModal').classList.remove('is-open');
+}
+document.getElementById('calEventModal').addEventListener('click',function(e){
+  if(e.target===this) closeCalEventModal();
+});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape') closeCalEventModal();
+});
+</script>
+</div>`;
+        res.type("text/html").send(notionPage("行事曆", body, "calendar", res));
+    });
+
+    router.post("/calendar", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const date = String(req.body.date || "").trim();
+        const kind = String(req.body.kind || "event").trim();
+        const label = String(req.body.label || "").trim();
+        const note = String(req.body.note || "").trim() || null;
+        const back = String(req.body.back || "/admin/calendar").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !label) { res.redirect(back); return; }
+        const id = (0, id_js_1.newId)("cal");
+        await db.prepare(`INSERT INTO company_calendar (id, date, kind, label, note, created_at) VALUES (?, ?, ?, ?, ?, ${nowSqlExpr()})`).run(id, date, kind, label, note);
+        res.redirect(back + (back.includes("?") ? "&" : "?") + "ok=added");
+    });
+
+    router.post("/calendar/:id/delete", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const back = String(req.body.back || req.query.back || "/admin/calendar").trim();
+        await db.prepare("DELETE FROM company_calendar WHERE id = ?").run(req.params.id);
+        res.redirect(back + (back.includes("?") ? "&" : "?") + "ok=deleted");
+    });
+
+    router.get("/calendar/export.csv", async (req, res) => {
+        const yearParam = parseInt(String(req.query.year || ""), 10);
+        let rows;
+        if (Number.isFinite(yearParam) && yearParam >= 2020 && yearParam <= 2100) {
+            const start = `${yearParam}-01-01`;
+            const end = `${yearParam}-12-31`;
+            rows = await db.prepare("SELECT date, kind, label, note FROM company_calendar WHERE date >= ? AND date <= ? ORDER BY date").all(start, end);
+        } else {
+            rows = await db.prepare("SELECT date, kind, label, note FROM company_calendar ORDER BY date").all();
+        }
+        const kindLabel = (k) => k === "national_holiday" ? "國定假日" : k === "company_off" ? "公司公休" : k === "company_on" ? "公司加班" : "事件";
+        const csvLines = ["日期,類型,標題,備註"];
+        for (const r of (rows || [])) {
+            const cells = [r.date, kindLabel(r.kind), r.label || "", r.note || ""].map((v) => {
+                const s = String(v ?? "");
+                return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+            });
+            csvLines.push(cells.join(","));
+        }
+        const filename = `calendar_${yearParam || "all"}.csv`;
+        res.set("Content-Type", "text/csv; charset=utf-8");
+        res.set("Content-Disposition", `attachment; filename="${filename}"`);
+        // 加上 UTF-8 BOM 讓 Excel 開啟中文正常
+        res.send("﻿" + csvLines.join("\n"));
+    });
+
+    router.post("/calendar/import-holidays", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const year = parseInt(String(req.body.year || ""), 10);
+        if (!Number.isFinite(year)) { res.redirect("/admin/calendar"); return; }
+        const list = calendar_holidays_js_1.getHolidaysForYear(year);
+        let added = 0;
+        for (const h of list) {
+            const exists = await db.prepare("SELECT id FROM company_calendar WHERE date = ? AND kind = ? AND label = ?").get(h.date, "national_holiday", h.label);
+            if (exists) continue;
+            const id = (0, id_js_1.newId)("cal");
+            await db.prepare(`INSERT INTO company_calendar (id, date, kind, label, note, created_at) VALUES (?, ?, 'national_holiday', ?, NULL, ${nowSqlExpr()})`).run(id, h.date, h.label);
+            added++;
+        }
+        res.redirect(`/admin/calendar?y=${year}&m=1&ok=imported&n=${added}&y=${year}`);
+    });
+
     return router;
 }
 function parseCsvLine(line) {

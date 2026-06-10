@@ -329,6 +329,57 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS announcements (
+          id TEXT PRIMARY KEY,
+          template_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          rendered_image_path TEXT,
+          status TEXT NOT NULL DEFAULT 'draft',
+          created_at TEXT,
+          updated_at TEXT,
+          sent_at TEXT,
+          sent_to_groups_json TEXT,
+          created_by TEXT
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_announcements_status ON announcements(status)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS company_calendar (
+          id TEXT PRIMARY KEY,
+          date TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          label TEXT NOT NULL,
+          note TEXT,
+          created_at TEXT
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_company_calendar_date ON company_calendar(date)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_company_calendar_kind ON company_calendar(kind)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        sqlite.exec(`CREATE TABLE IF NOT EXISTS commodity_prices (
+          id TEXT PRIMARY KEY,
+          category TEXT NOT NULL,
+          source TEXT,
+          record_date TEXT NOT NULL,
+          unit TEXT,
+          spec TEXT,
+          price REAL,
+          high_price REAL,
+          mid_price REAL,
+          low_price REAL,
+          note TEXT,
+          created_at TEXT,
+          updated_at TEXT
+        )`);
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_commodity_prices_date ON commodity_prices(record_date)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_commodity_prices_cat ON commodity_prices(category)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
         sqlite.exec(`CREATE TABLE IF NOT EXISTS product_packaging_ratios (
           id TEXT PRIMARY KEY,
           product_id TEXT NOT NULL,
@@ -840,6 +891,54 @@ async function initPg() {
                 // 既有 PG DB 補欄位
                 try { await client.query("ALTER TABLE basket_log_history ADD COLUMN IF NOT EXISTS prev_lines_json TEXT"); } catch (_) {}
                 try { await client.query("ALTER TABLE basket_log_history ADD COLUMN IF NOT EXISTS new_lines_json TEXT"); } catch (_) {}
+                await client.query(`CREATE TABLE IF NOT EXISTS announcements (
+            id TEXT PRIMARY KEY,
+            template_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            rendered_image_path TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ,
+            sent_at TIMESTAMPTZ,
+            sent_to_groups_json TEXT,
+            created_by TEXT
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_announcements_status ON announcements(status)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS company_calendar (
+            id TEXT PRIMARY KEY,
+            date TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            label TEXT NOT NULL,
+            note TEXT,
+            created_at TIMESTAMPTZ
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_company_calendar_date ON company_calendar(date)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_company_calendar_kind ON company_calendar(kind)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS commodity_prices (
+            id TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            source TEXT,
+            record_date TEXT NOT NULL,
+            unit TEXT,
+            spec TEXT,
+            price DOUBLE PRECISION,
+            high_price DOUBLE PRECISION,
+            mid_price DOUBLE PRECISION,
+            low_price DOUBLE PRECISION,
+            note TEXT,
+            created_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_commodity_prices_date ON commodity_prices(record_date)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_commodity_prices_cat ON commodity_prices(category)");
             }
             catch (_) { /* table may already exist */ }
         }
