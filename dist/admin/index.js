@@ -3153,250 +3153,401 @@ function createAdminRouter() {
         }
     });
     router.get("/", async (req, res) => {
-        const dateRe = /^\d{4}-\d{2}-\d{2}$/;
-        const qDate = String(req.query.date || "").trim();
-        const today = dateRe.test(qDate) ? qDate : getTaipeiCalendarDateYYYYMMDD();
-        let warRoom;
+        const today = getTaipeiCalendarDateYYYYMMDD();
+        const todayDate = new Date(today + "T12:00:00");
+        const weekdayZh = ["日","一","二","三","四","五","六"][todayDate.getDay()];
+        // ── KPI 資料 ──────────────────────────────────────────────
+        let totalOrders = 0, pendingOrders = 0, approvedOrders = 0;
+        let needReviewCnt = 0;
         try {
-            warRoom = await route_war_room_js_1.getRouteWarRoomData(db, today);
-        } catch (e) {
-            console.error("[dashboard] war room", e?.message || e);
-            warRoom = { today, todayIsHoliday: false, routes: [], unrouted: [], totals: { ordered: 0, missing: 0, abnormal: 0, total: 0 } };
-        }
-        const tapmc = wholesale_price_js_1.TAPMC_PRICE_URL;
-        const view = String(req.query.view || "compact").trim() === "detailed" ? "detailed" : "compact";
-        const sevColor = (s) => s === "danger" ? "background:#fef2f2;color:#b91c1c;border-color:#fecaca;" :
-            s === "warn" ? "background:#fffbeb;color:#b45309;border-color:#fde68a;" :
-            "background:#eff6ff;color:#1e40af;border-color:#bfdbfe;";
-
-        // 客戶分類（決定卡片底色／點點顏色）
-        const classifyCustomer = (c) => {
-            if (c.hasOrderedToday) return c.totalNeedReview > 0 ? "review" : "ok";
-            if (c.anomalies.some((a) => a.severity === "danger")) return "danger";
-            if (c.anomalies.length) return "warn";
-            return "muted";
+            const r1 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')").get(today);
+            totalOrders = Number(r1?.n) || 0;
+            const r2 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') = 'approved'").get(today);
+            approvedOrders = Number(r2?.n) || 0;
+            const r3 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','approved','complaint')").get(today);
+            pendingOrders = Number(r3?.n) || 0;
+            const r4 = await db.prepare("SELECT COUNT(*) AS n FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.order_date = ? AND oi.need_review = 1 AND oi.voided_at IS NULL").get(today);
+            needReviewCnt = Number(r4?.n) || 0;
+        } catch (_) { /* ignore */ }
+        let yesterdayOrders = 0;
+        try {
+            const yesterday = new Date(todayDate.getTime() - 86400000).toISOString().slice(0,10);
+            const r = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')").get(yesterday);
+            yesterdayOrders = Number(r?.n) || 0;
+        } catch (_) {}
+        const deltaOrders = totalOrders - yesterdayOrders;
+        // ── 客訴：今日新增 + 未解決總數 + 今日明細 ─────────────────
+        let complaintsTodayNew = 0, complaintsOpenTotal = 0, complaintsTodayOpen = [];
+        try {
+            const r1 = await db.prepare("SELECT COUNT(*) AS n FROM orders WHERE order_date = ? AND LOWER(TRIM(COALESCE(status,''))) = 'complaint'").get(today);
+            complaintsTodayNew = Number(r1?.n) || 0;
+            const r2 = await db.prepare("SELECT COUNT(*) AS n FROM orders o LEFT JOIN complaint_handling ch ON ch.order_id = o.id WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND COALESCE(ch.handle_status, 'pending') <> 'resolved'").get();
+            complaintsOpenTotal = Number(r2?.n) || 0;
+            complaintsTodayOpen = await db.prepare(
+                "SELECT o.id, o.order_no, o.order_date, c.name AS customer_name, o.raw_message, COALESCE(ch.handle_status, 'pending') AS handle_status, ch.handler " +
+                "FROM orders o JOIN customers c ON c.id = o.customer_id LEFT JOIN complaint_handling ch ON ch.order_id = o.id " +
+                "WHERE LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND COALESCE(ch.handle_status, 'pending') <> 'resolved' " +
+                "ORDER BY o.order_date DESC, o.id DESC LIMIT 6"
+            ).all();
+        } catch (e) { console.warn("[admin] dashboard complaints query failed:", e?.message || e); }
+        // ── 提醒叫貨：用 bulk helper 取得「逾期未叫貨」客戶數（速度 < 1 秒）──
+        let reminderTotal = 0, reminderCritical = 0, reminderTop = [];
+        try {
+            const reminderStats = await (0, customer_scoring_js_1.fetchAllCustomerReminderStats)(db, today);
+            const overdueList = (reminderStats || [])
+                .filter(c => c.daysSinceLastOrder != null && c.avgIntervalDays != null && c.daysSinceLastOrder > c.avgIntervalDays * 1.5)
+                .map(c => ({ ...c, overdueRatio: c.daysSinceLastOrder / c.avgIntervalDays }));
+            reminderTotal = overdueList.length;
+            reminderCritical = overdueList.filter(c => c.overdueRatio >= 3).length;
+            overdueList.sort((a, b) => b.overdueRatio - a.overdueRatio);
+            reminderTop = overdueList.slice(0, 5);
+        } catch (e) { console.warn("[admin] dashboard reminder query failed:", e?.message || e); }
+        // ── 警示來源：data_change_log 最近 30 筆異常 ──────────────
+        let alerts = [];
+        try {
+            alerts = await db.prepare(
+                "SELECT created_at, actor_username, action, summary, entity_type, entity_id " +
+                "FROM data_change_log WHERE action IN ('soft_delete','delete','unapprove','approve') " +
+                "ORDER BY created_at DESC LIMIT 12"
+            ).all();
+        } catch (_) {}
+        const alertStatusFor = (a) => {
+            if (a.action === "soft_delete" || a.action === "delete") return "bad";
+            if (a.action === "unapprove") return "warn";
+            return "info";
         };
-
-        const linkTargetFor = (c) => c.hasOrderedToday && c.todayOrders[0]
-            ? `/admin/orders/${encodeURIComponent(c.todayOrders[0].orderId)}`
-            : `/admin/customers/${encodeURIComponent(c.id)}/quick-view`;
-
-        const buildTipText = (c) => {
-            const parts = [c.name || "—"];
-            if (c.hasOrderedToday) {
-                parts.push(`✓ 已叫 ${c.totalItems} 項 · 量 ${Math.round(c.totalQtyToday)}`);
-                if (c.totalNeedReview > 0) parts.push(`⚠ 待確認 ${c.totalNeedReview} 項`);
-            } else {
-                if (c.lastOrderDate) parts.push(`上次叫貨：${c.lastOrderDate}（${c.daysSinceLast} 天前）`);
-                else parts.push(`— 無歷史 —`);
+        const alertLabelFor = (a) => ({
+            soft_delete: "訂單作廢",
+            delete: "刪除品項",
+            unapprove: "取消確認",
+            approve: "已確認",
+        })[a.action] || a.action;
+        // ── 訂單流量 24h：依 updated_at 台北日期 = 今日，按台北小時聚合 ──
+        // 註：order_date 是送貨日（06:00 後叫的貨會跳到隔天），不適合作為「今日活動」篩選。
+        //     orders 沒有 created_at 欄位，但訂單建立時會寫 updated_at，後續編輯也會更新。
+        //     用 updated_at 的台北日期做近似「今日活動」。
+        const hourBars = new Array(24).fill(0);
+        let chartTotal = 0;
+        try {
+            const isPg = Boolean(process.env.DATABASE_URL);
+            const rows = isPg
+                ? await db.prepare("SELECT EXTRACT(HOUR FROM (updated_at AT TIME ZONE 'Asia/Taipei'))::int AS h, COUNT(*) AS n FROM orders WHERE (updated_at AT TIME ZONE 'Asia/Taipei')::date = ?::date AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY h").all(today)
+                : await db.prepare("SELECT CAST(strftime('%H', datetime(updated_at, '+8 hours')) AS INTEGER) AS h, COUNT(*) AS n FROM orders WHERE date(datetime(updated_at, '+8 hours')) = date(?) AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY h").all(today);
+            for (const r of rows || []) {
+                const h = Number(r.h);
+                const n = Number(r.n) || 0;
+                if (Number.isFinite(h) && h >= 0 && h < 24) {
+                    hourBars[h] = n;
+                    chartTotal += n;
+                }
             }
-            for (const a of c.anomalies) parts.push(`• ${a.label}`);
-            return parts.join("\n");
-        };
-
-        const renderCardDetailed = (c) => {
-            const status = c.hasOrderedToday
-                ? `<span class="wr-status wr-status-ok">✓ 已叫貨</span>`
-                : (c.anomalies.some((a) => a.severity === "danger")
-                    ? `<span class="wr-status wr-status-danger">⚠ 注意</span>`
-                    : c.anomalies.length
-                        ? `<span class="wr-status wr-status-warn">⚠</span>`
-                        : `<span class="wr-status wr-status-muted">— 未叫</span>`);
-            const orderInfo = c.hasOrderedToday
-                ? `<div class="wr-meta">${c.totalItems} 項 · 量 ${Math.round(c.totalQtyToday)}</div>`
-                : (c.lastOrderDate ? `<div class="wr-meta wr-muted">上次 ${c.lastOrderDate}（${c.daysSinceLast} 天前）</div>` : `<div class="wr-meta wr-muted">— 無歷史 —</div>`);
-            const tags = c.anomalies.map((a) => `<span class="wr-tag" style="${sevColor(a.severity)}" title="${escapeAttr(a.label)}">${escapeHtml(a.label)}</span>`).join("");
-            return `<a href="${linkTargetFor(c)}" class="wr-card wr-card-${classifyCustomer(c)}">
-<div class="wr-card-head">
-  <div class="wr-name">${escapeHtml(c.name || "—")}</div>
-  ${status}
-</div>
-${orderInfo}
-${tags ? `<div class="wr-tags">${tags}</div>` : ""}
-</a>`;
-        };
-
-        const renderTileCompact = (c) => {
-            const klass = classifyCustomer(c);
-            const dotIcon = c.hasOrderedToday
-                ? (c.totalNeedReview > 0 ? "⚠" : "✓")
-                : (c.anomalies.some((a) => a.severity === "danger") ? "!" : (c.anomalies.length ? "⚠" : "·"));
-            const badge = c.anomalies.length ? `<span class="wr-tile-badge">${c.anomalies.length}</span>` : "";
-            return `<a href="${linkTargetFor(c)}" class="wr-tile wr-tile-${klass}" data-tip="${escapeAttr(buildTipText(c))}">
-<span class="wr-tile-dot">${dotIcon}</span>
-<span class="wr-tile-name">${escapeHtml(c.name || "—")}</span>
-${badge}
-</a>`;
-        };
-
-        const renderCard = view === "detailed" ? renderCardDetailed : renderTileCompact;
-
-        const renderRouteBlock = (route) => {
-            const cards = route.customers.map(renderCard).join("");
-            const summary = `<span class="wr-route-summary">${route.stats.ordered}/${route.stats.total} 已叫${route.stats.abnormal ? ` · ${route.stats.abnormal} 異常` : ""}</span>`;
-            const containerClass = view === "detailed" ? "wr-cards" : "wr-tiles";
-            return `<section class="wr-route">
-<header class="wr-route-head">
-  <h2 class="wr-route-title">${escapeHtml(route.routeLabel)}</h2>
-  ${summary}
-</header>
-<div class="${containerClass}">${cards}</div>
-</section>`;
-        };
-        const routesHtml = warRoom.routes.map(renderRouteBlock).join("");
-        const unroutedHtml = warRoom.unrouted.length
-            ? renderRouteBlock({ routeLabel: "未分線客戶", customers: warRoom.unrouted, stats: { total: warRoom.unrouted.length, ordered: warRoom.unrouted.filter(c => c.hasOrderedToday).length, missing: warRoom.unrouted.filter(c => !c.hasOrderedToday).length, abnormal: warRoom.unrouted.filter(c => c.anomalies.length).length } })
-            : "";
-        const dateLabel = (() => {
-            const d = new Date(warRoom.today + "T12:00:00");
-            return Number.isNaN(d.getTime()) ? warRoom.today : d.toLocaleDateString("zh-TW", { month: "2-digit", day: "2-digit", weekday: "long" });
+        } catch (e) { console.warn("[admin] dashboard hour bars query failed:", e?.message || e); }
+        const hoursWindow = hourBars.slice(6, 22); // 6:00 ~ 21:00
+        const hourMax = Math.max(1, ...hoursWindow);
+        const peakH = 6 + hoursWindow.indexOf(hourMax);
+        const flowBarsHtml = hoursWindow.map((v, i) => {
+            const hour = 6 + i;
+            const isPeak = v === hourMax && v > 0;
+            const barH = Math.round((v / hourMax) * 110);
+            return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;">
+                <span class="mono" style="font-size:9px;color:${v?"var(--txt-2)":"transparent"};margin-bottom:2px;">${v || "·"}</span>
+                <div style="width:100%;height:${v?Math.max(barH,2):0}px;background:var(--accent);opacity:${isPeak?1:0.45};border-radius:2px 2px 0 0;"></div>
+                <span class="mono" style="font-size:9px;color:var(--txt-3);margin-top:4px;">${hour}</span>
+              </div>`;
+        }).join("");
+        // ── 客戶綁定情況 ────────────────────────────────────────
+        let custTotal = 0, custBound = 0;
+        try {
+            const r = await db.prepare("SELECT COUNT(*) AS n FROM customers").get();
+            custTotal = Number(r?.n) || 0;
+            const r2 = await db.prepare("SELECT COUNT(*) AS n FROM customers WHERE line_group_id IS NOT NULL AND line_group_id != ''").get();
+            custBound = Number(r2?.n) || 0;
+        } catch (_) {}
+        // ── 冷凍冷藏 / 盤點 ──────────────────────────────────────
+        let freezerRows = [];
+        try {
+            freezerRows = await db.prepare("SELECT name, freezer_type FROM freezer_fridge_warehouses ORDER BY name LIMIT 8").all();
+        } catch (_) {}
+        const tapmc = wholesale_price_js_1.TAPMC_PRICE_URL;
+        const kpiCard = (label, num, unit, sub, status, delta, href) => `
+          <a href="${href || "#"}" class="sf-kpi ${status?"status-"+status:""}" style="text-decoration:none;color:inherit;display:block;transition:transform .12s,box-shadow .12s;cursor:pointer;">
+            <div class="sf-kpi-head">
+              <span class="sf-kpi-label">${label}</span>
+              ${status?`<span class="sf-dot ${status}"></span>`:""}
+            </div>
+            <div class="sf-kpi-value">
+              <span class="sf-kpi-num">${num}</span>
+              ${unit?`<span class="sf-kpi-unit">${unit}</span>`:""}
+            </div>
+            <div class="sf-kpi-foot">
+              ${delta?`<span class="mono">${delta}</span>`:""}
+              ${sub?`<span>${sub}</span>`:""}
+            </div>
+          </a>`;
+        const alertsRows = alerts.length
+            ? alerts.map(a => {
+                const s = alertStatusFor(a);
+                return `<div style="padding:12px 16px;border-bottom:var(--hairline);display:flex;gap:10px;${s==="bad"?"background:var(--bad-soft);":""}">
+                  <div style="padding-top:4px;"><span class="sf-dot ${s}"></span></div>
+                  <div style="flex:1;min-width:0;">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
+                      <span class="mono" style="font-size:11px;color:var(--txt-3);">${escapeHtml(String(a.created_at||"").slice(11,19))}</span>
+                      <span style="font-size:13px;font-weight:500;color:var(--txt-1);">${escapeHtml(alertLabelFor(a))}</span>
+                      <span class="sf-pill">${escapeHtml(a.actor_username||"system")}</span>
+                    </div>
+                    <div style="font-size:12px;color:var(--txt-2);line-height:1.5;">${escapeHtml(a.summary||"")}</div>
+                  </div>
+                </div>`;
+              }).join("")
+            : `<div style="padding:24px;text-align:center;color:var(--txt-3);font-size:13px;">尚無稽核事件</div>`;
+        const checklistCard = (title, head, items, href) => `
+          <a href="${href || "#"}" class="sf-card" style="text-decoration:none;color:inherit;display:block;transition:transform .12s,border-color .12s;">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${title}</div>
+              <span class="mono" style="font-size:11px;color:var(--txt-3);">${head} ›</span>
+            </div>
+            <div style="padding:12px 16px;display:flex;flex-direction:column;gap:6px;">
+              ${items.map((it, idx) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:12px;border-bottom:${idx<items.length-1?"1px dashed var(--line)":"none"};">
+                <span class="sf-dot ${it.status||""}"></span>
+                <span style="color:var(--txt-2);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${escapeHtml(it.name)}</span>
+                <span class="mono" style="color:${it.status==="bad"?"var(--bad)":it.status==="warn"?"var(--warn)":"var(--txt-1)"};">${escapeHtml(it.val||"")}</span>
+              </div>`).join("")}
+            </div>
+          </a>`;
+        const body = `
+        <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:20px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">儀表板 / 今日營運</div>
+              <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em;">松富物流 · HACCP 監控中心</h1>
+              <div style="margin-top:6px;font-size:12px;color:var(--txt-3);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                <span class="mono">作業日 · ${today} (週${weekdayZh})</span>
+                <span class="sf-pill ok"><span class="sf-dot ok"></span>系統正常</span>
+                <span class="sf-pill info">DB · ${process.env.DATABASE_URL?"PostgreSQL":"SQLite"}</span>
+                <span class="sf-pill accent">${SF_ICONS.spark} 視覺 ${escapeHtml((process.env.GEMINI_MODEL_VISION || process.env.GEMINI_MODEL || "gemini-2.5-flash").replace(/^gemini-/, "Gemini ").replace(/^claude-/, "Claude ").replace(/-/g, " ").replace(/\b(pro|flash|lite|sonnet|opus|haiku)\b/gi, (s) => s.charAt(0).toUpperCase() + s.slice(1)))}</span>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <a class="sf-btn" href="/admin">${SF_ICONS.refresh}<span>重新整理</span></a>
+              <a class="sf-btn" href="/admin/export">${SF_ICONS.dl}<span>當日報表</span></a>
+              ${(process.env.LIFF_ID_ORDER_REVIEW||"").trim() ? `<button type="button" class="sf-btn" onclick="(async()=>{try{await navigator.clipboard.writeText('https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');this.querySelector('span').textContent='已複製，請貼到 LINE';setTimeout(()=>this.querySelector('span').textContent='手機審核連結',2000);}catch(e){prompt('複製失敗，請手動複製：','https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');}})();" title="複製訂單審核 LIFF 連結，貼到 LINE 開啟"><span>📱 手機審核連結</span></button>` : ""}
+              <a class="sf-btn primary" href="/admin/orders?need_review=1">${SF_ICONS.check}<span>批次簽核 (${pendingOrders})</span></a>
+            </div>
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${kpiCard("今日訂單", totalOrders, "單", deltaOrders>=0?`vs 昨日 ${yesterdayOrders}`:"", "ok", deltaOrders>0?`↑ +${deltaOrders}`:deltaOrders<0?`↓ ${deltaOrders}`:"· 持平", "/admin/orders")}
+            ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"", pendingOrders>5?"warn":"ok", null, "/admin/orders?need_review=1")}
+            ${kpiCard("已確認", approvedOrders, "單", totalOrders?`完成 ${Math.round(approvedOrders*100/totalOrders)}%`:"", "ok", null, "/admin/orders")}
+            ${kpiCard("客訴", complaintsOpenTotal, "未解決", complaintsTodayNew>0?`今日新增 ${complaintsTodayNew}`:"今日無新客訴", complaintsOpenTotal>0?"bad":"ok", null, "/admin/complaints")}
+            ${kpiCard("提醒叫貨", reminderTotal, "戶", reminderCritical > 0 ? `嚴重逾期 ${reminderCritical} 戶` : reminderTotal > 0 ? "逾期未叫貨" : "全部準時", reminderCritical > 0 ? "bad" : reminderTotal > 0 ? "warn" : "ok", null, "/admin/reminders")}
+          </div>
+          ${reminderTop.length ? `
+          <div class="sf-card" style="border-left:4px solid #f59e0b;">
+            <div class="sf-card-head">
+              <a href="/admin/reminders" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
+                <div class="sf-card-title">🔔 提醒叫貨 Top ${reminderTop.length}（共 ${reminderTotal} 戶）</div>
+              </a>
+              <a href="/admin/reminders" class="sf-card-sub">完整清單 →</a>
+            </div>
+            <div style="padding:0;">
+              ${reminderTop.map(c => {
+                const tagCls = c.overdueRatio >= 3 ? "bad" : c.overdueRatio >= 2 ? "warn" : "info";
+                const tagLabel = c.overdueRatio >= 3 ? "嚴重" : c.overdueRatio >= 2 ? "高" : "中";
+                return `<a href="/admin/customers/${encodeURIComponent(c.id)}/360" style="display:flex;gap:12px;padding:10px 16px;border-bottom:var(--hairline);text-decoration:none;color:inherit;align-items:center;">
+                  <span class="sf-pill ${tagCls}">${tagLabel}</span>
+                  <span style="flex:1;font-size:13px;">${escapeHtml(c.name)}</span>
+                  <span style="font-size:12px;color:var(--txt-3);">最後 ${escapeHtml(c.lastOrderDate || "—")}</span>
+                  <span class="mono" style="font-size:12px;"><strong style="color:var(--bad);">${c.daysSinceLastOrder} 天</strong> / 平均 ${c.avgIntervalDays} 天</span>
+                </a>`;
+              }).join("")}
+            </div>
+          </div>` : ""}
+          ${complaintsTodayOpen.length ? `
+          <div class="sf-card" style="border-left:4px solid #ef4444;">
+            <div class="sf-card-head">
+              <a href="/admin/complaints" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
+                <div class="sf-card-title">⚠️ 未解決客訴（${complaintsOpenTotal}）</div>
+              </a>
+              <a href="/admin/complaints" class="sf-card-sub">前往處理 →</a>
+            </div>
+            <div>
+              ${complaintsTodayOpen.map(c => {
+                const t = String(c.raw_message || "").replace(/\[圖片\]/g, "[圖]").trim();
+                const preview = t.length > 80 ? t.slice(0, 80) + "…" : t;
+                const statusPill = c.handle_status === "handling"
+                  ? `<span class="sf-pill warn">處理中</span>`
+                  : `<span class="sf-pill bad">待處理</span>`;
+                return `<a href="/admin/complaints/${encodeURIComponent(c.id)}" style="display:flex;gap:12px;padding:10px 16px;border-bottom:var(--hairline);text-decoration:none;color:inherit;align-items:flex-start;">
+                  <div style="min-width:80px;font-size:12px;color:var(--txt-3);">${escapeHtml(c.order_date)}</div>
+                  <div style="min-width:120px;font-size:13px;font-weight:500;">${escapeHtml(c.customer_name)}</div>
+                  <div style="flex:1;font-size:12px;color:var(--txt-2);">${escapeHtml(preview) || "<span style='color:var(--txt-3);'>—</span>"}</div>
+                  <div style="display:flex;gap:6px;align-items:center;">${statusPill}${c.handler ? `<span style="font-size:12px;color:var(--txt-3);">${escapeHtml(c.handler)}</span>` : ""}</div>
+                </a>`;
+              }).join("")}
+            </div>
+          </div>` : ""}
+          <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;">
+            <div class="sf-card">
+              <div class="sf-card-head">
+                <div class="sf-card-title">${SF_ICONS.list} 今日叫貨流量 · 06:00–21:00</div>
+                <span class="sf-card-sub">${chartTotal>0?`尖峰 ${peakH}:00 · 共 ${chartTotal} 單`:"今日尚未收到訂單"}</span>
+              </div>
+              <div style="padding:16px;">
+                ${chartTotal>0
+                  ? `<div style="display:flex;align-items:flex-end;gap:4px;height:140px;">${flowBarsHtml}</div>`
+                  : `<div style="height:140px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;border:1px dashed var(--line);border-radius:var(--radius);background:var(--bg-2);">📊 今日（依收單時間）尚未收到訂單</div>`}
+                <div style="margin-top:16px;padding-top:14px;border-top:var(--hairline);display:flex;gap:24px;font-size:12px;color:var(--txt-2);flex-wrap:wrap;">
+                  ${chartTotal>0?`<span>尖峰 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${peakH}:00</strong></span>`:""}
+                  <span>今日收單 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${chartTotal}</strong></span>
+                  <span>送貨日 ${today} 訂單 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${totalOrders}</strong></span>
+                  <span>待確認 <strong class="mono" style="color:${needReviewCnt?"var(--warn)":"var(--ok)"};margin-left:6px;">${needReviewCnt}/${totalOrders||"-"}</strong></span>
+                  <a href="/admin/orders" style="margin-left:auto;font-size:12px;">前往訂單管理 →</a>
+                </div>
+              </div>
+            </div>
+            <div class="sf-card" style="display:flex;flex-direction:column;">
+              <div class="sf-card-head">
+                <a href="/admin/audit" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
+                  <div class="sf-card-title">${SF_ICONS.bell} 即時稽核事件</div>
+                </a>
+                <a href="/admin/audit" style="text-decoration:none;"><span class="sf-pill ${alerts.filter(a=>alertStatusFor(a)==="bad").length?"bad":"info"}">${alerts.length} 筆 ›</span></a>
+              </div>
+              <div style="flex:1;overflow:auto;max-height:380px;">${alertsRows}</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
+            ${checklistCard("冷凍／冷藏庫", `${freezerRows.length} 個庫房`, freezerRows.slice(0,4).map(r => ({ name: r.name, val: r.freezer_type || "—", status: "info" })), "/admin/freezer-fridge")}
+            ${checklistCard("每日盤點", `${today}`, [{ name: "前往盤點作業", val: "→", status: "info" }, { name: "盤差報表", val: "→", status: "info" }, { name: "庫房管理", val: "→", status: "info" }, { name: "ERP 匯入", val: "→", status: "info" }], "/admin/inventory")}
+            ${checklistCard("LINE 綁定", `${custBound} / ${custTotal} 戶`, [{ name: "已綁定客戶", val: custBound + " 戶", status: "ok" }, { name: "未綁定客戶", val: (custTotal-custBound) + " 戶", status: custBound===custTotal?"ok":"warn" }, { name: "群發訊息", val: "→", status: "info" }, { name: "綁定檢查", val: "→", status: "info" }], "/admin/customers")}
+          </div>
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.spark} 北農行情</div>
+              <a href="${tapmc}" target="_blank" rel="noopener" class="sf-card-sub">前往臺北農產 →</a>
+            </div>
+            <div style="padding:14px 16px;display:flex;gap:12px;align-items:center;">
+              <span style="font-size:12px;color:var(--txt-3);">即時行情請至臺北農產官網查詢。</span>
+              <a href="/admin/logistics/market" class="sf-btn sm">系統整理版</a>
+            </div>
+          </div>
+          <div class="sf-card" id="cost-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.spark} 費用概覽</div>
+              <span class="sf-card-sub">
+                <button type="button" id="cost-refresh-btn" class="sf-btn sm" style="margin-right:8px;">重新整理</button>
+                <span class="mono" id="cost-updated" style="font-size:11px;color:var(--txt-3);">載入中…</span>
+              </span>
+            </div>
+            <div style="padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+              <div id="cost-line" style="border:1px solid var(--line);border-radius:var(--radius);padding:14px;background:var(--bg-1);">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+                  <strong style="font-size:13px;">LINE 訊息額度（本月）</strong>
+                  <span class="mono" id="cost-line-status" style="font-size:11px;color:var(--txt-3);">—</span>
+                </div>
+                <div id="cost-line-body" style="min-height:96px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;">載入中…</div>
+                <div style="margin-top:8px;font-size:11px;color:var(--txt-3);">含 broadcast / push / multicast；reply 不計費</div>
+              </div>
+              <div id="cost-gemini" style="border:1px solid var(--line);border-radius:var(--radius);padding:14px;background:var(--bg-1);">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+                  <strong style="font-size:13px;">AI 視覺辨識用量（估算）</strong>
+                  <a href="/admin/recognition-stats" class="mono" style="font-size:11px;">辨識成效 →</a>
+                </div>
+                <div id="cost-gemini-body" style="min-height:96px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;">載入中…</div>
+                <div style="margin-top:8px;font-size:11px;color:var(--txt-3);">含 Gemini + Claude；以各家公告單價估算，實際以 GCP / Anthropic 帳單為準</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <script>
+        (function(){
+          const $ = (s) => document.querySelector(s);
+          const fmtInt = (n) => Number(n||0).toLocaleString();
+          const fmtUsd = (n) => "US$" + (Number(n||0)).toFixed(4);
+          function renderLine(line){
+            const box = $("#cost-line-body");
+            const status = $("#cost-line-status");
+            if (!line || !line.ok) {
+              status.textContent = "未連線";
+              box.innerHTML = '<span style="color:var(--warn);">' + (line && line.error ? line.error : "無法取得 LINE 額度") + '</span>';
+              return;
+            }
+            if (line.unlimited) {
+              status.textContent = "無上限方案";
+              box.innerHTML = '<div style="text-align:center;"><div style="font-size:28px;font-weight:600;font-family:var(--mono,monospace);">' + fmtInt(line.used) + '</div><div style="font-size:12px;color:var(--txt-2);">本月已送出（無上限）</div></div>';
+              return;
+            }
+            const pct = Math.min(100, Math.max(0, Number(line.percent)||0));
+            const color = pct > 90 ? "var(--bad)" : pct > 70 ? "var(--warn)" : "var(--ok)";
+            status.textContent = pct + "% 已用";
+            box.innerHTML =
+              '<div style="width:100%;">' +
+                '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px;"><span>已用 <strong class="mono">' + fmtInt(line.used) + '</strong></span><span>剩餘 <strong class="mono" style="color:' + color + ';">' + fmtInt(line.remaining) + '</strong> / ' + fmtInt(line.quota) + '</span></div>' +
+                '<div style="height:10px;background:var(--bg-2);border-radius:5px;overflow:hidden;border:1px solid var(--line);"><div style="height:100%;width:' + pct + '%;background:' + color + ';"></div></div>' +
+              '</div>';
+          }
+          function renderGemini(g){
+            const box = $("#cost-gemini-body");
+            if (!g || !g.ok) {
+              box.innerHTML = '<span style="color:var(--warn);">' + (g && g.error ? g.error : "無法統計 AI 用量") + '</span>';
+              return;
+            }
+            const t = g.today || { calls:0, tokens:0, usd:0 };
+            const m = g.month || { calls:0, tokens:0, usd:0, byModel:[], byVendor:{} };
+            // 供應商徽章樣式
+            function vendorBadge(v){
+              const styles = {
+                gemini: 'background:#e8f1ff;color:#1d4ed8;',
+                claude: 'background:#fff0e8;color:#c2410c;',
+                unknown: 'background:#f1f1f1;color:#666;',
+              };
+              const labels = { gemini: 'Gemini', claude: 'Claude', unknown: '?' };
+              const s = styles[v] || styles.unknown;
+              return '<span style="' + s + 'font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;margin-right:4px;">' + (labels[v] || v) + '</span>';
+            }
+            // 模型列：加上供應商徽章
+            const modelRows = (m.byModel||[]).map(r =>
+              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--txt-2);padding:2px 0;align-items:center;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;">' + vendorBadge(r.vendor) + r.model + '</span><span class="mono">' + fmtInt(r.in + r.out) + ' tok · ' + fmtUsd(r.usd) + '</span></div>'
+            ).join("");
+            // 供應商小計（本月）
+            const bv = m.byVendor || {};
+            const vendorCells = [];
+            if (bv.gemini && bv.gemini.calls > 0) {
+              vendorCells.push('<div style="font-size:11px;color:var(--txt-2);">' + vendorBadge('gemini') + '<span class="mono">' + fmtUsd(bv.gemini.usd) + ' · ' + fmtInt(bv.gemini.calls) + ' 次</span></div>');
+            }
+            if (bv.claude && bv.claude.calls > 0) {
+              vendorCells.push('<div style="font-size:11px;color:var(--txt-2);">' + vendorBadge('claude') + '<span class="mono">' + fmtUsd(bv.claude.usd) + ' · ' + fmtInt(bv.claude.calls) + ' 次</span></div>');
+            }
+            const vendorRow = vendorCells.length > 1
+              ? '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0;border-top:1px dashed var(--line);padding-top:6px;">' + vendorCells.join("") + '</div>'
+              : '';
+            box.innerHTML =
+              '<div style="width:100%;">' +
+                '<div style="display:flex;gap:12px;justify-content:space-around;text-align:center;margin-bottom:10px;">' +
+                  '<div><div style="font-size:11px;color:var(--txt-3);">今日</div><div class="mono" style="font-size:18px;font-weight:600;">' + fmtUsd(t.usd) + '</div><div style="font-size:11px;color:var(--txt-2);">' + fmtInt(t.tokens) + ' tok · ' + fmtInt(t.calls) + ' 次</div></div>' +
+                  '<div style="border-left:1px solid var(--line);"></div>' +
+                  '<div><div style="font-size:11px;color:var(--txt-3);">本月</div><div class="mono" style="font-size:18px;font-weight:600;">' + fmtUsd(m.usd) + '</div><div style="font-size:11px;color:var(--txt-2);">' + fmtInt(m.tokens) + ' tok · ' + fmtInt(m.calls) + ' 次</div></div>' +
+                '</div>' +
+                vendorRow +
+                (modelRows ? '<div style="border-top:1px dashed var(--line);padding-top:6px;">' + modelRows + '</div>' : '') +
+              '</div>';
+          }
+          async function loadCost(){
+            try {
+              const r = await fetch("/admin/api/cost-summary", { credentials: "same-origin" });
+              const j = await r.json();
+              renderLine(j.line);
+              renderGemini(j.gemini);
+              const t = j.generatedAt ? new Date(j.generatedAt) : new Date();
+              $("#cost-updated").textContent = "更新於 " + t.toLocaleTimeString("zh-TW", { hour12: false });
+            } catch (e) {
+              $("#cost-updated").textContent = "讀取失敗";
+            }
+          }
+          document.getElementById("cost-refresh-btn").addEventListener("click", loadCost);
+          loadCost();
         })();
-        const body = `<style>
-.wr-toolbar { display:flex; align-items:center; gap:14px; margin-bottom:14px; flex-wrap:wrap; }
-.wr-toolbar form { display:inline-flex; gap:6px; align-items:center; margin:0; }
-.wr-summary { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
-.wr-stat-card { flex:1; min-width:140px; padding:14px 18px; background:#fff; border:1px solid var(--notion-border); border-radius:10px; }
-.wr-stat-num { font-size:28px; font-weight:700; line-height:1; }
-.wr-stat-label { font-size:12px; color:var(--notion-text-muted); margin-top:4px; }
-.wr-stat-card.wr-stat-ok .wr-stat-num { color:#047857; }
-.wr-stat-card.wr-stat-missing .wr-stat-num { color:#787774; }
-.wr-stat-card.wr-stat-abnormal .wr-stat-num { color:#b91c1c; }
-.wr-route { margin-bottom:20px; }
-.wr-route-head { display:flex; align-items:center; gap:12px; margin-bottom:10px; padding-bottom:6px; border-bottom:1px solid var(--notion-border); }
-.wr-route-title { font-size:16px; font-weight:600; margin:0; color:var(--notion-text); }
-.wr-route-summary { font-size:12px; color:var(--notion-text-muted); }
-.wr-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; }
-.wr-card { display:block; padding:10px 12px; background:#fff; border:1.5px solid var(--notion-border); border-radius:8px; text-decoration:none; color:var(--notion-text); transition:transform .15s,border-color .15s,box-shadow .15s; }
-.wr-card:hover { transform:translateY(-2px); border-color:#3b82c4; box-shadow:0 4px 12px rgba(59,130,196,0.1); text-decoration:none; }
-.wr-card-ok { border-color:#a7f3d0; background:#f0fdf4; }
-.wr-card-review { border-color:#fde68a; background:#fffbeb; }
-.wr-card-warn { border-color:#fde68a; background:#fffbeb; }
-.wr-card-danger { border-color:#fecaca; background:#fef2f2; }
-.wr-card-muted { background:#fafafa; }
-.wr-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px; }
-.wr-name { font-weight:600; font-size:14px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.wr-status { font-size:11px; padding:2px 6px; border-radius:8px; flex-shrink:0; }
-.wr-status-ok { background:#dcfce7; color:#047857; }
-.wr-status-warn { background:#fef3c7; color:#b45309; }
-.wr-status-danger { background:#fee2e2; color:#b91c1c; }
-.wr-status-muted { background:#f4f4f0; color:#787774; }
-.wr-meta { font-size:12px; color:#37352f; margin:2px 0; }
-.wr-meta.wr-muted { color:var(--notion-text-muted); }
-.wr-tags { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
-.wr-tag { font-size:11px; padding:2px 6px; border-radius:4px; border:1px solid; line-height:1.4; }
-.wr-empty { color:var(--notion-text-muted); padding:30px; text-align:center; font-size:14px; background:#fafafa; border-radius:8px; }
-.wr-secondary { margin-top:30px; padding-top:18px; border-top:1px solid var(--notion-border); }
-
-/* === 緊湊瓦片模式：~10 個/行，hover 看詳細 === */
-.wr-tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(108px,1fr)); gap:5px; }
-@media (min-width:1280px) { .wr-tiles { grid-template-columns:repeat(auto-fill,minmax(100px,1fr)); } }
-@media (max-width:760px) { .wr-tiles { grid-template-columns:repeat(auto-fill,minmax(95px,1fr)); } }
-.wr-tile {
-  position:relative;
-  display:flex; align-items:center; gap:5px;
-  padding:5px 8px;
-  background:#fff;
-  border:1px solid var(--notion-border);
-  border-left:3px solid var(--notion-border-strong);
-  border-radius:4px;
-  text-decoration:none; color:var(--notion-text);
-  font-size:12px; line-height:1.3;
-  transition:transform .12s, border-color .12s, box-shadow .12s;
-  min-height:28px;
-  cursor:pointer;
-}
-.wr-tile:hover {
-  transform:translateY(-1px);
-  border-color:#3b82c4;
-  box-shadow:0 2px 8px rgba(59,130,196,0.18);
-  text-decoration:none;
-  z-index:5;
-}
-.wr-tile-dot {
-  flex:0 0 auto;
-  display:inline-flex; align-items:center; justify-content:center;
-  width:14px; height:14px;
-  border-radius:50%;
-  font-size:9px; font-weight:700; line-height:1;
-}
-.wr-tile-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
-.wr-tile-badge {
-  flex:0 0 auto;
-  background:#b91c1c; color:#fff;
-  font-size:9px; font-weight:700;
-  padding:1px 5px;
-  border-radius:8px;
-  min-width:14px;
-  text-align:center;
-  line-height:1.3;
-}
-.wr-tile-ok      { border-left-color:#10b981; }
-.wr-tile-ok      .wr-tile-dot { background:#dcfce7; color:#047857; }
-.wr-tile-review  { border-left-color:#f59e0b; background:#fffbeb; }
-.wr-tile-review  .wr-tile-dot { background:#fef3c7; color:#b45309; }
-.wr-tile-warn    { border-left-color:#f59e0b; background:#fffbeb; }
-.wr-tile-warn    .wr-tile-dot { background:#fef3c7; color:#b45309; }
-.wr-tile-danger  { border-left-color:#dc2626; background:#fef2f2; }
-.wr-tile-danger  .wr-tile-dot { background:#fee2e2; color:#b91c1c; }
-.wr-tile-muted   { border-left-color:#d1d5db; background:#fafafa; }
-.wr-tile-muted   .wr-tile-dot { background:#f4f4f0; color:#787774; }
-
-/* CSS-only tooltip：hover 顯示完整資訊（多行） */
-.wr-tile[data-tip]:hover::after {
-  content: attr(data-tip);
-  position:absolute;
-  left:0; top:100%;
-  margin-top:4px;
-  padding:8px 10px;
-  background:#1f2937;
-  color:#fff;
-  font-size:12px; line-height:1.5;
-  white-space:pre-line;
-  border-radius:6px;
-  box-shadow:0 4px 16px rgba(0,0,0,0.25);
-  z-index:50;
-  min-width:180px; max-width:260px;
-  pointer-events:none;
-}
-
-.wr-view-switch { display:inline-flex; gap:0; border:1px solid var(--notion-border-strong); border-radius:6px; overflow:hidden; }
-.wr-view-switch a { padding:6px 12px; font-size:12px; text-decoration:none; color:#666; background:#fff; border-right:1px solid var(--notion-border); }
-.wr-view-switch a:last-child { border-right:none; }
-.wr-view-switch a.active { background:#3b82c4; color:#fff; }
-.wr-view-switch a:hover:not(.active) { background:#f4f4f0; }
-</style>
-<div class="notion-page-content">
-<div class="wr-toolbar">
-  <h1 class="notion-page-title" style="margin:0;">路線戰情室</h1>
-  <span style="color:var(--notion-text-muted);font-size:13px;">${escapeHtml(dateLabel)}${warRoom.todayIsHoliday ? " · 公休日（不判斷未叫貨異常）" : ""}</span>
-  <form method="get" action="/admin">
-    <input type="date" name="date" value="${escapeAttr(warRoom.today)}">
-    <input type="hidden" name="view" value="${escapeAttr(view)}">
-    <button type="submit" class="btn">看其他日期</button>
-  </form>
-  <a href="/admin?date=${escapeAttr(getTaipeiCalendarDateYYYYMMDD())}&view=${escapeAttr(view)}" class="btn">回今日</a>
-  <span class="wr-view-switch" title="切換顯示密度">
-    <a href="/admin?date=${escapeAttr(warRoom.today)}&view=compact" class="${view === "compact" ? "active" : ""}">緊湊</a>
-    <a href="/admin?date=${escapeAttr(warRoom.today)}&view=detailed" class="${view === "detailed" ? "active" : ""}">詳細</a>
-  </span>
-</div>
-
-<div class="wr-summary">
-  <div class="wr-stat-card wr-stat-ok"><div class="wr-stat-num">${warRoom.totals.ordered}</div><div class="wr-stat-label">已叫貨 / 全 ${warRoom.totals.total}</div></div>
-  <div class="wr-stat-card wr-stat-missing"><div class="wr-stat-num">${warRoom.totals.missing}</div><div class="wr-stat-label">未叫貨${warRoom.todayIsHoliday ? "（公休日不視為異常）" : ""}</div></div>
-  <div class="wr-stat-card wr-stat-abnormal"><div class="wr-stat-num">${warRoom.totals.abnormal}</div><div class="wr-stat-label">異常需關注 <span class="info-pop" tabindex="0" data-tip="異常包含 4 種訊號：&#10;• 待確認：今天有訂單但有 OCR 待人工核對品項&#10;• 預期應叫：依過去節律應該叫貨但還沒叫&#10;• 已超期：上次叫貨距今 > 平均週期 × 2 倍&#10;• 量異常：今天總量偏離 30 日均量 > 50%">i</span></div></div>
-</div>
-
-${routesHtml || (unroutedHtml ? "" : `<div class="wr-empty">尚無啟用客戶。請先到「客戶管理」新增。</div>`)}
-${unroutedHtml}
-
-<div class="wr-secondary">
-  <h3 style="margin:0 0 10px;font-size:14px;color:var(--notion-text-muted);font-weight:500;">外部行情參考</h3>
-  <a href="${tapmc}" target="_blank" rel="noopener" class="btn">臺北農產 — 單日交易行情</a>
-  <a href="/admin/logistics/market" class="btn">系統內 北農行情</a>
-</div>
-</div>`;
-        res.type("text/html").send(notionPage("路線戰情室", body, "dashboard", res));
+        </script>`;
+        res.type("text/html").send(notionPage("儀表板", body, "dashboard", res));
     });
     // === 行事曆事件 API ===
     router.get("/api/dashboard-events", async (req, res) => {
