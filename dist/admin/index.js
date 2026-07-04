@@ -541,24 +541,58 @@ const NOTION_STYLE = `
       overflow: hidden;
     }
     tbody tr td {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
+      display: block;
       border-right: none;
       border-bottom: 1px solid var(--notion-border);
-      padding: 9px 10px;
-      text-align: right;
+      padding: 9px 12px;
+      text-align: left;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
     tbody tr td:last-child { border-bottom: none; }
-    tbody tr td::before {
+    /* 只有標了 data-label 的欄位才顯示欄名前綴；沒標的直接左對齊、自然換行，
+       避免中文被壓到一欄一字（見冷凍庫月曆／客訴／提醒清單等表格）。 */
+    tbody tr td[data-label]::before {
       content: attr(data-label);
+      display: inline-block;
+      min-width: 4.5em;
+      margin-right: 8px;
       font-size: 12px;
       color: var(--notion-text-muted);
       font-weight: 600;
-      margin-right: auto;
-      text-align: left;
+      vertical-align: baseline;
     }
+    /* 月曆類表格維持格狀，不套用上面的卡片堆疊 */
+    table.freezer-cal {
+      display: table;
+      table-layout: fixed;
+      width: 100%;
+      background: var(--notion-bg);
+      border: 1px solid var(--notion-border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    table.freezer-cal thead { display: table-header-group; }
+    table.freezer-cal tbody tr {
+      display: table-row;
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      margin: 0;
+      box-shadow: none;
+    }
+    table.freezer-cal th,
+    table.freezer-cal tbody tr td {
+      display: table-cell;
+      text-align: center;
+      padding: 8px 2px;
+      min-width: 0;
+      border: 1px solid var(--notion-border);
+      font-size: 13px;
+    }
+    table.freezer-cal thead th { font-size: 12px; color: var(--notion-text-muted); }
+    table.freezer-cal tbody tr td::before { content: none; }
     /* 訂單明細：三段卡片（原始資料 / 核定資料 / 備註+刪除） */
     .table-scroll-mobile { overflow: visible; }
     table.order-detail-table { border: none; background: transparent; min-width: 0; }
@@ -2479,7 +2513,7 @@ ${unroutedHtml}
                     meta.weekday_distribution ? String(meta.weekday_distribution).slice(0, 120) : "",
                 ].filter(Boolean);
                 const metaCell = escapeHtml(bits.join(" · "));
-                return `<tr><td>${typeLabel(r.signal_type)}</td><td><a href="/admin/customers/${encodeURIComponent(r.customer_id)}/edit">${escapeHtml(r.customer_name || r.customer_id)}</a></td><td>${escapeHtml(r.product_name || r.product_id)}</td><td style="font-size:13px;">${escapeHtml(meta.reason || "")}</td><td style="font-size:12px;color:var(--notion-text-muted);line-height:1.45;">${metaCell}</td></tr>`;
+                return `<tr><td data-label="類型">${typeLabel(r.signal_type)}</td><td data-label="客戶"><a href="/admin/customers/${encodeURIComponent(r.customer_id)}/edit">${escapeHtml(r.customer_name || r.customer_id)}</a></td><td data-label="品項">${escapeHtml(r.product_name || r.product_id)}</td><td data-label="說明" style="font-size:13px;">${escapeHtml(meta.reason || "")}</td><td data-label="統計摘要" style="font-size:12px;color:var(--notion-text-muted);line-height:1.45;">${metaCell}</td></tr>`;
             })
                 .join("")
             : "<tr><td colspan=\"5\" class=\"notion-hint\">尚無紀錄。請執行每日排程或由經理按「立即重算」。</td></tr>";
@@ -3908,7 +3942,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
     `).all(dateFrom, dateTo);
         const tableRows = rows.length === 0
             ? "<tr><td colspan='4'>此區間無資料</td></tr>"
-            : rows.map((r) => `<tr><td>${escapeHtml(r.product_name || r.raw_name || "待確認")}</td><td>${Number(r.total_qty)}</td><td>${escapeHtml(r.unit || "—")}</td><td>${escapeHtml(r.raw_name && !r.product_name ? "待對照" : "—")}</td></tr>`).join("");
+            : rows.map((r) => `<tr><td data-label="品項">${escapeHtml(r.product_name || r.raw_name || "待確認")}</td><td data-label="合計數量">${Number(r.total_qty)}</td><td data-label="單位">${escapeHtml(r.unit || "—")}</td><td data-label="備註">${escapeHtml(r.raw_name && !r.product_name ? "待對照" : "—")}</td></tr>`).join("");
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 採購分析</div>
         <h1 class="notion-page-title">採購分析</h1>
@@ -3969,7 +4003,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         </div>
         <div class="notion-card">
           <h2>當月填表紀錄</h2>
-          ${records.length ? "<table><thead><tr><th>日期</th><th>填表人</th><th>狀態</th><th>操作</th></tr></thead><tbody>" + records.map((r) => `<tr><td>${r.date}</td><td>${escapeHtml(r.filler_name || "")}</td><td>${r.confirmed_at ? "已確認" : "已填"}${r.anomaly ? "、異常" : ""}</td><td><a href="/admin/freezer-fridge/daily?date=${r.date}">編輯</a></td></tr>`).join("") + "</tbody></table>" : "<p>本月尚無填表紀錄</p>"}
+          ${records.length ? "<table><thead><tr><th>日期</th><th>填表人</th><th>狀態</th><th>操作</th></tr></thead><tbody>" + records.map((r) => `<tr><td data-label="日期">${r.date}</td><td data-label="填表人">${escapeHtml(r.filler_name || "")}</td><td data-label="狀態">${r.confirmed_at ? "已確認" : "已填"}${r.anomaly ? "、異常" : ""}</td><td data-label="操作"><a href="/admin/freezer-fridge/daily?date=${r.date}">編輯</a></td></tr>`).join("") + "</tbody></table>" : "<p>本月尚無填表紀錄</p>"}
         </div>
       `;
         res.type("text/html").send(notionPage("冷凍庫冷藏庫檢查表", body + "\n<style>.freezer-cal td,.freezer-cal th{border:1px solid var(--notion-border);padding:8px;min-width:40px;}.freezer-cal .cal-day{display:block;text-align:center;text-decoration:none;color:var(--notion-accent);}.freezer-cal .cal-day.filled{font-weight:600;}</style>", "env", res));
