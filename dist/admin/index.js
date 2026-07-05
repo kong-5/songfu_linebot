@@ -771,11 +771,14 @@ const NOTION_STYLE = `
       color: var(--notion-text);
       align-self: center;
       min-width: 0;
-      gap: 8px;
+      gap: 4px 8px;
+      flex-wrap: wrap; /* 品名 + 信心分數 + 改品項鈕擠不下時折行，避免品名被壓成一字一行 */
       word-break: keep-all;
       overflow-wrap: anywhere;
       line-height: 1.2;
     }
+    /* 品名保底寬度：不夠寬時讓「改品項」折行，而不是把品名壓成一字一行 */
+    table.order-detail-table tbody tr td:nth-child(5) .order-final-product { flex: 1 1 auto; min-width: 5.5em; }
     table.order-detail-table tbody tr td:nth-child(5) .order-final-product,
     table.order-detail-table tbody tr td:nth-child(5) .order-final-product a,
     table.order-detail-table tbody tr td:nth-child(5) .product-pick { font-size: 18px; font-weight: 600; word-break: keep-all; }
@@ -937,6 +940,8 @@ const NOTION_STYLE = `
     /* 每列的「＋插入」與「⊘作廢」在手機卡片右上角並排 */
     table.order-detail-table tbody tr td:nth-child(10) .row-act-stack { flex-direction: row; gap: 10px; }
     table.order-detail-table tbody tr td:nth-child(10) .item-insert-btn { min-width: 1.85rem; font-size: 16px; padding: 2px 6px; }
+    /* 品項卡左右滑手勢：pan-y 讓直向捲動交給瀏覽器、橫向滑動交給 JS */
+    table.order-detail-table tbody tr[data-item-id] { touch-action: pan-y; }
   }
   /* 訂單列表 mobile 卡片：桌面隱藏 */
   .order-mobile-only { display: none; }
@@ -10329,6 +10334,88 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     .catch(function(){ addBtn.disabled = false; alert("新增失敗，請重試。"); });
                 });
               });
+            })();
+            </script>
+            <script>
+            /* 手機左右滑手勢（iOS 風格）：品項卡「左滑＝作廢」「右滑＝在此列下方插入品項」。
+               放開前會顯示紅/綠提示膠囊，超過門檻才觸發；動作直接代理既有按鈕——
+               作廢會先跳原因確認視窗（可取消），插入是把新增表單移到該列下方（按「新增」才成立），
+               所以不會有誤滑就直接改資料的問題。未過門檻放開會彈回。 */
+            (function(){
+              if (!(window.matchMedia && window.matchMedia("(max-width: 760px)").matches)) return;
+              var tbody = document.querySelector("table.order-detail-table tbody");
+              if (!tbody) return;
+              var THRESH = 96, CLAMP = 140;
+              var hint = document.createElement("div");
+              hint.style.cssText = "position:fixed;z-index:9998;display:none;padding:8px 14px;border-radius:999px;font-size:14px;font-weight:700;color:#fff;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.18);transition:background .1s;";
+              document.body.appendChild(hint);
+              var tr = null, startX = 0, startY = 0, dx = 0, active = false, horiz = false, pid = null;
+              function isInteractive(el){ return !!(el && el.closest && el.closest("input, select, textarea, button, a, label")); }
+              function setHint(){
+                if (!tr) return;
+                var r = tr.getBoundingClientRect();
+                var over = Math.abs(dx) >= THRESH;
+                if (dx < 0) {
+                  hint.textContent = over ? "放開作廢 ⊘" : "← 滑到底作廢";
+                  hint.style.background = over ? "#b91c1c" : "rgba(185,28,28,.55)";
+                  hint.style.left = "auto"; hint.style.right = "12px";
+                } else {
+                  hint.textContent = over ? "放開插入 ＋" : "滑到底插入 →";
+                  hint.style.background = over ? "#047857" : "rgba(4,120,87,.55)";
+                  hint.style.right = "auto"; hint.style.left = "12px";
+                }
+                hint.style.top = (r.top + r.height/2 - 18) + "px";
+                hint.style.display = "block";
+                hint.style.opacity = String(Math.min(1, Math.abs(dx) / THRESH));
+              }
+              function reset(snap){
+                if (tr) {
+                  if (snap && tr.style.transform) {
+                    tr.style.transition = "transform .18s ease";
+                    tr.style.transform = "";
+                    (function(t){ setTimeout(function(){ t.style.transition = ""; }, 220); })(tr);
+                  } else {
+                    tr.style.transform = ""; tr.style.transition = "";
+                  }
+                }
+                hint.style.display = "none";
+                tr = null; active = false; horiz = false; dx = 0; pid = null;
+              }
+              tbody.addEventListener("pointerdown", function(e){
+                if (e.pointerType === "mouse") return;
+                if (isInteractive(e.target)) return;
+                var row = e.target.closest ? e.target.closest("tr[data-item-id]") : null;
+                if (!row) return;
+                tr = row; startX = e.clientX; startY = e.clientY; dx = 0; active = true; horiz = false; pid = e.pointerId;
+              });
+              tbody.addEventListener("pointermove", function(e){
+                if (!active || e.pointerId !== pid || !tr) return;
+                var mx = e.clientX - startX, my = e.clientY - startY;
+                if (!horiz) {
+                  if (Math.abs(mx) > 14 && Math.abs(mx) > Math.abs(my) * 1.3) horiz = true;
+                  else if (Math.abs(my) > 14) { reset(false); return; } /* 直向 → 交回頁面捲動 */
+                }
+                if (!horiz) return;
+                dx = Math.max(-CLAMP, Math.min(CLAMP, mx));
+                tr.style.transform = "translateX(" + dx + "px)";
+                setHint();
+              });
+              function finish(e){
+                if (!active || (pid != null && e.pointerId !== pid)) return;
+                var row = tr, d = dx, fired = horiz && Math.abs(d) >= THRESH;
+                reset(true);
+                if (row && fired) {
+                  if (d < 0) {
+                    var del = row.querySelector(".btn-delete-item");
+                    if (del) del.click(); /* 沿用作廢原因確認視窗，可取消 */
+                  } else {
+                    var ins = row.querySelector(".item-insert-btn");
+                    if (ins) ins.click(); /* 新增表單移到此列下方，按「新增」才真的加入 */
+                  }
+                }
+              }
+              tbody.addEventListener("pointerup", finish);
+              tbody.addEventListener("pointercancel", function(){ reset(true); });
             })();
             </script>
             <div style="padding:12px 14px;border-top:var(--hairline);display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
