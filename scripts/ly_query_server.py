@@ -23,24 +23,26 @@ ly_query_server.py — 凌越 ERP 銷貨單「查詢」對外服務（給 songya
       → 200 {"order": {..主表.. , "details":[..明細..]}}   查到
       → 404 {"error":"not_found"}                          查不到
 
-  GET /sp?date=YYYY-MM-DD&icpno=00&office=<部門編號或店名>
-      批次條件查詢：某天 + 某公司 + 某部門/營業所 的所有銷貨單（含明細）。
-      office 可傳部門編號（311）或店名（廣東門市），伺服器會正規化成編號再查。
-      靠 lystk.query（idakd=0000A1）拉主表，明細以 verify_sp_no 補齊，並附 office_name。
+  GET /sp?date=YYYY-MM-DD&office=<部門編號或店名>
+      批次條件查詢：某天 + 某部門/門市 的所有銷貨單（含明細）。
+      office 可傳部門編號（311）或店名（廣東門市），伺服器正規化成編號再查。
+      公司(icpno)自動取「部門所屬公司」（松成門市＝03），呼叫端不必知道公司代碼。
+      靠 lystk.query（idakd=0000A1，where=SP_DPNO）拉主表，明細以 verify_sp_no 補齊，附 office_name。
       → 200 {"count": N, "orders":[ {..主表.., "office_name":..., "details":[...]}, ... ]}
-      ※ 帶 office 過濾需先在 ly_departments.json 的 office_field（或環境變數
-        LY_OFFICE_FIELD）填「部門編號」欄位名；未設而帶 office → 400。
-        用 `--dump-fields <單號>` 找出該欄位名。不帶 office 可直接查整日。
+      ※ 不帶 office 則查該公司當天全部（可用 ?icpno= 指定公司）。
 
   GET /departments
       列出部門編號對照（來自 ly_departments.json），松成選店/對名用。
-      → 200 {"office_field": "...", "departments": {"311":"廣東門市","032":"創始店"}}
+      → 200 {"office_field":"SP_DPNO","default_icpno":"03",
+              "departments":{"311":{"name":"廣東門市","icpno":"03"},...}}
 
 部門對照（單一來源，多程式共用）
 --------------------------------
-  scripts/ly_departments.json —— 內含 office_field（部門編號欄位名）與
-  departments（{編號:店名}）。加店或別的程式要用，改／讀這一個檔即可。
-  編號一律字串以保留前導零（如 032 創始店）。
+  scripts/ly_departments.json —— 內含：
+    office_field   部門編號欄位名（＝SP_DPNO）
+    default_icpno  未指定公司時的預設（松成＝03）
+    departments    {部門編號: {name, icpno}}，每個部門自帶所屬公司
+  加店或別的程式要用，改／讀這一個檔即可。編號字串以保留前導零（如 032）。
 
 認證
 ----
@@ -126,12 +128,16 @@ def query_one(icpno: str, sp_no: str) -> dict | None:
 SP_IDAKD = "0000A1"  # 凌越資料種類：銷貨單
 
 # ----------------------------------------------------------------------
-#  部門（營業所）對照——單一來源 scripts/ly_departments.json，多程式共用
+#  部門（門市／營業所）對照——單一來源 scripts/ly_departments.json，多程式共用
 # ----------------------------------------------------------------------
-#  該檔同時放兩件事：
-#    office_field  銷貨單主表「部門編號」的欄位名（凌越欄位，待 --dump-fields 確認後填）
-#    departments   {部門編號: 名稱}，編號一律字串以保留前導零（如 032）
+#  該檔放三件事：
+#    office_field   銷貨單主表「部門編號」的欄位名（凌越欄位＝SP_DPNO）
+#    default_icpno  未指定公司時的預設公司代碼（松成＝03）
+#    departments    {部門編號: {name, icpno}}，每個部門自帶所屬公司；
+#                   編號一律字串以保留前導零（如 032）。
+#  呼叫端只需傳「部門編號」，服務依此表自動用對的公司(icpno)查。
 #  日後加店或別的程式要用，改／讀這一個檔即可，不必動程式。
+#  （向下相容舊格式 {部門編號: 名稱}：icpno 視為空、退回用預設公司。）
 
 _DEPT_FILE = os.environ.get(
     "LY_DEPARTMENTS_FILE",
@@ -141,7 +147,7 @@ _dept_cache = None
 
 
 def _load_departments() -> dict:
-    """讀部門對照檔並快取。回 {'office_field': str, 'departments': {code: name}}。"""
+    """讀部門對照檔並快取。回 {'office_field', 'default_icpno', 'departments':{code:{name,icpno}}}。"""
     global _dept_cache
     if _dept_cache is None:
         try:
@@ -149,9 +155,17 @@ def _load_departments() -> dict:
                 data = json.load(f)
         except FileNotFoundError:
             data = {}
+        depts = {}
+        for code, val in (data.get("departments") or {}).items():
+            code = str(code).strip()
+            if isinstance(val, dict):
+                depts[code] = {"name": val.get("name", ""), "icpno": str(val.get("icpno", "")).strip()}
+            else:  # 舊格式 {code: name}
+                depts[code] = {"name": val, "icpno": ""}
         _dept_cache = {
             "office_field": (os.environ.get("LY_OFFICE_FIELD") or data.get("office_field") or "").strip(),
-            "departments": {str(k).strip(): v for k, v in (data.get("departments") or {}).items()},
+            "default_icpno": str(data.get("default_icpno") or "").strip(),
+            "departments": depts,
         }
     return _dept_cache
 
@@ -161,22 +175,34 @@ def office_field() -> str:
     return _load_departments()["office_field"]
 
 
+def json_default_icpno() -> str:
+    """對照檔設定的預設公司代碼（可能為空）。"""
+    return _load_departments()["default_icpno"]
+
+
 def resolve_office(inp: str) -> str:
     """把使用者傳的部門（編號或店名）正規化成『部門編號』。查無 → ValueError。"""
     inp = (inp or "").strip()
     depts = _load_departments()["departments"]
-    if inp in depts:                       # 直接就是編號
+    if inp in depts:                              # 直接就是編號
         return inp
-    for code, name in depts.items():       # 傳的是店名
-        if inp == name:
+    for code, meta in depts.items():              # 傳的是店名
+        if inp == meta["name"]:
             return code
-    known = "、".join(f"{c}={n}" for c, n in depts.items()) or "（對照表為空）"
+    known = "、".join(f"{c}={m['name']}" for c, m in depts.items()) or "（對照表為空）"
     raise ValueError(f"未知部門「{inp}」。可用：{known}。若為新店請先加進 {os.path.basename(_DEPT_FILE)}。")
 
 
 def office_name(code: str) -> str:
     """由部門編號取店名，取不到就原樣回傳。"""
-    return _load_departments()["departments"].get(str(code).strip(), code)
+    meta = _load_departments()["departments"].get(str(code).strip())
+    return meta["name"] if meta else code
+
+
+def office_icpno(code: str) -> str:
+    """由部門編號取所屬公司代碼，取不到回空字串。"""
+    meta = _load_departments()["departments"].get(str(code).strip())
+    return meta["icpno"] if meta else ""
 
 
 def _detail_list(rec: dict) -> list:
@@ -186,28 +212,25 @@ def _detail_list(rec: dict) -> list:
 
 def query_invoices(icpno: str, date_str: str, office: str) -> list[dict]:
     """
-    批次查詢：某天 + 某公司(icpno) + 某部門/營業所(office) 的所有銷貨單（含明細）。
+    批次查詢：某天 + 某部門/門市(office) 的所有銷貨單（含明細）。
 
-    office 可傳部門編號（311）或店名（廣東門市），會正規化成編號再查。
-    用 lystk.query 拉主表清單；部門以 where/whval 在伺服器端過濾。
-    lystk.query 若不含明細，逐張用 ly_datain.verify_sp_no 補上（松成要主表+明細）。
-
-    待辦（不影響單張查詢與「不帶 office」的整日查詢）：
-      · 在 ly_departments.json 的 office_field（或環境變數 LY_OFFICE_FIELD）
-        填銷貨單「部門編號」欄位名，才能對 office 過濾。用真實單據找出來：
-          python ly_query_server.py --dump-fields <單號>   # 看哪個欄位的值是 311/032
-      · 若 lystk.query 已直接回明細，會自動沿用、不再逐張補查（見 _detail_list）。
+    office 可傳部門編號（311）或店名（廣東門市），會正規化成編號。
+    公司(icpno)以「部門自帶的 icpno」優先（松成門市＝03）；沒帶部門時才用傳入的 icpno。
+    用 lystk.query（idakd=0000A1）以 where=SP_DPNO / whval=部門編號 在伺服器端過濾主表；
+    lystk.query 只回主表，逐張用 ly_datain.verify_sp_no 補明細（松成要主表+明細）。
     """
     code = resolve_office(office) if office else ""
     fld = office_field()
     if code and not fld:
         raise ValueError(
             "帶了部門但尚未設定部門欄位名（ly_departments.json 的 office_field 或環境變數 LY_OFFICE_FIELD）。"
-            " 先用 `--dump-fields <單號>` 找出哪個欄位存部門編號，或先不帶部門查整日。"
         )
 
+    # 部門自帶公司優先；否則用傳入/預設 icpno。單張補明細也要用同一個 icpno。
+    eff_icpno = (office_icpno(code) if code else "") or icpno
+
     ly = _load_lystk()
-    kwargs = {"icpno": icpno, "idakd": SP_IDAKD, "date": date_str}
+    kwargs = {"icpno": eff_icpno, "idakd": SP_IDAKD, "date": date_str}
     if code:
         kwargs["where"] = fld
         kwargs["whval"] = code
@@ -220,7 +243,7 @@ def query_invoices(icpno: str, date_str: str, office: str) -> list[dict]:
             order = _normalize(r)
         else:
             sp_no = (r.get("SP_NO") or "").strip()
-            full = query_one(icpno, sp_no) if sp_no else None
+            full = query_one(eff_icpno, sp_no) if sp_no else None
             if full is None:
                 order = dict(r)
                 order["details"] = []
@@ -280,7 +303,11 @@ class _Handler(BaseHTTPRequestHandler):
         # GET /departments — 列出部門編號對照（松成要選店/對名用）
         if path == "/departments":
             depts = _load_departments()
-            self._send(200, {"office_field": depts["office_field"], "departments": depts["departments"]})
+            self._send(200, {
+                "office_field": depts["office_field"],
+                "default_icpno": depts["default_icpno"],
+                "departments": depts["departments"],
+            })
             return
 
         # GET /sp/<sp_no> — 單張回查（現成可用）
@@ -353,7 +380,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default=os.environ.get("LY_QUERY_HOST", "0.0.0.0"), help="監聽位址（預設 0.0.0.0）")
     p.add_argument("--port", type=int, default=int(os.environ.get("LY_QUERY_PORT", "8787")), help="監聽埠（預設 8787）")
     p.add_argument("--key", default=os.environ.get("LY_QUERY_KEY", ""), help="X-Query-Key 金鑰（預設讀 LY_QUERY_KEY）")
-    p.add_argument("--icpno", default=os.environ.get("LY_ICPNO", "00"), help="預設公司代碼（預設 00 松富）")
+    p.add_argument("--icpno", default=os.environ.get("LY_ICPNO", ""),
+                   help="預設公司代碼；留空則用 ly_departments.json 的 default_icpno（松成 03），再退 00")
     p.add_argument("--check", metavar="SP_NO", help="不開服務，直接命令列單張查詢並印出（自測凌越連線用）")
     p.add_argument("--dump-fields", metavar="SP_NO", help="不開服務，dump 該單主表所有欄位名（找『部門編號』欄位用）")
     p.add_argument("--list", metavar="DATE", help="不開服務，命令列批次查某天銷貨單並印出（搭配 --office 過濾部門）")
@@ -363,8 +391,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    # 有效預設公司：--icpno/環境變數 > 對照檔 default_icpno > 00
+    icpno = args.icpno.strip() or json_default_icpno() or "00"
     if args.dump_fields:
-        order = query_one(args.icpno, args.dump_fields.strip())
+        order = query_one(icpno, args.dump_fields.strip())
         if not order:
             print("查不到")
             return 1
@@ -377,17 +407,17 @@ def main() -> int:
         return 0
     if args.list:
         try:
-            orders = query_invoices(args.icpno, args.list.strip(), (args.office or "").strip())
+            orders = query_invoices(icpno, args.list.strip(), (args.office or "").strip())
         except ValueError as e:
             print(f"❌ {e}", file=sys.stderr)
             return 2
         print(json.dumps({"count": len(orders), "orders": orders}, ensure_ascii=False, indent=2))
         return 0
     if args.check:
-        order = query_one(args.icpno, args.check.strip())
+        order = query_one(icpno, args.check.strip())
         print(json.dumps(order, ensure_ascii=False, indent=2) if order else "查不到")
         return 0 if order else 1
-    return serve(args.host, args.port, args.key.strip(), args.icpno.strip())
+    return serve(args.host, args.port, args.key.strip(), icpno)
 
 
 if __name__ == "__main__":
