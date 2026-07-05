@@ -780,8 +780,21 @@ const NOTION_STYLE = `
     table.order-detail-table tbody tr td:nth-child(5) .order-final-product a,
     table.order-detail-table tbody tr td:nth-child(5) .product-pick { font-size: 18px; font-weight: 600; word-break: keep-all; }
     table.order-detail-table tbody tr td:nth-child(5) .conf-pill { font-size: 11px; font-weight: 600; flex: 0 0 auto; }
-    /* 改品項連結手機版隱藏（直接點品名即可編輯） */
-    table.order-detail-table tbody tr td:nth-child(5) .product-change { display: none; }
+    /* 改品項：手機顯示為小圓角鈕（點品名開的是「品項主檔編輯」，換對應要靠這顆，不能藏） */
+    table.order-detail-table tbody tr td:nth-child(5) .product-change {
+      display: inline-block;
+      margin-left: auto;
+      flex: 0 0 auto;
+      font-size: 12px;
+      padding: 3px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--accent);
+      background: var(--bg-1);
+      text-decoration: none;
+      white-space: nowrap;
+      line-height: 1.5;
+    }
     table.order-detail-table tbody tr td:nth-child(10) {
       grid-area: del;
       padding: 6px 10px 6px 0;
@@ -1344,8 +1357,10 @@ details.sf-nav-group > summary:hover > .sf-nav-group-title { background: var(--b
   }
   /* 內部 padding 縮一點 */
   .order-detail-raw-col .sf-card[id="rawOrderBlock"] > div[style*="padding:14px"] { padding: 10px 12px !important; }
-  /* 照片附件縮小 */
-  .order-detail-raw-col .sf-card[id="rawOrderBlock"] img { max-height: 180px !important; }
+  /* 照片附件縮小——只在「未放大」(data-scale=1) 時鎖高度；
+     放大時要解除，否則 !important 蓋過 JS 的 max-height:none，按＋只會變寬不會變大 */
+  .order-detail-raw-col .sf-card[id="rawOrderBlock"] img:not(.order-attach-img) { max-height: 180px !important; }
+  .order-detail-raw-col .sf-card[id="rawOrderBlock"] img.order-attach-img[data-scale="1"] { max-height: 180px !important; }
   /* 客戶打字內容 pre 字級壓小一點 */
   .order-detail-raw-col .sf-card[id="rawOrderBlock"] pre { font-size: 12px !important; line-height: 1.5 !important; padding: 8px 10px !important; }
   .order-detail-layout { flex-direction: column !important; }
@@ -9901,6 +9916,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         <button type="button" class="sf-btn sm zoom-in" title="放大">＋</button>
                         <span class="zoom-label" style="font-size:11px;color:var(--txt-3);font-family:var(--font-mono);min-width:40px;text-align:center;">100%</span>
                         <button type="button" class="sf-btn sm zoom-reset" title="重設大小">重設</button>
+                        <button type="button" class="sf-btn sm zoom-full" title="全螢幕檢視（手機可雙指縮放、拖曳、雙擊放大）">全螢幕</button>
                         <button type="button" class="sf-btn sm ocr-box-btn" title="用 Google Vision 框出圖片上偵測到的文字（會呼叫一次 API；綠框=有對應到明細品項，灰框=偵測到但未對應）">辨識框</button>
                         <span class="ocr-box-status" style="font-size:11px;color:var(--txt-3);"></span>
                         <a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener" title="另開新分頁看原圖" style="margin-left:auto;font-size:11px;color:var(--txt-3);text-decoration:none;">圖 ${idx + 1} · 新分頁↗</a>
@@ -9947,6 +9963,92 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         (function(){
           var MIN = 1, MAX = 5, STEP = 0.5;
           function fmt(s){ return Math.round(s*100) + "%"; }
+          /* 全螢幕照片檢視：手機雙指縮放／單指拖曳／雙擊放大；
+             行內檢視器在手機的 sticky 小框裡放大很難用，全螢幕才看得清手寫字 */
+          var fsOverlay = null;
+          function closeFullscreen(){
+            if (!fsOverlay) return;
+            fsOverlay.remove(); fsOverlay = null;
+            document.body.style.overflow = "";
+          }
+          function openFullscreen(src){
+            closeFullscreen();
+            var ov = document.createElement("div");
+            ov.style.cssText = "position:fixed;inset:0;z-index:10000;background:#141414;display:flex;flex-direction:column;";
+            ov.innerHTML = '<div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(0,0,0,.88);color:#fff;">'
+              + '<button type="button" data-fs="out" style="min-width:44px;height:38px;font-size:20px;font-weight:700;border:1px solid #555;background:#232323;color:#fff;border-radius:8px;">－</button>'
+              + '<button type="button" data-fs="in" style="min-width:44px;height:38px;font-size:20px;font-weight:700;border:1px solid #555;background:#232323;color:#fff;border-radius:8px;">＋</button>'
+              + '<span data-fs="label" style="font-size:13px;min-width:46px;text-align:center;font-variant-numeric:tabular-nums;">100%</span>'
+              + '<button type="button" data-fs="reset" style="height:38px;padding:0 12px;font-size:14px;border:1px solid #555;background:#232323;color:#fff;border-radius:8px;">重設</button>'
+              + '<button type="button" data-fs="close" style="margin-left:auto;height:38px;padding:0 14px;font-size:14px;font-weight:700;border:1px solid #666;background:#333;color:#fff;border-radius:8px;">✕ 關閉</button>'
+              + '</div>'
+              + '<div data-fs="vp" style="flex:1;overflow:auto;-webkit-overflow-scrolling:touch;touch-action:none;overscroll-behavior:contain;">'
+              + '<img data-fs="img" alt="訂單照片" draggable="false" style="display:block;width:100%;height:auto;user-select:none;-webkit-user-drag:none;">'
+              + '</div>';
+            document.body.appendChild(ov);
+            document.body.style.overflow = "hidden";
+            fsOverlay = ov;
+            var vp2 = ov.querySelector('[data-fs="vp"]');
+            var im2 = ov.querySelector('[data-fs="img"]');
+            var lb2 = ov.querySelector('[data-fs="label"]');
+            im2.src = src;
+            var scale = 1, MINF = 1, MAXF = 6;
+            function setScale(s, cx, cy){
+              s = Math.max(MINF, Math.min(MAXF, s));
+              var rect = vp2.getBoundingClientRect();
+              var ax = (cx == null ? rect.width/2 : cx - rect.left);
+              var ay = (cy == null ? rect.height/2 : cy - rect.top);
+              var px = ax + vp2.scrollLeft, py = ay + vp2.scrollTop;
+              var ratio = s / scale;
+              scale = s;
+              im2.style.width = Math.round(vp2.clientWidth * scale) + "px";
+              lb2.textContent = Math.round(scale*100) + "%";
+              vp2.scrollLeft = px*ratio - ax;
+              vp2.scrollTop = py*ratio - ay;
+            }
+            ov.querySelector('[data-fs="close"]').addEventListener("click", closeFullscreen);
+            ov.querySelector('[data-fs="in"]').addEventListener("click", function(){ setScale(scale + 0.5); });
+            ov.querySelector('[data-fs="out"]').addEventListener("click", function(){ setScale(scale - 0.5); });
+            ov.querySelector('[data-fs="reset"]').addEventListener("click", function(){ setScale(1); vp2.scrollLeft = 0; vp2.scrollTop = 0; });
+            document.addEventListener("keydown", function esc(e){ if (e.key === "Escape") { closeFullscreen(); document.removeEventListener("keydown", esc); } });
+            /* 手勢：pointer 事件自己接手（touch-action:none）——單指平移、雙指捏合、雙擊縮放 */
+            var pts = new Map(), startDist = 0, startScale = 1, panX = 0, panY = 0, panSL = 0, panST = 0, lastTap = 0;
+            vp2.addEventListener("pointerdown", function(e){
+              try { vp2.setPointerCapture(e.pointerId); } catch(_){}
+              pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+              if (pts.size === 1) {
+                panX = e.clientX; panY = e.clientY; panSL = vp2.scrollLeft; panST = vp2.scrollTop;
+                var now = Date.now();
+                if (now - lastTap < 320) { setScale(scale > 1.2 ? 1 : 2.5, e.clientX, e.clientY); lastTap = 0; }
+                else { lastTap = now; }
+              } else if (pts.size === 2) {
+                var arr = Array.from(pts.values());
+                startDist = Math.hypot(arr[0].x - arr[1].x, arr[0].y - arr[1].y) || 1;
+                startScale = scale;
+              }
+            });
+            vp2.addEventListener("pointermove", function(e){
+              if (!pts.has(e.pointerId)) return;
+              pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+              if (pts.size === 2) {
+                var arr = Array.from(pts.values());
+                var d = Math.hypot(arr[0].x - arr[1].x, arr[0].y - arr[1].y) || 1;
+                setScale(startScale * d / startDist, (arr[0].x + arr[1].x)/2, (arr[0].y + arr[1].y)/2);
+              } else if (pts.size === 1) {
+                vp2.scrollLeft = panSL - (e.clientX - panX);
+                vp2.scrollTop = panST - (e.clientY - panY);
+              }
+            });
+            function lift(e){
+              pts.delete(e.pointerId);
+              if (pts.size === 1) {
+                var p = Array.from(pts.values())[0];
+                panX = p.x; panY = p.y; panSL = vp2.scrollLeft; panST = vp2.scrollTop;
+              }
+            }
+            vp2.addEventListener("pointerup", lift);
+            vp2.addEventListener("pointercancel", lift);
+          }
           document.querySelectorAll(".order-attach-card").forEach(function(card){
             var img = card.querySelector(".order-attach-img");
             var vp = card.querySelector(".order-attach-viewport");
@@ -9968,14 +10070,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               vp.scrollLeft = px*ratio - (cx == null ? rect.width/2 : cx - rect.left);
               vp.scrollTop = py*ratio - (cy == null ? rect.height/2 : cy - rect.top);
             }
-            var bo = card.querySelector(".zoom-out"), bi = card.querySelector(".zoom-in"), br = card.querySelector(".zoom-reset");
+            var bo = card.querySelector(".zoom-out"), bi = card.querySelector(".zoom-in"), br = card.querySelector(".zoom-reset"), bf = card.querySelector(".zoom-full");
             if (bo) bo.addEventListener("click", function(){ apply((parseFloat(img.dataset.scale)||1) - STEP); });
             if (bi) bi.addEventListener("click", function(){ apply((parseFloat(img.dataset.scale)||1) + STEP); });
             if (br) br.addEventListener("click", function(){ apply(1); vp.scrollLeft = 0; vp.scrollTop = 0; });
-            // 點圖放大一級；放大後可拖曳平移
+            if (bf) bf.addEventListener("click", function(){ openFullscreen(img.currentSrc || img.src); });
+            // 點圖：手機/平板直接開全螢幕（行內小框放大很難用）；桌面維持放大一級＋拖曳平移
             var dragging = false, moved = false, sx = 0, sy = 0, sl = 0, st = 0;
             img.addEventListener("click", function(e){
               if (moved) { moved = false; return; }
+              if (window.matchMedia && window.matchMedia("(max-width: 1024px)").matches) { openFullscreen(img.currentSrc || img.src); return; }
               if ((parseFloat(img.dataset.scale)||1) < MAX) apply((parseFloat(img.dataset.scale)||1) + STEP, e.clientX, e.clientY);
             });
             img.addEventListener("pointerdown", function(e){
