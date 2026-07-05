@@ -76,7 +76,7 @@ const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
 const ORDER_LINE_UNITS = [
-    "公斤", "斤", "k", "小把", "大把", "包", "把", "束", "桶", "箱", "顆", "粒", "盒", "袋", "台", "件", "支", "根", "條", "入", "罐", "瓶", "組", "份", "塊", "片", "尾",
+    "公斤", "斤", "k", "個", "小把", "大把", "包", "把", "束", "桶", "箱", "顆", "粒", "盒", "袋", "台", "件", "支", "根", "條", "入", "罐", "瓶", "組", "份", "塊", "片", "尾",
 ];
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("file");
 const uploadImageMiddleware = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("image");
@@ -212,7 +212,9 @@ const NOTION_STYLE = `
   }
   .notion-app-header-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
   .sidebar-toggle {
-    display: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border: 1px solid var(--notion-border-strong);
     background: var(--notion-bg);
     color: var(--notion-text);
@@ -221,6 +223,12 @@ const NOTION_STYLE = `
     font-size: 14px;
     line-height: 1;
     cursor: pointer;
+  }
+  /* 桌面（>1024）收合側邊選單：整條隱藏，主內容吃滿寬（drawer 機制只在 ≤1024）。
+     注意：實際渲染的是 .sf-sidebar（非 .notion-sidebar），兩者都收以防萬一。 */
+  @media (min-width: 1025px) {
+    .notion-app.sidebar-collapsed .sf-sidebar,
+    .notion-app.sidebar-collapsed .notion-sidebar { display: none !important; }
   }
   .notion-app-logo {
     display: inline-flex;
@@ -464,7 +472,30 @@ const NOTION_STYLE = `
   .conf-pill.conf-low { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
   .conf-pill.conf-none { background: var(--notion-sidebar); color: var(--notion-text-muted); border-color: var(--notion-border); }
   table.order-detail-table tbody tr.order-item-low-conf > td { background: #fef2f2; }
-  .order-detail-layout { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: stretch; gap: 16px; margin-top: 4px; }
+  .order-detail-layout { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: stretch; gap: 16px; margin-top: 4px; position: relative; }
+  /* 原始訂單↔明細 連線對照 */
+  #orderConnSvg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; overflow: visible; }
+  #orderConnSvg path { fill: none; stroke: var(--txt-3); stroke-width: 1; opacity: .28; transition: opacity .1s, stroke-width .1s, stroke .1s; }
+  #orderConnSvg path.conn-hot { stroke: var(--accent); stroke-width: 2.25; opacity: 1; }
+  #rawLinesPre .raw-match { background: rgba(35,131,226,0.13); color: inherit; border-radius: 3px; padding: 0 2px; cursor: default; transition: background .1s, box-shadow .1s; }
+  #rawLinesPre .raw-match.conn-hot { background: rgba(35,131,226,0.30); box-shadow: 0 0 0 1px rgba(35,131,226,0.5); }
+  .order-detail-table tbody tr.conn-hot { box-shadow: inset 3px 0 0 var(--accent); }
+  .order-conn-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--txt-2); cursor: pointer; user-select: none; }
+  @media (max-width: 1024px) { #orderConnSvg { display: none !important; } }
+  /* 訂單檢視：平板與手機橫向（≤1024）兩欄過擠 → 上下堆疊、原始訂單置頂、隱藏連線 */
+  @media (min-width: 761px) and (max-width: 1024px) {
+    .order-detail-layout { flex-direction: column !important; }
+    .order-detail-raw-col { position: sticky !important; top: 0 !important; z-index: 20; flex: none !important; width: 100% !important; max-width: none !important; background: var(--bg-0); }
+    .order-detail-raw-col .sf-card[id="rawOrderBlock"] { position: static !important; max-height: 40vh !important; overflow-y: auto !important; }
+    /* 列表表格不要被擠爆，改橫向捲動；min-width 給足欄寬，避免客戶名等中文被壓成直排 */
+    .sf-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .sf-table { min-width: 940px; }
+    /* 客戶名、品名等中文欄位不要一個字一行 */
+    .sf-table td .cust-name-text,
+    .sf-table td .cust-name-cell,
+    .order-final-product,
+    .sf-table td { word-break: keep-all; overflow-wrap: normal; }
+  }
   /* 左欄寬度維持原本比例，避免擠壓右側辨識明細；內文區可較高、長行橫向捲動。整塊 sticky 捲動時仍跟著視窗 */
   .order-detail-raw-col { flex: 0 0 min(200px, 24vw); min-width: 160px; max-width: 220px; position: relative; }
   .order-detail-raw-inner { position: sticky; top: 10px; max-height: calc(100vh - 20px); overflow-y: auto; }
@@ -491,7 +522,13 @@ const NOTION_STYLE = `
   table.order-detail-table .order-detail-idx-num { font-size: 11px; font-weight: 600; line-height: 1; }
   table.order-detail-table .item-sort-stack { display: inline-flex; flex-direction: column; flex-wrap: nowrap; align-items: center; gap: 1px; }
   table.order-detail-table .item-sort-stack .btn { padding: 0 2px; line-height: 1.15; font-size: 10px; min-width: 18px; border-radius: 2px; }
-  table.order-detail-table input.order-detail-qty-input { width: 3rem; max-width: 3.25rem; min-width: 2.75rem; box-sizing: border-box; }
+  table.order-detail-table input.order-detail-qty-input { width: 4rem; max-width: 4.5rem; min-width: 3.25rem; box-sizing: border-box; font-size: 19px; font-weight: 700; text-align: center; padding: 4px 6px; -moz-appearance: textfield; }
+  /* 去掉數量框上下箭頭（避免誤觸）— 桌面明細列與新增列共用 */
+  input.order-detail-qty-input::-webkit-outer-spin-button,
+  input.order-detail-qty-input::-webkit-inner-spin-button,
+  input.add-item-qty::-webkit-outer-spin-button,
+  input.add-item-qty::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input.add-item-qty { -moz-appearance: textfield; font-size: 18px; font-weight: 700; text-align: center; }
   table.order-detail-table .order-del-btn-icon { min-width: 1.75rem; padding: 1px 4px; font-size: 17px; font-weight: 700; line-height: 1.1; color: #b71c1c; border-color: rgba(183, 28, 28, 0.35); }
   table.order-detail-table .order-del-btn-icon:hover { background: rgba(183, 28, 28, 0.07); }
   table.order-detail-table tbody td { padding-top: 5px; padding-bottom: 5px; }
@@ -505,7 +542,7 @@ const NOTION_STYLE = `
   a.product-pick.product-change { color: var(--notion-accent); }
   .assign-section-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--notion-text-muted); margin: 0 0 8px; }
   .assign-section h2.notion-card-title { font-size: 17px; font-weight: 600; color: var(--notion-text); margin: 0 0 10px; letter-spacing: -0.02em; }
-  @media (max-width: 900px) {
+  @media (max-width: 1024px) {
     .notion-sidebar { width: 168px; min-width: 168px; }
     .notion-main { padding: 20px 24px 48px; max-width: none; }
     .notion-topbar { padding: 12px 20px; }
@@ -586,18 +623,18 @@ const NOTION_STYLE = `
     /* 手機版品項卡：5 段式緊湊版型
        Row1: 原始（灰底）
        Row2: 料號 + 品項名稱（大字）+ 作廢×
-       Row3: 子客戶（全寬）
-       Row4: 數量（大字）+ 單位
+       Row3: 數量（大字）+ 單位
+       Row4: 子客戶（全寬）
        Row5: 備註（全寬）
-       HTML 欄序：1=cb 2=sort 3=idx 4=erp 5=product 6=sub_customer 7=qty 8=unit 9=remark 10=del */
+       HTML 欄序：1=cb 2=sort 3=idx 4=erp 5=product 6=qty 7=unit 8=sub_customer 9=remark 10=del */
     table.order-detail-table tbody tr {
       display: grid;
       grid-template-columns: minmax(40px, auto) minmax(0, 1fr) auto;
       grid-template-areas:
         "orig orig orig"
         "erp product del"
-        "subcust subcust subcust"
         "qty unit unit"
+        "subcust subcust subcust"
         "remark remark remark";
       gap: 0;
       border: 1px solid var(--notion-border);
@@ -650,64 +687,64 @@ const NOTION_STYLE = `
       justify-content: flex-end;
     }
     table.order-detail-table tbody tr td:nth-child(10) .order-del-btn-icon { min-width: 1.85rem; font-size: 16px; padding: 2px 6px; }
-    /* Row 3: 子客戶（全寬） */
+    /* Row 4: 數量 + 單位（HTML 欄序已改：6=數量 7=單位 8=子客戶） */
     table.order-detail-table tbody tr td:nth-child(6) {
-      grid-area: subcust;
-      padding: 6px 12px 8px;
-      border-top: 1px solid var(--notion-border);
-      gap: 6px;
-    }
-    table.order-detail-table tbody tr td:nth-child(6)::before {
-      content: "子客戶";
-      color: var(--notion-text-muted);
-      font-size: 11px;
-      margin-right: 4px;
-      flex: 0 0 auto;
-    }
-    table.order-detail-table tbody tr td:nth-child(6) input {
-      width: 100% !important;
-      max-width: none !important;
-      flex: 1 1 auto;
-      min-width: 0;
-      font-size: 13px;
-    }
-    /* Row 4: 數量 + 單位 */
-    table.order-detail-table tbody tr td:nth-child(7) {
       grid-area: qty;
       padding: 8px 6px 10px 12px;
       border-top: 1px solid var(--notion-border);
       gap: 6px;
     }
-    table.order-detail-table tbody tr td:nth-child(7)::before {
+    table.order-detail-table tbody tr td:nth-child(6)::before {
       content: "數量";
       color: var(--notion-text-muted);
       font-size: 11px;
       margin-right: 2px;
       flex: 0 0 auto;
     }
-    table.order-detail-table tbody tr td:nth-child(7) input {
-      font-size: 18px !important;
-      font-weight: 600;
+    table.order-detail-table tbody tr td:nth-child(6) input {
+      font-size: 20px !important;
+      font-weight: 700;
       width: 4.5rem !important;
       max-width: 4.5rem !important;
       text-align: center;
       padding: 4px 6px;
     }
-    table.order-detail-table tbody tr td:nth-child(8) {
+    table.order-detail-table tbody tr td:nth-child(7) {
       grid-area: unit;
       padding: 8px 12px 10px 6px;
       border-top: 1px solid var(--notion-border);
       gap: 6px;
       justify-content: flex-start;
     }
-    table.order-detail-table tbody tr td:nth-child(8)::before {
+    table.order-detail-table tbody tr td:nth-child(7)::before {
       content: "單位";
       color: var(--notion-text-muted);
       font-size: 11px;
       margin-right: 2px;
       flex: 0 0 auto;
     }
-    table.order-detail-table tbody tr td:nth-child(8) select {
+    /* Row 3: 子客戶（全寬） */
+    table.order-detail-table tbody tr td:nth-child(8) {
+      grid-area: subcust;
+      padding: 6px 12px 8px;
+      border-top: 1px solid var(--notion-border);
+      gap: 6px;
+    }
+    table.order-detail-table tbody tr td:nth-child(8)::before {
+      content: "子客戶";
+      color: var(--notion-text-muted);
+      font-size: 11px;
+      margin-right: 4px;
+      flex: 0 0 auto;
+    }
+    table.order-detail-table tbody tr td:nth-child(8) input {
+      width: 100% !important;
+      max-width: none !important;
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 13px;
+    }
+    table.order-detail-table tbody tr td:nth-child(7) select {
       font-size: 16px;
       font-weight: 600;
       width: auto;
@@ -1051,8 +1088,8 @@ const SF_TOKENS = `
 details.sf-nav-group > summary { list-style: none; cursor: pointer; }
 details.sf-nav-group > summary::-webkit-details-marker { display: none; }
 details.sf-nav-group > summary > .sf-nav-group-title {
-  padding: 6px 10px; font-size: 10px; color: var(--txt-3);
-  text-transform: uppercase; letter-spacing: .08em; font-weight: 500;
+  padding: 7px 10px; font-size: 12px; color: var(--txt-3);
+  text-transform: none; letter-spacing: .01em; font-weight: 600;
   display: flex; align-items: center; justify-content: space-between;
   border-radius: 4px; transition: background .12s;
 }
@@ -1064,12 +1101,12 @@ details.sf-nav-group[open] > summary > .sf-nav-group-title::after {
 }
 details.sf-nav-group > summary:hover > .sf-nav-group-title { background: var(--bg-2); color: var(--txt-2); }
 .sf-nav-group-title {
-  padding: 6px 10px; font-size: 10px; color: var(--txt-3);
-  text-transform: uppercase; letter-spacing: .08em; font-weight: 500;
+  padding: 7px 10px; font-size: 12px; color: var(--txt-3);
+  text-transform: none; letter-spacing: .01em; font-weight: 600;
 }
 .sf-nav a {
   display: flex; align-items: center; gap: 10px; padding: 7px 10px;
-  border-radius: var(--radius); color: var(--txt-2); font-size: 13px;
+  border-radius: var(--radius); color: var(--txt-2); font-size: 14px; line-height: 1.3;
   text-decoration: none; margin: 1px 0;
 }
 .sf-nav a:hover { background: var(--bg-3); text-decoration: none; }
@@ -1085,6 +1122,10 @@ details.sf-nav-group > summary:hover > .sf-nav-group-title { background: var(--b
 .sf-sidebar-foot {
   padding: 10px; border-top: var(--hairline);
   display: flex; align-items: center; gap: 10px;
+}
+.sf-sidebar-brandfoot {
+  padding: 10px 16px 14px; border-top: var(--hairline);
+  font-size: 12px; font-weight: 600; color: var(--txt-3); letter-spacing: 0.02em;
 }
 .sf-avatar {
   width: 28px; height: 28px; border-radius: 50%;
@@ -1116,12 +1157,15 @@ details.sf-nav-group > summary:hover > .sf-nav-group-title { background: var(--b
 
 /* mobile collapse — 與既有 .notion-app.sidebar-open 機制相容 */
 .sf-sidebar-toggle { display: none; }
-@media (max-width: 760px) {
+/* 平板／手機（≤1024）：側邊選單改抽屜，預設收起、點 ☰ 滑出 */
+@media (max-width: 1024px) {
   .sf-sidebar {
-    position: fixed; top: 0; left: -240px; z-index: 50; height: 100vh;
+    position: fixed; top: 0; left: -260px; z-index: 50; height: 100vh;
     transition: left .2s; box-shadow: 0 0 20px rgba(0,0,0,0.2);
   }
   .notion-app.sidebar-open .sf-sidebar { left: 0; }
+}
+@media (max-width: 760px) {
 
   /* SF 頁面 padding 縮小，給內容更多橫向空間 */
   .sf-root { padding: 14px !important; }
@@ -1312,13 +1356,6 @@ function sfSidebar(active) {
     </a>`;
   return `
   <aside class="sf-sidebar">
-    <div class="sf-sidebar-brand">
-      <div class="sf-sidebar-logo">松</div>
-      <div>
-        <div class="sf-sidebar-title">松富物流</div>
-        <div class="sf-sidebar-ver">HACCP · v2.5</div>
-      </div>
-    </div>
     <nav class="sf-nav">
       <details class="sf-nav-group" open>
         <summary><div class="sf-nav-group-title">日常作業</div></summary>
@@ -1354,6 +1391,7 @@ function sfSidebar(active) {
       </details>
     </nav>
     <div class="sf-sidebar-foot" id="sfSidebarFoot"></div>
+    <div class="sf-sidebar-brandfoot">松富物流</div>
   </aside>
   `;
 }
@@ -1561,7 +1599,6 @@ function renderNotionAppHeader(username, pageTitle, opts = {}) {
       <div class="notion-app-header-left">
         ${showSidebarToggle ? `<button type="button" class="sidebar-toggle" id="sidebarToggleBtn" aria-label="切換側邊欄">☰</button>` : ""}
         <a href="/admin" class="notion-app-logo" title="松富物流">
-          <img src="/admin/assets/logo.svg" alt="松富物流 logo">
           <span class="logo-text">松富物流</span>
         </a>
         <span class="notion-app-header-sep">/</span>
@@ -1597,6 +1634,34 @@ function getTaipeiCalendarDateYYYYMMDD() {
     if (y && m && d)
         return `${y}-${m}-${d}`;
     return new Date().toISOString().slice(0, 10);
+}
+/**
+ * 把 DB 時間戳（Postgres timestamptz 回傳為 Date 物件，或 ISO 字串）格式化為台北時間。
+ * 舊寫法 String(v).replace("T"," ").slice(...) 遇到 Date 物件會變成 "Fri Jul 03 2026" → 切成 "ul 03 2026"。
+ */
+function fmtTaipeiParts(v) {
+    if (v == null || v === "")
+        return null;
+    const d = v instanceof Date ? v : new Date(v);
+    if (isNaN(d.getTime()))
+        return null;
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Taipei",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(d);
+    const g = (t) => (parts.find((x) => x.type === t) || {}).value || "";
+    return { y: g("year"), mo: g("month"), d: g("day"), h: g("hour"), mi: g("minute") };
+}
+/** 台北時間 MM-DD HH:mm（列表用）；無效回傳 fallback（預設 "—"） */
+function fmtTaipeiMMDDHHmm(v, fallback = "—") {
+    const p = fmtTaipeiParts(v);
+    return p ? `${p.mo}-${p.d} ${p.h}:${p.mi}` : fallback;
+}
+/** 台北時間 YYYY-MM-DD HH:mm（明細用）；無效回傳 fallback（預設 "—"） */
+function fmtTaipeiYMDHM(v, fallback = "—") {
+    const p = fmtTaipeiParts(v);
+    return p ? `${p.y}-${p.mo}-${p.d} ${p.h}:${p.mi}` : fallback;
 }
 async function getWorkingDate(database) {
     const row = await database.prepare("SELECT value FROM app_settings WHERE key = ?").get("working_date");
@@ -1660,7 +1725,19 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
       var btn = document.getElementById('sidebarToggleBtn');
       var overlay = document.getElementById('sidebarOverlay');
       function closeSidebar(){ if(app) app.classList.remove('sidebar-open'); }
-      if(btn && app){ btn.addEventListener('click', function(){ app.classList.toggle('sidebar-open'); }); }
+      function isWide(){ return window.matchMedia('(min-width: 1025px)').matches; }
+      // 還原桌面收合狀態（避免只在窄螢幕才能收）
+      try { if (app && isWide() && localStorage.getItem('songfu.sidebar_collapsed') === '1') app.classList.add('sidebar-collapsed'); } catch(_){}
+      if(btn && app){
+        btn.addEventListener('click', function(){
+          if (isWide()) {
+            app.classList.toggle('sidebar-collapsed');
+            try { localStorage.setItem('songfu.sidebar_collapsed', app.classList.contains('sidebar-collapsed') ? '1' : '0'); } catch(_){}
+          } else {
+            app.classList.toggle('sidebar-open');
+          }
+        });
+      }
       if(overlay){ overlay.addEventListener('click', closeSidebar); }
       document.addEventListener('click', function(e){
         var a = e.target.closest('.notion-sidebar a, .sf-nav a');
@@ -3336,7 +3413,7 @@ function createAdminRouter() {
           </div>
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${kpiCard("今日訂單", totalOrders, "單", deltaOrders>=0?`vs 昨日 ${yesterdayOrders}`:"", "ok", deltaOrders>0?`↑ +${deltaOrders}`:deltaOrders<0?`↓ ${deltaOrders}`:"· 持平", "/admin/orders")}
-            ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"", pendingOrders>5?"warn":"ok", null, "/admin/orders?need_review=1")}
+            ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"", pendingOrders>5?"warn":"ok", null, "/admin/orders?status=pending")}
             ${kpiCard("已確認", approvedOrders, "單", totalOrders?`完成 ${Math.round(approvedOrders*100/totalOrders)}%`:"", "ok", null, "/admin/orders")}
             ${kpiCard("客訴", complaintsOpenTotal, "未解決", complaintsTodayNew>0?`今日新增 ${complaintsTodayNew}`:"今日無新客訴", complaintsOpenTotal>0?"bad":"ok", null, "/admin/complaints")}
             ${kpiCard("提醒叫貨", reminderTotal, "戶", reminderCritical > 0 ? `嚴重逾期 ${reminderCritical} 戶` : reminderTotal > 0 ? "逾期未叫貨" : "全部準時", reminderCritical > 0 ? "bad" : reminderTotal > 0 ? "warn" : "ok", null, "/admin/reminders")}
@@ -6394,11 +6471,46 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         await (0, rebuild_order_from_sources_js_1.replaceOrderItemsFromParsedRows)(db, orderId, customerId, parsed);
     }
     /** 依全文解析並重建訂單明細（先刪除既有品項）。rawText 須為非空字串。 */
+    /**
+     * 依客戶路線把空籃（號碼籃 + 四角籃 C0100065）補回訂單。
+     * 與 webhook 收單時的邏輯一致；後台「重新辨識／補登」會清空並重建品項，
+     * 若不補回，路線空籃與四角空籃就會消失，故重建成功後呼叫此函式還原。
+     */
+    async function insertRouteEmptyBaskets(orderId, customerId) {
+        if (!orderId || !customerId)
+            return;
+        try {
+            const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(customerId);
+            const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
+            const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
+            const erps = [];
+            if (emptyBasketErp)
+                erps.push(emptyBasketErp);
+            if (!erps.includes("C0100065"))
+                erps.push("C0100065");
+            for (const erp of erps) {
+                const prod = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(erp);
+                if (!prod)
+                    continue;
+                const exists = await db.prepare("SELECT 1 FROM order_items WHERE order_id = ? AND product_id = ? LIMIT 1").get(orderId, prod.id);
+                if (exists)
+                    continue;
+                const itemId = (0, id_js_1.newId)("item");
+                await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, 0, ?, 0, 1, NULL)").run(itemId, orderId, prod.id, prod.name, prod.unit || "個");
+            }
+        }
+        catch (e) {
+            console.error("[admin] 重新辨識補空籃失敗 order=%s:", orderId, e?.message || e);
+        }
+    }
     async function rebuildOrderItemsFromRawText(orderId, customerId, rawText) {
         const rawTrim = String(rawText || "").trim();
         if (!rawTrim)
             return { ok: false, error: "empty" };
-        return (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, orderId, customerId, rawTrim, []);
+        const r = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, orderId, customerId, rawTrim, []);
+        if (r && r.ok)
+            await insertRouteEmptyBaskets(orderId, customerId);
+        return r;
     }
     /**
      * 後台「重新辨識」：文字略過僅含「[圖片]」的行後再解析，並對 order_attachments 逐張向 LINE 取圖，
@@ -6406,8 +6518,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
      */
     async function rebuildOrderItemsForReRecognize(orderId, customerId, rawMessage, attachmentRows, imageExtraOpts) {
         const result = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, orderId, customerId, rawMessage, attachmentRows, imageExtraOpts);
-        if (result.ok)
+        if (result.ok) {
+            await insertRouteEmptyBaskets(orderId, customerId);
             return { ok: true };
+        }
         return { ok: false, error: result.error || "parse" };
     }
     router.post("/api/logistics/recognize", uploadImageSafe, async (req, res) => {
@@ -7197,12 +7311,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 ? req.query.date_to.trim()
                 : today;
             let lineOrders = await db.prepare(`
-      SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, c.name AS customer_name,
+      SELECT o.id, o.order_no, o.order_date, o.status, o.updated_at, o.customer_id, c.name AS customer_name, c.route_line AS route_line,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.need_review = 1 AND oi.voided_at IS NULL) AS need_review_count,
         0 AS non_kg_count,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND (oi.include_export IS NULL OR oi.include_export = 1) AND oi.voided_at IS NULL) AS export_item_count,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.voided_at IS NULL) AS total_item_count,
-        o.sheet_exported_at, o.lingyue_exported_at, o.lingyue_doc_no, o.lingyue_written_at,
+        o.sheet_exported_at, o.lingyue_exported_at, o.lingyue_doc_no, o.lingyue_written_at, o.lingyue_queued_by,
         o.raw_message AS source_raw_message,
         o.approved_by, o.approved_at,
         (SELECT COUNT(*) FROM order_attachments oa WHERE oa.order_id = o.id) AS source_attachment_count
@@ -7261,6 +7375,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     return db.localeCompare(da);
                 return String(b.id).localeCompare(String(a.id));
             });
+            // 狀態篩選：pending=待簽核（未確認）／approved=已確認。與儀表板卡片定義一致。
+            const statusFilter = String(req.query.status || "").toLowerCase();
+            if (statusFilter === "pending") {
+                orders = orders.filter((o) => String(o.status || "").toLowerCase() !== "approved");
+            }
+            else if (statusFilter === "approved") {
+                orders = orders.filter((o) => String(o.status || "").toLowerCase() === "approved");
+            }
             if (onlyNeedReview) {
                 orders = orders.filter((o) => (o.need_review_count ?? 0) > 0);
             }
@@ -7350,6 +7472,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     parts.push(`<span class="order-src-icon order-src-i" title="含圖片叫貨">圖</span>`);
                 return `<span class="order-src-icons">${parts.join("")}</span>`;
             };
+            // 操作者 email → 顯示名字（狀態列顯示名字而非 email）
+            const adminNameMap = new Map();
+            try {
+                for (const u of (await loadAdminUsers())) {
+                    if (u && u.username) adminNameMap.set(String(u.username).toLowerCase(), u.name || u.username);
+                }
+            } catch (_) { /* 讀不到就退回顯示原字串 */ }
+            const nameOf = (u) => {
+                if (!u) return "";
+                return adminNameMap.get(String(u).toLowerCase()) || String(u);
+            };
             const rows = orders
                 .map((o, idx) => {
                 const n = o.need_review_count ?? 0;
@@ -7371,9 +7504,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const detailUrl = o.is_logistics
                     ? `/admin/logistics/orders/${encodeURIComponent(o.id)}`
                     : `/admin/orders/${encodeURIComponent(o.id)}?back=${encodeURIComponent(backBase)}`;
-                const orderNoCell = o.is_logistics
-                    ? `<span class="sf-pill">紙本</span>`
-                    : `<span class="mono" style="font-size:12px;">${escapeHtml(o.order_no ?? "—")}</span>`;
+                // 叫貨日期與時間（訂單無 created_at，用 updated_at＝進單/紀錄時間；MM-DD HH:mm）
+                const receivedAt = fmtTaipeiMMDDHHmm(o.updated_at);
+                const orderNoCell = `<span class="mono" style="font-size:12px;color:var(--txt-2);white-space:nowrap;">${escapeHtml(receivedAt)}</span>`;
                 const checkboxCell = o.is_logistics
                     ? `<span style="color:var(--txt-3);">—</span>`
                     : `<input type="checkbox" name="order_ids" value="${escapeAttr(o.id)}" form="batchOrderActionsForm" class="order-batch-cb">`;
@@ -7390,8 +7523,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     hasText ? `<span class="sf-pill info" title="含文字叫貨">字</span>` : "",
                     hasImg ? `<span class="sf-pill accent" title="含圖片叫貨">圖</span>` : "",
                 ].join(" ");
-                const approvedByShort = (isApproved && o.approved_by) ? String(o.approved_by) : "";
-                const approvedAtShort = (isApproved && o.approved_at) ? String(o.approved_at).replace("T", " ").slice(5, 16) : "";
+                const approvedByShort = (isApproved && o.approved_by) ? nameOf(o.approved_by) : "";
+                const approvedAtShort = (isApproved && o.approved_at) ? fmtTaipeiMMDDHHmm(o.approved_at, "") : "";
                 const approvedMeta = isApproved && (approvedByShort || approvedAtShort)
                     ? `<div style="font-size:10px;color:var(--txt-3);margin-top:2px;line-height:1.2;">${approvedByShort ? "by " + escapeHtml(approvedByShort) : ""}${approvedByShort && approvedAtShort ? " · " : ""}${approvedAtShort ? escapeHtml(approvedAtShort) : ""}</div>`
                     : "";
@@ -7421,22 +7554,26 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 <div class="row1">
                   <span class="delivery">${escapeHtml(dateShortForCard)}</span>
                   <span class="cust${custFallback ? " fallback" : ""}">${escapeHtml(custDisp)}</span>
+                  ${o.route_line ? `<span class="sf-pill" style="background:#eef2ff;color:#3730a3;font-weight:600;font-size:10px;">${escapeHtml(String(o.route_line))} 號線</span>` : ""}
                   ${statusPill}
                 </div>
                 <div class="row2">
-                  <span class="mono">${escapeHtml(o.is_logistics ? "紙本" : (o.order_no || ""))}</span>
+                  <span class="mono">叫貨 ${escapeHtml(receivedAt)}</span>
                   ${mobileItemCountHtml}
                   ${mobileSrcText ? `<span>· ${escapeHtml(mobileSrcText)}</span>` : ""}
                   ${n > 0 ? `<span style="color:var(--bad);font-weight:600;">· ${n} 待確認</span>` : ""}
                 </div>
                 <div class="row3">${escapeHtml(previewShort || "—")}</div>
               </a>`;
-                return `<tr class="order-row" data-cust="${escapeAttr(custDisp)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no ?? ""))}" data-status="${escapeAttr(isApproved ? "approved" : (n>0?"need_review":"pending"))}">
+                const routeVal = (o.route_line != null && o.route_line !== "") ? String(o.route_line) : "";
+                const routeCellHtml = routeVal ? `<span class="sf-pill" style="background:#eef2ff;color:#3730a3;font-weight:600;">${escapeHtml(routeVal)} 號線</span>` : `<span style="color:var(--txt-3);">—</span>`;
+                return `<tr class="order-row" data-href="${escapeAttr(detailUrl)}" style="cursor:pointer;" data-cust="${escapeAttr(custDisp)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no ?? ""))}" data-route="${escapeAttr(routeVal)}" data-status="${escapeAttr(isApproved ? "approved" : (n>0?"need_review":"pending"))}">
             <td style="width:36px;" data-label="">${checkboxCell}</td>
             <td style="width:24px;" data-label=""><span class="sf-dot ${dotStatus}"></span></td>
-            <td style="white-space:nowrap;" data-label="單號">${orderNoCell}</td>
+            <td style="white-space:nowrap;" data-label="叫貨時間">${orderNoCell}</td>
             <td class="mono" style="font-size:12px;color:var(--txt-3);white-space:nowrap;" data-label="出貨日">${escapeHtml(o.order_date)}</td>
             <td data-label="客戶">${custLink}</td>
+            <td style="white-space:nowrap;" data-label="路線">${routeCellHtml}</td>
             <td style="white-space:nowrap;" data-label="來源">${srcPills}</td>
             <td style="max-width:380px;" data-label="品項">
               ${cnt > 0
@@ -7445,10 +7582,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                   ? `<div style="font-size:12px;color:#b45309;font-weight:600;">⚠ 無匯出品項<span style="font-weight:400;font-size:11px;margin-left:4px;">（共 ${o.total_item_count} 筆全部排除）</span></div>`
                   : `<div style="font-size:13px;color:#b91c1c;font-weight:700;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;padding:3px 8px;display:inline-block;">⚠ 無品項 · 可能不是訂單</div>`)
               }
-              ${previewShort ? `<div style="font-size:11px;color:var(--txt-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(previewShort)}</div>` : ""}
             </td>
             <td style="white-space:nowrap;" data-label="狀態">${statusPill}${expIcons ? " " + expIcons : ""}</td>
-            <td style="text-align:right;white-space:nowrap;" data-label=""><a class="sf-btn sm" href="${detailUrl}">明細</a></td>
+            <td style="text-align:right;white-space:nowrap;" data-label="">${o.lingyue_doc_no
+                ? `<span class="sf-pill" style="background:#e0f2f1;color:#00695c;font-weight:700;" title="已轉入凌越，單據號 ${escapeAttr(String(o.lingyue_doc_no))}${o.lingyue_queued_by ? "，由 " + escapeAttr(nameOf(o.lingyue_queued_by)) + " 轉入" : ""}（如需重轉請進明細）">✓已轉入 ↩${escapeHtml(String(o.lingyue_doc_no))}${o.lingyue_queued_by ? " ·" + escapeHtml(nameOf(o.lingyue_queued_by)) : ""}</span>`
+                : `<button type="button" class="sf-btn sm lingyue-transfer-btn" data-id="${escapeAttr(o.id)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no || ""))}" title="轉入凌越（顯示凌越料號並轉入）">轉入凌越</button>`} <a class="sf-btn sm" href="${detailUrl}">明細</a></td>
             <td class="order-mobile-only">${mobileCardHtml}</td>
           </tr>`;
             })
@@ -7458,7 +7596,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               const backUrl = "/admin/orders?date_from=" + encodeURIComponent(filterDateFrom) + "&date_to=" + encodeURIComponent(filterDateTo) + (onlyNeedReview ? "&need_review=1" : "");
               const reasonLabel = voidReasonLabel[o.void_reason] || (o.void_reason || "—");
               const reasonPillCls = o.void_reason === "ai_wrong" ? "warn" : (o.void_reason === "customer_complaint" ? "bad" : "");
-              const voidedShort = o.voided_at ? String(o.voided_at).replace("T", " ").slice(0,16) : "—";
+              const voidedShort = fmtTaipeiYMDHM(o.voided_at);
               const custName = (o.customer_name && String(o.customer_name).trim()) || (o.customer_id ? `客戶 ${String(o.customer_id).slice(0,6)}` : "—");
               return `<tr>
                 <td style="width:24px;"><span class="sf-dot bad"></span></td>
@@ -7467,7 +7605,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 <td>${escapeHtml(custName)}</td>
                 <td><span class="sf-pill ${reasonPillCls}" style="font-size:11px;">${escapeHtml(reasonLabel)}</span></td>
                 <td style="font-size:11px;color:var(--txt-3);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(o.void_note || "")}">${escapeHtml(o.void_note || "—")}</td>
-                <td class="mono" style="font-size:11px;color:var(--txt-3);">${escapeHtml(voidedShort)}${o.voided_by?"<br>by "+escapeHtml(o.voided_by):""}</td>
+                <td class="mono" style="font-size:11px;color:var(--txt-3);">${escapeHtml(voidedShort)}${o.voided_by?"<br>by "+escapeHtml(nameOf(o.voided_by)):""}</td>
                 <td style="text-align:right;white-space:nowrap;">
                   <form method="post" action="/admin/orders/${encodeURIComponent(o.id)}/unvoid?back=${encodeURIComponent(backUrl)}" style="display:inline-block;margin:0;">
                     <button type="submit" class="sf-btn sm" onclick="return confirm('取消作廢「${escapeAttr(o.order_no || o.id)}」並恢復為待確認？');" title="取消作廢，恢復為待確認">↶ 取消作廢</button>
@@ -7565,13 +7703,20 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           </details>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <div style="position:relative;flex:0 0 240px;">
-              <input class="sf-input" id="orderFilterOrderNo" placeholder="篩選：貨單編號" autocomplete="off" style="padding-left:28px;">
-              <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.search}</span>
-            </div>
-            <div style="position:relative;flex:0 0 240px;">
               <input class="sf-input" id="orderFilterCustomer" placeholder="篩選：客戶名稱" autocomplete="off" style="padding-left:28px;">
               <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.users}</span>
             </div>
+            <select class="sf-input" id="orderFilterRoute" style="flex:0 0 140px;" title="依揀貨路線篩選">
+              <option value="">全部路線</option>
+              ${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n} 號線</option>`).join("")}
+              <option value="__none__">未指定路線</option>
+            </select>
+            <select class="sf-input" id="orderStatusNav" style="flex:0 0 130px;" title="依狀態篩選（會重新查詢）"
+              onchange="location.href='/admin/orders?date_from=${escapeAttr(filterDateFrom)}&date_to=${escapeAttr(filterDateTo)}'+(this.value?'&status='+this.value:'')${onlyNeedReview ? "+'&need_review=1'" : ""}">
+              <option value="">全部狀態</option>
+              <option value="pending" ${statusFilter === "pending" ? "selected" : ""}>待簽核</option>
+              <option value="approved" ${statusFilter === "approved" ? "selected" : ""}>已確認</option>
+            </select>
             <div style="flex:1;"></div>
             <form id="batchOrderActionsForm" method="post" action="/admin/orders/batch-delete" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0;">
               <span style="font-size:12px;color:var(--txt-3);" id="batchSelectedHint">未選</span>
@@ -7623,16 +7768,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 <tr>
                   <th style="width:36px;"><input type="checkbox" id="orderSelectAllCb" title="全選"></th>
                   <th style="width:24px;"></th>
-                  <th>訂單編號</th>
+                  <th>叫貨時間</th>
                   <th>出貨日</th>
                   <th>客戶</th>
+                  <th>路線</th>
                   <th>來源</th>
                   <th>品項</th>
                   <th>狀態</th>
                   <th style="text-align:right;width:80px;"></th>
                 </tr>
               </thead>
-              <tbody>${rows.length ? rows : `<tr><td colspan='9' style='padding:32px;text-align:center;color:var(--txt-3);'>所選日期區間內無訂單</td></tr>`}</tbody>
+              <tbody>${rows.length ? rows : `<tr><td colspan='10' style='padding:32px;text-align:center;color:var(--txt-3);'>所選日期區間內無訂單</td></tr>`}</tbody>
             </table>
           </div>
           ${deletedOrders.length ? `<details class="sf-card">
@@ -7650,6 +7796,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         </div>
           <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
           <script>
+          (function(){
+            // 點整列直接進訂單明細（點 checkbox／連結／按鈕不觸發）
+            document.addEventListener("click", function(e){
+              if (e.target.closest("a, button, input, select, textarea, label")) return;
+              var tr = e.target.closest("tr.order-row[data-href]");
+              if (!tr) return;
+              var href = tr.getAttribute("data-href");
+              if (href) window.location.href = href;
+            });
+          })();
           (function(){
             function allCbs(){ return document.querySelectorAll(".order-batch-cb"); }
             var allEl = document.getElementById("orderSelectAllCb");
@@ -7755,18 +7911,23 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             function applyListFilters(){
               var qNo = (document.getElementById("orderFilterOrderNo") && document.getElementById("orderFilterOrderNo").value || "").toLowerCase().trim();
               var qCust = (document.getElementById("orderFilterCustomer") && document.getElementById("orderFilterCustomer").value || "").toLowerCase().trim();
+              var qRoute = (document.getElementById("orderFilterRoute") && document.getElementById("orderFilterRoute").value || "").trim();
               document.querySelectorAll("tr.order-row").forEach(function(tr){
                 var no = (tr.getAttribute("data-orderno") || "").toLowerCase();
                 var cust = (tr.getAttribute("data-cust") || "").toLowerCase();
+                var route = (tr.getAttribute("data-route") || "").trim();
                 var okNo = !qNo || no.indexOf(qNo) >= 0;
                 var okCust = !qCust || cust.indexOf(qCust) >= 0;
-                tr.style.display = okNo && okCust ? "" : "none";
+                var okRoute = !qRoute || (qRoute === "__none__" ? route === "" : route === qRoute);
+                tr.style.display = okNo && okCust && okRoute ? "" : "none";
               });
             }
             var fo = document.getElementById("orderFilterOrderNo");
             var fc = document.getElementById("orderFilterCustomer");
+            var fr = document.getElementById("orderFilterRoute");
             if (fo) fo.addEventListener("input", applyListFilters);
             if (fc) fc.addEventListener("input", applyListFilters);
+            if (fr) fr.addEventListener("change", applyListFilters);
             // 即時統計勾選數
             function updateSelectedHint(){
               var n = document.querySelectorAll(".order-batch-cb:checked").length;
@@ -7777,6 +7938,85 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             ["orderSelectAll","orderSelectNone","orderSelectAllCb"].forEach(function(id){ var el = document.getElementById(id); if (el) el.addEventListener("click", function(){ setTimeout(updateSelectedHint, 0); }); });
           })();
           </script>
+        <div id="lyTransferModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:flex-start;justify-content:center;padding:32px 16px;overflow:auto;">
+          <div class="sf-card" style="max-width:640px;width:100%;margin:auto;" onclick="event.stopPropagation();">
+            <div class="sf-card-head">
+              <div class="sf-card-title">↩ 轉入凌越 <span id="lyTransferOrderNo" class="sf-pill"></span></div>
+              <button type="button" class="sf-btn sm ghost" id="lyTransferClose" title="關閉">✕</button>
+            </div>
+            <div style="padding:14px 16px;">
+              <div id="lyTransferLoading" style="color:var(--txt-3);font-size:13px;">讀取中…</div>
+              <div id="lyTransferContent" style="display:none;"></div>
+            </div>
+            <div style="padding:12px 16px;border-top:var(--hairline);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span id="lyTransferMsg" style="font-size:12px;color:var(--txt-3);flex:1;min-width:180px;"></span>
+              <div style="display:flex;gap:8px;">
+                <button type="button" class="sf-btn sm ghost" id="lyTransferCancel">關閉</button>
+                <button type="button" class="sf-btn sm primary" id="lyTransferConfirm" disabled>確認轉入</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <script>
+        (function(){
+          var modal = document.getElementById("lyTransferModal");
+          if (!modal) return;
+          var titleNo = document.getElementById("lyTransferOrderNo");
+          var loading = document.getElementById("lyTransferLoading");
+          var content = document.getElementById("lyTransferContent");
+          var msg = document.getElementById("lyTransferMsg");
+          var confirmBtn = document.getElementById("lyTransferConfirm");
+          var curId = null;
+          function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+          function openModal(){ modal.style.display="flex"; document.body.style.overflow="hidden"; }
+          function closeModal(){ modal.style.display="none"; document.body.style.overflow=""; }
+          function renderPreview(d){
+            if (!d || d.ok === false) { loading.textContent = "讀取失敗：" + ((d && d.error) || ""); return; }
+            var rows = (d.items||[]).map(function(it){
+              var code = it.product_code ? '<span class="mono">'+esc(it.product_code)+'</span>' : '<span style="color:#b91c1c;font-weight:700;">缺料號</span>';
+              return '<tr><td style="font-size:12px;">'+code+'</td><td>'+esc(it.product_name)+'</td><td style="text-align:right;">'+esc(it.quantity)+'</td><td>'+esc(it.unit)+'</td></tr>';
+            }).join("");
+            var custCode = d.customer_code ? '<span class="mono">('+esc(d.customer_code)+')</span>' : '<span style="color:#b91c1c;">（缺凌越編號）</span>';
+            var head = '<div style="font-size:12px;color:var(--txt-2);margin-bottom:8px;">客戶：'+esc(d.customer_name)+' '+custCode+' · 出貨日 '+esc(d.order_date)+'</div>';
+            var warn = "";
+            if (d.missing_count > 0) warn += '<div class="sf-pill warn" style="margin:0 0 8px;display:inline-block;">有 '+d.missing_count+' 項缺凌越料號，這些列凌越收不進去，請先到明細補料號</div>';
+            if (!d.customer_code) warn += '<div class="sf-pill bad" style="margin:0 0 8px;display:inline-block;">此客戶缺凌越編號（HQCustCode），請先到客戶編輯補上</div>';
+            content.innerHTML = head + warn + '<div style="overflow-x:auto;"><table class="sf-table" style="font-size:12px;"><thead><tr><th>凌越料號</th><th>品名</th><th style="text-align:right;">數量</th><th>單位</th></tr></thead><tbody>'+(rows||'<tr><td colspan="4" style="text-align:center;color:var(--txt-3);padding:16px;">無可轉入品項</td></tr>')+'</tbody></table></div>';
+            content.style.display="block"; loading.style.display="none";
+            confirmBtn.disabled = !(d.items && d.items.length);
+          }
+          document.querySelectorAll(".lingyue-transfer-btn").forEach(function(btn){
+            btn.addEventListener("click", function(){
+              curId = this.dataset.id;
+              titleNo.textContent = this.dataset.orderno || "";
+              loading.style.display="block"; loading.textContent="讀取中…"; content.style.display="none"; content.innerHTML="";
+              msg.textContent=""; confirmBtn.disabled=true;
+              openModal();
+              fetch("/admin/orders/"+encodeURIComponent(curId)+"/lingyue-preview", {method:"POST", credentials:"same-origin"})
+                .then(function(r){ return r.json(); }).then(renderPreview)
+                .catch(function(){ loading.textContent="讀取失敗，請重試。"; });
+            });
+          });
+          function lySubmit(force){
+            confirmBtn.disabled=true; msg.textContent="轉入中…";
+            fetch("/admin/orders/"+encodeURIComponent(curId)+"/lingyue-transfer"+(force?"?force=1":""), {method:"POST", credentials:"same-origin"})
+              .then(function(r){ return r.json(); })
+              .then(function(res){
+                if (res && res.ok && res.doc_no) { msg.textContent = "✅ 已轉入凌越，單據號 " + res.doc_no + "，即將重新整理…"; setTimeout(function(){ location.reload(); }, 1200); }
+                else if (res && res.queued) { msg.textContent = "✅ " + (res.message || "已排入凌越匯入佇列，數秒內自動完成…") + " 稍候自動重新整理。"; setTimeout(function(){ location.reload(); }, 6000); }
+                else if (res && res.needConfirm) { if (window.confirm(res.message || "此單已轉入凌越，確定要重新轉入嗎？請先到凌越刪除舊單。")) { lySubmit(true); } else { msg.textContent="已取消重新轉入。"; confirmBtn.disabled=false; } }
+                else if (res && res.mode === "preview") { msg.textContent = "ℹ️ " + (res.message || "這台無法直接寫入凌越，僅顯示料號預覽。"); confirmBtn.disabled=false; }
+                else { msg.textContent = "❌ " + ((res && res.error) || "轉入失敗"); confirmBtn.disabled=false; }
+              })
+              .catch(function(){ msg.textContent="❌ 轉入失敗，請重試。"; confirmBtn.disabled=false; });
+          }
+          confirmBtn.addEventListener("click", function(){ if (!curId) return; lySubmit(false); });
+          document.getElementById("lyTransferClose").addEventListener("click", closeModal);
+          document.getElementById("lyTransferCancel").addEventListener("click", closeModal);
+          modal.addEventListener("click", function(e){ if (e.target===modal) closeModal(); });
+          document.addEventListener("keydown", function(e){ if (e.key==="Escape" && modal.style.display==="flex") closeModal(); });
+        })();
+        </script>
       `;
             res.type("text/html").send(notionPage("訂單審核", body, "orders", res));
         }
@@ -8321,7 +8561,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const safeCustomer = String(meta.customer).replace(/[\\/:*?"<>|]/g, "_").trim() || "客戶";
         const seq = String(meta.orderNo || "01").replace(/[^\d]/g, "").slice(-2) || "01";
         const dlName = `${meta.date}_${safeCustomer}_${seq}_揀貨單.html`;
-        res.setHeader("Content-Disposition", "attachment; filename=\"" + dlName + "\"");
+        const dlAsciiFallback = dlName.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'");
+        res.setHeader("Content-Disposition", "attachment; filename=\"" + dlAsciiFallback + "\"; filename*=UTF-8''" + encodeURIComponent(dlName));
         res.type("text/html").send(notionPage("合併揀貨單", sheetBody, "", res));
     }
     router.get("/orders/batch-order-sheet", async (req, res) => {
@@ -8515,7 +8756,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const safeDate = String(fDate).replace(/[\\/:*?"<>|]/g, "_");
                 fname = `${safeDate}_凌越訂單_合併${sortedIds.length}筆.xlsx`;
             }
-            res.setHeader("Content-Disposition", "attachment; filename=\"" + fname + "\"");
+            const asciiFallback = fname.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'");
+            res.setHeader("Content-Disposition", "attachment; filename=\"" + asciiFallback + "\"; filename*=UTF-8''" + encodeURIComponent(fname));
             res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet").send(bin);
         }
         catch (e) {
@@ -8607,6 +8849,56 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     /**
+     * GET /admin/lingyue-writeback/wait?timeout=25
+     *   長連線等待（long-poll）：內網 agent 掛一條線等待「使用者已在網站點『轉入凌越』」的排隊訂單。
+     *   有排隊單（lingyue_queued_at 非空且尚未回寫）立刻回傳；否則 hold 到 timeout 秒（預設 25、上限 50）才回空。
+     *   agent 拿到後寫入凌越，再用 callback 回填單號（回填後 lingyue_written_at 非空，即退出佇列）。
+     */
+    router.get("/lingyue-writeback/wait", async (req, res) => {
+        let timeoutSec = parseInt(String(req.query.timeout || "25"), 10);
+        if (!Number.isFinite(timeoutSec) || timeoutSec <= 0)
+            timeoutSec = 25;
+        if (timeoutSec > 50)
+            timeoutSec = 50;
+        const deadline = Date.now() + timeoutSec * 1000;
+        try {
+            while (true) {
+                const rows = await db.prepare(`
+          SELECT o.id, o.order_no, o.order_date, o.remark, o.lingyue_queued_at, c.name AS customer_name, c.hq_cust_code, c.teraoka_code
+          FROM orders o JOIN customers c ON c.id = o.customer_id
+          WHERE o.lingyue_queued_at IS NOT NULL
+            AND o.lingyue_written_at IS NULL
+            AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
+          ORDER BY o.lingyue_queued_at ASC, o.id ASC
+          LIMIT 20
+        `).all();
+                if (rows && rows.length) {
+                    const orders = [];
+                    for (const order of rows) {
+                        const preview = await buildLingyuePreview(order);
+                        if (preview.items.length) {
+                            preview.queued_at = order.lingyue_queued_at ? String(order.lingyue_queued_at) : "";
+                            orders.push(preview);
+                        }
+                    }
+                    if (orders.length) {
+                        res.json({ count: orders.length, orders });
+                        return;
+                    }
+                }
+                if (Date.now() >= deadline) {
+                    res.json({ count: 0, orders: [] });
+                    return;
+                }
+                await new Promise((r) => setTimeout(r, 1500));
+            }
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/wait", e?.message || e);
+            res.status(500).json({ error: "wait 失敗", detail: String(e?.message || e) });
+        }
+    });
+    /**
      * POST /admin/lingyue-writeback/callback
      *   body: { "results": [ { "order_id": "...", "doc_no": "凌越單據號", "ok": true, "error": "" }, ... ] }
      *   把凌越寫入後回傳的單據號回填到 orders.lingyue_doc_no，並記錄 lingyue_written_at。
@@ -8653,6 +8945,150 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.status(500).json({ error: "callback 失敗", detail: String(e?.message || e) });
         }
     });
+    /**
+     * 轉入凌越 — 單張。組出凌越料號對映（沿用 /pending 的欄位邏輯），供列表「轉入凌越」按鈕用。
+     * @param {*} order  已含 hq_cust_code / teraoka_code / customer_name / order_date / remark 的訂單列
+     */
+    async function buildLingyuePreview(order) {
+        const customer_code = (order.hq_cust_code && String(order.hq_cust_code).trim())
+            || (order.teraoka_code && String(order.teraoka_code).trim()) || "";
+        const itemRows = await db.prepare(`
+        SELECT oi.quantity, oi.unit, oi.remark, oi.raw_name, p.erp_code, p.name AS product_name
+        FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1)
+        ORDER BY COALESCE(oi.display_order, 999999), oi.id
+      `).all(order.id);
+        let missing_count = 0;
+        const items = (itemRows || []).map((it) => {
+            const product_code = (it.erp_code && String(it.erp_code).trim()) || "";
+            if (!product_code)
+                missing_count += 1;
+            const qtyNum = it.quantity != null ? Number(it.quantity) : null;
+            return {
+                product_code,
+                product_name: (it.product_name && String(it.product_name).trim())
+                    || (it.raw_name && String(it.raw_name).trim()) || "",
+                unit: (it.unit && String(it.unit).trim()) || "公斤",
+                quantity: Number.isFinite(qtyNum) ? qtyNum : 0,
+                item_note: (it.remark && String(it.remark).trim()) || "",
+            };
+        });
+        return {
+            order_id: order.id,
+            order_no: order.order_no || null,
+            order_date: formatOrderDateForLingyue(order.order_date),
+            customer_code,
+            customer_name: order.customer_name || "",
+            doc_remark: (order.remark && String(order.remark).trim()) || "",
+            items,
+            missing_count,
+        };
+    }
+    /** 呼叫外部凌越寫入橋接（LINGYUE_WRITE_CMD，讀 stdin JSON、輸出 {ok,doc_no,error}）。 */
+    function runLingyueWrite(cmd, payload) {
+        return new Promise((resolve) => {
+            let child;
+            try {
+                child = require("child_process").spawn(cmd, { shell: true });
+            }
+            catch (e) {
+                resolve({ ok: false, error: "無法啟動寫入程序：" + (e?.message || e) });
+                return;
+            }
+            let out = "", err = "";
+            const timer = setTimeout(() => { try { child.kill(); } catch (_) { } resolve({ ok: false, error: "凌越寫入逾時（60 秒）" }); }, 60000);
+            child.stdout.on("data", (d) => { out += d.toString(); });
+            child.stderr.on("data", (d) => { err += d.toString(); });
+            child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, error: "寫入程序錯誤：" + (e?.message || e) }); });
+            child.on("close", () => {
+                clearTimeout(timer);
+                try {
+                    const lastLine = out.trim().split(/\r?\n/).pop();
+                    resolve(JSON.parse(lastLine));
+                }
+                catch (_) {
+                    resolve({ ok: false, error: (err || out || "無法解析寫入結果").slice(0, 300) });
+                }
+            });
+            try { child.stdin.write(payload); child.stdin.end(); } catch (_) { }
+        });
+    }
+    // 轉入凌越：預覽（顯示凌越料號、缺料號檢查）— 離線可用，不寫入、不改狀態。
+    router.post("/orders/:orderId/lingyue-preview", async (req, res) => {
+        try {
+            const order = await db.prepare(`
+        SELECT o.id, o.order_no, o.order_date, o.remark, c.name AS customer_name, c.hq_cust_code, c.teraoka_code
+        FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
+      `).get(req.params.orderId);
+            if (!order) {
+                res.status(404).json({ ok: false, error: "訂單不存在" });
+                return;
+            }
+            const preview = await buildLingyuePreview(order);
+            res.json({ ok: true, ...preview });
+        }
+        catch (e) {
+            console.error("[admin] lingyue-preview", e?.message || e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+    // 轉入凌越：實際寫入（需在有凌越內網＋ly_datain 的機器，由 LINGYUE_WRITE_CMD 指定橋接）。
+    router.post("/orders/:orderId/lingyue-transfer", async (req, res) => {
+        try {
+            const order = await db.prepare(`
+        SELECT o.id, o.order_no, o.order_date, o.remark, o.lingyue_doc_no,
+               c.name AS customer_name, c.hq_cust_code, c.teraoka_code
+        FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
+      `).get(req.params.orderId);
+            if (!order) {
+                res.status(404).json({ ok: false, error: "訂單不存在" });
+                return;
+            }
+            const actor = req.adminUsername || "";
+            const force = req.query.force === "1" || req.query.force === "true";
+            // 已轉入且未帶 force → 要求確認：重轉會在凌越產生新單，舊單不會自動刪，須先手動刪除舊單。
+            if (order.lingyue_doc_no && !force) {
+                res.json({
+                    ok: false, needConfirm: true, doc_no: order.lingyue_doc_no,
+                    message: `此單已轉入凌越（單號 ${order.lingyue_doc_no}）。\n\n重新轉入會在凌越「產生一張新單」，舊單 ${order.lingyue_doc_no} 不會自動刪除。\n請先到凌越把舊單 ${order.lingyue_doc_no} 刪除，再按「確定」重新轉入。\n\n確定要重新轉入嗎？`,
+                });
+                return;
+            }
+            const preview = await buildLingyuePreview(order);
+            if (!preview.items.length) {
+                res.json({ ok: false, error: "此訂單無可轉入品項" });
+                return;
+            }
+            const writeCmd = (process.env.LINGYUE_WRITE_CMD || "").trim();
+            if (!writeCmd) {
+                // 這台沒接凌越橋接（雲端 Cloud Run 打不進內網）→ 標記排隊，由內網 agent 長連線等待後寫入。
+                // 清掉舊單號／回寫時間（重轉時），讓 /wait 重新撿到；記錄是誰轉的。
+                const now = new Date().toISOString();
+                await db.prepare("UPDATE orders SET lingyue_queued_at = ?, lingyue_queued_by = ?, lingyue_doc_no = NULL, lingyue_written_at = NULL WHERE id = ?").run(now, actor, order.id);
+                res.json({ ok: true, queued: true, message: "已排入凌越匯入佇列，內網小幫手會在數秒內寫入並回填單號。", ...preview });
+                return;
+            }
+            const payload = JSON.stringify({
+                icpno: process.env.LY_ICPNO || "00",
+                warehouse: process.env.LY_DEFAULT_WHNO || "",
+                price: process.env.LY_DEFAULT_PRICE || "",
+                order: preview,
+            });
+            const result = await runLingyueWrite(writeCmd, payload);
+            if (result && result.ok && result.doc_no) {
+                const now = new Date().toISOString();
+                await db.prepare("UPDATE orders SET lingyue_doc_no = ?, lingyue_written_at = ?, lingyue_queued_by = ? WHERE id = ?").run(String(result.doc_no), now, actor, order.id);
+                res.json({ ok: true, doc_no: result.doc_no });
+            }
+            else {
+                res.json({ ok: false, error: (result && result.error) || "凌越寫入失敗" });
+            }
+        }
+        catch (e) {
+            console.error("[admin] lingyue-transfer", e?.message || e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 300) });
+        }
+    });
     router.get("/orders/:orderId", async (req, res) => {
         const { orderId } = req.params;
         const backTo = (typeof req.query.back === "string" && req.query.back.startsWith("/admin/orders"))
@@ -8661,7 +9097,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const order = await db.prepare(`
       SELECT o.id, o.order_no, o.order_date, o.status, o.updated_at, o.raw_message, o.customer_id,
              o.voided_at, o.voided_by, o.void_reason, o.void_note,
-             o.lingyue_doc_no, o.lingyue_written_at,
+             o.lingyue_doc_no, o.lingyue_written_at, o.lingyue_queued_by,
              c.name AS customer_name, c.teraoka_code AS customer_teraoka_code, c.known_sub_customers
       FROM orders o LEFT JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
@@ -8686,6 +9122,99 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
       ORDER BY oi.voided_at DESC, oi.id
     `).all(orderId);
         const attachments = await db.prepare("SELECT id, line_message_id FROM order_attachments WHERE order_id = ?").all(orderId);
+        // 新增品項推薦：此客戶歷史最常叫的品項（排除本單已有的），做成快速標籤
+        let frequentProducts = [];
+        if (order.customer_id) {
+            const existingPids = new Set(items.filter((i) => i.product_id).map((i) => String(i.product_id)));
+            const freqRows = await db.prepare(`
+      SELECT p.id AS id, p.name AS name, p.erp_code AS erp_code, COUNT(*) AS cnt
+      FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        JOIN products p ON p.id = oi.product_id
+      WHERE o.customer_id = ? AND oi.product_id IS NOT NULL AND oi.voided_at IS NULL AND o.voided_at IS NULL
+      GROUP BY p.id, p.name, p.erp_code
+      ORDER BY cnt DESC, p.name
+      LIMIT 20
+    `).all(order.customer_id);
+            frequentProducts = (freqRows || []).filter((fp) => !existingPids.has(String(fp.id))).slice(0, 10);
+        }
+        // 連線對照：把每個品項的 raw_name 在原始文字中的實際位置框出來（<mark>），
+        // 連線只連到「那個詞」而非整句/整行；沒對應到的品項就不畫線。長名先配對避免被短名吃掉。
+        const rawTextForMatch = (order.raw_message || "").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && l !== "[圖片]").join("\n");
+        const buildRawMatchHtml = (rawText, itemList) => {
+            if (!rawText) return "";
+            const normChar = (ch) => (/[\s,，、。.·:：*xX╳＊()（）]/.test(ch) ? "" : ch.toLowerCase());
+            const normArr = [];
+            const idxMap = [];
+            for (let i = 0; i < rawText.length; i++) {
+                const nc = normChar(rawText[i]);
+                if (nc) { normArr.push(nc); idxMap.push(i); }
+            }
+            const normStr = normArr.join("");
+            const used = new Array(normStr.length).fill(false);
+            const ranges = [];
+            const order2 = itemList
+                .map((it, i) => ({ it, i, n: String(it.raw_name || "").split("").map(normChar).join("") }))
+                .filter((x) => x.n.length >= 1)
+                .sort((a, b) => (b.n.length - a.n.length) || (a.i - b.i));
+            const unmatched = [];
+            // 第一輪：精確子字串（原文完整含品項名）
+            for (const { it, n } of order2) {
+                let from = 0, pos = -1;
+                while (true) {
+                    const p = normStr.indexOf(n, from);
+                    if (p < 0) break;
+                    let occ = false;
+                    for (let k = p; k < p + n.length; k++) { if (used[k]) { occ = true; break; } }
+                    if (!occ) { pos = p; break; }
+                    from = p + 1;
+                }
+                if (pos < 0) { unmatched.push({ it, n }); continue; }
+                for (let k = pos; k < pos + n.length; k++) used[k] = true;
+                ranges.push({ start: idxMap[pos], end: idxMap[pos + n.length - 1] + 1, itemId: it.item_id });
+            }
+            // 第二輪：最長連續共同子字串退路（品項名有夾字/括號描述時，仍連到重疊的那段）。
+            // 門檻：重疊長度 ≥ max(2, 品項名一半) 才連，避免亂連。
+            const lcsSubstr = (name, ns, usedArr) => {
+                const N = name.length, M = ns.length;
+                let best = { start: -1, end: -1, len: 0 };
+                const dp = new Array(M + 1).fill(0);
+                for (let i = 1; i <= N; i++) {
+                    let prev = 0;
+                    for (let j = 1; j <= M; j++) {
+                        const tmp = dp[j];
+                        if (name[i - 1] === ns[j - 1] && !usedArr[j - 1]) {
+                            dp[j] = prev + 1;
+                            if (dp[j] > best.len) best = { len: dp[j], end: j, start: j - dp[j] };
+                        }
+                        else dp[j] = 0;
+                        prev = tmp;
+                    }
+                }
+                return best.len > 0 ? best : null;
+            };
+            for (const { it, n } of unmatched) {
+                if (n.length < 2) continue;
+                const m = lcsSubstr(n, normStr, used);
+                if (!m) continue;
+                if (m.len < Math.max(2, Math.ceil(n.length * 0.5))) continue;
+                for (let k = m.start; k < m.end; k++) used[k] = true;
+                ranges.push({ start: idxMap[m.start], end: idxMap[m.end - 1] + 1, itemId: it.item_id });
+            }
+            ranges.sort((a, b) => a.start - b.start);
+            let html = "", cur = 0;
+            for (const r of ranges) {
+                if (r.start < cur) continue;
+                html += escapeHtml(rawText.slice(cur, r.start));
+                html += `<mark class="raw-match" data-item-id="${escapeAttr(String(r.itemId))}" id="rawmatch-${escapeAttr(String(r.itemId))}">${escapeHtml(rawText.slice(r.start, r.end))}</mark>`;
+                cur = r.end;
+            }
+            html += escapeHtml(rawText.slice(cur));
+            return html;
+        };
+        const rawMatchHtml = buildRawMatchHtml(rawTextForMatch, items);
+        // 供照片辨識框比對：本單所有品項的原始名稱（用來把 Vision 偵測到的詞上綠框）
+        const ocrItemNamesJson = JSON.stringify(items.map((i) => String(i.raw_name || "")).filter(Boolean)).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
         const needReviewCount = items.filter((i) => i.need_review === 1).length;
         const lowConfThreshold = Number(process.env.ADMIN_CONFIDENCE_REVIEW_THRESHOLD || 70);
         const lowConfCount = items.filter((i) => {
@@ -8797,9 +9326,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <td class="order-detail-col-idx"><span class="order-detail-idx-num">${idx + 1}</span></td>
             <td class="order-table-col-system"><span class="order-final-erp">${escapeHtml(erp)}</span></td>
             <td>${productCell}</td>
-            <td><input type="text" name="sub_customer_${i.item_id}" form="itemsForm" value="${subCustomerVal}" placeholder="子客戶" style="width:100%;max-width:7rem;"></td>
-            <td><input type="number" class="order-detail-qty-input" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0"></td>
+            <td><input type="number" inputmode="decimal" class="order-detail-qty-input" name="qty_${i.item_id}" form="itemsForm" value="${escapeAttr(String(q))}" step="any" min="0"></td>
             <td>${unitSelectWithVal}</td>
+            <td><input type="text" name="sub_customer_${i.item_id}" form="itemsForm" value="${subCustomerVal}" placeholder="子客戶" style="width:100%;max-width:7rem;"></td>
             <td><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:100px;"></td>
             <td><button type="button" class="btn btn-delete-item order-del-btn order-del-btn-icon" data-item-id="${escapeAttr(i.item_id)}" data-order-id="${escapeAttr(orderId)}" data-raw-name="${escapeAttr(i.raw_name || "")}" title="作廢此列（保留稽核紀錄、可納入 AI 學習）" aria-label="作廢此列">⊘</button></td>
           </tr>`;
@@ -8832,7 +9361,23 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/to-complaint" style="display:inline;margin:0;"><button type="submit" class="sf-btn sm" title="此筆其實是客訴而非訂單，按下將轉入客訴處理流程" onclick="return confirm('確定將此筆轉為客訴？將不再出現在訂單列表，並進入客訴處理流程。');" style="color:#c2410c;border-color:#fed7aa;">⚠ 轉為客訴</button></form>`;
         const statusPillCls = orderStatusLc === "approved" ? "ok" : orderStatusLc === "deleted" ? "bad" : orderStatusLc === "complaint" ? "bad" : "warn";
         // 訂貨日（系統紀錄時間） - 取 updated_at 的前 16 字（YYYY-MM-DD HH:mm）
-        const orderReceivedAt = order.updated_at ? String(order.updated_at).replace("T", " ").slice(0, 16) : "—";
+        const orderReceivedAt = fmtTaipeiYMDHM(order.updated_at);
+        // 凌越轉入者 email → 顯示名字
+        let queuedByDisplay = order.lingyue_queued_by ? String(order.lingyue_queued_by) : "";
+        if (order.lingyue_queued_by) {
+            try {
+                const hit = (await loadAdminUsers()).find((u) => String(u.username).toLowerCase() === String(order.lingyue_queued_by).toLowerCase());
+                if (hit) queuedByDisplay = hit.name || queuedByDisplay;
+            } catch (_) { /* 讀不到就用原字串 */ }
+        }
+        // 出貨日短格式：M/D（週幾），主視覺用；完整 ISO 放 title 供對照
+        const orderDateShort = (() => {
+            const mm = String(order.order_date || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (!mm) return order.order_date || "—";
+            const dt = new Date(order.order_date + "T00:00:00+08:00");
+            const wd = "日一二三四五六"[dt.getDay()] || "";
+            return `${Number(mm[2])}/${Number(mm[3])}` + (wd ? `（${wd}）` : "");
+        })();
         // 客戶名 fallback
         const orderCustomerName = (order.customer_name && String(order.customer_name).trim())
             || (order.customer_id ? `客戶 ${String(order.customer_id).slice(0, 6)}` : "（未指定客戶）");
@@ -8844,11 +9389,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         // 作廢資訊（若為已作廢訂單，顯示原因 + 取消作廢按鈕）
         const orderVoidReason = order.void_reason || null;
         const orderVoidLabel = { ai_wrong:"AI 辨識錯誤", customer_complaint:"客訴", customer_cancelled:"客戶取消", duplicate:"重複叫貨", staff_error:"內部錯誤", not_order:"非訂單訊息", other:"其他" }[orderVoidReason] || orderVoidReason;
-        const orderVoidedAt = order.voided_at ? String(order.voided_at).replace("T", " ").slice(0, 16) : null;
+        const orderVoidedAt = order.voided_at ? fmtTaipeiYMDHM(order.voided_at) : null;
         const isOrderVoided = orderStatusLc === "deleted";
         const body = `
         <div style="padding:20px 24px 0;">
-          <div class="sf-breadcrumb" style="margin-bottom:6px;">訂單 · 出貨日 ${escapeHtml(order.order_date)}</div>
+          <div class="sf-breadcrumb" style="margin-bottom:6px;"><a href="${escapeAttr(backTo)}">訂單審核</a> · 訂單明細</div>
           ${dateOkBanner}
           ${req.query.ok === "voided" ? `<div class="sf-pill bad" style="align-self:flex-start;margin-bottom:8px;">已作廢此訂單${order.void_reason ? "（"+escapeHtml(orderVoidLabel || "")+"）" : ""}</div>` : ""}
           ${req.query.ok === "unvoided" ? `<div class="sf-pill ok" style="align-self:flex-start;margin-bottom:8px;">已取消作廢，訂單恢復為待確認狀態</div>` : ""}
@@ -8868,24 +9413,30 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 <a href="/admin/customers/${encodeURIComponent(order.customer_id)}/quick-view?from=orders" style="color:inherit;">${escapeHtml(orderCustomerName)}</a>
                 ${hasCustomerName ? "" : `<span class="sf-pill bad" style="font-weight:400;">⚠ 客戶資料缺名稱</span>`}
                 <span class="sf-pill ${statusPillCls}">${escapeHtml(orderStatusDisplay)}</span>
-                ${order.lingyue_doc_no ? `<span class="sf-pill" style="background:#e0f2f1;color:#00695c;font-weight:700;" title="已回寫凌越">↩ 凌越單據號 ${escapeHtml(String(order.lingyue_doc_no))}</span>` : ""}
+                ${order.lingyue_doc_no
+                  ? `<span class="sf-pill" style="background:#e0f2f1;color:#00695c;font-weight:700;" title="已轉入凌越${order.lingyue_queued_by ? "，由 " + escapeAttr(queuedByDisplay) + " 轉入" : ""}">↩ 凌越單據號 ${escapeHtml(String(order.lingyue_doc_no))}${order.lingyue_queued_by ? ` <span style="font-weight:400;opacity:.85;">· ${escapeHtml(queuedByDisplay)}</span>` : ""}</span> <button type="button" class="sf-btn sm lingyue-transfer-btn" data-id="${escapeAttr(order.id)}" data-orderno="${escapeAttr(order.order_no || "")}" title="重新轉入凌越（會先提醒你刪除凌越舊單）" style="font-weight:400;">↩ 重新轉入</button>`
+                  : `<button type="button" class="sf-btn sm lingyue-transfer-btn" data-id="${escapeAttr(order.id)}" data-orderno="${escapeAttr(order.order_no || "")}" title="轉入凌越（顯示凌越料號並轉入）" style="font-weight:400;">↩ 轉入凌越</button>`}
                 ${needReviewCount > 0 ? `<span class="sf-pill warn">${SF_ICONS.warn}<span>${needReviewCount} 待確認</span></span>` : ""}
                 ${lowConfCount > 0 ? `<span class="sf-pill bad">${SF_ICONS.warn}<span>${lowConfCount} 低信心</span></span>` : ""}
               </h2>
-              <div style="margin-top:6px;font-size:12px;color:var(--txt-3);display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-                <span class="mono">${escapeHtml(order.order_no ?? "—")}</span>
-                <span>· ${escapeHtml(items.length+"")} 項</span>
-                ${attachments.length ? `<span>· 圖 ${attachments.length}</span>` : "<span>· 純文字</span>"}
-                <span>· 訂貨 <span class="mono" style="color:var(--txt-2);">${escapeHtml(orderReceivedAt)}</span></span>
-                <span>· 出貨 <strong class="mono" style="color:var(--txt-1);font-size:13px;">${escapeHtml(order.order_date || "—")}</strong></span>
+              <div style="margin-top:8px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+                <span style="display:inline-flex;align-items:center;gap:6px;font-size:15px;color:var(--txt-1);">
+                  <span style="color:var(--txt-3);">出貨</span>
+                  <strong style="font-weight:600;" title="${escapeAttr(order.order_date || "")}">${escapeHtml(orderDateShort)}</strong>
+                  <button type="button" class="sf-btn sm ghost" id="orderDateEditToggle" title="修改出貨日" style="padding:2px 7px;color:var(--txt-3);">✎</button>
+                </span>
+                <span style="font-size:12px;color:var(--txt-3);">
+                  訂於 <span class="mono">${escapeHtml(orderReceivedAt)}</span> · <span class="mono">${escapeHtml(order.order_no ?? "—")}</span> · ${escapeHtml(items.length+"")} 項${attachments.length ? " · 圖 "+attachments.length : " · 純文字"}
+                </span>
               </div>
-              <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <div id="orderDateEditRow" style="margin-top:8px;display:none;">
                 <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/set-date${backTo ? "?back=" + encodeURIComponent(backTo) : ""}" style="display:inline-flex;gap:6px;align-items:center;margin:0;padding:6px 10px;background:var(--bg-1);border:1px solid var(--line);border-radius:6px;">
-                  <span style="font-size:12px;color:var(--txt-2);">改出貨日：</span>
+                  <span style="font-size:12px;color:var(--txt-2);">改出貨日</span>
                   <input type="date" name="order_date" id="orderEditDate" value="${escapeAttr(order.order_date || "")}" required style="padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px;font-family:ui-monospace,monospace;width:140px;">
                   <button type="button" class="sf-btn sm" id="orderEditDateTomorrow" title="自動填入明天">明天</button>
                   <button type="button" class="sf-btn sm" id="orderEditDateMon" title="自動填入下週一">下週一</button>
                   <button type="submit" class="sf-btn sm primary" title="儲存新的出貨日">儲存</button>
+                  <button type="button" class="sf-btn sm ghost" id="orderDateEditCancel">取消</button>
                 </form>
               </div>
             </div>
@@ -8919,6 +9470,15 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           const m = document.getElementById("orderEditDateMon");
           if (t) t.addEventListener("click", () => { if (inp) inp.value = tomorrow(); });
           if (m) m.addEventListener("click", () => { if (inp) inp.value = nextMonday(); });
+          const editRow = document.getElementById("orderDateEditRow");
+          const editToggle = document.getElementById("orderDateEditToggle");
+          const editCancel = document.getElementById("orderDateEditCancel");
+          if (editToggle && editRow) editToggle.addEventListener("click", () => {
+            const open = editRow.style.display !== "none";
+            editRow.style.display = open ? "none" : "flex";
+            if (!open && inp) inp.focus();
+          });
+          if (editCancel && editRow) editCancel.addEventListener("click", () => { editRow.style.display = "none"; });
         })();
         </script>
         <div class="notion-breadcrumb" style="display:none;"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / 訂單明細</div>
@@ -8930,7 +9490,6 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           ${req.query.ok === "product" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已更新對應品項</div>" : ""}
           ${req.query.ok === "prod_edit" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已儲存品項</div>" : ""}
           ${req.query.ok === "approved" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已標記為已確認</div>" : ""}
-          ${req.query.ok === "approved_prev" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">✓ 上一筆已確認，已自動跳到下一筆待確認</div>" : ""}
           ${req.query.ok === "unconfirmed" ? "<div class=\"sf-pill\" style=\"margin-bottom:8px;\">已撤銷確認</div>" : ""}
           ${req.query.ok === "rerecog" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已重新辨識明細</div>" : ""}
           ${req.query.ok === "raw_applied" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已補登並解析</div>" : ""}
@@ -9101,15 +9660,19 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:${order.raw_message && String(order.raw_message).replace(/\[圖片\]/g,"").trim() ? "14px" : "0"};">
                   <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;">客戶傳的照片 · ${attachments.length} 張</div>
                   ${attachments.map((a, idx) => `
-                    <div class="order-attach-card" style="border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#fff;">
+                    <div class="order-attach-card" data-msg="${escapeAttr(a.line_message_id)}" style="border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#fff;">
                       <div class="order-attach-viewport" style="overflow:auto;max-height:70vh;background:#fff;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;">
-                        <img class="order-attach-img" data-scale="1" src="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" alt="附件 ${idx + 1}" loading="lazy" style="display:block;width:100%;height:auto;max-height:480px;object-fit:contain;background:#fff;transform-origin:top left;cursor:zoom-in;user-select:none;">
+                        <div class="order-attach-stage" style="position:relative;display:inline-block;min-width:100%;line-height:0;">
+                          <img class="order-attach-img" data-scale="1" src="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" alt="附件 ${idx + 1}" loading="lazy" style="display:block;width:100%;height:auto;max-height:480px;object-fit:contain;background:#fff;transform-origin:top left;cursor:zoom-in;user-select:none;">
+                        </div>
                       </div>
-                      <div class="order-attach-zoombar" style="display:flex;align-items:center;gap:4px;padding:5px 8px;background:var(--bg-2);border-top:1px solid var(--line);">
+                      <div class="order-attach-zoombar" style="display:flex;align-items:center;gap:4px;padding:5px 8px;background:var(--bg-2);border-top:1px solid var(--line);flex-wrap:wrap;">
                         <button type="button" class="sf-btn sm zoom-out" title="縮小">－</button>
                         <button type="button" class="sf-btn sm zoom-in" title="放大">＋</button>
                         <span class="zoom-label" style="font-size:11px;color:var(--txt-3);font-family:var(--font-mono);min-width:40px;text-align:center;">100%</span>
                         <button type="button" class="sf-btn sm zoom-reset" title="重設大小">重設</button>
+                        <button type="button" class="sf-btn sm ocr-box-btn" title="用 Google Vision 框出圖片上偵測到的文字（會呼叫一次 API；綠框=有對應到明細品項，灰框=偵測到但未對應）">辨識框</button>
+                        <span class="ocr-box-status" style="font-size:11px;color:var(--txt-3);"></span>
                         <a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener" title="另開新分頁看原圖" style="margin-left:auto;font-size:11px;color:var(--txt-3);text-decoration:none;">圖 ${idx + 1} · 新分頁↗</a>
                       </div>
                     </div>
@@ -9126,13 +9689,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 </div>
               ` : ""}
               ${(() => {
-                const raw = order.raw_message || "";
-                // 去掉 [圖片] 行後若有文字內容才顯示
-                const textOnly = raw.split(/\r?\n/).filter(l => l.trim() && l.trim() !== "[圖片]").join("\n");
-                if (textOnly) {
+                if (rawMatchHtml) {
                   return `
-                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">客戶打字內容</div>
-                    <pre style="background:var(--bg-2);padding:10px 12px;border-radius:var(--radius);border:var(--hairline);font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin:0;color:var(--txt-1);font-family:var(--font-ui);">${escapeHtml(textOnly)}</pre>
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">客戶打字內容<span style="text-transform:none;letter-spacing:0;margin-left:6px;color:var(--txt-3);">（<span style="background:rgba(35,131,226,0.14);border-radius:3px;padding:0 3px;">藍底</span> = 已對應到明細）</span></div>
+                    <pre id="rawLinesPre" style="background:var(--bg-2);padding:10px 12px;border-radius:var(--radius);border:var(--hairline);font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;margin:0;color:var(--txt-1);font-family:var(--font-ui);">${rawMatchHtml}</pre>
                   `;
                 }
                 if (attachments.length === 0) {
@@ -9213,6 +9773,65 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           });
         })();
         </script>
+        <script>
+        /* 照片辨識框：按「辨識框」呼叫 Google Vision，把偵測到的每個詞疊上方框。
+           綠框＝該詞屬於某個明細品項名稱；灰框＝有讀到字但沒對應到品項（可看出漏辨識）。 */
+        (function(){
+          var orderBase = "/admin/orders/${encodeURIComponent(orderId)}";
+          var itemNames = ${ocrItemNamesJson};
+          function normW(s){ return String(s||"").replace(/[\\s,，、。.·:：*xX╳＊()（）0-9]/g, "").toLowerCase(); }
+          var itemNorms = itemNames.map(normW).filter(function(x){ return x.length >= 1; });
+          var SVGNS = "http://www.w3.org/2000/svg";
+          document.querySelectorAll(".order-attach-card").forEach(function(card){
+            var img = card.querySelector(".order-attach-img");
+            var stage = card.querySelector(".order-attach-stage");
+            var btn = card.querySelector(".ocr-box-btn");
+            var statusEl = card.querySelector(".ocr-box-status");
+            var msg = card.getAttribute("data-msg");
+            if (!img || !stage || !btn || !msg) return;
+            var overlay = null, loaded = false, on = false;
+            function sync(){ if (!overlay) return; overlay.style.width = img.offsetWidth + "px"; overlay.style.height = img.offsetHeight + "px"; overlay.style.left = img.offsetLeft + "px"; overlay.style.top = img.offsetTop + "px"; }
+            function render(data){
+              overlay = document.createElementNS(SVGNS, "svg");
+              overlay.setAttribute("viewBox", "0 0 " + (data.width || 1) + " " + (data.height || 1));
+              overlay.setAttribute("preserveAspectRatio", "xMinYMin meet");
+              overlay.style.cssText = "position:absolute;pointer-events:none;z-index:3;left:0;top:0;";
+              var matched = 0;
+              (data.words || []).forEach(function(w){
+                var wn = normW(w.text);
+                if (!wn) return;
+                var hit = itemNorms.some(function(n){ return n.indexOf(wn) >= 0 || wn.indexOf(n) >= 0; });
+                if (hit) matched++;
+                var r = document.createElementNS(SVGNS, "rect");
+                r.setAttribute("x", w.x); r.setAttribute("y", w.y);
+                r.setAttribute("width", Math.max(1, w.w)); r.setAttribute("height", Math.max(1, w.h));
+                r.setAttribute("rx", "2");
+                r.setAttribute("fill", hit ? "rgba(29,158,117,0.20)" : "rgba(120,120,120,0.06)");
+                r.setAttribute("stroke", hit ? "#1d9e75" : "#9a9a9a");
+                r.setAttribute("stroke-width", hit ? "2.5" : "1");
+                overlay.appendChild(r);
+              });
+              stage.appendChild(overlay);
+              sync();
+              if (window.ResizeObserver){ try { new ResizeObserver(sync).observe(img); } catch(_){} }
+              window.addEventListener("resize", sync);
+              if (statusEl) statusEl.textContent = "偵測 " + (data.words ? data.words.length : 0) + " 詞・對應品項 " + matched + (data.cached ? "（快取）" : "");
+            }
+            btn.addEventListener("click", function(){
+              if (loaded){ on = !on; if (overlay) overlay.style.display = on ? "" : "none"; btn.classList.toggle("primary", on); return; }
+              btn.disabled = true; var old = btn.textContent; btn.textContent = "辨識中…";
+              fetch(orderBase + "/attachment/" + encodeURIComponent(msg) + "/ocr-boxes", { credentials: "same-origin" })
+                .then(function(r){ return r.json(); })
+                .then(function(d){
+                  btn.disabled = false; btn.textContent = old;
+                  if (!d || !d.ok){ if (statusEl) statusEl.textContent = (d && d.error) || "辨識框失敗"; return; }
+                  loaded = true; on = true; btn.classList.add("primary"); render(d);
+                })
+                .catch(function(){ btn.disabled = false; btn.textContent = old; if (statusEl) statusEl.textContent = "辨識框請求失敗"; });
+            });
+          });
+        })();
+        </script>
         <div class="order-detail-main-col">
         <form id="itemsForm" method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items" novalidate>
           <div class="sf-card" id="items">
@@ -9225,12 +9844,120 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               ${batchMoveBarHtml}
             </div>
             <div class="table-scroll-mobile" style="overflow-x:auto;">
-              <table class="order-detail-table sf-table" style="font-size:12px;">
-                <thead><tr><th style="width:2.25rem;"><input type="checkbox" id="select_all_items" title="全選"></th><th class="order-detail-th-sort" title="順序（上移／下移）"></th><th class="order-detail-th-idx">項次</th><th class="order-table-col-system">料號</th><th>品名</th><th>子客戶/分店</th><th style="width:3.5rem;">數量</th><th>單位</th><th>備註</th><th style="width:2.75rem;">作廢</th></tr></thead>
+              <table class="order-detail-table sf-table" style="font-size:13px;">
+                <thead><tr><th style="width:2.25rem;"><input type="checkbox" id="select_all_items" title="全選"></th><th class="order-detail-th-sort" title="順序（上移／下移）"></th><th class="order-detail-th-idx">項次</th><th class="order-table-col-system">料號</th><th>品名</th><th style="width:4.5rem;">數量</th><th>單位</th><th>子客戶/分店</th><th>備註</th><th style="width:2.75rem;">作廢</th></tr></thead>
                 <tbody>${itemsRows}</tbody>
-                <tr><td colspan="10" style="background:var(--bg-2);padding:8px 12px;"><a href="/admin/orders/${encodeURIComponent(orderId)}/items/add" class="sf-btn sm">${SF_ICONS.plus}<span>增加品項</span></a></td></tr>
+                <tr class="add-item-row"><td colspan="10" style="background:var(--bg-2);padding:8px 12px;">
+                  <div id="inlineAddItem" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    ${frequentProducts.length ? `<style>
+                      .freq-prod-chip { font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); background:var(--bg-1); color:var(--txt-1); cursor:pointer; font-family:inherit; max-width:12rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.4; }
+                      .freq-prod-chip:hover { border-color:var(--accent); color:var(--accent); }
+                    </style>
+                    <div class="freq-chips-row" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%;margin:0 0 2px;">
+                      <span style="font-size:11px;color:var(--txt-3);flex:0 0 auto;">此客戶常叫：</span>
+                      ${frequentProducts.map((fp) => `<button type="button" class="freq-prod-chip" data-id="${escapeAttr(String(fp.id))}" data-name="${escapeAttr(fp.name || "")}" title="${escapeAttr((fp.name || "") + (fp.erp_code ? " (" + fp.erp_code + ")" : "") + " · 叫過 " + fp.cnt + " 次")}">${escapeHtml(fp.name || "")}</button>`).join("")}
+                    </div>` : ""}
+                    <div class="review-product-picker" style="position:relative;flex:1;min-width:220px;">
+                      <input type="text" class="review-product-search sf-input" autocomplete="off" placeholder="輸入品名、料號或條碼加入品項…" style="width:100%;box-sizing:border-box;">
+                      <input type="hidden" class="review-product-id" value="">
+                      <div class="review-product-dropdown" style="display:none;position:absolute;left:0;right:0;top:100%;max-height:280px;overflow-y:auto;background:var(--bg-1);border:1px solid var(--line);border-radius:8px;z-index:40;box-shadow:0 4px 12px rgba(0,0,0,.08);margin-top:4px;"></div>
+                    </div>
+                    <input type="number" inputmode="decimal" class="add-item-qty sf-input" step="any" min="0" value="0" style="width:5.5rem;" title="數量">
+                    <select class="add-item-unit sf-input" style="width:5.5rem;" title="單位">${ORDER_LINE_UNITS.map((u) => `<option value="${escapeAttr(u)}">${escapeHtml(u)}</option>`).join("")}</select>
+                    <button type="button" class="sf-btn sm primary" id="inlineAddBtn">${SF_ICONS.plus}<span>新增</span></button>
+                    <span class="review-product-label" style="font-size:11px;color:var(--txt-3);"></span>
+                  </div>
+                </td></tr>
               </table>
             </div>
+            <script>
+            /* 數量框：點入即全選（像 ERP，直接覆蓋輸入不用先刪） */
+            (function(){
+              document.addEventListener("focusin", function(e){
+                var el = e.target;
+                if (el && el.tagName === "INPUT" && (el.classList.contains("order-detail-qty-input") || el.classList.contains("add-item-qty"))) {
+                  setTimeout(function(){ try { el.select(); } catch(_){} }, 0);
+                }
+              });
+              /* 點一下（非拖曳選字）也重新全選，避免 focus 後又被點擊清掉 */
+              document.addEventListener("mouseup", function(e){
+                var el = e.target;
+                if (el && el.tagName === "INPUT" && (el.classList.contains("order-detail-qty-input") || el.classList.contains("add-item-qty"))) {
+                  if (String(el.value).length && el.selectionStart === el.selectionEnd) { try { el.select(); } catch(_){} }
+                }
+              });
+            })();
+            </script>
+            <script>
+            (function(){
+              var wrap = document.querySelector("#inlineAddItem .review-product-picker");
+              if (!wrap) return;
+              var orderBase = "/admin/orders/${encodeURIComponent(orderId)}";
+              var inp = wrap.querySelector(".review-product-search");
+              var hidden = wrap.querySelector(".review-product-id");
+              var label = document.querySelector("#inlineAddItem .review-product-label");
+              var dropdown = wrap.querySelector(".review-product-dropdown");
+              var qtyEl = document.querySelector("#inlineAddItem .add-item-qty");
+              var unitEl = document.querySelector("#inlineAddItem .add-item-unit");
+              var addBtn = document.getElementById("inlineAddBtn");
+              var t;
+              function hide(){ dropdown.style.display = "none"; }
+              // 下拉用 fixed 定位，避免被表格的 overflow 捲動容器裁切（否則新增列在表格底部時下拉會看不到）
+              function positionDropdown(){
+                var r = inp.getBoundingClientRect();
+                dropdown.style.position = "fixed";
+                dropdown.style.left = r.left + "px";
+                dropdown.style.top = (r.bottom + 2) + "px";
+                dropdown.style.width = r.width + "px";
+                dropdown.style.right = "auto";
+                dropdown.style.zIndex = "1000";
+              }
+              function show(arr){
+                dropdown.innerHTML = (arr && arr.length) ? arr.map(function(p){
+                  return '<div class="review-product-opt" data-id="' + (p.id || "") + '" data-name="' + String(p.name || "").replace(/"/g,"&quot;") + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px;">' +
+                    (p.name || "") + (p.erp_code ? " （" + p.erp_code + "）" : "") + (p.teraoka_barcode ? " " + p.teraoka_barcode : "") + "</div>";
+                }).join("") : '<div style="padding:8px 12px;color:var(--txt-3);font-size:13px;">無符合品項，請換關鍵字</div>';
+                positionDropdown();
+                dropdown.style.display = "block";
+              }
+              window.addEventListener("scroll", function(){ if (dropdown.style.display === "block") positionDropdown(); }, true);
+              window.addEventListener("resize", function(){ if (dropdown.style.display === "block") positionDropdown(); });
+              function selectProduct(id, name){ hidden.value = id || ""; label.textContent = name ? "已選：" + name : ""; inp.value = name || ""; hide(); }
+              /* 常叫品項標籤：點一下直接帶入該品項，游標跳到數量（會自動全選） */
+              document.querySelectorAll("#inlineAddItem .freq-prod-chip").forEach(function(chip){
+                chip.addEventListener("click", function(){
+                  selectProduct(chip.dataset.id, chip.dataset.name);
+                  if (qtyEl) { qtyEl.focus(); }
+                });
+              });
+              inp.addEventListener("input", function(){
+                var q = (this.value || "").trim();
+                hidden.value = ""; label.textContent = "";
+                clearTimeout(t);
+                if (!q) { hide(); return; }
+                t = setTimeout(function(){
+                  fetch("/admin/api/products-search?q=" + encodeURIComponent(q) + "&active=1", { credentials: "same-origin" })
+                    .then(function(r){ return r.json(); }).then(show).catch(hide);
+                }, 200);
+              });
+              dropdown.addEventListener("click", function(e){
+                var opt = e.target.closest(".review-product-opt");
+                if (opt && opt.dataset.id) selectProduct(opt.dataset.id, opt.dataset.name);
+              });
+              document.addEventListener("click", function(e){ if (wrap && !wrap.contains(e.target)) hide(); });
+              addBtn.addEventListener("click", function(){
+                var pid = String(hidden.value || "").trim();
+                if (!pid) { alert("請先輸入關鍵字並從下拉選擇品項。"); inp.focus(); return; }
+                var qty = parseFloat(qtyEl.value);
+                if (!isFinite(qty) || qty < 0) { alert("數量請填 0 或正數。"); qtyEl.focus(); return; }
+                addBtn.disabled = true;
+                var body = "product_id=" + encodeURIComponent(pid) + "&quantity=" + encodeURIComponent(qty) + "&unit=" + encodeURIComponent(unitEl.value || "公斤");
+                fetch(orderBase + "/items/add", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body, credentials: "same-origin" })
+                  .then(function(){ window.location.href = orderBase + "?ok=add_item#items"; })
+                  .catch(function(){ addBtn.disabled = false; alert("新增失敗，請重試。"); });
+              });
+            })();
+            </script>
             <div style="padding:12px 14px;border-top:var(--hairline);display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
               <button type="submit" class="sf-btn primary" title="儲存數量、單位、備註與排序">${SF_ICONS.check}<span>儲存明細</span></button>
               ${orderStatusLc === "approved" || orderStatusLc === "deleted" || orderStatusLc === "complaint" ? "" : `<button type="submit" form="approveOrderForm" class="btn btn-cute-approve" title="核對完畢，直接確認並跳到下一筆待確認">確認 → 下一筆</button>`}
@@ -9256,7 +9983,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                       <td>${reasonPill}</td>
                       <td style="font-size:11px;color:var(--txt-3);">${escapeHtml(vi.void_note || "—")}</td>
                       <td style="font-size:11px;color:var(--txt-3);">${escapeHtml(vi.voided_by || "—")}</td>
-                      <td class="mono" style="font-size:11px;color:var(--txt-3);">${escapeHtml(String(vi.voided_at || "").replace("T", " ").slice(0,16))}</td>
+                      <td class="mono" style="font-size:11px;color:var(--txt-3);">${escapeHtml(fmtTaipeiYMDHM(vi.voided_at, ""))}</td>
                     </tr>`;
                   }).join("")}
                 </tbody>
@@ -9264,6 +9991,92 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             </div>
           </div>` : ""}
         </form>
+        <script>
+        /* 原始訂單 ↔ 明細 連線對照：全部淡連線 + 滑到某列（或某原始行）該對高亮加粗。
+           僅打字訂單（有逐行文字）與桌面版啟用；照片訂單無逐行文字自動略過。 */
+        (function(){
+          var mqMobile = window.matchMedia("(max-width: 1024px)");
+          var layout = document.querySelector(".order-detail-layout");
+          var rawPre = document.getElementById("rawLinesPre");
+          var table = document.querySelector(".order-detail-table");
+          if (!layout || !rawPre || !table) return;
+          var SVGNS = "http://www.w3.org/2000/svg";
+          var svg = document.createElementNS(SVGNS, "svg");
+          svg.setAttribute("id", "orderConnSvg");
+          layout.appendChild(svg);
+          var marks = [].slice.call(rawPre.querySelectorAll(".raw-match"));
+          var rows = [].slice.call(table.querySelectorAll("tbody tr[data-item-id]"));
+          function escId(id){ try { return (window.CSS && CSS.escape) ? CSS.escape(id) : String(id).replace(/["\\\\]/g, "\\\\$&"); } catch(_) { return id; } }
+          // 配對：伺服器已把每個品項的字框成 <mark data-item-id>，直接用 id 對應；沒框到的品項就不畫線
+          var pairs = [];
+          rows.forEach(function(row){
+            var id = row.getAttribute("data-item-id");
+            if (!id) return;
+            var mark = rawPre.querySelector('.raw-match[data-item-id="' + escId(id) + '"]');
+            if (!mark) return;
+            var p = { row: row, raw: mark }; pairs.push(p); row.__pair = p; mark.__pair = p;
+          });
+          pairs.forEach(function(p){ p.path = document.createElementNS(SVGNS, "path"); svg.appendChild(p.path); });
+          var enabled = true;
+          try { enabled = localStorage.getItem("songfu.order_conn") !== "0"; } catch(_){}
+          function draw(){
+            if (mqMobile.matches || !enabled || !pairs.length){ svg.style.display = "none"; return; }
+            svg.style.display = "";
+            var lr = layout.getBoundingClientRect();
+            pairs.forEach(function(p){
+              var rr = p.raw.getBoundingClientRect();
+              var tr = p.row.getBoundingClientRect();
+              var x1 = rr.right - lr.left;
+              var y1 = (rr.top + rr.height / 2) - lr.top;
+              var x2 = tr.left - lr.left;
+              var y2 = (tr.top + tr.height / 2) - lr.top;
+              var mx = (x1 + x2) / 2;
+              p.path.setAttribute("d", "M " + x1 + " " + y1 + " C " + mx + " " + y1 + " " + mx + " " + y2 + " " + x2 + " " + y2);
+            });
+          }
+          var raf = null;
+          function schedule(){ if (raf) return; raf = requestAnimationFrame(function(){ raf = null; draw(); }); }
+          function setHot(p, on){
+            if (!p) return;
+            if (p.path) p.path.classList.toggle("conn-hot", on);
+            p.row.classList.toggle("conn-hot", on);
+            p.raw.classList.toggle("conn-hot", on);
+          }
+          rows.forEach(function(row){
+            row.addEventListener("mouseenter", function(){ if (row.__pair && !mqMobile.matches && enabled) setHot(row.__pair, true); });
+            row.addEventListener("mouseleave", function(){ if (row.__pair) setHot(row.__pair, false); });
+          });
+          marks.forEach(function(mk){
+            mk.addEventListener("mouseenter", function(){ if (mk.__pair && !mqMobile.matches && enabled) setHot(mk.__pair, true); });
+            mk.addEventListener("mouseleave", function(){ if (mk.__pair) setHot(mk.__pair, false); });
+          });
+          var head = document.querySelector("#rawOrderBlock .sf-card-head");
+          if (head && pairs.length){
+            var lbl = document.createElement("label");
+            lbl.className = "order-conn-toggle";
+            lbl.title = "顯示／隱藏 原始訂單↔明細 對照連線";
+            var cb = document.createElement("input");
+            cb.type = "checkbox"; cb.checked = enabled;
+            var span = document.createElement("span"); span.textContent = "連線";
+            lbl.appendChild(cb); lbl.appendChild(span);
+            var pasteBtn = document.getElementById("pasteRawToggleBtn");
+            if (pasteBtn && pasteBtn.parentNode === head) head.insertBefore(lbl, pasteBtn); else head.appendChild(lbl);
+            cb.addEventListener("change", function(){
+              enabled = cb.checked;
+              try { localStorage.setItem("songfu.order_conn", enabled ? "1" : "0"); } catch(_){}
+              draw();
+            });
+          }
+          var scroller = document.getElementById("rawOrderBlock");
+          window.addEventListener("scroll", schedule, { passive: true });
+          window.addEventListener("resize", schedule);
+          if (scroller) scroller.addEventListener("scroll", schedule, { passive: true });
+          if (mqMobile.addEventListener) mqMobile.addEventListener("change", schedule);
+          if (window.ResizeObserver){ try { new ResizeObserver(schedule).observe(layout); new ResizeObserver(schedule).observe(table); } catch(_){} }
+          setTimeout(draw, 60);
+          setTimeout(draw, 250);
+        })();
+        </script>
         </div>
         </div>
         </div>
@@ -9529,15 +10342,41 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               .then(function(data){ if (data && data.ok) { var tr = btn.closest('tr'); if (tr) tr.remove(); } else { alert(data && data.error ? data.error : '作廢失敗'); } })
               .catch(function(){ alert('請求失敗'); });
           });
+          // 全域 toast：固定在畫面下方中央，捲動到哪都看得到
+          function sfToast(text, kind){
+            var wrap = document.getElementById('sfToastWrap');
+            if (!wrap) {
+              wrap = document.createElement('div');
+              wrap.id = 'sfToastWrap';
+              wrap.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;';
+              document.body.appendChild(wrap);
+            }
+            var t = document.createElement('div');
+            var isErr = kind === 'err';
+            t.style.cssText = 'pointer-events:auto;min-width:180px;max-width:88vw;text-align:center;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.18);opacity:0;transform:translateY(8px);transition:opacity .18s,transform .18s;'
+              + (isErr ? 'background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;' : 'background:#065f46;color:#fff;border:1px solid #047857;');
+            t.textContent = text;
+            wrap.appendChild(t);
+            requestAnimationFrame(function(){ t.style.opacity = '1'; t.style.transform = 'translateY(0)'; });
+            setTimeout(function(){ t.style.opacity = '0'; t.style.transform = 'translateY(8px)'; setTimeout(function(){ if (t.parentNode) t.parentNode.removeChild(t); }, 220); }, isErr ? 5000 : 2400);
+          }
+          window.sfToast = sfToast;
           var itemsForm = document.getElementById('itemsForm');
           if (itemsForm) {
+            var itemsSaving = false;
             itemsForm.addEventListener('change', function(){ formDirty = true; });
             itemsForm.addEventListener('input', function(){ formDirty = true; });
             itemsForm.addEventListener('submit', function(e){
               e.preventDefault();
-              var btn = itemsForm.querySelector('button[type="submit"]');
-              var origText = btn ? btn.textContent : '';
-              if (btn) { btn.disabled = true; btn.textContent = '儲存中…'; }
+              if (itemsSaving) return; // 防連點造成重複送出
+              itemsSaving = true;
+              // 針對「實際被按下的那顆」按鈕做讀取狀態（上/下兩顆儲存都可能）
+              var btn = (e.submitter && e.submitter.getAttribute('type') === 'submit') ? e.submitter : itemsForm.querySelector('button[type="submit"]');
+              var saveBtns = Array.prototype.slice.call(itemsForm.querySelectorAll('button[type="submit"]'));
+              var origText = btn ? btn.innerHTML : '';
+              saveBtns.forEach(function(b){ b.disabled = true; });
+              if (btn) btn.textContent = '儲存中…';
+              function restore(){ itemsSaving = false; saveBtns.forEach(function(b){ b.disabled = false; }); if (btn) btn.innerHTML = origText; }
               var formData = new FormData(itemsForm);
               formData.delete("selected_items");
               var params = new URLSearchParams(formData);
@@ -9555,34 +10394,22 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                   });
                 })
                 .then(function(result){
-                  if (btn) { btn.disabled = false; btn.textContent = origText; }
+                  restore();
                   if (result.ok && result.data && result.data.ok) {
                     formDirty = false;
-                    var msg = document.getElementById('itemsFormSavedMsg');
-                    if (!msg) {
-                      msg = document.createElement('p');
-                      msg.id = 'itemsFormSavedMsg';
-                      msg.className = 'notion-msg ok';
-                      msg.style.cssText = 'margin:8px 0;padding:8px 12px;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:6px;font-size:13px;';
-                      // 頁面已改 SF 設計，不一定有 .notion-card；改用穩健的容器尋找
-                      var container = itemsForm.querySelector('.notion-card') || itemsForm.querySelector('.sf-card') || itemsForm;
-                      container.insertBefore(msg, container.firstChild);
-                    }
-                    msg.textContent = '已儲存。';
-                    msg.style.display = 'block';
-                    setTimeout(function(){ msg.style.display = 'none'; }, 3000);
+                    sfToast('✓ 已儲存明細');
                   } else {
                     var serverMsg = (result.data && result.data.error)
                       ? result.data.error
-                      : (result.rawText ? String(result.rawText).slice(0, 300) : '');
+                      : (result.rawText ? String(result.rawText).slice(0, 200) : '');
                     console.error('[儲存明細] HTTP ' + result.status, result);
-                    alert('儲存失敗 (HTTP ' + result.status + ')：' + (serverMsg || '請稍後再試。'));
+                    sfToast('儲存失敗 (HTTP ' + result.status + ')' + (serverMsg ? '：' + serverMsg : '，請再試一次'), 'err');
                   }
                 })
                 .catch(function(err){
-                  if (btn) { btn.disabled = false; btn.textContent = origText; }
+                  restore();
                   console.error('[儲存明細] 請求例外：', err);
-                  alert('儲存請求失敗：' + (err && err.message ? err.message : '網路或伺服器無回應'));
+                  sfToast('儲存請求失敗：' + (err && err.message ? err.message : '網路或伺服器無回應'), 'err');
                 });
             });
           }
@@ -9698,7 +10525,88 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           <p class="notion-hint" style="margin:6px 0 12px 0;">列出本訂單與其品項所有的變更／作廢／確認紀錄。任何「刪除」會保留品項快照於日誌中，可透過 metadata 還原。</p>
           <table style="width:100%;border-collapse:collapse;"><thead><tr><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">時間</th><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">操作者</th><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">動作</th><th style="text-align:left;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--notion-border);">說明</th></tr></thead><tbody>${auditRowsHtml}</tbody></table>
         </div>`;
-        res.type("text/html").send(notionPage("訂單明細", body + auditCard, "orders", res));
+        // 轉入凌越彈窗（明細頁；與列表頁同一份，複製貼上，見 CLAUDE.md 不強求 DRY）
+        const lyTransferModalHtml = `
+        <div id="lyTransferModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:flex-start;justify-content:center;padding:32px 16px;overflow:auto;">
+          <div class="sf-card" style="max-width:640px;width:100%;margin:auto;" onclick="event.stopPropagation();">
+            <div class="sf-card-head">
+              <div class="sf-card-title">↩ 轉入凌越 <span id="lyTransferOrderNo" class="sf-pill"></span></div>
+              <button type="button" class="sf-btn sm ghost" id="lyTransferClose" title="關閉">✕</button>
+            </div>
+            <div style="padding:14px 16px;">
+              <div id="lyTransferLoading" style="color:var(--txt-3);font-size:13px;">讀取中…</div>
+              <div id="lyTransferContent" style="display:none;"></div>
+            </div>
+            <div style="padding:12px 16px;border-top:var(--hairline);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span id="lyTransferMsg" style="font-size:12px;color:var(--txt-3);flex:1;min-width:180px;"></span>
+              <div style="display:flex;gap:8px;">
+                <button type="button" class="sf-btn sm ghost" id="lyTransferCancel">關閉</button>
+                <button type="button" class="sf-btn sm primary" id="lyTransferConfirm" disabled>確認轉入</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <script>
+        (function(){
+          var modal = document.getElementById("lyTransferModal");
+          if (!modal) return;
+          var titleNo = document.getElementById("lyTransferOrderNo");
+          var loading = document.getElementById("lyTransferLoading");
+          var content = document.getElementById("lyTransferContent");
+          var msg = document.getElementById("lyTransferMsg");
+          var confirmBtn = document.getElementById("lyTransferConfirm");
+          var curId = null;
+          function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+          function openModal(){ modal.style.display="flex"; document.body.style.overflow="hidden"; }
+          function closeModal(){ modal.style.display="none"; document.body.style.overflow=""; }
+          function renderPreview(d){
+            if (!d || d.ok === false) { loading.textContent = "讀取失敗：" + ((d && d.error) || ""); return; }
+            var rows = (d.items||[]).map(function(it){
+              var code = it.product_code ? '<span class="mono">'+esc(it.product_code)+'</span>' : '<span style="color:#b91c1c;font-weight:700;">缺料號</span>';
+              return '<tr><td style="font-size:12px;">'+code+'</td><td>'+esc(it.product_name)+'</td><td style="text-align:right;">'+esc(it.quantity)+'</td><td>'+esc(it.unit)+'</td></tr>';
+            }).join("");
+            var custCode = d.customer_code ? '<span class="mono">('+esc(d.customer_code)+')</span>' : '<span style="color:#b91c1c;">（缺凌越編號）</span>';
+            var head = '<div style="font-size:12px;color:var(--txt-2);margin-bottom:8px;">客戶：'+esc(d.customer_name)+' '+custCode+' · 出貨日 '+esc(d.order_date)+'</div>';
+            var warn = "";
+            if (d.missing_count > 0) warn += '<div class="sf-pill warn" style="margin:0 0 8px;display:inline-block;">有 '+d.missing_count+' 項缺凌越料號，這些列凌越收不進去，請先到明細補料號</div>';
+            if (!d.customer_code) warn += '<div class="sf-pill bad" style="margin:0 0 8px;display:inline-block;">此客戶缺凌越編號（HQCustCode），請先到客戶編輯補上</div>';
+            content.innerHTML = head + warn + '<div style="overflow-x:auto;"><table class="sf-table" style="font-size:12px;"><thead><tr><th>凌越料號</th><th>品名</th><th style="text-align:right;">數量</th><th>單位</th></tr></thead><tbody>'+(rows||'<tr><td colspan="4" style="text-align:center;color:var(--txt-3);padding:16px;">無可轉入品項</td></tr>')+'</tbody></table></div>';
+            content.style.display="block"; loading.style.display="none";
+            confirmBtn.disabled = !(d.items && d.items.length);
+          }
+          document.querySelectorAll(".lingyue-transfer-btn").forEach(function(btn){
+            btn.addEventListener("click", function(){
+              curId = this.dataset.id;
+              titleNo.textContent = this.dataset.orderno || "";
+              loading.style.display="block"; loading.textContent="讀取中…"; content.style.display="none"; content.innerHTML="";
+              msg.textContent=""; confirmBtn.disabled=true;
+              openModal();
+              fetch("/admin/orders/"+encodeURIComponent(curId)+"/lingyue-preview", {method:"POST", credentials:"same-origin"})
+                .then(function(r){ return r.json(); }).then(renderPreview)
+                .catch(function(){ loading.textContent="讀取失敗，請重試。"; });
+            });
+          });
+          function lySubmit(force){
+            confirmBtn.disabled=true; msg.textContent="轉入中…";
+            fetch("/admin/orders/"+encodeURIComponent(curId)+"/lingyue-transfer"+(force?"?force=1":""), {method:"POST", credentials:"same-origin"})
+              .then(function(r){ return r.json(); })
+              .then(function(res){
+                if (res && res.ok && res.doc_no) { msg.textContent = "✅ 已轉入凌越，單據號 " + res.doc_no + "，即將重新整理…"; setTimeout(function(){ location.reload(); }, 1200); }
+                else if (res && res.queued) { msg.textContent = "✅ " + (res.message || "已排入凌越匯入佇列，數秒內自動完成…") + " 稍候自動重新整理。"; setTimeout(function(){ location.reload(); }, 6000); }
+                else if (res && res.needConfirm) { if (window.confirm(res.message || "此單已轉入凌越，確定要重新轉入嗎？請先到凌越刪除舊單。")) { lySubmit(true); } else { msg.textContent="已取消重新轉入。"; confirmBtn.disabled=false; } }
+                else if (res && res.mode === "preview") { msg.textContent = "ℹ️ " + (res.message || "這台無法直接寫入凌越，僅顯示料號預覽。"); confirmBtn.disabled=false; }
+                else { msg.textContent = "❌ " + ((res && res.error) || "轉入失敗"); confirmBtn.disabled=false; }
+              })
+              .catch(function(){ msg.textContent="❌ 轉入失敗，請重試。"; confirmBtn.disabled=false; });
+          }
+          confirmBtn.addEventListener("click", function(){ if (!curId) return; lySubmit(false); });
+          document.getElementById("lyTransferClose").addEventListener("click", closeModal);
+          document.getElementById("lyTransferCancel").addEventListener("click", closeModal);
+          modal.addEventListener("click", function(e){ if (e.target===modal) closeModal(); });
+          document.addEventListener("keydown", function(e){ if (e.key==="Escape" && modal.style.display==="flex") closeModal(); });
+        })();
+        </script>`;
+        res.type("text/html").send(notionPage("訂單明細", body + auditCard + lyTransferModalHtml, "orders", res));
     });
     router.get("/orders/:orderId/attachment/:messageId", async (req, res) => {
         const { orderId, messageId } = req.params;
@@ -9728,6 +10636,52 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         catch (e) {
             console.error("[admin] 取得 LINE 圖片失敗:", e?.message || e);
             res.status(500).send("取得圖片時發生錯誤");
+        }
+    });
+    // 照片辨識框：對附件圖跑 Google Vision，回傳每個字詞的方框＋圖片尺寸。
+    // 按鈕觸發（前端），行程內快取避免同一張重複計費。
+    const _ocrBoxCache = new Map();
+    router.get("/orders/:orderId/attachment/:messageId/ocr-boxes", async (req, res) => {
+        const { orderId, messageId } = req.params;
+        const att = await db.prepare("SELECT id FROM order_attachments WHERE order_id = ? AND line_message_id = ?").get(orderId, messageId);
+        if (!att) {
+            res.status(404).json({ ok: false, error: "找不到該附件" });
+            return;
+        }
+        if (_ocrBoxCache.has(messageId)) {
+            res.json(Object.assign({ ok: true, cached: true }, _ocrBoxCache.get(messageId)));
+            return;
+        }
+        const hasVision = process.env.VISION_USE_ADC === "1" || !!process.env.GOOGLE_CLOUD_VISION_API_KEY;
+        if (!hasVision) {
+            res.status(503).json({ ok: false, error: "未設定 Google Vision（GOOGLE_CLOUD_VISION_API_KEY 或 VISION_USE_ADC）" });
+            return;
+        }
+        const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+        if (!token) {
+            res.status(503).json({ ok: false, error: "未設定 LINE Channel Access Token" });
+            return;
+        }
+        try {
+            const resp = await fetch(`https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!resp.ok) {
+                res.status(resp.status).json({ ok: false, error: "無法取得 LINE 圖片" });
+                return;
+            }
+            const buf = Buffer.from(await resp.arrayBuffer());
+            const boxes = await (0, vision_ocr_js_1.getWordBoxesFromImageBuffer)(buf);
+            if (!boxes || !boxes.words || boxes.words.length === 0) {
+                res.status(502).json({ ok: false, error: "Vision 未偵測到文字（或未回應）" });
+                return;
+            }
+            _ocrBoxCache.set(messageId, boxes);
+            res.json(Object.assign({ ok: true, cached: false }, boxes));
+        }
+        catch (e) {
+            console.error("[admin] ocr-boxes 失敗:", e?.message || e);
+            res.status(500).json({ ok: false, error: "辨識框處理失敗" });
         }
     });
     router.post("/orders/:orderId/re-recognize", async (req, res) => {
@@ -11118,7 +12072,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.status(404).send("訂單不存在");
             return;
         }
-        const units = [...ORDER_LINE_UNITS, "個"];
+        const units = ORDER_LINE_UNITS;
         const unitOpts = units.map((u) => `<option value="${escapeAttr(u)}">${escapeHtml(u)}</option>`).join("");
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品項</div>
@@ -11324,7 +12278,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const safeCustomer = String(order.customer_name || "客戶").replace(/[\\/:*?"<>|]/g, "_").trim() || "客戶";
             const seq = String(order.order_no || order.id || "01").replace(/[^\d]/g, "").slice(-2) || "01";
             const fname = `${order.order_date}_${safeCustomer}_${seq}_揀貨單.html`;
-            res.setHeader("Content-Disposition", "attachment; filename=\"" + fname + "\"");
+            const fnameAsciiFallback = fname.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'");
+            res.setHeader("Content-Disposition", "attachment; filename=\"" + fnameAsciiFallback + "\"; filename*=UTF-8''" + encodeURIComponent(fname));
         }
         res.type("text/html").send(notionPage("訂貨單", sheetBody, "", res));
     });
@@ -11511,7 +12466,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const stars = tier.stars;
             // === HTML ===
             const okMsg = req.query.ok === "handover_saved" ? `<div class="sf-pill ok" style="align-self:flex-start;">已儲存交接備註</div>` : "";
-            const fmtTs = (s) => String(s || "").replace("T", " ").slice(0, 16);
+            const fmtTs = (s) => fmtTaipeiYMDHM(s, "");
             const statusBadge = (s) => {
                 const lc = String(s || "").toLowerCase();
                 if (lc === "approved") return `<span class="sf-pill ok">已確認</span>`;
@@ -11720,37 +12675,48 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / 編輯客戶</div>
         <h1 class="notion-page-title">編輯客戶</h1>
         ${editMsg ? `<div class="notion-msg ${editMsg.indexOf("已") >= 0 ? "ok" : "err"}">${editMsg.replace(/<p[^>]*>|<\/p>/g, "").trim()}</div>` : ""}
-        <div class="notion-card">
-          <form method="post" action="/admin/customers/${v(customer.id)}/edit">
+        <div class="sf-card">
+          <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.edit} 客戶資料</div></div>
+          <form method="post" action="/admin/customers/${v(customer.id)}/edit" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
             ${req.query.from === "orders" ? '<input type="hidden" name="from" value="orders">' : ""}
-            <label>客戶名稱 <input type="text" name="name" value="${v(customer.name)}" required style="width:100%;"></label>
-            <label>寺岡編號（CustCode／QR） <input type="text" name="teraoka_code" value="${v(customer.teraoka_code)}" style="width:100%;"></label>
-            <label>凌越編號（HQCustCode） <input type="text" name="hq_cust_code" value="${v(customer.hq_cust_code)}" style="width:100%;"></label>
-            <label>LINE 群組名稱 <input type="text" name="line_group_name" value="${v(customer.line_group_name)}" placeholder="可之後填" style="width:100%;"></label>
-            <label>LINE 群組 ID <input type="text" name="line_group_id" value="${v(customer.line_group_id)}" placeholder="C開頭，綁定後機器人會認此群組" style="width:100%;"></label>
-            <label>聯絡方式 <input type="text" name="contact" value="${v(customer.contact)}" style="width:100%;"></label>
-            <label>第幾號線（檢貨路線）<select name="route_line"><option value="">— 不指定</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}" ${customer.route_line === n ? "selected" : ""}>${n} 號線</option>`).join("")}</select></label>
-            <label>預設單位（客戶只打數字未填單位時使用）<select name="default_unit">
-              <option value="" ${!customer.default_unit ? "selected" : ""}>公斤（預設）</option>
-              ${ORDER_LINE_UNITS.map((u) => `<option value="${escapeAttr(u)}" ${customer.default_unit === u ? "selected" : ""}>${escapeHtml(u)}</option>`).join("")}
-            </select></label>
-            <label>叫貨備註／習慣說明 <textarea name="order_notes" placeholder="此客戶叫貨的習慣、特定說法或規則，僅供內部參考" style="width:100%;min-height:60px;">${v(customer.order_notes)}</textarea></label>
-            <label>專屬子客戶/分店名單 (請用逗號分隔) <input type="text" name="known_sub_customers" value="${v(customer.known_sub_customers)}" placeholder="例：東大附小,豐源國小,馬蘭國小" style="width:100%;"></label>
-            <label><input type="checkbox" name="active" value="1" ${activeChecked ? "checked" : ""}> 啟用（未勾選＝停用）</label>
-            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+            <label style="font-size:12px;color:var(--txt-2);">客戶名稱 <input class="sf-input" type="text" name="name" value="${v(customer.name)}" required style="margin-top:4px;"></label>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+              <label style="font-size:12px;color:var(--txt-2);flex:1;min-width:150px;">寺岡編號（CustCode／QR） <input class="sf-input" type="text" name="teraoka_code" value="${v(customer.teraoka_code)}" style="margin-top:4px;"></label>
+              <label style="font-size:12px;color:var(--txt-2);flex:1;min-width:150px;">凌越編號（HQCustCode） <input class="sf-input" type="text" name="hq_cust_code" value="${v(customer.hq_cust_code)}" style="margin-top:4px;"></label>
+            </div>
+            <label style="font-size:12px;color:var(--txt-2);">LINE 群組名稱 <input class="sf-input" type="text" name="line_group_name" value="${v(customer.line_group_name)}" placeholder="可之後填" style="margin-top:4px;"></label>
+            <label style="font-size:12px;color:var(--txt-2);">LINE 群組 ID <input class="sf-input" type="text" name="line_group_id" value="${v(customer.line_group_id)}" placeholder="C開頭，綁定後機器人會認此群組" style="margin-top:4px;"></label>
+            <label style="font-size:12px;color:var(--txt-2);">聯絡方式 <input class="sf-input" type="text" name="contact" value="${v(customer.contact)}" style="margin-top:4px;"></label>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+              <label style="font-size:12px;color:var(--txt-2);flex:1;min-width:150px;">第幾號線（檢貨路線）
+                <select class="sf-input" name="route_line" style="margin-top:4px;"><option value="">— 不指定</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}" ${customer.route_line === n ? "selected" : ""}>${n} 號線</option>`).join("")}</select>
+              </label>
+              <label style="font-size:12px;color:var(--txt-2);flex:1;min-width:150px;">預設單位（客戶只打數字未填單位）
+                <select class="sf-input" name="default_unit" style="margin-top:4px;"><option value="" ${!customer.default_unit ? "selected" : ""}>公斤（預設）</option>${ORDER_LINE_UNITS.map((u) => `<option value="${escapeAttr(u)}" ${customer.default_unit === u ? "selected" : ""}>${escapeHtml(u)}</option>`).join("")}</select>
+              </label>
+            </div>
+            <label style="font-size:12px;color:var(--txt-2);">叫貨備註／習慣說明 <textarea class="sf-input" name="order_notes" placeholder="此客戶叫貨的習慣、特定說法或規則，僅供內部參考" style="margin-top:4px;min-height:60px;">${v(customer.order_notes)}</textarea></label>
+            <label style="font-size:12px;color:var(--txt-2);">專屬子客戶/分店名單（逗號分隔） <input class="sf-input" type="text" name="known_sub_customers" value="${v(customer.known_sub_customers)}" placeholder="例：東大附小,豐源國小,馬蘭國小" style="margin-top:4px;"></label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt-1);"><input type="checkbox" name="active" value="1" ${activeChecked ? "checked" : ""}> 啟用（未勾選＝停用）</label>
+            <div style="margin-top:6px;"><button type="submit" class="sf-btn primary">${SF_ICONS.check}<span>儲存</span></button></div>
           </form>
         </div>
-        <div class="notion-card">
-          <h2>此客戶專用別名（叫貨習慣）</h2>
-          <p>此客戶在 LINE 叫貨時若輸入下列名稱，會對應到指定品項（僅此客戶適用）。</p>
-          <table>
-            <thead><tr><th>客戶常叫的名稱</th><th>對應品項</th><th>操作</th></tr></thead>
-            <tbody>${aliasRows || "<tr><td colspan='3'>尚無專用別名</td></tr>"}</tbody>
-          </table>
-          <form method="post" action="/admin/customers/${v(customer.id)}/alias" style="margin-top:12px;">
-            <label style="margin:0;">新增：客戶叫「<input type="text" name="alias" required placeholder="例：大陸妹">」→ 對應 <select name="product_id" required>${productOptions}</select></label>
-            <button type="submit" class="btn">新增</button>
-          </form>
+        <div class="sf-card" style="margin-top:14px;">
+          <div class="sf-card-head"><div class="sf-card-title">此客戶專用別名（叫貨習慣）</div></div>
+          <div style="padding:14px 16px;">
+            <p style="margin:0 0 10px;font-size:13px;color:var(--txt-2);">此客戶在 LINE 叫貨時若輸入下列名稱，會對應到指定品項（僅此客戶適用）。</p>
+            <div class="sf-table-wrap"><table class="sf-table" style="font-size:13px;">
+              <thead><tr><th>客戶常叫的名稱</th><th>對應品項</th><th style="width:60px;">操作</th></tr></thead>
+              <tbody>${aliasRows || "<tr><td colspan='3' style='padding:16px;text-align:center;color:var(--txt-3);'>尚無專用別名</td></tr>"}</tbody>
+            </table></div>
+            <form method="post" action="/admin/customers/${v(customer.id)}/alias" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <span style="font-size:13px;color:var(--txt-2);">新增：客戶叫</span>
+              <input class="sf-input" type="text" name="alias" required placeholder="例：大陸妹" style="width:140px;">
+              <span style="font-size:13px;color:var(--txt-2);">→ 對應</span>
+              <select class="sf-input" name="product_id" required style="max-width:220px;">${productOptions}</select>
+              <button type="submit" class="sf-btn sm primary">新增</button>
+            </form>
+          </div>
         </div>
         ${profileSection}
         <p>${req.query.from === "orders" ? `<a href="/admin/orders">← 回訂單審核</a>` : `<a href="/admin/customers">← 回客戶列表</a>`}</p>
@@ -11763,6 +12729,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     router.post("/customers/:id/edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest" || (req.get("Accept") || "").includes("application/json");
         const id = req.params.id;
         const name = req.body.name?.trim();
         const teraokaCode = req.body.teraoka_code?.trim() || null;
@@ -11777,16 +12744,27 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const knownSubCustomers = req.body.known_sub_customers?.trim() || null;
         const active = req.body.active === "1" ? 1 : 0;
         if (!name) {
+            if (wantsJson) { res.status(400).json({ ok: false, error: "請填客戶名稱" }); return; }
             res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=name");
             return;
         }
-        await db.prepare("UPDATE customers SET name = ?, teraoka_code = ?, hq_cust_code = ?, line_group_name = ?, line_group_id = ?, contact = ?, route_line = ?, default_unit = ?, order_notes = ?, known_sub_customers = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, defaultUnit, orderNotes, knownSubCustomers, active, id);
-        if (lineGroupId) {
-            try {
-                await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(lineGroupId);
+        try {
+            const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+            await db.prepare("UPDATE customers SET name = ?, teraoka_code = ?, hq_cust_code = ?, line_group_name = ?, line_group_id = ?, contact = ?, route_line = ?, default_unit = ?, order_notes = ?, known_sub_customers = ?, active = ?, updated_at = " + nowSql + " WHERE id = ?").run(name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, defaultUnit, orderNotes, knownSubCustomers, active, id);
+            if (lineGroupId) {
+                try {
+                    await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(lineGroupId);
+                }
+                catch (_) { /* 表可能尚未建立 */ }
             }
-            catch (_) { /* 表可能尚未建立 */ }
         }
+        catch (e) {
+            console.error("[admin] 客戶儲存失敗:", e?.message || e);
+            if (wantsJson) { res.status(500).json({ ok: false, error: "儲存失敗：" + (e?.message || String(e)).slice(0, 120) }); return; }
+            res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=" + encodeURIComponent("儲存失敗"));
+            return;
+        }
+        if (wantsJson) { res.json({ ok: true }); return; }
         const fromOrders = req.body?.from === "orders";
         res.redirect(fromOrders ? "/admin/orders?ok=edit" : "/admin/customers?ok=edit");
     });
@@ -11824,6 +12802,25 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         await db.prepare("DELETE FROM customer_product_aliases WHERE id = ?").run(aliasId);
         res.redirect("/admin/customers/" + encodeURIComponent(customerId) + "/edit?ok=alias_del");
     });
+    // 匯出客戶清單 CSV（含路線、綁定、狀態）——可用來對帳凌越當日出貨、找出沒下單的客戶
+    router.get("/customers/export.csv", async (req, res) => {
+        try {
+            const rows = await db.prepare("SELECT name, route_line, teraoka_code, hq_cust_code, line_group_id, active FROM customers ORDER BY name").all();
+            const esc = (v) => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+            const lines = [["客戶名稱", "路線", "寺岡編號", "凌越編號", "已綁定LINE", "狀態"].join(",")];
+            for (const r of (rows || [])) {
+                const isActive = !(r.active === 0 || r.active === "0");
+                lines.push([r.name, r.route_line ?? "", r.teraoka_code ?? "", r.hq_cust_code ?? "", r.line_group_id ? "是" : "", isActive ? "啟用" : "停用"].map(esc).join(","));
+            }
+            const csv = "﻿" + lines.join("\r\n");
+            res.setHeader("Content-Type", "text/csv; charset=utf-8");
+            res.setHeader("Content-Disposition", 'attachment; filename="customers.csv"');
+            res.send(csv);
+        }
+        catch (e) {
+            res.status(500).send("匯出失敗：" + (e?.message || String(e)));
+        }
+    });
     router.get("/customers", async (req, res) => {
         const msg = req.query.ok === "1"
             ? "<p style='color:green'>客戶已建立。</p>"
@@ -11836,8 +12833,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                             : "";
         const q = req.query.q?.trim() ?? "";
         const rows = (q
-            ? await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, active FROM customers WHERE name LIKE ? ORDER BY name").all("%" + q + "%")
-            : await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, active FROM customers ORDER BY name").all());
+            ? await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, default_unit, order_notes, known_sub_customers, active FROM customers WHERE name LIKE ? ORDER BY name").all("%" + q + "%")
+            : await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, default_unit, order_notes, known_sub_customers, active FROM customers ORDER BY name").all());
         const makeRow = (r) => {
             const active = r.active === 1 || r.active === "1" || r.active === undefined || r.active === null;
             const bound = !!r.line_group_id;
@@ -11850,26 +12847,37 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                    </div>`
                 : `<span class="sf-pill warn">${SF_ICONS.warn}<span>尚未綁定</span></span>`;
             const codeCell = `<span class="mono" style="font-size:11px;color:var(--txt-2);">${escapeHtml(r.teraoka_code ?? "—")} / ${escapeHtml(r.hq_cust_code ?? "—")}</span>`;
-            return `<tr data-customer-id="${escapeAttr(r.id)}">
+            return `<tr class="customer-row" data-customer-id="${escapeAttr(r.id)}" style="cursor:pointer;">
             <td><span class="sf-dot ${active ? "ok" : ""}"></span></td>
             <td>
-              <div style="display:flex;align-items:center;gap:8px;">
+              <div class="cust-name-cell" style="display:flex;align-items:center;gap:8px;">
                 <span class="sf-avatar" style="background:${bound?"var(--accent)":"var(--txt-3)"};">${escapeHtml(initial)}</span>
                 <div>
-                  <div style="font-size:13px;font-weight:500;">${escapeHtml(r.name)}</div>
+                  <div class="cust-name-text" style="font-size:13px;font-weight:500;">${escapeHtml(r.name)}</div>
                   <div class="mono" style="font-size:10px;color:var(--txt-3);">${escapeHtml(r.id)}</div>
                 </div>
+                ${r.route_line ? `<span class="sf-pill cust-route-pill" title="檢貨路線" style="margin-left:auto;font-size:11px;background:var(--bg-2);color:var(--txt-2);">路線 ${escapeHtml(String(r.route_line))}</span>` : ""}
               </div>
             </td>
             <td>${groupCell}</td>
             <td>${codeCell}</td>
-            <td style="font-size:12px;color:var(--txt-2);">${escapeHtml(r.contact ?? "")}</td>
+            <td class="cust-contact-cell" style="font-size:12px;color:var(--txt-2);">${escapeHtml(r.contact ?? "")}</td>
             <td style="text-align:right;" class="customer-status-cell">${active ? `<span class="sf-pill ok">啟用</span>` : `<span class="sf-pill">停用</span>`}</td>
             <td style="white-space:nowrap;">
               <a class="sf-btn sm" href="/admin/customers/${encodeURIComponent(r.id)}/360" title="客戶完整檔案">${SF_ICONS.spark}</a>
-              <a class="sf-btn sm" href="/admin/customers/${encodeURIComponent(r.id)}/edit" title="編輯">${SF_ICONS.edit}</a>
-              <button type="button" class="sf-btn sm customer-toggle-btn" data-id="${escapeAttr(r.id)}" data-active="${active ? "1" : "0"}">${active ? "停用" : "啟用"}</button>
-              <a class="sf-btn sm danger" href="/admin/customers/${encodeURIComponent(r.id)}/delete" title="刪除">${SF_ICONS.x}</a>
+              <button type="button" class="sf-btn sm customer-edit-btn" title="編輯"
+                data-id="${escapeAttr(r.id)}"
+                data-name="${escapeAttr(r.name ?? "")}"
+                data-teraoka_code="${escapeAttr(r.teraoka_code ?? "")}"
+                data-hq_cust_code="${escapeAttr(r.hq_cust_code ?? "")}"
+                data-line_group_name="${escapeAttr(r.line_group_name ?? "")}"
+                data-line_group_id="${escapeAttr(r.line_group_id ?? "")}"
+                data-contact="${escapeAttr(r.contact ?? "")}"
+                data-route_line="${escapeAttr(r.route_line != null ? String(r.route_line) : "")}"
+                data-default_unit="${escapeAttr(r.default_unit ?? "")}"
+                data-order_notes="${escapeAttr(r.order_notes ?? "")}"
+                data-known_sub_customers="${escapeAttr(r.known_sub_customers ?? "")}"
+                data-active="${active ? "1" : "0"}">${SF_ICONS.edit}</button>
             </td>
           </tr>`;
         };
@@ -11929,6 +12937,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                   <input type="hidden" name="group_name" value="${escapeAttr(g.group_name || "")}">
                   <input type="hidden" name="mode" value="new">
                   <input type="text" name="name" placeholder="新客戶名稱" required class="sf-input" style="width:160px;height:32px;">
+                  <select name="route_line" class="sf-input" style="width:110px;height:32px;" title="揀貨路線">
+                    <option value="">路線…</option>
+                    ${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n} 號線</option>`).join("")}
+                  </select>
                   <button type="submit" class="sf-btn sm">建立並綁定</button>
                 </form>
                 <form method="post" action="/admin/customers/pending-dismiss" style="display:inline;margin:6px 0 0 0;">
@@ -12034,6 +13046,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             </div>
             <div style="display:flex;gap:8px;">
               <a class="sf-btn" href="/admin/import-customers">${SF_ICONS.dl}<span>匯入 CSV</span></a>
+              <a class="sf-btn" href="/admin/customers/export.csv">${SF_ICONS.dl}<span>匯出客戶 CSV</span></a>
               <a class="sf-btn" href="/admin/groups/export.xlsx">${SF_ICONS.dl}<span>下載群組 Excel</span></a>
               <a class="sf-btn" href="/admin/line-binding">${SF_ICONS.link}<span>LINE 綁定檢查</span></a>
               <a class="sf-btn primary" href="/admin/customers/new">${SF_ICONS.plus}<span>新增客戶</span></a>
@@ -12112,6 +13125,46 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             </div>
           </div>
         </div>
+        <div id="custEditModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:flex-start;justify-content:center;padding:32px 16px;overflow:auto;">
+          <div class="sf-card" style="max-width:560px;width:100%;margin:auto;" onclick="event.stopPropagation();">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.edit} 編輯客戶</div>
+              <button type="button" class="sf-btn sm ghost" id="custEditClose" title="關閉">${SF_ICONS.x}</button>
+            </div>
+            <form id="custEditForm" method="post" action="" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
+              <label style="font-size:12px;color:var(--txt-2);">客戶名稱 <input class="sf-input" type="text" name="name" required style="margin-top:4px;"></label>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                <label style="font-size:12px;color:var(--txt-2);flex:1;min-width:150px;">寺岡編號 <input class="sf-input" type="text" name="teraoka_code" style="margin-top:4px;"></label>
+                <label style="font-size:12px;color:var(--txt-2);flex:1;min-width:150px;">凌越編號 <input class="sf-input" type="text" name="hq_cust_code" style="margin-top:4px;"></label>
+              </div>
+              <label style="font-size:12px;color:var(--txt-2);">LINE 群組名稱 <input class="sf-input" type="text" name="line_group_name" placeholder="可之後填" style="margin-top:4px;"></label>
+              <label style="font-size:12px;color:var(--txt-2);">LINE 群組 ID <input class="sf-input" type="text" name="line_group_id" placeholder="C開頭，綁定後機器人會認此群組" style="margin-top:4px;"></label>
+              <label style="font-size:12px;color:var(--txt-2);">聯絡方式 <input class="sf-input" type="text" name="contact" style="margin-top:4px;"></label>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                <label style="font-size:12px;color:var(--txt-2);flex:1;min-width:150px;">第幾號線（檢貨路線）
+                  <select class="sf-input" name="route_line" style="margin-top:4px;"><option value="">— 不指定</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n} 號線</option>`).join("")}</select>
+                </label>
+                <label style="font-size:12px;color:var(--txt-2);flex:1;min-width:150px;">預設單位
+                  <select class="sf-input" name="default_unit" style="margin-top:4px;"><option value="">公斤（預設）</option>${ORDER_LINE_UNITS.map((u) => `<option value="${escapeAttr(u)}">${escapeHtml(u)}</option>`).join("")}</select>
+                </label>
+              </div>
+              <label style="font-size:12px;color:var(--txt-2);">叫貨備註／習慣說明 <textarea class="sf-input" name="order_notes" style="margin-top:4px;min-height:56px;"></textarea></label>
+              <label style="font-size:12px;color:var(--txt-2);">專屬子客戶/分店（逗號分隔） <input class="sf-input" type="text" name="known_sub_customers" placeholder="例：東大附小,豐源國小" style="margin-top:4px;"></label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt-1);"><input type="checkbox" name="active" value="1"> 啟用（未勾選＝停用）</label>
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap;">
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                  <a class="sf-btn sm ghost" id="custEditAdvanced" href="#" target="_blank" title="別名、客戶畫像等進階設定">別名／完整檔案…</a>
+                  <button type="button" class="sf-btn sm" id="custEditToggle">停用</button>
+                  <button type="button" class="sf-btn sm danger" id="custEditDelete" title="刪除此客戶">${SF_ICONS.x}<span>刪除</span></button>
+                </div>
+                <div style="display:flex;gap:8px;">
+                  <button type="button" class="sf-btn sm ghost" id="custEditCancel">取消</button>
+                  <button type="submit" class="sf-btn sm primary">${SF_ICONS.check}<span>儲存</span></button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
         <script>
         (function(){
           var boundTbody = document.getElementById("customers-bound-tbody");
@@ -12154,23 +13207,124 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               if (panel) panel.style.display = "block";
             });
           });
-          document.querySelectorAll(".customer-toggle-btn").forEach(function(btn){
-            btn.addEventListener("click", function(){
-              var el = this, id = el.dataset.id;
-              if (!id) return;
-              el.disabled = true;
-              fetch("/admin/api/customers/" + encodeURIComponent(id) + "/toggle", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "", credentials: "same-origin" })
+          // 迷你 toast（存/停用/刪除的即時反饋，不整頁刷新）
+          function custToast(text, kind){
+            var t = document.createElement("div");
+            t.textContent = text;
+            t.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2000;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.18);opacity:0;transition:opacity .18s;"
+              + (kind==="err" ? "background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;" : "background:#065f46;color:#fff;");
+            document.body.appendChild(t);
+            requestAnimationFrame(function(){ t.style.opacity="1"; });
+            setTimeout(function(){ t.style.opacity="0"; setTimeout(function(){ if(t.parentNode) t.parentNode.removeChild(t); }, 220); }, kind==="err"?4000:2200);
+          }
+          // ── 編輯客戶：點整列開啟彈窗；停用/刪除移入彈窗；儲存走 AJAX，不整頁刷新 ──
+          var modal = document.getElementById("custEditModal");
+          var form = document.getElementById("custEditForm");
+          if (modal && form) {
+            var advLink = document.getElementById("custEditAdvanced");
+            var toggleBtn = document.getElementById("custEditToggle");
+            var deleteBtn = document.getElementById("custEditDelete");
+            var curRow = null, curId = null, curActive = true;
+            function setField(name, val){
+              var f = form.elements[name];
+              if (!f) return;
+              if (f.type === "checkbox") { f.checked = String(val) === "1"; }
+              else { f.value = (val == null ? "" : String(val)); }
+            }
+            function fval(n){ var f = form.elements[n]; return f ? (f.type==="checkbox" ? (f.checked?"1":"0") : f.value) : ""; }
+            function openModal(){ modal.style.display = "flex"; document.body.style.overflow = "hidden"; }
+            function closeModal(){ modal.style.display = "none"; document.body.style.overflow = ""; curRow = null; curId = null; }
+            function syncToggleLabel(){ if (toggleBtn) toggleBtn.textContent = curActive ? "停用" : "啟用"; }
+            function openForRow(row){
+              var btn = row.querySelector(".customer-edit-btn");
+              if (!btn) return;
+              var d = btn.dataset;
+              curRow = row; curId = d.id; curActive = d.active === "1";
+              form.action = "/admin/customers/" + encodeURIComponent(d.id) + "/edit";
+              if (advLink) advLink.href = "/admin/customers/" + encodeURIComponent(d.id) + "/edit";
+              setField("name", d.name); setField("teraoka_code", d.teraoka_code); setField("hq_cust_code", d.hq_cust_code);
+              setField("line_group_name", d.line_group_name); setField("line_group_id", d.line_group_id);
+              setField("contact", d.contact); setField("route_line", d.route_line); setField("default_unit", d.default_unit);
+              setField("order_notes", d.order_notes); setField("known_sub_customers", d.known_sub_customers); setField("active", d.active);
+              syncToggleLabel(); openModal();
+              var nameEl = form.elements["name"]; if (nameEl) { try { nameEl.focus(); } catch(_){} }
+            }
+            // 點整列開啟（點連結/按鈕/輸入不觸發）
+            document.addEventListener("click", function(e){
+              if (e.target.closest("a, button, input, select, textarea, label")) return;
+              var row = e.target.closest("tr.customer-row");
+              if (row) openForRow(row);
+            });
+            document.querySelectorAll(".customer-edit-btn").forEach(function(btn){
+              btn.addEventListener("click", function(e){ e.stopPropagation(); var row = this.closest("tr"); if (row) openForRow(row); });
+            });
+            // 停用/啟用（彈窗內）
+            if (toggleBtn) toggleBtn.addEventListener("click", function(){
+              if (!curId) return;
+              toggleBtn.disabled = true;
+              fetch("/admin/api/customers/" + encodeURIComponent(curId) + "/toggle", { method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:"", credentials:"same-origin" })
                 .then(function(r){ return r.json(); })
                 .then(function(data){
+                  toggleBtn.disabled = false;
                   if (data && data.ok === true) {
-                    var row = el.closest("tr");
-                    if (row) moveRow(row, data.active === 1);
-                  }
-                  el.disabled = false;
+                    curActive = data.active === 1; syncToggleLabel(); setField("active", curActive ? "1":"0");
+                    if (curRow) moveRow(curRow, curActive);
+                    custToast(curActive ? "已啟用" : "已停用");
+                  } else { custToast((data&&data.err)||"操作失敗","err"); }
                 })
-                .catch(function(){ el.disabled = false; });
+                .catch(function(){ toggleBtn.disabled = false; custToast("操作失敗","err"); });
             });
-          });
+            // 刪除（彈窗內）
+            if (deleteBtn) deleteBtn.addEventListener("click", function(){
+              if (!curId) return;
+              if (!confirm("確定刪除此客戶？此動作無法復原。")) return;
+              deleteBtn.disabled = true;
+              fetch("/admin/customers/" + encodeURIComponent(curId) + "/delete", { method:"POST", headers:{"X-Requested-With":"XMLHttpRequest","Accept":"application/json"}, credentials:"same-origin" })
+                .then(function(r){ return r.json().catch(function(){ return { ok: r.ok }; }); })
+                .then(function(data){
+                  deleteBtn.disabled = false;
+                  if (data && data.ok !== false) {
+                    var row = curRow; closeModal();
+                    if (row){ var tb = row.parentNode; tb.removeChild(row); if (tb.children.length===0) tb.innerHTML = placeholderHtml(tb.id); }
+                    custToast("已刪除客戶");
+                  } else { custToast((data&&data.error)||"刪除失敗","err"); }
+                })
+                .catch(function(){ deleteBtn.disabled = false; custToast("刪除失敗","err"); });
+            });
+            function updateRowFromForm(row){
+              var editBtn = row.querySelector(".customer-edit-btn");
+              var nameEl = row.querySelector(".cust-name-text"); if (nameEl) nameEl.textContent = fval("name");
+              var contactCell = row.querySelector(".cust-contact-cell"); if (contactCell) contactCell.textContent = fval("contact");
+              if (editBtn){ ["name","teraoka_code","hq_cust_code","line_group_name","line_group_id","contact","route_line","default_unit","order_notes","known_sub_customers"].forEach(function(n){ editBtn.dataset[n] = fval(n); }); }
+              var cell = row.querySelector(".cust-name-cell");
+              if (cell){
+                var pill = cell.querySelector(".cust-route-pill"); var rv = fval("route_line");
+                if (rv){ if(!pill){ pill=document.createElement("span"); pill.className="sf-pill cust-route-pill"; pill.title="檢貨路線"; pill.style.cssText="margin-left:auto;font-size:11px;background:var(--bg-2);color:var(--txt-2);"; cell.appendChild(pill);} pill.textContent = "路線 " + rv; }
+                else if (pill){ pill.parentNode.removeChild(pill); }
+              }
+            }
+            // 儲存（AJAX，不整頁刷新，更新該列）
+            form.addEventListener("submit", function(e){
+              e.preventDefault();
+              var saveBtn = form.querySelector('button[type="submit"]');
+              if (saveBtn) saveBtn.disabled = true;
+              var params = new URLSearchParams(new FormData(form));
+              fetch(form.action, { method:"POST", headers:{"X-Requested-With":"XMLHttpRequest","Content-Type":"application/x-www-form-urlencoded","Accept":"application/json"}, body: params, credentials:"same-origin" })
+                .then(function(r){ return r.json().catch(function(){ return { ok: r.ok }; }); })
+                .then(function(data){
+                  if (saveBtn) saveBtn.disabled = false;
+                  if (data && data.ok !== false) { if (curRow) updateRowFromForm(curRow); custToast("已儲存客戶"); closeModal(); }
+                  else { custToast((data&&data.error)||"儲存失敗","err"); }
+                })
+                .catch(function(){ if (saveBtn) saveBtn.disabled = false; custToast("儲存失敗，請重試","err"); });
+            });
+            var closeBtn = document.getElementById("custEditClose");
+            var cancelBtn = document.getElementById("custEditCancel");
+            if (closeBtn) closeBtn.addEventListener("click", closeModal);
+            if (cancelBtn) cancelBtn.addEventListener("click", closeModal);
+            modal.addEventListener("click", function(e){ if (e.target === modal) closeModal(); });
+            document.addEventListener("keydown", function(e){ if (e.key === "Escape" && modal.style.display === "flex") closeModal(); });
+          }
         })();
         </script>
       `;
@@ -12224,7 +13378,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     return;
                 }
                 const newCid = (0, id_js_1.newId)("cust");
-                await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, known_sub_customers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(newCid, name, null, null, groupName, groupId, null, null, null);
+                const routeRaw = (req.body.route_line || "").trim();
+                const routeLine = /^[1-9]$/.test(routeRaw) ? parseInt(routeRaw, 10) : null;
+                await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, known_sub_customers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(newCid, name, null, null, groupName, groupId, null, routeLine, null);
                 await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(groupId);
                 await logDataChange(req, {
                     entityType: "customer",
@@ -12302,13 +13458,24 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         res.type("text/html").send(notionPage("確認刪除", body, "", res));
     });
     router.post("/customers/:id/delete", async (req, res) => {
+        const wantsJson = req.get("X-Requested-With") === "XMLHttpRequest" || (req.get("Accept") || "").includes("application/json");
         const id = req.params.id;
-        const orderCount = await db.prepare("SELECT COUNT(*) AS c FROM orders WHERE customer_id = ?").get(id);
-        if ((orderCount?.c ?? 0) > 0) {
-            res.redirect("/admin/customers?err=" + encodeURIComponent("此客戶已有訂單，無法刪除。請改為停用。"));
+        try {
+            const orderCount = await db.prepare("SELECT COUNT(*) AS c FROM orders WHERE customer_id = ?").get(id);
+            if ((orderCount?.c ?? 0) > 0) {
+                if (wantsJson) { res.status(409).json({ ok: false, error: "此客戶已有訂單，無法刪除。請改為停用。" }); return; }
+                res.redirect("/admin/customers?err=" + encodeURIComponent("此客戶已有訂單，無法刪除。請改為停用。"));
+                return;
+            }
+            await db.prepare("DELETE FROM customers WHERE id = ?").run(id);
+        }
+        catch (e) {
+            console.error("[admin] 客戶刪除失敗:", e?.message || e);
+            if (wantsJson) { res.status(500).json({ ok: false, error: "刪除失敗：" + (e?.message || String(e)).slice(0, 120) }); return; }
+            res.redirect("/admin/customers?err=" + encodeURIComponent("刪除失敗"));
             return;
         }
-        await db.prepare("DELETE FROM customers WHERE id = ?").run(id);
+        if (wantsJson) { res.json({ ok: true }); return; }
         res.redirect("/admin/customers?ok=del");
     });
     router.get("/products", async (req, res) => {
@@ -13032,7 +14199,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         catch (_) {
             recentLogs = [];
         }
-        const unitOptsHtml = ORDER_LINE_UNITS.map((u) => `<option value="${escapeAttr(u)}" ${String(row.unit) === u ? "selected" : ""}>${escapeHtml(u)}</option>`).join("");
+        const curMasterUnit = String(row.unit ?? "").trim();
+        const masterUnitBase = ORDER_LINE_UNITS;
+        // 若目前存的單位不在標準清單內（例如舊資料的「個」以外的怪值），仍原樣列出並選中，避免下拉靜默顯示錯的第一個選項
+        const masterUnitChoices = curMasterUnit && !masterUnitBase.includes(curMasterUnit) ? [curMasterUnit, ...masterUnitBase] : masterUnitBase;
+        const unitOptsHtml = (curMasterUnit ? "" : `<option value="" selected>—（未設定）</option>`) + masterUnitChoices.map((u) => `<option value="${escapeAttr(u)}" ${curMasterUnit === u ? "selected" : ""}>${escapeHtml(u)}</option>`).join("");
         const linkTarget = "";
         const formTarget = "";
         const specTableRows = unitSpecs.map((s) => {
@@ -13101,28 +14272,43 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           .pe-context-spot .pe-ctx-main { font-size: 14px; line-height: 1.5; }
           .pe-context-spot .pe-ctx-main strong { font-size: 15px; }
           .pe-context-spot .pe-ctx-tip { font-size: 12px; color: var(--notion-text-muted); margin: 6px 0 0; }
-          .pe-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+          .pe-card { background:#fff; border: 1px solid var(--notion-border); border-radius: 8px; padding: 18px 20px; margin-bottom: 14px; }
+          .pe-card-head { display:flex; align-items:center; gap:9px; margin: 0 0 3px; }
+          .pe-card-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+          .pe-ic { width:26px; height:26px; border-radius:7px; background:rgba(35,131,226,0.1); color:var(--notion-accent); display:inline-flex; align-items:center; justify-content:center; font-size:15px; flex:0 0 auto; }
+          .pe-card .sec-hint { font-size: 12px; color: var(--notion-text-muted); margin: 0 0 16px; line-height: 1.55; padding-left: 35px; }
+          @media (max-width: 580px) { .pe-card .sec-hint { padding-left: 0; } }
+          .pe-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; }
           @media (max-width: 580px) { .pe-grid-2 { grid-template-columns: 1fr; } }
-          .pe-grid-2 label { margin: 0; }
-          .pe-grid-2 input, .pe-grid-2 select { width: 100%; padding: 7px 9px; font-size: 14px; }
-          .pe-card { background:#fff; border: 1px solid var(--notion-border); border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; }
-          .pe-card h2 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
-          .pe-card .sec-hint { font-size: 12px; color: var(--notion-text-muted); margin: 0 0 14px; line-height: 1.55; }
-          .pe-actions { margin-top: 14px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+          .pe-field { display:block; margin: 0; }
+          .pe-field .pe-flabel { display:block; font-size: 12px; color: var(--notion-text-muted); margin: 0 0 5px; font-weight: 600; }
+          .pe-field input, .pe-field select { width: 100%; height: 36px; padding: 0 10px; font-size: 14px; box-sizing: border-box; }
+          .pe-field .pe-fhint { font-size: 11px; color: var(--notion-text-muted); margin: 5px 0 0; line-height: 1.45; }
+          .pe-toggle-row { grid-column: 1 / -1; display:flex; align-items:center; justify-content:space-between; gap:12px; padding: 11px 13px; background: var(--notion-sidebar); border: 1px solid var(--notion-border); border-radius: 8px; cursor: pointer; }
+          .pe-toggle-row .pe-tl { font-size: 13px; }
+          .pe-toggle-row .pe-tl b { font-weight: 600; }
+          .pe-toggle-row .pe-tl span { display:block; font-size: 11px; color: var(--notion-text-muted); margin-top: 2px; }
+          .pe-toggle-row input { position:absolute; opacity:0; width:0; height:0; }
+          .pe-switch { width:38px; height:22px; border-radius:11px; background:#cfceca; position:relative; flex:0 0 auto; transition: background .15s; }
+          .pe-switch::after { content:""; position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; transition: left .15s; }
+          .pe-toggle-row input:checked ~ .pe-switch { background: var(--notion-accent); }
+          .pe-toggle-row input:checked ~ .pe-switch::after { left:18px; }
+          .pe-actions { margin-top: 16px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
           .pe-table { width: 100%; font-size: 13px; border-collapse: collapse; }
-          .pe-table thead th { font-weight:600; padding: 6px 8px; background: var(--notion-sidebar); text-align: left; font-size: 12px; color: var(--notion-text-muted); border-bottom: 1px solid var(--notion-border); }
-          .pe-table tbody td { padding: 6px 8px; border-bottom: 1px solid var(--notion-border); }
+          .pe-table thead th { font-weight:600; padding: 7px 8px; background: var(--notion-sidebar); text-align: left; font-size: 12px; color: var(--notion-text-muted); border-bottom: 1px solid var(--notion-border); }
+          .pe-table tbody td { padding: 8px; border-bottom: 1px solid var(--notion-border); }
           .pe-table tbody tr:last-child td { border-bottom: none; }
-          .pe-add-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 10px 0 0; }
+          .pe-add-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 12px 0 0; }
           .pe-add-row label { margin: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--notion-text-muted); }
           .pe-add-row input, .pe-add-row select { padding: 6px 8px; font-size: 13px; }
           .pe-mini-hint { font-size: 11px; color: var(--notion-text-muted); margin: 8px 0 0; }
-          details.pe-sop { background:#fff; border: 1px solid var(--notion-border); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
-          details.pe-sop > summary { cursor: pointer; font-weight: 600; font-size: 14px; list-style: none; display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+          details.pe-sop { background:#fff; border: 1px solid var(--notion-border); border-radius: 8px; padding: 13px 18px; margin-bottom: 12px; }
+          details.pe-sop > summary { cursor: pointer; font-weight: 600; font-size: 14px; list-style: none; display: flex; align-items: center; gap: 9px; padding: 2px 0; }
           details.pe-sop > summary::-webkit-details-marker { display: none; }
-          details.pe-sop > summary::before { content: "▸"; font-size: 12px; color: var(--notion-text-muted); }
+          details.pe-sop > summary::before { content: "▸"; font-size: 12px; color: var(--notion-text-muted); flex:0 0 auto; }
           details.pe-sop[open] > summary::before { content: "▾"; }
-          details.pe-sop .pe-step-body { padding-top: 14px; }
+          details.pe-sop > summary .pe-ic { width:24px; height:24px; font-size:14px; }
+          details.pe-sop .pe-step-body { padding-top: 15px; }
         </style>
         <div class="pe-page">
         ${embed ? "" : `<div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/products">品項與俗名</a> / 編輯品項</div>`}
@@ -13140,24 +14326,28 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         </div>` : ""}
 
         <div class="pe-card">
-          <h2>基本資料</h2>
-          <p class="sec-hint">主檔品名與識別碼。「主檔預設單位」與下方「叫貨單位」可不同（青菜常出現包／把等非主檔單位）。</p>
+          <div class="pe-card-head"><span class="pe-ic">▦</span><h2>基本資料</h2></div>
+          <p class="sec-hint">主檔品名與識別碼。「主檔預設單位」是這個品項的計價基準；客戶若用包／把等單位下單，於下方「叫貨單位 → 公斤」設定換算。</p>
           <form method="post" action="/admin/products/${encodeURIComponent(row.id)}/edit"${formTarget}>
             ${hiddenReturn}
             ${hiddenEmbed}
             <div class="pe-grid-2">
-              <label style="grid-column: 1 / -1;">標準品名 <input type="text" name="name" value="${escapeAttr(row.name)}" required></label>
-              <label>凌越料號 <input type="text" name="erp_code" value="${escapeAttr(row.erp_code ?? "")}"></label>
-              <label>寺岡條碼 <input type="text" name="teraoka_barcode" value="${escapeAttr(row.teraoka_barcode ?? "")}"></label>
-              <label>主檔預設單位 <select name="unit">${unitOptsHtml}</select></label>
-              <label style="display:flex;align-items:center;gap:6px;padding-top:18px;"><input type="checkbox" name="active" value="1" ${row.active === 1 ? "checked" : ""}> 啟用</label>
+              <label class="pe-field" style="grid-column: 1 / -1;"><span class="pe-flabel">標準品名</span><input type="text" name="name" value="${escapeAttr(row.name)}" required></label>
+              <label class="pe-field"><span class="pe-flabel">凌越料號</span><input type="text" name="erp_code" value="${escapeAttr(row.erp_code ?? "")}"></label>
+              <label class="pe-field"><span class="pe-flabel">寺岡條碼</span><input type="text" name="teraoka_barcode" value="${escapeAttr(row.teraoka_barcode ?? "")}"></label>
+              <label class="pe-field"><span class="pe-flabel">主檔預設單位</span><select name="unit">${unitOptsHtml}</select><span class="pe-fhint">青菜多為「公斤」計價。此設定影響進單時的單位提示與凌越匯出。</span></label>
+              <label class="pe-toggle-row">
+                <span class="pe-tl"><b>啟用此品項</b><span>停用後不會出現在叫貨與匯出清單</span></span>
+                <input type="checkbox" name="active" value="1" ${row.active === 1 ? "checked" : ""}>
+                <span class="pe-switch" aria-hidden="true"></span>
+              </label>
             </div>
             <div class="pe-actions"><button type="submit" class="btn btn-primary">儲存基本資料</button></div>
           </form>
         </div>
 
         <details class="pe-sop" open id="step-21">
-          <summary>俗名（客戶寫法 → 本品項）${aliases.length ? ` <span class="sf-pill" style="margin-left:auto;font-size:11px;">${aliases.length} 筆</span>` : ""}</summary>
+          <summary><span class="pe-ic">✎</span>俗名（客戶寫法 → 本品項）${aliases.length ? ` <span class="sf-pill" style="margin-left:auto;font-size:11px;">${aliases.length} 筆</span>` : ""}</summary>
           <div class="pe-step-body">
             <p class="sec-hint">全公司有效；客戶寫的別名（例「大陸妹」「美生菜」）對應到本品項。</p>
             <table class="pe-table"><thead><tr><th>俗名</th><th style="width:120px;">操作</th></tr></thead><tbody>${aliasRows || "<tr><td colspan='2' style='color:var(--notion-text-muted);'>尚無俗名</td></tr>"}</tbody></table>
@@ -13173,7 +14363,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         </details>
 
         <details class="pe-sop" open id="step-22">
-          <summary>叫貨單位 → 公斤${unitSpecs.length ? ` <span class="sf-pill" style="margin-left:auto;font-size:11px;">${unitSpecs.length} 筆</span>` : ""}</summary>
+          <summary><span class="pe-ic">⚖</span>叫貨單位 → 公斤${unitSpecs.length ? ` <span class="sf-pill" style="margin-left:auto;font-size:11px;">${unitSpecs.length} 筆</span>` : ""}</summary>
           <div class="pe-step-body">
             <p class="sec-hint">客戶下單用的單位（一包、一小把、一罐…）對應<strong>幾公斤</strong>。填了會自動更新 <strong>LINE 叫貨單位換算</strong>。</p>
             <div class="pu-chip-row"><span class="notion-hint" style="margin:0;font-size:12px;">快選：</span>${unitChipsHtml}</div>
@@ -13193,7 +14383,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         </details>
 
         <details class="pe-sop" id="step-23">
-          <summary>包裝規格（1 箱＝N 包等）${packRatios.length ? ` <span class="sf-pill" style="margin-left:auto;font-size:11px;">${packRatios.length} 筆</span>` : ""}</summary>
+          <summary><span class="pe-ic">▤</span>包裝規格（1 箱＝N 包等）${packRatios.length ? ` <span class="sf-pill" style="margin-left:auto;font-size:11px;">${packRatios.length} 筆</span>` : ""}</summary>
           <div class="pe-step-body">
             <p class="sec-hint">少用。如要描述「1 箱＝12 包」、「1 箱＝24 罐」這類關係。內層重量請在上方「叫貨單位 → 公斤」先填好，本區會推算外層公斤。</p>
             <table class="pe-table"><thead><tr><th>1 外層</th><th>＝幾個內層</th><th>內層單位</th><th>備註</th><th style="width:80px;"></th></tr></thead><tbody>${packTableRows || "<tr><td colspan='5' style='color:var(--notion-text-muted);'>尚無包裝關係</td></tr>"}</tbody></table>

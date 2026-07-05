@@ -43,6 +43,32 @@ function normUnit(u) {
         return "公斤";
     return s;
 }
+/**
+ * 內建物理質量換算 → 每 1 單位對應幾公斤（通用、不需逐品項設定）。
+ * 這些是固定物理換算：1 公斤 = 1000 克、1 台斤 = 0.6 公斤、1 台兩 = 37.5 克。
+ * 注意：「斤」在 normalizeOrderUnitForStorage 已被視為「公斤」（沿用既有行為），
+ *       故實際進單時「斤」不會走到這裡；此處保留 0.6 僅供直接呼叫時一致。
+ */
+const BUILTIN_MASS_KG = {
+    "公斤": 1, "千克": 1, "kg": 1, "k": 1,
+    "公克": 0.001, "克": 0.001, "g": 0.001, "gram": 0.001, "grams": 0.001,
+    "台斤": 0.6, "斤": 0.6,
+    "台兩": 0.0375, "兩": 0.0375,
+};
+/** 回傳該單位的「每單位公斤數」；非質量單位回 null。 */
+function builtinMassKg(unit) {
+    if (unit == null)
+        return null;
+    const raw = String(unit).trim();
+    if (!raw)
+        return null;
+    if (Object.prototype.hasOwnProperty.call(BUILTIN_MASS_KG, raw))
+        return BUILTIN_MASS_KG[raw];
+    const low = raw.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(BUILTIN_MASS_KG, low))
+        return BUILTIN_MASS_KG[low];
+    return null;
+}
 /** 與 LINE webhook 一致：進庫前將 k／kg／斤等統一成「公斤」，其餘保留原文（把、包等） */
 function normalizeOrderUnitForStorage(raw, fallbackUnit) {
     const u = String(raw || "").trim().toUpperCase();
@@ -78,13 +104,14 @@ function applyUnitConversion(rulesWrap, resolved, quantity, unit) {
     let u = normUnit(unit);
     if (!resolved || !Number.isFinite(q))
         return { quantity: q, unit: u || unit, remark: null };
-    // 通用換算：1斤 = 0.6公斤
-    if (u === "斤") {
-        const converted = Math.round((q * 0.6) * 1000) / 1000;
+    // 內建物理質量換算：克/公克/g、台斤、台兩、斤 → 公斤（乘係數，非改名）
+    const massKg = builtinMassKg(u);
+    if (massKg != null && u !== "公斤") {
+        const converted = Math.round((q * massKg) * 1000) / 1000;
         return {
             quantity: converted,
             unit: "公斤",
-            remark: buildConversionRemark({ remarkStyle: "plain" }, q, "斤"),
+            remark: buildConversionRemark({ remarkStyle: "plain" }, q, u),
         };
     }
     if (!rules.length)
@@ -166,12 +193,14 @@ async function applyOrderUnitConversion(db, rulesWrap, resolved, quantity, unit)
     const u = normUnit(unit);
     if (!resolved || !Number.isFinite(q))
         return { quantity: q, unit: u || unit, remark: null };
-    if (u === "斤") {
-        const converted = Math.round((q * 0.6) * 1000) / 1000;
+    // 內建物理質量換算：克/公克/g、台斤、台兩、斤 → 公斤（乘係數，非改名）；優先於品項規則
+    const massKg = builtinMassKg(u);
+    if (massKg != null && u !== "公斤") {
+        const converted = Math.round((q * massKg) * 1000) / 1000;
         return {
             quantity: converted,
             unit: "公斤",
-            remark: buildConversionRemark({ remarkStyle: "plain" }, q, "斤"),
+            remark: buildConversionRemark({ remarkStyle: "plain" }, q, u),
         };
     }
     if (resolved.productId && db && normUnit(u) !== "公斤") {

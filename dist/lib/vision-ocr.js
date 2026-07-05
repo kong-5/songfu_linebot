@@ -18,7 +18,7 @@ async function getMetadataAccessToken() {
     const now = Date.now();
     if (_tokenCache.token && now < _tokenCache.exp)
         return _tokenCache.token;
-    const res = await fetch("http://metadata.google.internal/computeMetadata/v1/instance/service-account/token", {
+    const res = await fetch("http://metadata.google.internal/computeMetadata/v1/instance/service-account/default/token", {
         headers: { "Metadata-Flavor": "Google" },
     });
     if (!res.ok)
@@ -28,7 +28,8 @@ async function getMetadataAccessToken() {
     _tokenCache = { token: j.access_token, exp: now + ttlMs - 60000 };
     return j.access_token;
 }
-async function getTextFromImageBuffer(buffer) {
+/** 呼叫 Vision DOCUMENT_TEXT_DETECTION，回傳 responses[0]（含 fullTextAnnotation），失敗回 null。 */
+async function annotateDocumentText(buffer) {
     if (!buffer || buffer.length === 0)
         return null;
     const apiKey = process.env.GOOGLE_CLOUD_VISION_API_KEY;
@@ -83,11 +84,51 @@ async function getTextFromImageBuffer(buffer) {
             return null;
         }
         const data = await res.json();
-        const text = data?.responses?.[0]?.fullTextAnnotation?.text?.trim();
-        return text || null;
+        return data?.responses?.[0] || null;
     }
     catch (e) {
         console.warn("[vision-ocr] 辨識失敗:", e?.message || e);
         return null;
     }
 }
+async function getTextFromImageBuffer(buffer) {
+    const r = await annotateDocumentText(buffer);
+    const text = r?.fullTextAnnotation?.text?.trim();
+    return text || null;
+}
+/**
+ * 回傳每個「字詞」的方框（像素座標）＋圖片尺寸，供後台在照片上疊辨識框。
+ * @returns {Promise<{width:number,height:number,words:Array<{text:string,x:number,y:number,w:number,h:number}>}|null>}
+ */
+async function getWordBoxesFromImageBuffer(buffer) {
+    const r = await annotateDocumentText(buffer);
+    const fta = r?.fullTextAnnotation;
+    const page = fta?.pages?.[0];
+    if (!page)
+        return null;
+    let W = page.width || 0;
+    let H = page.height || 0;
+    const words = [];
+    let maxX = 0, maxY = 0;
+    for (const block of (page.blocks || [])) {
+        for (const para of (block.paragraphs || [])) {
+            for (const w of (para.words || [])) {
+                const text = (w.symbols || []).map((s) => s.text || "").join("");
+                const vs = (w.boundingBox && (w.boundingBox.vertices || w.boundingBox.normalizedVertices)) || [];
+                if (!text || vs.length < 2)
+                    continue;
+                const xs = vs.map((v) => v.x || 0);
+                const ys = vs.map((v) => v.y || 0);
+                const x = Math.min(...xs), y = Math.min(...ys);
+                const x2 = Math.max(...xs), y2 = Math.max(...ys);
+                if (x2 > maxX) maxX = x2;
+                if (y2 > maxY) maxY = y2;
+                words.push({ text, x, y, w: x2 - x, h: y2 - y });
+            }
+        }
+    }
+    if (!W) W = maxX;
+    if (!H) H = maxY;
+    return { width: W, height: H, words };
+}
+exports.getWordBoxesFromImageBuffer = getWordBoxesFromImageBuffer;

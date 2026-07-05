@@ -5,49 +5,48 @@ ly_writeback_bridge.py — 雲端後台 ↔ 凌越 ERP 回寫橋接（內網 age
 =====================================================================
 
 跑在已能連到凌越 LAN 的那台機器（D:\\Work\\lystk_tool 旁），把雲端後台的
-「待回寫訂單」寫進凌越銷貨單，再把凌越配發的單號回填到後台顯示。
+「待回寫訂單」寫進凌越【訂貨單／客戶訂單】，再把凌越配發的單號回填到後台顯示。
+
+單別（2026-07-04 定案）
+----------------------
+  ※ 寫入凌越「訂貨單（客戶訂單）」= 資料種類 0000A0，用 ly_order.write_order。
+    （不是銷貨單 0000A1；客戶 LINE 叫貨屬「訂單」階段，之後在凌越再轉銷貨出貨。）
+  ※ 若日後要改寫銷貨單，改回 import ly_datain 並用 SP_/SD_ 欄位即可（見 git 舊版）。
 
 流程
 ----
   1. GET  {CLOUD}/admin/lingyue-writeback/pending?date=YYYY-MM-DD   （帶 X-Writeback-Key）
-  2. 每張訂單 → 組成 ly_datain.write_invoice 的 row → 寫入凌越
-     （單號 SP_NO 由 ly_datain 依「當日既有單據最大流水 +1」自動順編，不會撞號）
+  2. 每張訂單 → 組成 ly_order.write_order 的 row → 寫入凌越訂貨單
+     （單號 OR_NO 由 ly_order 依「當日既有單據最大流水 +1」自動順編，不會撞號）
   3. POST {CLOUD}/admin/lingyue-writeback/callback  回填凌越單號
 
-目標單別
---------
-  ※ 應寫入凌越「銷貨訂單（客戶訂單）」，不是銷貨單。
-  ※ 目前 ly_datain.write_invoice 寫的是「銷貨單」(SP_/SD_ 欄位)。改寫銷貨訂單需 Dispatch
-    在 ly_datain.py 提供訂單寫入方法（資料種類代碼 + 訂單主表/明細欄位名稱），確認後改下方 map_order
-    與 write_invoice 呼叫。雲端 /pending 給的是通用欄位（客戶碼/料號/數量/單位），單別切換不需動雲端。
-
-欄位對映（雲端 pending → 凌越，以下為「銷貨單」對映，銷貨訂單欄位待 Dispatch 提供）
+欄位對映（雲端 pending → 凌越訂貨單）
 ------------------------------
-  主表： customer_code→SP_CTNO  customer_name→SP_CTNAME  order_date→SP_DATE  doc_remark→SP_REM
-  明細： product_code→SD_SKNO  product_name→SD_NAME  unit→SD_UNIT  quantity→SD_QTY
-         item_note→SD_REM   SD_WHNO=（預設留空，之後在凌越補）
-         SD_PRICE=（預設留空＝不送，讓凌越依客戶售價表自動帶價）
+  主表： customer_code→OR_CTNO  customer_name→OR_CTNAME  order_date→OR_DATE1/OR_DATE2  doc_remark→OR_REM
+  明細： product_code→OD_SKNO  product_name→OD_NAME  unit→OD_UNIT  quantity→OD_QTY
+         item_note→OD_REM   OD_WARE=（預設留空，之後在凌越補倉別）
+         OD_PRICE=（預設留空＝不送，讓凌越依客戶售價表自動帶價）
 
 設定（環境變數，或用 CLI 參數覆蓋）
 -----------------------------------
   LY_CLOUD_BASE     雲端後台網址，如 https://xxxx.run.app（必填）
   LY_WRITEBACK_KEY  與後台環境變數 LINGYUE_WRITEBACK_KEY 相同的金鑰（必填）
   LY_ICPNO          公司代碼，預設 "00"（松富）
-  LY_DEFAULT_WHNO   預設倉別 SD_WHNO，預設 ""（留空；若凌越不接受空倉別，改設成如 FN005）
-  LY_DEFAULT_PRICE  預設單價，預設 ""（留空＝不送單價，讓凌越依客戶售價表自動帶；
+  LY_DEFAULT_WHNO   預設倉別 OD_WARE，預設 ""（留空；若凌越不接受空倉別，改設成如 FN005）
+  LY_DEFAULT_PRICE  預設單價 OD_PRICE，預設 ""（留空＝不送單價，讓凌越依客戶售價表自動帶；
                     只有確實要強制單價時才設，如 LY_DEFAULT_PRICE=0 會強制變 0）
 
 用法
 ----
   # 1) 先試跑（只抓資料、組單、印出來，不寫凌越、不回填）— 確認對映正確
-  python ly_writeback_bridge.py --date 2026-06-06 --dry-run
+  python ly_writeback_bridge.py --date 2026-07-04 --dry-run
 
-  # 2) 寫「一張」測試單（SP_REM 標記【API測試請刪除】）→ 驗證 → 自動刪除；不回填後台
-  #    用這步確認「倉別留空 + 單價 0」凌越會不會收。加 --keep 可保留不刪、自己進 ERP 看。
-  python ly_writeback_bridge.py --date 2026-06-06 --test
+  # 2) 寫「一張」測試訂貨單（OR_REM 標記【API測試請刪除】）→ 驗證 → 自動刪除；不回填後台
+  #    用這步確認「倉別留空 + 單價留空」凌越會不會收。加 --keep 可保留不刪、自己進 ERP 看。
+  python ly_writeback_bridge.py --date 2026-07-04 --test
 
   # 3) 確認沒問題後，正式整批回寫並回填後台
-  python ly_writeback_bridge.py --date 2026-06-06
+  python ly_writeback_bridge.py --date 2026-07-04
 """
 
 import os
@@ -58,9 +57,9 @@ import datetime
 import urllib.request
 import urllib.error
 
-# 讓本機找得到 ly_datain（與探索工具同目錄）
+# 讓本機找得到 ly_order（與探索工具同目錄）
 sys.path.insert(0, r"D:\Work\lystk_tool")
-import ly_datain  # noqa: E402  提供 write_invoice / verify_sp_no / delete_invoice
+import ly_order  # noqa: E402  提供 write_order / verify_or_no / delete_order
 
 TEST_REM_PREFIX = "【API測試請刪除】"
 
@@ -99,40 +98,48 @@ def post_callback(base: str, key: str, results: list) -> dict:
 
 
 # ----------------------------------------------------------------------
-#  雲端訂單 → 凌越 write_invoice row
+#  雲端訂單 → 凌越 write_order row（訂貨單 OR_/OD_ 欄位）
 # ----------------------------------------------------------------------
 
 def map_order(order: dict, *, whno: str, price: str, rem_prefix: str = "") -> dict:
-    """把一張雲端 pending 訂單轉成 ly_datain.write_invoice 需要的 row dict。"""
+    """把一張雲端 pending 訂單轉成 ly_order.write_order 需要的 row dict。"""
     details = []
     for it in order.get("items", []) or []:
+        skno = (it.get("product_code") or "").strip()
+        name = (it.get("product_name") or "").strip()
+        if not skno:
+            # 凌越不收沒有料號的明細行 → 跳過並警示，避免整張單寫入失敗（品項需人工補料號）
+            print(f"    ⚠ 跳過無凌越料號品項：{name or '(無名)'}（客戶 {order.get('customer_name')}）", file=sys.stderr)
+            continue
         qty = it.get("quantity")
         det = {
-            "SD_SKNO": (it.get("product_code") or "").strip(),
-            "SD_NAME": (it.get("product_name") or "").strip(),
-            "SD_UNIT": (it.get("unit") or "KG").strip(),
-            "SD_WHNO": whno,                       # 預設留空（之後在凌越補倉別）
-            "SD_QTY": qty if qty is not None else 0,
+            "OD_SKNO": skno,
+            "OD_NAME": name,
+            "OD_UNIT": (it.get("unit") or "KG").strip(),
+            "OD_WARE": whno,                       # 預設留空（之後在凌越補倉別）
+            "OD_QTY": qty if qty is not None else 0,
         }
-        # 單價：叫貨單無價。留空（不送 SD_PRICE）→ 讓凌越依「客戶售價表」自動帶價。
+        # 單價：叫貨單無價。留空（不送 OD_PRICE）→ 讓凌越依「客戶售價表」自動帶價。
         # 只有當明確指定 LY_DEFAULT_PRICE / --price（非空）時才強制覆寫單價。
         if price not in (None, ""):
-            det["SD_PRICE"] = price
+            det["OD_PRICE"] = price
         note = (it.get("item_note") or "").strip()
         if note:
-            det["SD_REM"] = note
+            det["OD_REM"] = note
         details.append(det)
 
     rem = (order.get("doc_remark") or "").strip()
     if rem_prefix:
         rem = (rem_prefix + rem).strip()
 
+    order_date = (order.get("order_date") or "").strip().replace("/", "-")  # 正規化成 YYYY-MM-DD（雲端可能給斜線）
     return {
-        "SP_CTNO": (order.get("customer_code") or "").strip(),
-        "SP_CTNAME": (order.get("customer_name") or "").strip(),
-        "SP_DATE": (order.get("order_date") or "").strip(),  # 雲端已給 YYYY-MM-DD
-        "SP_REM": rem,
-        "SP_CHECK": "0",                                      # 不審核，方便需要時刪除
+        "OR_CTNO": (order.get("customer_code") or "").strip(),
+        "OR_CTNAME": (order.get("customer_name") or "").strip(),
+        "OR_DATE1": order_date,
+        "OR_DATE2": order_date,
+        "OR_REM": rem,
+        "OR_CHECK": "0",                                      # 不審核，方便需要時刪除
         "details": details,
     }
 
@@ -164,7 +171,7 @@ def run(args) -> int:
     if args.dry_run:
         for o in orders:
             row = map_order(o, whno=whno, price=price)
-            print(f"\n── order_id={o.get('order_id')}  客戶={row['SP_CTNO']} {row['SP_CTNAME']} ──")
+            print(f"\n── order_id={o.get('order_id')}  客戶={row['OR_CTNO']} {row['OR_CTNAME']} ──")
             print(json.dumps(row, ensure_ascii=False, indent=2))
         print("\n(dry-run：未寫入凌越、未回填)")
         return 0
@@ -173,27 +180,28 @@ def run(args) -> int:
     if args.test:
         o = orders[0]
         row = map_order(o, whno=whno, price=price, rem_prefix=TEST_REM_PREFIX)
-        print(f"\n▶ 測試寫入第一張：order_id={o.get('order_id')}  客戶={row['SP_CTNO']} {row['SP_CTNAME']}")
+        print(f"\n▶ 測試寫入第一張：order_id={o.get('order_id')}  客戶={row['OR_CTNO']} {row['OR_CTNAME']}")
         try:
-            new_nos = ly_datain.write_invoice(icpno=icpno, rows=[row], verbose=True)
+            new_nos = ly_order.write_order(icpno=icpno, rows=[row], verbose=True)
         except RuntimeError as e:
             print(f"❌ 測試寫入失敗：{e}")
             print("   （若是倉別/單價被拒，請調整 LY_DEFAULT_WHNO / LY_DEFAULT_PRICE 後再試）")
             return 1
-        sp_no = new_nos[0]
-        print(f"✅ 測試寫入成功，凌越單號 = {sp_no}")
-        rec = ly_datain.verify_sp_no(icpno, sp_no)
+        or_no = new_nos[0]
+        print(f"✅ 測試寫入成功，凌越訂貨單號 = {or_no}")
+        rec = ly_order.verify_or_no(icpno, or_no)
         if rec:
             print("  回查 ERP：")
-            for f in ["SP_NO", "SP_DATE", "SP_CTNAME", "SP_TOTAL", "SP_REM", "SP_CHECK"]:
+            for f in ["OR_NO", "OR_DATE1", "OR_CTNAME", "OR_TOT", "OR_SUM", "OR_REM", "OR_CHECK"]:
                 print(f"    {f:<12} {rec.get(f, '(無)')}")
+            print(f"    明細行數     {len(rec.get('_details', []))}")
         else:
             print("  ⚠️ 回查不到，可能有延遲")
         if args.keep:
-            print(f"  --keep：保留測試單 {sp_no}，請自行到凌越確認後刪除。")
+            print(f"  --keep：保留測試單 {or_no}，請自行到凌越確認後刪除。")
         else:
-            rc = ly_datain.delete_invoice(icpno, sp_no)
-            print(f"  已刪除測試單 {sp_no}（LyDataDel rc={rc}，0=成功）")
+            rc = ly_order.delete_order(icpno, or_no)
+            print(f"  已刪除測試單 {or_no}（LyDataDel rc={rc}，0=成功）")
         print("\n(test：未回填後台。確認無誤後，拿掉 --test 正式整批回寫。)")
         return 0
 
@@ -204,11 +212,11 @@ def run(args) -> int:
         oid = o.get("order_id")
         row = map_order(o, whno=whno, price=price)
         try:
-            new_nos = ly_datain.write_invoice(icpno=icpno, rows=[row], verbose=args.verbose)
-            sp_no = new_nos[0]
-            results.append({"order_id": oid, "doc_no": sp_no, "ok": True})
+            new_nos = ly_order.write_order(icpno=icpno, rows=[row], verbose=args.verbose)
+            or_no = new_nos[0]
+            results.append({"order_id": oid, "doc_no": or_no, "ok": True})
             ok_count += 1
-            print(f"  ✅ {oid} → 凌越單號 {sp_no}")
+            print(f"  ✅ {oid} → 凌越訂貨單號 {or_no}")
         except RuntimeError as e:
             results.append({"order_id": oid, "ok": False, "error": str(e)})
             print(f"  ❌ {oid} 寫入失敗：{e}")
@@ -220,13 +228,13 @@ def run(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="雲端後台 ↔ 凌越 ERP 訂單回寫橋接")
+    p = argparse.ArgumentParser(description="雲端後台 ↔ 凌越 ERP 訂貨單回寫橋接")
     p.add_argument("--date", help="要回寫的日期 YYYY-MM-DD（預設今天）")
     p.add_argument("--base", help="雲端後台網址（預設讀 LY_CLOUD_BASE）")
     p.add_argument("--key", help="回寫金鑰（預設讀 LY_WRITEBACK_KEY）")
     p.add_argument("--icpno", help="公司代碼（預設 00 松富，或 LY_ICPNO）")
-    p.add_argument("--warehouse", help="預設倉別 SD_WHNO（預設留空，或 LY_DEFAULT_WHNO）")
-    p.add_argument("--price", help="預設單價 SD_PRICE（預設 0，或 LY_DEFAULT_PRICE）")
+    p.add_argument("--warehouse", help="預設倉別 OD_WARE（預設留空，或 LY_DEFAULT_WHNO）")
+    p.add_argument("--price", help="預設單價 OD_PRICE（預設留空，或 LY_DEFAULT_PRICE）")
     p.add_argument("--dry-run", action="store_true", help="只抓+組單印出，不寫凌越、不回填")
     p.add_argument("--test", action="store_true", help="只寫第一張(標記測試)→驗證→刪除；不回填")
     p.add_argument("--keep", action="store_true", help="搭配 --test：保留測試單不刪除")
