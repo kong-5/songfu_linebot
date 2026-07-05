@@ -44,6 +44,8 @@ async function insertEmptyBaskets(db, customerId, orderIds) {
     try {
         const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(customerId);
         const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
+        // 沒設路線＝自取，不補任何空籃（含固定四角籃 C0100065）
+        if (routeLine == null) return;
         const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
         // 要補的空籃料號：路線號碼籃（有設路線才有）＋ 固定四角籃 C0100065。
         // 路線 9 的號碼籃剛好等於 C0100065，去重避免同一料號插兩次。

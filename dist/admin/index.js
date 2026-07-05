@@ -6533,6 +6533,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         try {
             const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(customerId);
             const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
+            // 沒設路線＝自取，不補任何空籃（含固定四角籃 C0100065）
+            if (routeLine == null) return;
             const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
             const erps = [];
             if (emptyBasketErp)
