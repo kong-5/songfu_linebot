@@ -229,12 +229,13 @@ def query_invoices(icpno: str, date_str: str, office: str) -> list[dict]:
     # 部門自帶公司優先；否則用傳入/預設 icpno。單張補明細也要用同一個 icpno。
     eff_icpno = (office_icpno(code) if code else "") or icpno
 
+    # 拉該公司當天全部主表，再在本地依部門欄位過濾。
+    # （不用 lystk.query 的 where/whval：實測其語意非「欄位=值」，會濾成空；
+    #   本地過濾與探索時 probe 的做法一致，穩定可靠。當日單量小，整批拉無負擔。）
     ly = _load_lystk()
-    kwargs = {"icpno": eff_icpno, "idakd": SP_IDAKD, "date": date_str}
+    rows = ly.query(icpno=eff_icpno, idakd=SP_IDAKD, date=date_str) or []
     if code:
-        kwargs["where"] = fld
-        kwargs["whval"] = code
-    rows = ly.query(**kwargs) or []
+        rows = [r for r in rows if str(r.get(fld, "")).strip() == code]
 
     out = []
     for r in rows:
