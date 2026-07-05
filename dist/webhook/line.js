@@ -23,6 +23,7 @@ const order_parsed_heuristics_js_1 = require("../lib/order-parsed-heuristics.js"
 const cloud_tasks_line_js_1 = require("../lib/cloud-tasks-line.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
+const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
@@ -31,42 +32,8 @@ const hasLineConfig = Boolean(channelAccessToken && channelSecret);
 const COLLECT_TIMEOUT_MS = (parseInt(process.env.LINE_COLLECT_TIMEOUT_SEC || "30", 10) || 30) * 1000;
 const collectingByGroup = new Map();
 const autoFinalizeTimers = new Map();
-/**
- * 依客戶路線把空籃（號碼籃 + 四角籃）補進指定訂單。
- * 手動收單與 30 秒自動收單都呼叫同一個函式，避免只有一條路徑會補籃。
- * 已存在同 product_id 的品項就跳過，重複結單不會長出重複列。
- * @param {*} db
- * @param {string} customerId
- * @param {string[]} orderIds
- */
-async function insertEmptyBaskets(db, customerId, orderIds) {
-    if (!db || !customerId || !orderIds || !orderIds.length) return;
-    try {
-        const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(customerId);
-        const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
-        // 沒設路線＝自取，不補任何空籃（含固定四角籃 C0100065）
-        if (routeLine == null) return;
-        const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
-        // 要補的空籃料號：路線號碼籃（有設路線才有）＋ 固定四角籃 C0100065。
-        // 路線 9 的號碼籃剛好等於 C0100065，去重避免同一料號插兩次。
-        const erps = [];
-        if (emptyBasketErp) erps.push(emptyBasketErp);
-        if (!erps.includes("C0100065")) erps.push("C0100065");
-        for (const erp of erps) {
-            const prod = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(erp);
-            if (!prod) continue;
-            for (const oid of orderIds) {
-                const exists = await db.prepare("SELECT 1 FROM order_items WHERE order_id = ? AND product_id = ? LIMIT 1").get(oid, prod.id);
-                if (exists) continue;
-                const itemId = (0, id_js_1.newId)("item");
-                await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, 0, ?, 0, 1, NULL)").run(itemId, oid, prod.id, prod.name, prod.unit || "個");
-            }
-        }
-    }
-    catch (e) {
-        console.error("[LINE] 補空籃失敗 customerId=%s:", customerId, e?.message || e);
-    }
-}
+// 補空籃邏輯抽到 ../lib/empty-baskets.js（後台拆併單也要用同一份，避免兩處版本漂移）
+const insertEmptyBaskets = empty_baskets_js_1.insertEmptyBaskets;
 // G15：session 持久化 helpers（讓 Cloud Run 重啟後可恢復未結單）
 async function persistCollectSession(db, groupId, session) {
     if (!db || !groupId || !session?.orderId) return;

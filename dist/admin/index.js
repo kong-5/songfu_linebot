@@ -68,6 +68,7 @@ const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
 const daily_summary_push_js_1 = require("../lib/daily-summary-push.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
+const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const announcement_templates_js_1 = require("../lib/announcement-templates.js");
 const announcement_image_js_1 = require("../lib/announcement-image.js");
 const calendar_holidays_js_1 = require("../lib/calendar-holidays.js");
@@ -113,6 +114,53 @@ async function getNextOrderNoAdmin(db, orderDate) {
     const orderNo = orderDate.replace(/-/g, "") + String(nextSeq).padStart(3, "0");
     await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(nextKey, String(nextSeq + 1));
     return orderNo;
+}
+/**
+ * 拆併單共用：找到（或建立）同客戶＋同出貨日、指定子客戶的目標訂單，回傳 targetOrderId。
+ * targetSubCustomer 空字串 = 主客戶（未分拆）訂單。新建訂單會複製來源訂單的附件參照，
+ * 讓審核子單時也看得到原始訂單照片。
+ * 呼叫端：手動拆併單（move-items）、依子客戶一鍵拆單（split-by-sub-customer）。
+ */
+async function resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer) {
+    const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+    let targetOrderId = null;
+    if (targetSubCustomer === "") {
+        const row = await db.prepare(`
+      SELECT id FROM orders
+      WHERE customer_id = ? AND order_date = ?
+      AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key, '')) = '')
+      ORDER BY id ASC LIMIT 1
+    `).get(sourceOrder.customer_id, sourceOrder.order_date);
+        targetOrderId = row?.id ?? null;
+    }
+    else {
+        const row = await db.prepare(`
+      SELECT id FROM orders
+      WHERE customer_id = ? AND order_date = ?
+      AND TRIM(order_sub_split_key) = ?
+      ORDER BY id ASC LIMIT 1
+    `).get(sourceOrder.customer_id, sourceOrder.order_date, targetSubCustomer);
+        targetOrderId = row?.id ?? null;
+    }
+    if (!targetOrderId) {
+        const newOid = (0, id_js_1.newId)("ord");
+        const orderNo = await getNextOrderNoAdmin(db, sourceOrder.order_date);
+        const remarkNew = targetSubCustomer ? `[子單拆分: ${targetSubCustomer}]` : null;
+        const splitKeyNew = targetSubCustomer ? targetSubCustomer : null;
+        await db.prepare(`
+      INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, line_message_id, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ` + nowSql + `)
+    `).run(newOid, orderNo, sourceOrder.customer_id, sourceOrder.order_date, sourceOrder.line_group_id ?? null, sourceOrder.raw_message ?? "", remarkNew, splitKeyNew);
+        const attRows = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ?").all(sourceOrder.id);
+        for (const ar of attRows) {
+            if (!ar?.line_message_id)
+                continue;
+            const attId = (0, id_js_1.newId)("att");
+            await db.prepare(`INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, ` + nowSql + `)`).run(attId, newOid, ar.line_message_id);
+        }
+        targetOrderId = newOid;
+    }
+    return targetOrderId;
 }
 const NOTION_STYLE = `
   :root {
@@ -531,6 +579,10 @@ const NOTION_STYLE = `
   input.add-item-qty { -moz-appearance: textfield; font-size: 18px; font-weight: 700; text-align: center; }
   table.order-detail-table .order-del-btn-icon { min-width: 1.75rem; padding: 1px 4px; font-size: 17px; font-weight: 700; line-height: 1.1; color: #b71c1c; border-color: rgba(183, 28, 28, 0.35); }
   table.order-detail-table .order-del-btn-icon:hover { background: rgba(183, 28, 28, 0.07); }
+  /* 每列操作鈕（＋插入 / ⊘作廢）：桌面直向堆疊，手機（760px 以下）改橫排 */
+  table.order-detail-table .row-act-stack { display: inline-flex; flex-direction: column; gap: 3px; align-items: center; }
+  table.order-detail-table .item-insert-btn { min-width: 1.75rem; padding: 1px 4px; font-size: 15px; font-weight: 700; line-height: 1.1; color: #047857; border-color: rgba(4, 120, 87, 0.35); }
+  table.order-detail-table .item-insert-btn:hover { background: rgba(4, 120, 87, 0.07); }
   table.order-detail-table tbody td { padding-top: 5px; padding-bottom: 5px; }
   table.order-detail-table thead th { padding: 6px 8px; font-size: 12px; }
   .order-legend { font-size: 12px; color: var(--notion-text-muted); margin: 0 0 10px; line-height: 1.5; }
@@ -847,6 +899,31 @@ const NOTION_STYLE = `
     }
     .sf-table tbody tr.order-row > td.order-mobile-only::before { display: none !important; content: none !important; }
     .sf-table tbody tr.order-row { padding: 0 !important; }
+    /* 新增品項列（.add-item-row）：不能套上面的品項卡 grid 版型——
+       它只有一個 colspan td（nth-child(1) 會被隱藏），整列在手機上會消失、無法新增品項。
+       改為整塊直排卡片顯示。 */
+    table.order-detail-table tr.add-item-row {
+      display: block;
+      border: 1.5px dashed var(--notion-border);
+      border-radius: 12px;
+      margin-bottom: 12px;
+      background: var(--notion-bg);
+      overflow: visible;
+    }
+    table.order-detail-table tr.add-item-row::before { content: none; display: none; }
+    table.order-detail-table tr.add-item-row > td {
+      display: block !important;
+      border: none;
+      padding: 10px 12px !important;
+      background: transparent !important;
+    }
+    #inlineAddItem .review-product-picker { flex: 1 1 100%; min-width: 0; }
+    #inlineAddItem .add-item-qty { width: 6rem !important; font-size: 20px; }
+    #inlineAddItem .add-item-unit { min-width: 5.5rem; font-size: 16px; }
+    #inlineAddItem #inlineAddBtn { flex: 1 0 auto; height: 38px; font-size: 14px; }
+    /* 每列的「＋插入」與「⊘作廢」在手機卡片右上角並排 */
+    table.order-detail-table tbody tr td:nth-child(10) .row-act-stack { flex-direction: row; gap: 10px; }
+    table.order-detail-table tbody tr td:nth-child(10) .item-insert-btn { min-width: 1.85rem; font-size: 16px; padding: 2px 6px; }
   }
   /* 訂單列表 mobile 卡片：桌面隱藏 */
   .order-mobile-only { display: none; }
@@ -9481,7 +9558,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <td>${unitSelectWithVal}</td>
             <td><input type="text" name="sub_customer_${i.item_id}" form="itemsForm" value="${subCustomerVal}" placeholder="子客戶" style="width:100%;max-width:7rem;"></td>
             <td><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:100px;"></td>
-            <td><button type="button" class="btn btn-delete-item order-del-btn order-del-btn-icon" data-item-id="${escapeAttr(i.item_id)}" data-order-id="${escapeAttr(orderId)}" data-raw-name="${escapeAttr(i.raw_name || "")}" title="作廢此列（保留稽核紀錄、可納入 AI 學習）" aria-label="作廢此列">⊘</button></td>
+            <td><span class="row-act-stack"><button type="button" class="btn item-insert-btn" data-item-id="${escapeAttr(i.item_id)}" data-item-idx="${idx + 1}" title="在第 ${idx + 1} 項下方插入品項（補漏辨識）" aria-label="在此項下方插入品項">＋</button><button type="button" class="btn btn-delete-item order-del-btn order-del-btn-icon" data-item-id="${escapeAttr(i.item_id)}" data-order-id="${escapeAttr(orderId)}" data-raw-name="${escapeAttr(i.raw_name || "")}" title="作廢此列（保留稽核紀錄、可納入 AI 學習）" aria-label="作廢此列">⊘</button></span></td>
           </tr>`;
         })
             .join("");
@@ -9500,6 +9577,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               </label>
               <input type="text" id="target_sub_customer_custom" placeholder="選「自訂」或額外輸入正式名稱" style="min-width:12rem;max-width:20rem;padding:4px 8px;" />
               <button type="button" id="btn_move_items" class="btn btn-primary">轉移選取品項</button>
+              <button type="button" id="btn_split_by_subcust" class="btn" title="把有填「子客戶」的品項各自拆成獨立訂單（每個子客戶一筆），並自動補該路線空籃；審核時就是分開的兩筆單">依子客戶拆單</button>
               <span id="move_items_status" style="font-size:12px;color:var(--notion-text-secondary);"></span>
             </div>`;
         const orderStatusLc = String(order.status || "").toLowerCase();
@@ -10001,6 +10079,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 <tbody>${itemsRows}</tbody>
                 <tr class="add-item-row"><td colspan="10" style="background:var(--bg-2);padding:8px 12px;">
                   <div id="inlineAddItem" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <input type="hidden" id="addAfterItemId" value="">
+                    <div id="insertPosBar" style="display:none;width:100%;font-size:12px;color:#047857;align-items:center;gap:8px;flex-wrap:wrap;">
+                      <span id="insertPosText" style="font-weight:700;"></span>
+                      <button type="button" id="insertPosCancel" class="sf-btn sm" style="flex:0 0 auto;">取消插入（改加到最後）</button>
+                    </div>
                     ${frequentProducts.length ? `<style>
                       .freq-prod-chip { font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); background:var(--bg-1); color:var(--txt-1); cursor:pointer; font-family:inherit; max-width:12rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.4; }
                       .freq-prod-chip:hover { border-color:var(--accent); color:var(--accent); }
@@ -10097,6 +10180,33 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 if (opt && opt.dataset.id) selectProduct(opt.dataset.id, opt.dataset.name);
               });
               document.addEventListener("click", function(e){ if (wrap && !wrap.contains(e.target)) hide(); });
+              /* 插入品項：點某列的「＋」，把新增列搬到該列下方，新增後就落在該位置（補漏辨識） */
+              var addRow = document.querySelector("tr.add-item-row");
+              var addRowHome = addRow ? addRow.parentNode : null;
+              var afterInput = document.getElementById("addAfterItemId");
+              var posBar = document.getElementById("insertPosBar");
+              var posText = document.getElementById("insertPosText");
+              var posCancel = document.getElementById("insertPosCancel");
+              function resetInsertPos(){
+                if (afterInput) afterInput.value = "";
+                if (posBar) posBar.style.display = "none";
+                if (addRow && addRowHome && addRow.parentNode !== addRowHome) addRowHome.appendChild(addRow);
+              }
+              if (posCancel) posCancel.addEventListener("click", resetInsertPos);
+              document.addEventListener("click", function(e){
+                var ib = e.target.closest(".item-insert-btn");
+                if (!ib || !addRow) return;
+                var tr = ib.closest("tr");
+                if (!tr) return;
+                tr.after(addRow);
+                if (afterInput) afterInput.value = ib.getAttribute("data-item-id") || "";
+                if (posBar && posText) {
+                  posText.textContent = "插入位置：第 " + (ib.getAttribute("data-item-idx") || "?") + " 項之後";
+                  posBar.style.display = "flex";
+                }
+                try { addRow.scrollIntoView({ behavior: "smooth", block: "center" }); } catch(_){}
+                setTimeout(function(){ try { inp.focus(); } catch(_){} }, 250);
+              });
               addBtn.addEventListener("click", function(){
                 var pid = String(hidden.value || "").trim();
                 if (!pid) { alert("請先輸入關鍵字並從下拉選擇品項。"); inp.focus(); return; }
@@ -10104,9 +10214,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 if (!isFinite(qty) || qty < 0) { alert("數量請填 0 或正數。"); qtyEl.focus(); return; }
                 addBtn.disabled = true;
                 var body = "product_id=" + encodeURIComponent(pid) + "&quantity=" + encodeURIComponent(qty) + "&unit=" + encodeURIComponent(unitEl.value || "公斤");
-                fetch(orderBase + "/items/add", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body, credentials: "same-origin" })
-                  .then(function(){ window.location.href = orderBase + "?ok=add_item#items"; })
-                  .catch(function(){ addBtn.disabled = false; alert("新增失敗，請重試。"); });
+                var afterId = afterInput ? String(afterInput.value || "").trim() : "";
+                if (afterId) body += "&after_item_id=" + encodeURIComponent(afterId);
+                // 先自動儲存目前明細（數量/單位/排序等），避免新增後頁面重載把未存的修改洗掉
+                var pre = (typeof window.doSaveItems === "function") ? window.doSaveItems() : Promise.resolve(true);
+                pre.then(function(saved){
+                  if (saved === false) { addBtn.disabled = false; return; }
+                  fetch(orderBase + "/items/add", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body, credentials: "same-origin" })
+                    .then(function(){ window.location.replace(orderBase + "?ok=add_item&t=" + new Date().getTime() + "#items"); })
+                    .catch(function(){ addBtn.disabled = false; alert("新增失敗，請重試。"); });
+                });
               });
             })();
             </script>
@@ -10590,6 +10707,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 });
             });
           }
+          // 供「新增/插入品項」流程先自動存明細用（該段 script 在前面、不同 IIFE 作用域）
+          window.doSaveItems = doSaveItems;
           if (itemsForm) {
             itemsForm.addEventListener('change', function(){ formDirty = true; });
             itemsForm.addEventListener('input', function(){ formDirty = true; });
@@ -10694,6 +10813,42 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                   if (st) st.textContent = '';
                   alert('請求失敗');
                 });
+            });
+          }
+          // 依子客戶一鍵拆單：先自動存明細（把剛填的「子客戶」存進資料庫），再呼叫拆單
+          var btnSplitSub = document.getElementById('btn_split_by_subcust');
+          if (btnSplitSub) {
+            btnSplitSub.addEventListener('click', function(){
+              if (!confirm('將把有填「子客戶」的品項各自拆成獨立訂單（每個子客戶一筆），並自動補該路線空籃。\\n拆出去的訂單會出現在待確認清單，附有同一張原始訂單照片。\\n\\n確定拆單？')) return;
+              var st = document.getElementById('move_items_status');
+              btnSplitSub.disabled = true;
+              if (st) st.textContent = '拆單中…';
+              var pre = (typeof window.doSaveItems === 'function') ? window.doSaveItems() : Promise.resolve(true);
+              pre.then(function(saved){
+                if (saved === false) { btnSplitSub.disabled = false; if (st) st.textContent = ''; return; }
+                fetch('/admin/api/orders/' + encodeURIComponent(orderId) + '/split-by-sub-customer', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                  credentials: 'same-origin'
+                })
+                  .then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); })
+                  .then(function(x){
+                    btnSplitSub.disabled = false;
+                    if (st) st.textContent = '';
+                    if (x.ok && x.j && x.j.ok) {
+                      var n = (x.j.moved || []).length;
+                      sfToast('✓ 已拆出 ' + n + ' 筆子客戶訂單（空籃已補），即將重新整理…');
+                      setTimeout(function(){ window.location.reload(); }, 900);
+                      return;
+                    }
+                    alert(x.j && x.j.error ? x.j.error : '拆單失敗');
+                  })
+                  .catch(function(){
+                    btnSplitSub.disabled = false;
+                    if (st) st.textContent = '';
+                    alert('拆單請求失敗');
+                  });
+              });
             });
           }
         })();
@@ -11042,56 +11197,69 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.status(400).json({ ok: false, error: "部分品項不存在或不屬於此訂單" });
                 return;
             }
-            const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
             const subVal = targetSubCustomer === "" ? null : targetSubCustomer;
-            let targetOrderId = null;
-            if (targetSubCustomer === "") {
-                const row = await db.prepare(`
-          SELECT id FROM orders
-          WHERE customer_id = ? AND order_date = ?
-          AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key, '')) = '')
-          ORDER BY id ASC LIMIT 1
-        `).get(sourceOrder.customer_id, sourceOrder.order_date);
-                targetOrderId = row?.id ?? null;
-            }
-            else {
-                const row = await db.prepare(`
-          SELECT id FROM orders
-          WHERE customer_id = ? AND order_date = ?
-          AND TRIM(order_sub_split_key) = ?
-          ORDER BY id ASC LIMIT 1
-        `).get(sourceOrder.customer_id, sourceOrder.order_date, targetSubCustomer);
-                targetOrderId = row?.id ?? null;
-            }
-            if (!targetOrderId) {
-                const newOid = (0, id_js_1.newId)("ord");
-                const orderNo = await getNextOrderNoAdmin(db, sourceOrder.order_date);
-                const remarkNew = targetSubCustomer ? `[子單拆分: ${targetSubCustomer}]` : null;
-                const splitKeyNew = targetSubCustomer ? targetSubCustomer : null;
-                await db.prepare(`
-          INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, line_message_id, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ` + nowSql + `)
-        `).run(newOid, orderNo, sourceOrder.customer_id, sourceOrder.order_date, sourceOrder.line_group_id ?? null, sourceOrder.raw_message ?? "", remarkNew, splitKeyNew);
-                const attRows = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ?").all(orderId);
-                for (const ar of attRows) {
-                    if (!ar?.line_message_id)
-                        continue;
-                    const attId = (0, id_js_1.newId)("att");
-                    await db.prepare(`INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, ` + nowSql + `)`).run(attId, newOid, ar.line_message_id);
-                }
-                targetOrderId = newOid;
-            }
+            const targetOrderId = await resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer);
             const phUp = itemIds.map(() => "?").join(",");
             if (targetOrderId === orderId) {
                 await db.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
             }
             else {
                 await db.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(targetOrderId, subVal, orderId, ...itemIds);
+                // 拆出去的子單是獨立一趟配送 → 空籃各自重新記錄（冪等：已有就不重複補）
+                await empty_baskets_js_1.insertEmptyBaskets(db, sourceOrder.customer_id, [targetOrderId]);
             }
             res.json({ ok: true, targetOrderId });
         }
         catch (e) {
             console.error("[admin] move-items", e?.message || e, e?.stack);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 400) });
+        }
+    });
+    // 依子客戶一鍵拆單：把本單內有填「子客戶」的品項，依子客戶各自拆成獨立訂單
+    // （找同客戶＋同出貨日既有的 split 單就併入，否則新建；複製附件、補該路線空籃）。
+    // 拆完審核清單就會看到每個子客戶各一筆訂單，空籃也各自記錄。
+    router.post("/api/orders/:orderId/split-by-sub-customer", express_1.default.json(), async (req, res) => {
+        try {
+            const { orderId } = req.params;
+            const sourceOrder = await db.prepare(`
+        SELECT o.id, o.customer_id, o.order_date, o.raw_message, o.line_group_id, o.remark, o.order_sub_split_key
+        FROM orders o WHERE o.id = ?
+      `).get(orderId);
+            if (!sourceOrder) {
+                res.status(404).json({ ok: false, error: "訂單不存在" });
+                return;
+            }
+            const rows = await db.prepare(`
+        SELECT id, sub_customer FROM order_items
+        WHERE order_id = ? AND voided_at IS NULL AND TRIM(COALESCE(sub_customer, '')) <> ''
+      `).all(orderId);
+            const groups = new Map();
+            for (const r of rows) {
+                const key = String(r.sub_customer).trim();
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(r.id);
+            }
+            // 本單自己的 split key（若本單就是某子客戶的單）不用再拆
+            const ownKey = String(sourceOrder.order_sub_split_key || "").trim();
+            if (ownKey) groups.delete(ownKey);
+            if (!groups.size) {
+                res.status(400).json({ ok: false, error: "沒有需要拆分的品項：請先在品項的「子客戶」欄填上分店/子客戶名稱。" });
+                return;
+            }
+            const moved = [];
+            for (const [subName, ids] of groups) {
+                const targetOrderId = await resolveSplitTargetOrder(db, sourceOrder, subName);
+                if (targetOrderId === orderId) continue;
+                const ph = ids.map(() => "?").join(",");
+                await db.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${ph})`).run(targetOrderId, subName, orderId, ...ids);
+                // 子單是獨立一趟配送 → 空籃各自重新記錄（冪等）
+                await empty_baskets_js_1.insertEmptyBaskets(db, sourceOrder.customer_id, [targetOrderId]);
+                moved.push({ subCustomer: subName, orderId: targetOrderId, count: ids.length });
+            }
+            res.json({ ok: true, moved });
+        }
+        catch (e) {
+            console.error("[admin] split-by-sub-customer", e?.message || e, e?.stack);
             res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 400) });
         }
     });
@@ -12361,6 +12529,25 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
         const itemId = (0, id_js_1.newId)("item");
         await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer, confidence_score) VALUES (?, ?, ?, ?, ?, ?, 0, 1, NULL, 100)").run(itemId, orderId, productId, product.name, qty, unit);
+        // 插入位置：after_item_id = 要插在哪一項之後（沒帶或找不到 → 排最後）。
+        // 全部重編 display_order（既有品項可能從未存過排序、display_order 皆為 NULL）。
+        try {
+            const afterItemId = String(req.body.after_item_id || "").trim();
+            const ordered = await db.prepare("SELECT id FROM order_items WHERE order_id = ? AND voided_at IS NULL ORDER BY COALESCE(display_order, 999999), id").all(orderId);
+            const ids = ordered.map((r) => r.id).filter((x) => x !== itemId);
+            let insertAt = ids.length;
+            if (afterItemId) {
+                const pos = ids.indexOf(afterItemId);
+                if (pos >= 0) insertAt = pos + 1;
+            }
+            ids.splice(insertAt, 0, itemId);
+            for (let i = 0; i < ids.length; i++) {
+                await db.prepare("UPDATE order_items SET display_order = ? WHERE id = ? AND order_id = ?").run(i + 1, ids[i], orderId);
+            }
+        }
+        catch (e) {
+            console.error("[admin] items/add 排序重編失敗（品項已新增，僅落在最後）:", e?.message || e);
+        }
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=add_item#items");
     });
     router.get("/barcode", async (req, res) => {
