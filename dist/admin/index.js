@@ -642,10 +642,23 @@ const NOTION_STYLE = `
     /* 客戶清單：手機隱藏首欄圓點與常空的「聯絡」欄，壓低卡片高度 */
     .sf-table tbody tr.customer-row > td:nth-child(1),
     .sf-table tbody tr.customer-row > td:nth-child(5) { display: none; }
+    /* 貨品清單：手機隱藏寺岡碼／俗名／規格（細節進編輯頁看），只留 品名/ERP/狀態/操作 */
+    .sf-table tbody tr.product-row > td:nth-child(3),
+    .sf-table tbody tr.product-row > td:nth-child(4),
+    .sf-table tbody tr.product-row > td:nth-child(5) { display: none; }
     /* 表單元件不超出螢幕寬度（固定 width 的 input/select 在窄螢幕會溢出）*/
     input, select, textarea { max-width: 100%; }
     /* 手機的操作按鈕列更緊湊，讓一排按鈕自然換行成 2–3 顆一列 */
     .sf-root .sf-btn { font-size: 12px; height: 32px; padding: 0 10px; }
+    /* 儀表板等 sf-card 內的「清單列」（客訴／提醒 Top 等 flex 橫列）：手機自動換行，
+       並解除 min-width，避免中間文字被擠成「一個字一列」。 */
+    .sf-card a[style*="display:flex"][style*="gap:12px"],
+    .sf-card div[style*="display:flex"][style*="gap:12px"] { flex-wrap: wrap !important; row-gap: 2px !important; }
+    .sf-card [style*="min-width:80px"],
+    .sf-card [style*="min-width:100px"],
+    .sf-card [style*="min-width:120px"] { min-width: 0 !important; }
+    .sf-card a[style*="gap:12px"] > [style*="flex:1"],
+    .sf-card div[style*="gap:12px"] > [style*="flex:1"] { min-width: 0 !important; flex-basis: 100% !important; }
     /* 訂單明細：三段卡片（原始資料 / 核定資料 / 備註+刪除） */
     .table-scroll-mobile { overflow: visible; }
     table.order-detail-table { border: none; background: transparent; min-width: 0; }
@@ -13565,7 +13578,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const toggleLabel = isActive ? "停用" : "啟用";
             const aliases = (aliasesByProduct.get(p.id) ?? []);
             const aliasHtml = aliases.length ? `<span style="font-size:12px;color:var(--txt-2);">${aliases.map(a => escapeHtml(a)).join("、")}</span>` : `<span style="color:var(--txt-3);">—</span>`;
-            return `<tr data-product-id="${escapeAttr(p.id)}">
+            return `<tr class="product-row" data-product-id="${escapeAttr(p.id)}">
             <td>
               <div style="font-weight:500;">${escapeHtml(p.name)}</div>
               ${p.unit ? `<div style="font-size:11px;color:var(--txt-3);">單位：${escapeHtml(p.unit)}</div>` : ""}
