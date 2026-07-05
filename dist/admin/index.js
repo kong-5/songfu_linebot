@@ -9541,8 +9541,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const orderVoidedAt = order.voided_at ? fmtTaipeiYMDHM(order.voided_at) : null;
         const isOrderVoided = orderStatusLc === "deleted";
         const body = `
-        <div style="padding:20px 24px 0;">
-          ${(orderStatusLc === "deleted" || orderStatusLc === "complaint") ? `<div aria-hidden="true" class="order-status-watermark" style="position:fixed;inset:-25%;z-index:900;pointer-events:none;transform:rotate(-45deg);display:flex;flex-wrap:wrap;gap:34px 70px;align-content:center;justify-content:center;overflow:hidden;">${Array(60).fill(0).map(() => `<span style="font-size:58px;font-weight:900;letter-spacing:.12em;white-space:nowrap;color:${orderStatusLc === "deleted" ? "rgba(220,38,38,0.11)" : "rgba(202,138,4,0.14)"};">${orderStatusLc === "deleted" ? "已作廢" : "客訴"}</span>`).join("")}</div>` : ""}
+        <div style="padding:20px 24px 0;position:relative;">
+          ${(orderStatusLc === "deleted" || orderStatusLc === "complaint") ? `<div aria-hidden="true" class="order-status-watermark" style="position:absolute;inset:0;z-index:3;pointer-events:none;overflow:hidden;"><div style="position:absolute;top:50%;left:50%;width:200%;height:200%;transform:translate(-50%,-50%) rotate(-45deg);display:flex;flex-wrap:wrap;gap:34px 70px;align-content:center;justify-content:center;">${Array(80).fill(0).map(() => `<span style="font-size:58px;font-weight:900;letter-spacing:.12em;white-space:nowrap;color:${orderStatusLc === "deleted" ? "rgba(220,38,38,0.11)" : "rgba(202,138,4,0.14)"};">${orderStatusLc === "deleted" ? "已作廢" : "客訴"}</span>`).join("")}</div></div>` : ""}
           <div class="sf-breadcrumb" style="margin-bottom:6px;"><a href="${escapeAttr(backTo)}">訂單審核</a> · 訂單明細</div>
           ${dateOkBanner}
           ${req.query.ok === "voided" ? `<div class="sf-pill bad" style="align-self:flex-start;margin-bottom:8px;">已作廢此訂單${order.void_reason ? "（"+escapeHtml(orderVoidLabel || "")+"）" : ""}</div>` : ""}
