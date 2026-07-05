@@ -7619,8 +7619,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const routeVal = (o.route_line != null && o.route_line !== "") ? String(o.route_line) : "";
                 const routeCellHtml = routeVal ? `<span class="sf-pill" style="background:#eef2ff;color:#3730a3;font-weight:600;">${escapeHtml(routeVal)} 號線</span>` : `<span style="color:var(--txt-3);">—</span>`;
                 return `<tr class="order-row" data-href="${escapeAttr(detailUrl)}" style="cursor:pointer;" data-cust="${escapeAttr(custDisp)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no ?? ""))}" data-route="${escapeAttr(routeVal)}" data-status="${escapeAttr(isApproved ? "approved" : (n>0?"need_review":"pending"))}">
-            <td style="width:36px;" data-label="">${checkboxCell}</td>
-            <td style="width:24px;" data-label=""><span class="sf-dot ${dotStatus}"></span></td>
+            <td class="order-cb-cell" style="width:36px;cursor:pointer;" data-label="">${checkboxCell}</td>
+            <td class="order-cb-cell" style="width:24px;cursor:pointer;" data-label=""><span class="sf-dot ${dotStatus}"></span></td>
             <td style="white-space:nowrap;" data-label="叫貨時間">${orderNoCell}</td>
             <td class="mono" style="font-size:12px;color:var(--txt-3);white-space:nowrap;" data-label="出貨日">${escapeHtml(o.order_date)}</td>
             <td data-label="客戶">${custLink}</td>
@@ -7710,6 +7710,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           ${req.query.ok === "seq" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已儲存本日起始編號</div>" : ""}
           ${req.query.ok === "del" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單作廢（移到「已作廢」清單）</div>" : ""}
           ${req.query.ok === "approved" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單標記為已確認</div>" : ""}
+          ${req.query.ok === "date" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單改到新出貨日（訂單編號不變）</div>" : ""}
+          ${req.query.err === "baddate" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">改出貨日失敗：請確認已勾選訂單並選了有效日期</div>" : ""}
           ${req.query.ok === "approved_done" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">🎉 全部待確認都處理完了</div>" : ""}
           ${req.query.err === "none" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">請先勾選要處理的訂單</div>" : ""}
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
@@ -7738,20 +7740,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               </form>
             </div>
           </div>
-          <details class="sf-card">
-            <summary style="padding:12px 16px;cursor:pointer;font-size:13px;color:var(--txt-2);list-style:none;display:flex;align-items:center;gap:8px;">
-              <span style="font-size:11px;color:var(--txt-3);">▸</span>
-              <span>本日（${escapeHtml(today)}）起始流水號設定（與 ERP 對齊）</span>
-            </summary>
-            <div style="padding:0 16px 14px 32px;border-top:var(--hairline);padding-top:12px;">
-              <p style="font-size:12px;color:var(--txt-3);margin:0 0 10px;">訂單編號規則：西元年月日＋3 位流水號（例 20260516001）。</p>
-              <form method="post" action="/admin/api/order-seq-start" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <input type="hidden" name="date" value="${escapeAttr(today)}">
-                <label style="font-size:13px;color:var(--txt-2);">起始流水號 <input class="sf-input" type="number" name="start" value="${escapeAttr(orderSeqStartVal)}" min="1" placeholder="1" style="width:90px;display:inline-block;margin-left:6px;"></label>
-                <button type="submit" class="sf-btn primary">儲存</button>
-              </form>
-            </div>
-          </details>
+          <!-- 起始流水號設定區塊：依老闆指示暫時關閉（2026-07-05，出貨日不再與流水號綁定）。程式碼保留在 git 歷史，需要時可還原。 -->
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <div style="position:relative;flex:0 0 240px;">
               <input class="sf-input" id="orderFilterCustomer" placeholder="篩選：客戶名稱" autocomplete="off" style="padding-left:28px;">
@@ -7769,17 +7758,37 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               <option value="approved" ${statusFilter === "approved" ? "selected" : ""}>已確認</option>
             </select>
             <div style="flex:1;"></div>
-            <form id="batchOrderActionsForm" method="post" action="/admin/orders/batch-delete" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0;">
+            <div style="display:flex;gap:8px;align-items:center;">
               <span style="font-size:12px;color:var(--txt-3);" id="batchSelectedHint">未選</span>
               <button type="button" class="sf-btn sm" id="orderSelectAll">全選</button>
               <button type="button" class="sf-btn sm" id="orderSelectNone">取消</button>
-              <button type="button" class="sf-btn sm primary" id="btnBatchApprove">${SF_ICONS.check}<span>確認</span></button>
-              <button type="button" class="sf-btn sm" id="btnBatchOrderSheet">${SF_ICONS.dl}<span>揀貨單</span></button>
-              <button type="button" class="sf-btn sm" id="btnBatchLingyueXlsx">${SF_ICONS.dl}<span>凌越 Excel</span></button>
-              <button type="button" class="sf-btn sm danger" id="btnBatchVoid">${SF_ICONS.x}<span>作廢</span></button>
+            </div>
+            <form id="batchOrderActionsForm" method="post" action="/admin/orders/batch-delete" style="display:none;margin:0;">
               <input type="hidden" name="void_reason" id="batchVoidReason" value="">
               <input type="hidden" name="void_note" id="batchVoidNote" value="">
             </form>
+            <!-- 勾選訂單後才浮出的操作列（toast bar），減少上方常駐按鈕 -->
+            <div id="orderBatchBar" style="display:none;position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:1100;background:var(--bg-1,#fff);border:1px solid var(--notion-border,#e3e2e0);box-shadow:0 8px 28px rgba(15,23,42,.18);border-radius:14px;padding:10px 14px;align-items:center;gap:8px;flex-wrap:wrap;max-width:calc(100vw - 24px);">
+              <span style="font-size:13px;color:var(--txt-2);white-space:nowrap;">已選 <strong id="obbCount">0</strong> 筆</span>
+              <button type="button" class="sf-btn sm primary" id="btnBatchApprove">${SF_ICONS.check}<span>確認</span></button>
+              <button type="button" class="sf-btn sm" id="btnBatchChangeDate"><span>📅 改出貨日</span></button>
+              <button type="button" class="sf-btn sm" id="btnBatchOrderSheet">${SF_ICONS.dl}<span>揀貨單</span></button>
+              <button type="button" class="sf-btn sm" id="btnBatchLingyueXlsx">${SF_ICONS.dl}<span>凌越 Excel</span></button>
+              <button type="button" class="sf-btn sm danger" id="btnBatchVoid">${SF_ICONS.x}<span>作廢</span></button>
+              <button type="button" class="sf-btn sm ghost" id="orderSelectNone2" title="清除選取">✕</button>
+            </div>
+            <!-- 改出貨日 modal -->
+            <div id="changeDateModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1200;align-items:center;justify-content:center;padding:20px;">
+              <div style="background:var(--bg-1,#fff);border-radius:14px;padding:20px;max-width:360px;width:100%;box-shadow:0 12px 32px rgba(0,0,0,.25);">
+                <div style="font-weight:600;font-size:15px;margin-bottom:6px;">改出貨日</div>
+                <div style="font-size:12px;color:var(--txt-3);margin-bottom:14px;">已選 <span id="cdCount">0</span> 筆訂單，改到下面這個出貨日（訂單編號不變）。</div>
+                <input type="date" id="cdDate" class="sf-input" style="width:100%;">
+                <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;">
+                  <button type="button" class="sf-btn" id="cdCancel">取消</button>
+                  <button type="button" class="sf-btn primary" id="cdConfirm">確定改期</button>
+                </div>
+              </div>
+            </div>
             <script>
             (function(){
               const btn = document.getElementById("btnBatchVoid");
@@ -7848,8 +7857,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
           <script>
           (function(){
-            // 點整列直接進訂單明細（點 checkbox／連結／按鈕不觸發）
+            // 點勾選欄／狀態圓點欄（附近）→ 切換勾選，不進明細；點其他列區域才進明細
             document.addEventListener("click", function(e){
+              var cbCell = e.target.closest("td.order-cb-cell");
+              if (cbCell) {
+                if (!e.target.closest("input")) {
+                  var cb = cbCell.parentNode && cbCell.parentNode.querySelector("input.order-batch-cb");
+                  if (cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event("change", { bubbles: true })); }
+                }
+                return;
+              }
               if (e.target.closest("a, button, input, select, textarea, label")) return;
               var tr = e.target.closest("tr.order-row[data-href]");
               if (!tr) return;
@@ -7863,8 +7880,23 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             if (allEl) allEl.addEventListener("change", function(){ allCbs().forEach(function(c){ c.checked = allEl.checked; }); });
             var b1 = document.getElementById("orderSelectAll");
             var b2 = document.getElementById("orderSelectNone");
-            if (b1) b1.onclick = function(){ allCbs().forEach(function(c){ c.checked = true; }); if (allEl) allEl.checked = true; };
-            if (b2) b2.onclick = function(){ allCbs().forEach(function(c){ c.checked = false; }); if (allEl) allEl.checked = false; };
+            var b2b = document.getElementById("orderSelectNone2");
+            var batchBar = document.getElementById("orderBatchBar");
+            var obbCount = document.getElementById("obbCount");
+            var selHint = document.getElementById("batchSelectedHint");
+            function countChecked(){ var n = 0; allCbs().forEach(function(c){ if (c.checked) n++; }); return n; }
+            function updateBar(){
+              var n = countChecked();
+              if (obbCount) obbCount.textContent = n;
+              if (selHint) selHint.textContent = n ? ("已選 " + n + " 筆") : "未選";
+              if (batchBar) batchBar.style.display = n ? "flex" : "none";
+            }
+            function clearSel(){ allCbs().forEach(function(c){ c.checked = false; }); if (allEl) allEl.checked = false; updateBar(); }
+            if (b1) b1.onclick = function(){ allCbs().forEach(function(c){ c.checked = true; }); if (allEl) allEl.checked = true; updateBar(); };
+            if (b2) b2.onclick = clearSel;
+            if (b2b) b2b.onclick = clearSel;
+            document.addEventListener("change", function(e){ if (e.target && e.target.classList && e.target.classList.contains("order-batch-cb")) updateBar(); });
+            updateBar();
             function selectedIds(){
               var a = [];
               allCbs().forEach(function(c){ if (c.checked) a.push(c.value); });
@@ -7924,6 +7956,36 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               document.body.appendChild(form);
               form.submit();
             };
+            // 改出貨日：開 modal → 送出到 batch-change-date（只改 order_date，訂單編號不變）
+            var bcd = document.getElementById("btnBatchChangeDate");
+            var cdModal = document.getElementById("changeDateModal");
+            var cdDate = document.getElementById("cdDate");
+            var cdCount = document.getElementById("cdCount");
+            if (bcd && cdModal) {
+              bcd.onclick = function(){
+                var ids = selectedIds();
+                if (!ids.length) { alert("請先勾選訂單"); return; }
+                if (cdCount) cdCount.textContent = ids.length;
+                var d = new Date(); d.setDate(d.getDate() + 1);
+                if (cdDate) cdDate.value = d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+                cdModal.style.display = "flex";
+              };
+              var cdCancel = document.getElementById("cdCancel");
+              if (cdCancel) cdCancel.onclick = function(){ cdModal.style.display = "none"; };
+              cdModal.addEventListener("click", function(e){ if (e.target === cdModal) cdModal.style.display = "none"; });
+              var cdConfirm = document.getElementById("cdConfirm");
+              if (cdConfirm) cdConfirm.onclick = function(){
+                var ids = selectedIds();
+                if (!ids.length) { alert("請先勾選訂單"); return; }
+                var nd = cdDate ? cdDate.value : "";
+                if (!nd || nd.length !== 10) { alert("請選擇有效的出貨日"); return; }
+                var form = document.createElement("form");
+                form.method = "post"; form.action = "/admin/orders/batch-change-date";
+                ids.forEach(function(id){ var i = document.createElement("input"); i.type = "hidden"; i.name = "order_ids"; i.value = id; form.appendChild(i); });
+                var di = document.createElement("input"); di.type = "hidden"; di.name = "new_date"; di.value = nd; form.appendChild(di);
+                document.body.appendChild(form); form.submit();
+              };
+            }
             var df = document.getElementById("ordersDateFrom");
             var dt = document.getElementById("ordersDateTo");
             var rangeInp = document.getElementById("ordersDateRange");
@@ -8494,6 +8556,39 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             }
         }
         res.redirect("/admin/orders?ok=approved");
+    });
+    /** 批次改出貨日：只更新 order_date（把訂單移到新那天的出貨清單），order_no 維持不變。 */
+    router.post("/orders/batch-change-date", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        let ids = req.body.order_ids;
+        if (ids == null)
+            ids = [];
+        if (!Array.isArray(ids))
+            ids = [ids];
+        ids = ids.map((x) => String(x).trim()).filter(Boolean);
+        const newDate = String(req.body.new_date || "").trim();
+        if (!ids.length || !/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
+            res.redirect("/admin/orders?err=baddate");
+            return;
+        }
+        for (const oid of ids.slice(0, 200)) {
+            try {
+                const before = await db.prepare("SELECT order_no, order_date FROM orders WHERE id = ?").get(oid);
+                if (before && String(before.order_date) === newDate)
+                    continue;
+                await db.prepare("UPDATE orders SET order_date = ? WHERE id = ?").run(newDate, oid);
+                await logDataChange(req, {
+                    entityType: "order",
+                    entityId: oid,
+                    action: "update",
+                    summary: `批次改出貨日 ${before?.order_no || oid}：${before?.order_date || "?"} → ${newDate}`,
+                    meta: { before, new_date: newDate, source: "batch-change-date" },
+                });
+            }
+            catch (e) {
+                console.error("[admin] batch-change-date order", oid, e?.message || e);
+            }
+        }
+        res.redirect("/admin/orders?ok=date&date_from=" + encodeURIComponent(newDate) + "&date_to=" + encodeURIComponent(newDate));
     });
     /** 合併揀貨單 HTML；GET／POST 共用。一次最多 50 筆訂單。 */
     async function sendBatchOrderSheetHtml(res, inputIds) {
