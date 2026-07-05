@@ -36,7 +36,8 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
         const inputUnit = (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(p.unit, fallbackUnit);
         let unit = inputUnit;
         let itemRemark = p.remark != null && String(p.remark).trim() !== "" ? String(p.remark).trim() : null;
-        if (resolved) {
+        {
+            // 內建物理換算（台斤/斤/台兩/克→公斤）一律套用；品項規則在函式內部才需已對應
             const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
             qty = Number(c.quantity);
             unit = (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(c.unit || fallbackUnit, fallbackUnit);

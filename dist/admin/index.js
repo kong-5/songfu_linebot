@@ -76,7 +76,7 @@ const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
 const ORDER_LINE_UNITS = [
-    "公斤", "斤", "k", "個", "小把", "大把", "包", "把", "束", "桶", "箱", "顆", "粒", "盒", "袋", "台", "件", "支", "根", "條", "入", "罐", "瓶", "組", "份", "塊", "片", "尾",
+    "公斤", "台斤", "斤", "台兩", "兩", "k", "個", "小把", "大把", "包", "把", "束", "桶", "箱", "顆", "粒", "盒", "袋", "台", "件", "支", "根", "條", "入", "罐", "瓶", "組", "份", "塊", "片", "尾",
 ];
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("file");
 const uploadImageMiddleware = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("image");
@@ -6644,7 +6644,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                                 let qty = Number.isFinite(Number(p.quantity)) ? Number(p.quantity) : 0;
                                 let unit = inputUnit;
                                 let remark = p.remark != null && String(p.remark).trim() !== "" ? String(p.remark).trim() : null;
-                                if (resolved) {
+                                {
                                     const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
                                     qty = Number(c.quantity);
                                     unit = (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(c.unit || fallbackUnit, fallbackUnit);
@@ -6703,7 +6703,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     let qty = Number.isFinite(Number(p.quantity)) ? Number(p.quantity) : 0;
                     let unit = inputUnit;
                     let remark = p.remark != null && String(p.remark).trim() !== "" ? String(p.remark).trim() : null;
-                    if (resolved) {
+                    {
                         const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
                         qty = Number(c.quantity);
                         unit = (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(c.unit || fallbackUnit, fallbackUnit);

@@ -408,7 +408,8 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
         if (!Number.isFinite(qty))
             qty = 0;
         let itemRemark = item.remark != null && String(item.remark).trim() !== "" ? String(item.remark).trim() : null;
-        if (resolved) {
+        {
+            // 內建物理換算（台斤/斤/台兩/克→公斤）一律套用；品項規則在函式內部才需已對應
             const c = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, convRules, resolved, qty, unit);
             qty = Number(c.quantity);
             unit = normalizeOrderUnit(c.unit, fallbackUnit);

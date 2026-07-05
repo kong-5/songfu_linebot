@@ -46,8 +46,8 @@ function normUnit(u) {
 /**
  * 內建物理質量換算 → 每 1 單位對應幾公斤（通用、不需逐品項設定）。
  * 這些是固定物理換算：1 公斤 = 1000 克、1 台斤 = 0.6 公斤、1 台兩 = 37.5 克。
- * 注意：「斤」在 normalizeOrderUnitForStorage 已被視為「公斤」（沿用既有行為），
- *       故實際進單時「斤」不會走到這裡；此處保留 0.6 僅供直接呼叫時一致。
+ * 注意：2026-07 起「斤」不再被 normalizeOrderUnitForStorage 視為「公斤」，
+ *       與「台斤」一樣以 0.6 公斤換算（老闆確認：斤＝台斤＝0.6 公斤）。
  */
 const BUILTIN_MASS_KG = {
     "公斤": 1, "千克": 1, "kg": 1, "k": 1,
@@ -74,7 +74,7 @@ function normalizeOrderUnitForStorage(raw, fallbackUnit) {
     const u = String(raw || "").trim().toUpperCase();
     if (!u)
         return fallbackUnit || "公斤";
-    if (u === "K" || u === "KG" || u === "公斤" || u === "千克" || u === "斤") {
+    if (u === "K" || u === "KG" || u === "公斤" || u === "千克") {
         return "公斤";
     }
     return String(raw || "").trim();
@@ -191,9 +191,11 @@ async function loadProductSpecKgPerUnit(db, productId, orderUnit) {
 async function applyOrderUnitConversion(db, rulesWrap, resolved, quantity, unit) {
     let q = Number(quantity);
     const u = normUnit(unit);
-    if (!resolved || !Number.isFinite(q))
+    if (!Number.isFinite(q))
         return { quantity: q, unit: u || unit, remark: null };
-    // 內建物理質量換算：克/公克/g、台斤、台兩、斤 → 公斤（乘係數，非改名）；優先於品項規則
+    // 內建物理質量換算：克/公克/g、台斤、台兩、斤 → 公斤（乘係數，非改名）。
+    // 屬純物理換算（台斤/斤=0.6、台兩/兩=0.0375、克=0.001），與品項是否已對應無關，
+    // 故一律先套用，讓「待人工指定品項」的單也會正確換算成公斤。
     const massKg = builtinMassKg(u);
     if (massKg != null && u !== "公斤") {
         const converted = Math.round((q * massKg) * 1000) / 1000;
@@ -203,6 +205,9 @@ async function applyOrderUnitConversion(db, rulesWrap, resolved, quantity, unit)
             remark: buildConversionRemark({ remarkStyle: "plain" }, q, u),
         };
     }
+    // 以下品項規則（2-2 spec／品名關鍵字）需要已對應到品項才有意義
+    if (!resolved)
+        return { quantity: q, unit: u || unit, remark: null };
     if (resolved.productId && db && normUnit(u) !== "公斤") {
         const specKgFirst = await loadProductSpecKgPerUnit(db, resolved.productId, u);
         if (Number.isFinite(specKgFirst) && specKgFirst > 0) {
