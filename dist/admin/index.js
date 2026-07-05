@@ -634,6 +634,18 @@ const NOTION_STYLE = `
     }
     table.freezer-cal thead th, table.cal-table thead th { font-size: 12px; color: var(--notion-text-muted); }
     table.freezer-cal tbody tr td::before, table.cal-table tbody tr td::before { content: none; }
+    /* ── 手機清單：更緊湊 + 去雜訊（客戶/貨品/一般清單共用）── */
+    tbody tr { margin-bottom: 8px; }
+    tbody tr td { padding: 6px 10px; }
+    /* 純狀態圓點／勾選的空表頭欄，auto-label 會標成「欄位」，在手機是雜訊 → 隱藏 */
+    tbody tr td[data-label="欄位"] { display: none; }
+    /* 客戶清單：手機隱藏首欄圓點與常空的「聯絡」欄，壓低卡片高度 */
+    .sf-table tbody tr.customer-row > td:nth-child(1),
+    .sf-table tbody tr.customer-row > td:nth-child(5) { display: none; }
+    /* 表單元件不超出螢幕寬度（固定 width 的 input/select 在窄螢幕會溢出）*/
+    input, select, textarea { max-width: 100%; }
+    /* 手機的操作按鈕列更緊湊，讓一排按鈕自然換行成 2–3 顆一列 */
+    .sf-root .sf-btn { font-size: 12px; height: 32px; padding: 0 10px; }
     /* 訂單明細：三段卡片（原始資料 / 核定資料 / 備註+刪除） */
     .table-scroll-mobile { overflow: visible; }
     table.order-detail-table { border: none; background: transparent; min-width: 0; }
@@ -13070,7 +13082,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               <div class="sf-breadcrumb" style="margin-bottom:6px;">管理 / 客戶</div>
               <h1 style="margin:0;font-size:22px;font-weight:600;">客戶管理</h1>
             </div>
-            <div style="display:flex;gap:8px;">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
               <a class="sf-btn" href="/admin/import-customers">${SF_ICONS.dl}<span>匯入 CSV</span></a>
               <a class="sf-btn" href="/admin/customers/export.csv">${SF_ICONS.dl}<span>匯出客戶 CSV</span></a>
               <a class="sf-btn" href="/admin/groups/export.xlsx">${SF_ICONS.dl}<span>下載群組 Excel</span></a>
