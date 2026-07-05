@@ -76,7 +76,7 @@ const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
 const ORDER_LINE_UNITS = [
-    "公斤", "台斤", "斤", "台兩", "兩", "k", "個", "小把", "大把", "包", "把", "束", "桶", "箱", "顆", "粒", "盒", "袋", "台", "件", "支", "根", "條", "入", "罐", "瓶", "組", "份", "塊", "片", "尾",
+    "公斤", "斤", "k", "個", "小把", "大把", "包", "把", "束", "桶", "箱", "顆", "粒", "盒", "袋", "台", "件", "支", "根", "條", "入", "罐", "瓶", "組", "份", "塊", "片", "尾",
 ];
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("file");
 const uploadImageMiddleware = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single("image");
@@ -9404,10 +9404,18 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             .map((i, idx) => {
             const q = Number(i.quantity);
             const u = (i.unit && i.unit.trim()) || "";
+            // 品項標準單位（ERP 主檔單位）：沒帶單位時預設帶它，並把「標準單位＋公斤」排最前，減少手動選擇
+            const stdUnit = (i.product_unit && String(i.product_unit).trim()) || "";
+            const effU = u || stdUnit;
+            const unitOrdered = [];
+            const unitSeen = new Set();
+            const pushUnitOpt = (x) => { const t = (x == null ? "" : String(x)).trim(); if (t && !unitSeen.has(t)) { unitSeen.add(t); unitOrdered.push(t); } };
+            pushUnitOpt(stdUnit);
+            pushUnitOpt("公斤");
+            units.forEach(pushUnitOpt);
+            pushUnitOpt(effU);
             const unitSelect = `<select name="unit_${i.item_id}" form="itemsForm">${unitOptions}</select>`;
-            const unitSelectWithVal = units.includes(u)
-                ? `<select name="unit_${i.item_id}" form="itemsForm"><option value="">—</option>${units.map((x) => `<option value="${escapeAttr(x)}" ${x === u ? "selected" : ""}>${escapeHtml(x)}</option>`).join("")}</select>`
-                : `<select name="unit_${i.item_id}" form="itemsForm"><option value="">—</option>${unitOptions}</select>`;
+            const unitSelectWithVal = `<select name="unit_${i.item_id}" form="itemsForm"><option value="">—</option>${unitOrdered.map((x) => `<option value="${escapeAttr(x)}" ${x === effU ? "selected" : ""}>${escapeHtml(x)}</option>`).join("")}</select>`;
             const erp = i.erp_code ?? "—";
             const pname = i.product_name ? escapeHtml(i.product_name) : "";
             const pid = i.product_id ? String(i.product_id) : "";
@@ -9534,6 +9542,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const isOrderVoided = orderStatusLc === "deleted";
         const body = `
         <div style="padding:20px 24px 0;">
+          ${(orderStatusLc === "deleted" || orderStatusLc === "complaint") ? `<div aria-hidden="true" class="order-status-watermark" style="position:fixed;inset:-25%;z-index:900;pointer-events:none;transform:rotate(-45deg);display:flex;flex-wrap:wrap;gap:34px 70px;align-content:center;justify-content:center;overflow:hidden;">${Array(60).fill(0).map(() => `<span style="font-size:58px;font-weight:900;letter-spacing:.12em;white-space:nowrap;color:${orderStatusLc === "deleted" ? "rgba(220,38,38,0.11)" : "rgba(202,138,4,0.14)"};">${orderStatusLc === "deleted" ? "已作廢" : "客訴"}</span>`).join("")}</div>` : ""}
           <div class="sf-breadcrumb" style="margin-bottom:6px;"><a href="${escapeAttr(backTo)}">訂單審核</a> · 訂單明細</div>
           ${dateOkBanner}
           ${req.query.ok === "voided" ? `<div class="sf-pill bad" style="align-self:flex-start;margin-bottom:8px;">已作廢此訂單${order.void_reason ? "（"+escapeHtml(orderVoidLabel || "")+"）" : ""}</div>` : ""}
