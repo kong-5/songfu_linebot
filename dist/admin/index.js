@@ -590,24 +590,50 @@ const NOTION_STYLE = `
       overflow: hidden;
     }
     tbody tr td {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
+      display: block;
       border-right: none;
       border-bottom: 1px solid var(--notion-border);
-      padding: 9px 10px;
-      text-align: right;
+      padding: 9px 12px;
+      text-align: left;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
     tbody tr td:last-child { border-bottom: none; }
-    tbody tr td::before {
+    /* 只有標了 data-label 的欄位才顯示欄名前綴；沒標的直接左對齊、自然換行，
+       避免中文被壓成「一欄一字」（客訴／提醒清單等未標欄名的表格）。 */
+    tbody tr td[data-label]::before {
       content: attr(data-label);
+      display: inline-block;
+      min-width: 4.5em;
+      margin-right: 8px;
       font-size: 12px;
       color: var(--notion-text-muted);
       font-weight: 600;
-      margin-right: auto;
-      text-align: left;
+      vertical-align: baseline;
     }
+    /* 卡片化的表格不要被 .sf-table 的 min-width:560px 撐開造成橫向擠壓 */
+    .sf-table:not(.freezer-cal):not(.cal-table) { min-width: 0 !important; }
+    /* 月曆類表格（冷凍庫 .freezer-cal／行事曆 .cal-table）維持 7 欄格狀，
+       不套用卡片堆疊，否則會垮成「一天一列」。 */
+    table.freezer-cal, table.cal-table {
+      display: table; table-layout: fixed; width: 100%;
+      background: var(--notion-bg); border: 1px solid var(--notion-border);
+      border-radius: 10px; overflow: hidden;
+    }
+    table.freezer-cal thead, table.cal-table thead { display: table-header-group; }
+    table.freezer-cal tbody tr, table.cal-table tbody tr {
+      display: table-row; background: transparent; border: none;
+      border-radius: 0; margin: 0; box-shadow: none;
+    }
+    table.freezer-cal th, table.freezer-cal tbody tr td,
+    table.cal-table th, table.cal-table tbody tr td {
+      display: table-cell; text-align: center; padding: 6px 2px;
+      min-width: 0; border: 1px solid var(--notion-border); font-size: 12px;
+      white-space: normal; word-break: break-word;
+    }
+    table.freezer-cal thead th, table.cal-table thead th { font-size: 12px; color: var(--notion-text-muted); }
+    table.freezer-cal tbody tr td::before, table.cal-table tbody tr td::before { content: none; }
     /* 訂單明細：三段卡片（原始資料 / 核定資料 / 備註+刪除） */
     .table-scroll-mobile { overflow: visible; }
     table.order-detail-table { border: none; background: transparent; min-width: 0; }
@@ -4092,16 +4118,16 @@ function createAdminRouter() {
                       </tr></thead>
                       <tbody>${rows.map(r => `
                       <tr>
-                        <td style="text-align:center;">${severityPill(r.overdueRatio)}</td>
-                        <td style="overflow:hidden;">
+                        <td data-label="等級" style="text-align:center;">${severityPill(r.overdueRatio)}</td>
+                        <td data-label="客戶" style="overflow:hidden;">
                           <a href="/admin/customers/${encodeURIComponent(r.id)}/360" style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;max-width:100%;">${escapeHtml(r.name)}</a>
                           ${r.handoverNotes ? `<div style="font-size:11px;color:var(--txt-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(r.handoverNotes)}">📝 ${escapeHtml(String(r.handoverNotes).slice(0,40))}${String(r.handoverNotes).length>40?"…":""}</div>` : ""}
                         </td>
-                        <td class="mono" style="color:var(--txt-3);white-space:nowrap;">${escapeHtml(r.lastOrderDate || "—")}</td>
-                        <td style="text-align:right;white-space:nowrap;" class="mono"><strong style="color:var(--bad);">${r.daysSince}</strong></td>
-                        <td style="text-align:right;white-space:nowrap;color:var(--txt-3);" class="mono">${r.avg}</td>
-                        <td style="text-align:right;white-space:nowrap;" class="mono">${r.overdueRatio.toFixed(1)}×</td>
-                        <td style="text-align:center;"><span class="sf-pill" style="background:${r.tier.bg};color:${r.tier.color};font-size:11px;padding:1px 6px;">${r.score}</span></td>
+                        <td data-label="最後叫貨" class="mono" style="color:var(--txt-3);white-space:nowrap;">${escapeHtml(r.lastOrderDate || "—")}</td>
+                        <td data-label="已 N 天" style="text-align:right;white-space:nowrap;" class="mono"><strong style="color:var(--bad);">${r.daysSince}</strong></td>
+                        <td data-label="平均間隔" style="text-align:right;white-space:nowrap;color:var(--txt-3);" class="mono">${r.avg}</td>
+                        <td data-label="逾期倍" style="text-align:right;white-space:nowrap;" class="mono">${r.overdueRatio.toFixed(1)}×</td>
+                        <td data-label="分數" style="text-align:center;"><span class="sf-pill" style="background:${r.tier.bg};color:${r.tier.color};font-size:11px;padding:1px 6px;">${r.score}</span></td>
                         <td style="text-align:center;"><button type="button" class="sf-btn sm copy-reminder-btn" data-name="${escapeAttr(r.name)}" data-days="${r.daysSince}" title="複製提醒訊息給客戶">複製</button></td>
                       </tr>`).join("")}</tbody>
                     </table></div>` : `<p style="padding:24px;text-align:center;color:var(--ok);">✓ 目前沒有客戶需要提醒</p>`}
