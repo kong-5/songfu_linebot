@@ -51,10 +51,12 @@ ly_query_server.py — 凌越 ERP 銷貨單「查詢」對外服務（給 songya
 
 設定（環境變數，或 CLI 覆蓋）
 -----------------------------
-  LY_QUERY_KEY   松成帶的 X-Query-Key 金鑰（必填）
-  LY_QUERY_HOST  監聽位址，預設 0.0.0.0（讓 LAN 上的松成連得到）
-  LY_QUERY_PORT  監聽埠，預設 8787
-  LY_ICPNO       預設公司代碼，預設 "00"（松富）；查詢可用 ?icpno= 覆蓋
+  LY_QUERY_KEY     松成帶的 X-Query-Key 金鑰（必填）
+  LY_QUERY_HOST    監聽位址，預設 0.0.0.0（讓 LAN 上的松成連得到）
+  LY_QUERY_PORT    監聽埠，預設 8787
+  LY_ICPNO         預設公司代碼；留空則用 ly_departments.json 的 default_icpno（松成 03）
+  LY_OFFICE_FIELD  部門欄位名（預設讀 ly_departments.json 的 office_field＝SP_DPNO）
+  LY_DETAIL_FIELDS 明細要回的 SD_ 欄位（逗號分隔；預設含品項/數量/單價/小計等）
 
 用法
 ----
@@ -79,6 +81,7 @@ import argparse
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
+from xml.etree import ElementTree as ET
 
 # 讓本機找得到 ly_datain / lystk（與探索工具同目錄）。改成你的實際路徑。
 LY_TOOL_DIR = os.environ.get("LY_TOOL_DIR", r"D:\Work\lystk_tool")
@@ -108,21 +111,73 @@ def _load_lystk():
 
 
 # ----------------------------------------------------------------------
-#  查詢邏輯
+#  查詢邏輯——直接呼叫凌越 LyDataOut（帶明細）
 # ----------------------------------------------------------------------
+#  ly_datain.verify_sp_no / lystk.query 都只回主表（idetfields 傳空、且只解析
+#  LYDATATITLE）。要拿明細，需自行呼叫 LyDataOut 並把 idetfields 填上要的 SD_ 欄位，
+#  再解析 LYDATADETAIL 節點。明細以 SD_NO(=主單號) 對應主表、SD_SEQ 為行序。
 
-def _normalize(rec: dict) -> dict:
-    """把 ly_datain 回來的單張紀錄整理成回傳格式：明細統一放在 details。"""
-    out = {k: v for k, v in rec.items() if k != "_details"}
-    out["details"] = rec.get("_details", []) or []
+# 明細要回哪些 SD_ 欄位（品項/數量/單價/小計等）。可用環境變數覆蓋；
+# 一律確保含 SD_NO(對應主單)、SD_SEQ(排序) 這兩個必要欄位。
+DETAIL_FIELDS = os.environ.get(
+    "LY_DETAIL_FIELDS",
+    "SD_SEQ,SD_SKNO,SD_NAME,SD_SPEC,SD_UNIT,SD_QTY,SD_PRICE,SD_STOT,SD_REM,SD_NO",
+)
+
+_LYDATAOUT_ERR = {"-1": "SQL連接失敗", "-2": "讀取失敗", "-3": "金鑰失效",
+                  "-4": "金鑰不合法", "-5": "無權限"}
+
+
+def _detail_fields() -> str:
+    fields = [x.strip() for x in DETAIL_FIELDS.split(",") if x.strip()]
+    for req in ("SD_NO", "SD_SEQ"):
+        if req not in fields:
+            fields.append(req)
+    return ",".join(fields)
+
+
+def _lydataout(icpno: str, where: str, whval: str, *, want_details: bool):
+    """直接呼叫凌越 LyDataOut。回 (titles, details)，各為 dict list。"""
+    ly = _load_lystk()
+    client = ly.get_client()
+    resp = client.service.LyDataOut(
+        ikye=ly.fresh_key(), icpno=ly.resolve_icpno(icpno), idakd=SP_IDAKD,
+        ifld="", idetfields=(_detail_fields() if want_details else ""),
+        irwhere=where, iwhval=whval,
+        irec=0, imode=" " * 30,
+        iorder="order by SP_NO", idtorder="",
+        iswhere="", isifld="",
+        Isecgroup="", iseckindfg="", iseckind="",
+        Isecorder="", Isecrec=0,
+    )
+    rc = str(resp["LyDataOutResult"])
+    if rc != "0":
+        raise RuntimeError(f"LyDataOut 失敗：{_LYDATAOUT_ERR.get(rc, f'code={rc}')}")
+    xml = resp["ixmlda"]
+    if not xml:
+        return [], []
+    root = ET.fromstring(str(xml))
+    titles = [{c.tag: (c.text or "").strip() for c in t} for t in root.findall(".//LYDATATITLE")]
+    details = [{c.tag: (c.text or "").strip() for c in d} for d in root.findall(".//LYDATADETAIL")]
+    return titles, details
+
+
+def _attach_details(header: dict, details: list) -> dict:
+    """把屬於這張主單(SD_NO==SP_NO)的明細行，依 SD_SEQ 排序後掛進 header['details']。"""
+    sp_no = str(header.get("SP_NO", "")).strip()
+    mine = [d for d in details if str(d.get("SD_NO", "")).strip() == sp_no]
+    mine.sort(key=lambda d: int(d.get("SD_SEQ") or 0))
+    out = dict(header)
+    out["details"] = mine
     return out
 
 
-def query_one(icpno: str, sp_no: str) -> dict | None:
-    """單張回查——直接用現成的 ly_datain.verify_sp_no。"""
-    ly = _load_ly_datain()
-    rec = ly.verify_sp_no(icpno, sp_no)
-    return _normalize(rec) if rec else None
+def _fetch_one(icpno: str, sp_no: str) -> dict | None:
+    """單張：主表 + 明細（一次 LyDataOut）。"""
+    titles, details = _lydataout(icpno, "SP_NO=@v1@", sp_no, want_details=True)
+    if not titles:
+        return None
+    return _attach_details(titles[0], details)
 
 
 SP_IDAKD = "0000A1"  # 凌越資料種類：銷貨單
@@ -205,9 +260,18 @@ def office_icpno(code: str) -> str:
     return meta["icpno"] if meta else ""
 
 
-def _detail_list(rec: dict) -> list:
-    """從一筆紀錄取明細，容忍 lystk.query 與 ly_datain 兩種可能的鍵名。"""
-    return rec.get("_details") or rec.get("details") or []
+def _with_office_name(order: dict) -> dict:
+    """主表若有部門欄位，補上人看得懂的店名。"""
+    fld = office_field()
+    if fld and order.get(fld) is not None:
+        order["office_name"] = office_name(order.get(fld))
+    return order
+
+
+def query_one(icpno: str, sp_no: str) -> dict | None:
+    """單張回查：主表 + 明細 + 店名。"""
+    order = _fetch_one(icpno, sp_no)
+    return _with_office_name(order) if order else None
 
 
 def query_invoices(icpno: str, date_str: str, office: str) -> list[dict]:
@@ -216,8 +280,10 @@ def query_invoices(icpno: str, date_str: str, office: str) -> list[dict]:
 
     office 可傳部門編號（311）或店名（廣東門市），會正規化成編號。
     公司(icpno)以「部門自帶的 icpno」優先（松成門市＝03）；沒帶部門時才用傳入的 icpno。
-    用 lystk.query（idakd=0000A1）以 where=SP_DPNO / whval=部門編號 在伺服器端過濾主表；
-    lystk.query 只回主表，逐張用 ly_datain.verify_sp_no 補明細（松成要主表+明細）。
+
+    做法：先用 lystk.query（idakd=0000A1，日期）拉當天主表清單，本地依 SP_DPNO 過濾出
+    該部門的單（lystk.query 的 where/whval 實測語意非「欄位=值」，故用本地過濾）；
+    再對每張單以 LyDataOut 撈「主表+明細」（verify_sp_no/query 都不回明細，見 _lydataout）。
     """
     code = resolve_office(office) if office else ""
     fld = office_field()
@@ -226,34 +292,20 @@ def query_invoices(icpno: str, date_str: str, office: str) -> list[dict]:
             "帶了部門但尚未設定部門欄位名（ly_departments.json 的 office_field 或環境變數 LY_OFFICE_FIELD）。"
         )
 
-    # 部門自帶公司優先；否則用傳入/預設 icpno。單張補明細也要用同一個 icpno。
+    # 部門自帶公司優先；否則用傳入/預設 icpno。撈明細也用同一個 icpno。
     eff_icpno = (office_icpno(code) if code else "") or icpno
 
-    # 拉該公司當天全部主表，再在本地依部門欄位過濾。
-    # （不用 lystk.query 的 where/whval：實測其語意非「欄位=值」，會濾成空；
-    #   本地過濾與探索時 probe 的做法一致，穩定可靠。當日單量小，整批拉無負擔。）
     ly = _load_lystk()
-    rows = ly.query(icpno=eff_icpno, idakd=SP_IDAKD, date=date_str) or []
+    headers = ly.query(icpno=eff_icpno, idakd=SP_IDAKD, date=date_str) or []
     if code:
-        rows = [r for r in rows if str(r.get(fld, "")).strip() == code]
+        headers = [h for h in headers if str(h.get(fld, "")).strip() == code]
 
     out = []
-    for r in rows:
-        # lystk.query 若已含明細就直接用；否則用單號回查補明細。
-        if _detail_list(r):
-            order = _normalize(r)
-        else:
-            sp_no = (r.get("SP_NO") or "").strip()
-            full = query_one(eff_icpno, sp_no) if sp_no else None
-            if full is None:
-                order = dict(r)
-                order["details"] = []
-            else:
-                order = full
-        # 附上店名，方便松成/人看（部門欄位存在時）
-        if fld and order.get(fld) is not None:
-            order["office_name"] = office_name(order.get(fld))
-        out.append(order)
+    for h in headers:
+        sp_no = (h.get("SP_NO") or "").strip()
+        full = _fetch_one(eff_icpno, sp_no) if sp_no else None
+        order = full if full is not None else {**h, "details": []}
+        out.append(_with_office_name(order))
     return out
 
 
