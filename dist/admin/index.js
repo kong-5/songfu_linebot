@@ -10527,16 +10527,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             });
           })();
           var itemsForm = document.getElementById('itemsForm');
-          if (itemsForm) {
-            var itemsSaving = false;
-            itemsForm.addEventListener('change', function(){ formDirty = true; });
-            itemsForm.addEventListener('input', function(){ formDirty = true; });
-            itemsForm.addEventListener('submit', function(e){
-              e.preventDefault();
-              if (itemsSaving) return; // 防連點造成重複送出
+          var itemsSaving = false;
+          // 儲存明細（AJAX）抽成函式，回傳 Promise<boolean>；供「儲存明細」與「確認→下一筆」共用
+          function doSaveItems(submitterBtn){
+            return new Promise(function(resolve){
+              if (!itemsForm) { resolve(true); return; } // 沒有明細表單，視為已存
+              if (itemsSaving) { resolve(false); return; } // 防連點重複送出
               itemsSaving = true;
-              // 針對「實際被按下的那顆」按鈕做讀取狀態（上/下兩顆儲存都可能）
-              var btn = (e.submitter && e.submitter.getAttribute('type') === 'submit') ? e.submitter : itemsForm.querySelector('button[type="submit"]');
+              var btn = (submitterBtn && submitterBtn.getAttribute && submitterBtn.getAttribute('type') === 'submit') ? submitterBtn : itemsForm.querySelector('button[type="submit"]');
               var saveBtns = Array.prototype.slice.call(itemsForm.querySelectorAll('button[type="submit"]'));
               var origText = btn ? btn.innerHTML : '';
               saveBtns.forEach(function(b){ b.disabled = true; });
@@ -10563,19 +10561,40 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                   if (result.ok && result.data && result.data.ok) {
                     formDirty = false;
                     sfToast('✓ 已儲存明細');
+                    resolve(true);
                   } else {
                     var serverMsg = (result.data && result.data.error)
                       ? result.data.error
                       : (result.rawText ? String(result.rawText).slice(0, 200) : '');
                     console.error('[儲存明細] HTTP ' + result.status, result);
                     sfToast('儲存失敗 (HTTP ' + result.status + ')' + (serverMsg ? '：' + serverMsg : '，請再試一次'), 'err');
+                    resolve(false);
                   }
                 })
                 .catch(function(err){
                   restore();
                   console.error('[儲存明細] 請求例外：', err);
                   sfToast('儲存請求失敗：' + (err && err.message ? err.message : '網路或伺服器無回應'), 'err');
+                  resolve(false);
                 });
+            });
+          }
+          if (itemsForm) {
+            itemsForm.addEventListener('change', function(){ formDirty = true; });
+            itemsForm.addEventListener('input', function(){ formDirty = true; });
+            itemsForm.addEventListener('submit', function(e){ e.preventDefault(); doSaveItems(e.submitter); });
+          }
+          // 「確認 → 下一筆」：若明細有未存變更，先自動存明細、成功才確認並跳下一筆
+          // （解決按下一筆一直彈「未儲存」通知、以及存了還被擋的困擾；存檔失敗則停在本頁不放行）
+          var approveForm = document.getElementById('approveOrderForm');
+          if (approveForm) {
+            approveForm.addEventListener('submit', function(e){
+              if (!formDirty) return; // 無未存變更，直接放行（beforeunload 因 formDirty=false 不會彈）
+              e.preventDefault();
+              doSaveItems(null).then(function(ok){
+                if (ok) { formDirty = false; approveForm.submit(); }
+                else { sfToast('明細尚未存成功，已停在本頁，請確認後再按一次「確認」', 'err'); }
+              });
             });
           }
           window.addEventListener('beforeunload', function(e){
@@ -10586,15 +10605,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           document.addEventListener('submit', function(e){
             var f = e.target;
             if (!formDirty || !f || f.tagName !== 'FORM') return;
-            if (f.id === 'itemsForm') return;
-            if (!confirm('明細有尚未儲存的變更，確定要離開此頁？')) e.preventDefault();
+            if (f.id === 'itemsForm' || f.id === 'approveOrderForm') return; // 這兩個自己處理（存明細／存後確認）
+            if (confirm('明細有尚未儲存的變更，確定要離開此頁？')) { formDirty = false; }
+            else { e.preventDefault(); }
           }, true);
           document.addEventListener('click', function(e){
             var a = e.target.closest('a');
             if (!a || !formDirty) return;
             var href = a.getAttribute('href') || '';
             if (!href || href.startsWith('#')) return;
-            if (confirm('明細有尚未儲存的變更，確定要離開此頁？')) return;
+            if (confirm('明細有尚未儲存的變更，確定要離開此頁？')) { formDirty = false; return; }
             e.preventDefault();
           }, true);
           var pasteBtn = document.getElementById('pasteRawToggleBtn');
