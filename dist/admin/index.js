@@ -7758,11 +7758,6 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               <option value="approved" ${statusFilter === "approved" ? "selected" : ""}>已確認</option>
             </select>
             <div style="flex:1;"></div>
-            <div style="display:flex;gap:8px;align-items:center;">
-              <span style="font-size:12px;color:var(--txt-3);" id="batchSelectedHint">未選</span>
-              <button type="button" class="sf-btn sm" id="orderSelectAll">全選</button>
-              <button type="button" class="sf-btn sm" id="orderSelectNone">取消</button>
-            </div>
             <form id="batchOrderActionsForm" method="post" action="/admin/orders/batch-delete" style="display:none;margin:0;">
               <input type="hidden" name="void_reason" id="batchVoidReason" value="">
               <input type="hidden" name="void_note" id="batchVoidNote" value="">
@@ -7877,7 +7872,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           (function(){
             function allCbs(){ return document.querySelectorAll(".order-batch-cb"); }
             var allEl = document.getElementById("orderSelectAllCb");
-            if (allEl) allEl.addEventListener("change", function(){ allCbs().forEach(function(c){ c.checked = allEl.checked; }); });
+            if (allEl) allEl.addEventListener("change", function(){ allCbs().forEach(function(c){ c.checked = allEl.checked; }); updateBar(); });
             var b1 = document.getElementById("orderSelectAll");
             var b2 = document.getElementById("orderSelectNone");
             var b2b = document.getElementById("orderSelectNone2");
@@ -9504,7 +9499,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}&next=1" id="approveOrderForm" style="display:inline;margin:0;flex:0 0 auto;" title="確認後自動跳到下一筆待確認"><button type="submit" class="btn btn-cute-approve">確認 → 下一筆</button></form>`;
         const toComplaintFormHtml = orderStatusLc === "complaint" || orderStatusLc === "deleted"
             ? ""
-            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/to-complaint" style="display:inline;margin:0;"><button type="submit" class="sf-btn sm" title="此筆其實是客訴而非訂單，按下將轉入客訴處理流程" onclick="return confirm('確定將此筆轉為客訴？將不再出現在訂單列表，並進入客訴處理流程。');" style="color:#c2410c;border-color:#fed7aa;">⚠ 轉為客訴</button></form>`;
+            : `<button type="button" id="btnToComplaint" data-order-id="${escapeAttr(orderId)}" class="sf-btn sm" title="此筆其實是客訴而非訂單，按下將轉入客訴處理流程（轉完留在本頁，不跳轉）" style="color:#c2410c;border-color:#fed7aa;">⚠ 轉為客訴</button>`;
         const statusPillCls = orderStatusLc === "approved" ? "ok" : orderStatusLc === "deleted" ? "bad" : orderStatusLc === "complaint" ? "bad" : "warn";
         // 訂貨日（系統紀錄時間） - 取 updated_at 的前 16 字（YYYY-MM-DD HH:mm）
         const orderReceivedAt = fmtTaipeiYMDHM(order.updated_at);
@@ -10507,6 +10502,30 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             setTimeout(function(){ t.style.opacity = '0'; t.style.transform = 'translateY(8px)'; setTimeout(function(){ if (t.parentNode) t.parentNode.removeChild(t); }, 220); }, isErr ? 5000 : 2400);
           }
           window.sfToast = sfToast;
+          // 轉為客訴：AJAX 呼叫，成功後跳 toast、留在本頁（不跳轉到客訴畫面，避免一直點來點去）
+          (function(){
+            var btnTC = document.getElementById('btnToComplaint');
+            if (!btnTC) return;
+            btnTC.addEventListener('click', function(){
+              if (!confirm('確定將此筆轉為客訴？將不再出現在訂單列表，並進入客訴處理流程。')) return;
+              var oid = btnTC.getAttribute('data-order-id');
+              btnTC.disabled = true;
+              fetch('/admin/orders/' + encodeURIComponent(oid) + '/to-complaint', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' } })
+                .then(function(r){ return r.json().catch(function(){ return { ok: r.ok }; }); })
+                .then(function(d){
+                  if (d && d.ok) {
+                    sfToast('✓ 已轉為客訴，此筆已移出訂單列表');
+                    btnTC.textContent = '✓ 已轉客訴';
+                    btnTC.style.color = '#059669';
+                    btnTC.style.borderColor = '#a7f3d0';
+                  } else {
+                    btnTC.disabled = false;
+                    sfToast('轉為客訴失敗，請再試一次', 'err');
+                  }
+                })
+                .catch(function(){ btnTC.disabled = false; sfToast('轉為客訴請求失敗，請檢查網路', 'err'); });
+            });
+          })();
           var itemsForm = document.getElementById('itemsForm');
           if (itemsForm) {
             var itemsSaving = false;
@@ -11650,6 +11669,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             summary: `轉為客訴 ${order.order_no || orderId}（前狀態：${order.status || "－"}）`,
             meta: { before: order },
         });
+        const wantsJson = (req.get("x-requested-with") === "XMLHttpRequest") || String(req.get("accept") || "").indexOf("application/json") >= 0;
+        if (wantsJson) {
+            res.json({ ok: true, complaintUrl: "/admin/complaints/" + encodeURIComponent(orderId) });
+            return;
+        }
         res.redirect("/admin/complaints/" + encodeURIComponent(orderId));
     });
     router.post("/complaints/:orderId/to-order", async (req, res) => {
