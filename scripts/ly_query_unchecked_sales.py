@@ -97,6 +97,38 @@ def run(args) -> int:
     icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
     ensure_timeout_client(args.timeout)
 
+    # 診斷拋轉問題：撈某一張單（訂貨單0000A0 或 銷貨單0000A1）的所有欄位，看少了什麼。
+    if args.doc:
+        kind = (args.kind or "0000A0").strip()          # 網站轉入的是訂貨單 0000A0
+        prefix = lystk._FIELD_PREFIX.get(kind, "SP")     # OR / SP
+        print(f"▶ 查單 {args.doc}  種類={kind}({lystk.IDAKD.get(kind,'?')})  ICPNO={icpno} …", flush=True)
+        rows = lystk.query(icpno=icpno, idakd=kind,
+                           where=f"{prefix}_NO='@v1@'", whval=args.doc)
+        if not rows:
+            print(f"\n⚠ 查無單號 {args.doc}（ICPNO={icpno} / {kind}）。"
+                  f"\n  單號前綴/公司別要對；訂貨單用 --kind 0000A0、銷貨單用 --kind 0000A1。")
+            return 0
+        r = rows[0]
+        print(f"\n── 單 {args.doc} 共 {len(r)} 欄 ──")
+        # 先把最關鍵的幾欄挑出來提示
+        hot = {
+            "審核狀態": f"{prefix}_CHECK",
+            "倉別(表頭)": next((k for k in r if k.endswith("_WHNO") or k.endswith("_WARE")), None),
+            "業務員": f"{prefix}_SALES", "部門": f"{prefix}_DPNO",
+        }
+        print("  【重點欄位】")
+        for label, key in hot.items():
+            if key and key in r:
+                val = r[key]
+                flag = "  ← 空的!" if str(val).strip() == "" else ("  ← 0=未審核!" if key.endswith("_CHECK") and str(val).strip() == "0" else "")
+                print(f"    {label:<10}{key:<12} = {val!r}{flag}")
+        print("  【全部欄位】")
+        for k, v in r.items():
+            print(f"    {k:<16} {v}")
+        if args.xlsx:
+            export_xlsx(rows, args.xlsx)
+        return 0
+
     # 診斷：撈任意資料種類的前幾筆，印出所有欄位名+值。用來看庫存(000009)等的真實欄位。
     if args.dump_kind:
         n = args.limit or 5
@@ -197,6 +229,8 @@ def build_parser():
     p.add_argument("--all", action="store_true", help="列出全部（含已審核），並統計未審核數")
     p.add_argument("--pending", action="store_true", help="不分月份找所有未審核銷貨單（同盤點系統；未指定公司則掃 00/01/03）")
     p.add_argument("--latest", type=int, metavar="N", help="不篩日期抓最新 N 張（診斷公司別/資料是否存在）")
+    p.add_argument("--doc", help="診斷拋轉：撈某一張單的所有欄位（看少打什麼），配 --kind 指定單別")
+    p.add_argument("--kind", help="搭配 --doc：0000A0 訂貨單（預設）、0000A1 銷貨單")
     p.add_argument("--dump-kind", help="撈任意資料種類前幾筆的原始欄位，如 000009（庫存）、000000（貨品）")
     p.add_argument("--limit", type=int, help="搭配 --dump-kind：撈幾筆（預設 5）")
     p.add_argument("--xlsx", help="把查到的結果匯出成 Excel（給路徑，如 D:\\out.xlsx）")
