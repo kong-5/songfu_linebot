@@ -152,9 +152,12 @@ def run_test_ctno(args, *, icpno, whno, price, create_name, check, maker, date_s
         "order_date": date_str, "doc_remark": "",
         "items": [{"product_code": skno, "product_name": skname, "unit": "KG", "quantity": 1}],
     }
+    # 備註：預設標【API測試請刪除】；但拋轉是把 # 寫進備註，備註被佔住會標不上，
+    # 要驗證拋轉就用 --no-test-mark 讓備註留空（像真單），拋完自己記單號刪除。
+    rem_prefix = "" if args.no_test_mark else TEST_REM_PREFIX
     row = map_order(order, icpno=icpno, whno=whno, price=price,
                     create_name=create_name, check=check, maker=maker,
-                    rem_prefix=TEST_REM_PREFIX)
+                    rem_prefix=rem_prefix)
     print(f"  即將寫入：OR_CHECK={row.get('OR_CHECK','')!r} OR_MAKER={row.get('OR_MAKER','(ly_order預設)')!r} "
           f"OR_FKFS={row.get('OR_FKFS','')!r} OR_SALES={row.get('OR_SALES','')!r} "
           f"OR_CREATEDATE={row.get('OR_CREATEDATE','')} 料號={skno}")
@@ -374,6 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--test-ctno", help="測試：為指定客戶代碼寫一張測試訂貨單，驗證付款方式/業務員有無帶入")
     p.add_argument("--test-skno", help="搭配 --test-ctno：測試明細用的料號（省略則自動取一個）")
     p.add_argument("--audited", action="store_true", help="寫入即設為已審核 OR_CHECK=1（省去人工審核）")
+    p.add_argument("--no-test-mark", action="store_true", help="測試單備註留空（不加【API測試請刪除】），讓拋轉能寫入 # 以驗證")
     p.add_argument("--maker", help="覆寫製單人 OR_MAKER（預設由 ly_order 帶 LY；手打單多為操作員代碼如 052）")
     p.add_argument("--dry-run", action="store_true", help="只抓+組單印出，不寫凌越、不回填")
     p.add_argument("--test", action="store_true", help="只寫第一張(標記測試)→驗證→刪除；不回填")
