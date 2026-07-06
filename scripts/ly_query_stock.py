@@ -34,16 +34,16 @@ ly_query_stock.py — 查品項目前庫存（貨品主檔 000000）/ 匯出 Exc
   python ly_query_stock.py --item A001
   python ly_query_stock.py --item A001 --code-field SK_NO
 
-  # 3) 確認欄名後 → 批次查「輸入品項 → 目前庫存」，並匯出 Excel
-  python ly_query_stock.py --items "A001,A002,B010" \
-         --code-field SK_NO --stock-field SK_STOCK --name-field SK_NAME \
-         --xlsx D:\\stock.xlsx
-  python ly_query_stock.py --items-file D:\\codes.txt \
-         --code-field SK_NO --stock-field SK_STOCK --xlsx D:\\stock.xlsx
+  # 3) 批次查「輸入品項 → 目前庫存」，並匯出 Excel（欄名已內建預設，免打 --*-field）
+  python ly_query_stock.py --items "10100004,10100005,10100006" --xlsx D:\\stock.xlsx
+  python ly_query_stock.py --items-file D:\\codes.txt --xlsx D:\\stock.xlsx
 
-  # 4) 全品項匯出（不指定品項）→ 撈整張貨品主檔的 料號/品名/目前庫存
-  python ly_query_stock.py --all --code-field SK_NO --stock-field SK_STOCK \
-         --name-field SK_NAME --xlsx D:\\stock_all.xlsx
+  # 4) 全品項匯出（不指定品項）→ 撈整張貨品主檔的 料號/品名/規格/單位/目前庫存
+  python ly_query_stock.py --all --xlsx D:\\stock_all.xlsx
+
+欄位（2026-07 於松富 ICPNO=00 用 --dump 實測確認）：
+  料號 SK_NO、品名 SK_NAME、規格 SK_SPEC、單位 SK_UNIT、目前庫存 SK_NOWQTY（現有量，即時變動）。
+  換公司別若欄名不同，用 --code-field / --stock-field / --name-field 覆寫，或先跑 --dump 確認。
 
 環境變數：LY_ICPNO 公司代碼，預設 "00"（松富；01=龍港、03=桂田）。
 """
@@ -59,10 +59,12 @@ import lystk  # noqa: E402  內建 query() / dump_xlsx() 等
 
 KIND_GOODS = "000000"  # 貨品主檔
 
-# 貨品主檔欄位名「先猜、待 --dump 確認」的預設值。確認後改這裡即可少打參數。
-DEFAULT_CODE_FIELD = "SK_NO"     # 料號欄（貨品編號）
-DEFAULT_NAME_FIELD = "SK_NAME"   # 品名欄
-DEFAULT_STOCK_FIELD = ""         # 目前庫存欄（尚未確認，先留空，靠 --stock-field 或 --dump 找）
+# 貨品主檔欄位名（已於 2026-07 用 --dump 在松富 ICPNO=00 實測確認）。
+DEFAULT_CODE_FIELD = "SK_NO"      # 料號欄（貨品編號）
+DEFAULT_NAME_FIELD = "SK_NAME"    # 品名欄
+DEFAULT_STOCK_FIELD = "SK_NOWQTY"  # 目前庫存（現有量）★ 即時變動，確認為「目前在庫量」
+DEFAULT_SPEC_FIELD = "SK_SPEC"    # 規格（如 20KG/件）
+DEFAULT_UNIT_FIELD = "SK_UNIT"    # 單位（如 KG）
 
 # 判斷「這欄名像不像庫存/數量」用的關鍵字（中英都放）。
 STOCK_HINTS = ("庫", "存", "結存", "現量", "現有", "在庫", "數量", "餘",
@@ -168,10 +170,11 @@ def read_codes(args) -> list:
 
 def print_stock_table(rows: list):
     print(f"\n品項目前庫存（{len(rows)} 筆）：\n")
-    print(f"  {'料號':<16}{'品名':<24}{'目前庫存':>12}")
-    print("  " + "-" * 54)
+    print(f"  {'料號':<12}{'品名':<20}{'規格':<12}{'單位':<6}{'目前庫存':>10}")
+    print("  " + "-" * 62)
     for r in rows:
-        print(f"  {str(r['料號']):<16}{str(r['品名'])[:22]:<24}{str(r['目前庫存']):>12}")
+        print(f"  {str(r['料號']):<12}{str(r['品名'])[:18]:<20}"
+              f"{str(r['規格'])[:10]:<12}{str(r['單位']):<6}{str(r['目前庫存']):>10}")
 
 
 # ----------------------------------------------------------------------
@@ -183,6 +186,8 @@ def run(args) -> int:
     code_field = (args.code_field or DEFAULT_CODE_FIELD).strip()
     name_field = (args.name_field or DEFAULT_NAME_FIELD).strip()
     stock_field = (args.stock_field or DEFAULT_STOCK_FIELD).strip()
+    spec_field = DEFAULT_SPEC_FIELD
+    unit_field = DEFAULT_UNIT_FIELD
     ensure_timeout_client(args.timeout)
 
     # ── 模式 1：欄位發現 — 撈貨品主檔前 N 筆，全欄位＋標候選庫存欄 ───────────
@@ -252,6 +257,8 @@ def run(args) -> int:
             out.append({
                 "料號": str(rec.get(code_field, "")).strip(),
                 "品名": str(rec.get(name_field, "")).strip(),
+                "規格": str(rec.get(spec_field, "")).strip(),
+                "單位": str(rec.get(unit_field, "")).strip(),
                 "目前庫存": _to_number(rec.get(stock_field, "")),
             })
         print_stock_table(out)
