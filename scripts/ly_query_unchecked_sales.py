@@ -68,22 +68,39 @@ def print_table(rows, title):
               f"  {mark}  {str(r.get('SP_REM','')).strip()}")
 
 
+def query_days(icpno, start: datetime.date, end: datetime.date) -> list:
+    """一天一天查（每天資料小、不會卡），加總整段。每天印進度。"""
+    all_rows, d = [], start
+    while d <= end:
+        ds = d.strftime("%Y-%m-%d")
+        try:
+            rows = lystk.query(icpno=icpno, idakd=IDAKD_SALES, date=ds)
+        except Exception as e:
+            print(f"    … {ds} 失敗：{e}", flush=True)
+            rows = []
+        n_un = sum(1 for r in rows if is_unchecked(r))
+        print(f"    … {ds}  {len(rows)} 張" + (f"（未審 {n_un}）" if n_un else ""), flush=True)
+        all_rows += rows
+        d += datetime.timedelta(days=1)
+    return all_rows
+
+
 def run(args) -> int:
     icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
     ensure_timeout_client(args.timeout)
 
     if args.date:
         span = args.date.strip()
+        d = datetime.date.fromisoformat(span)
         print(f"▶ 查詢銷貨單  ICPNO={icpno}  {span} …", flush=True)
-        rows = lystk.query(icpno=icpno, idakd=IDAKD_SALES, date=span)
+        rows = query_days(icpno, d, d)
     else:
         month = (args.month or datetime.date.today().strftime("%Y-%m")).strip()
         span = month
         y, m = (int(x) for x in month.split("-"))
         last = calendar.monthrange(y, m)[1]
-        print(f"▶ 查詢銷貨單  ICPNO={icpno}  {month}-01 ~ {month}-{last:02d} …", flush=True)
-        rows = lystk.query(icpno=icpno, idakd=IDAKD_SALES,
-                           start=f"{month}-01", end=f"{month}-{last:02d}")
+        print(f"▶ 查詢銷貨單  ICPNO={icpno}  {month}-01 ~ {month}-{last:02d}（逐日查）…", flush=True)
+        rows = query_days(icpno, datetime.date(y, m, 1), datetime.date(y, m, last))
 
     if not rows:
         print(f"\n⚠ {span} 查無銷貨單。可能：公司別 ICPNO={icpno} 不對、或該區間沒單。")
