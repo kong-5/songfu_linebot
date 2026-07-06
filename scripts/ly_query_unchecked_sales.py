@@ -97,6 +97,33 @@ def run(args) -> int:
     icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
     ensure_timeout_client(args.timeout)
 
+    # 直接找「所有未審核」銷貨單（不分月份）＝ 盤點系統看到的那種。
+    # 未審核單不管哪天開的都會一直存在，用月份反而框不到 → 這才是對的查法。
+    if args.pending:
+        companies = [icpno] if args.icpno else ["00", "01", "03"]
+        found_any = False
+        for cp in companies:
+            name = lystk.COMPANIES.get(cp, cp)
+            print(f"▶ 找未審核銷貨單（不分日期）  ICPNO={cp} {name} …", flush=True)
+            try:
+                rows = lystk.query(icpno=cp, idakd=IDAKD_SALES,
+                                   where="SP_CHECK='@v1@'", whval="0",
+                                   order="order by SP_NO desc")
+            except Exception as e:
+                print(f"    查詢失敗：{e}", flush=True)
+                continue
+            if rows:
+                found_any = True
+                print_table(rows, f"{name} 未審核銷貨單")
+                if args.xlsx:
+                    export_xlsx(rows, args.xlsx)
+        if not found_any:
+            print("\n⚠ 三家公司都查不到 SP_CHECK=0 的銷貨單。"
+                  "\n  盤點系統那張若確定存在，可能：(1) 它不是『銷貨單 0000A1』而是別的單別"
+                  "（如訂貨單/銷退），(2) 未審核在該系統用的是別的欄位。"
+                  "\n  把盤點系統那張的單號截給我，我對一下單號前綴就知道是哪種單/哪家公司。")
+        return 0
+
     # 診斷：不管日期，抓最新 N 張。用來確認「公司別對不對／有沒有資料／日期長怎樣」
     if args.latest:
         print(f"▶ 抓最新 {args.latest} 張 0000A1  ICPNO={icpno}（不篩日期）…", flush=True)
@@ -152,6 +179,7 @@ def build_parser():
     p.add_argument("--date", help="查單日 YYYY-MM-DD（優先於 --month）")
     p.add_argument("--icpno", help="公司代碼（預設 00 松富；01 龍港、03 桂田，或 LY_ICPNO）")
     p.add_argument("--all", action="store_true", help="列出全部（含已審核），並統計未審核數")
+    p.add_argument("--pending", action="store_true", help="不分月份找所有未審核銷貨單（同盤點系統；未指定公司則掃 00/01/03）")
     p.add_argument("--latest", type=int, metavar="N", help="不篩日期抓最新 N 張（診斷公司別/資料是否存在）")
     p.add_argument("--xlsx", help="把查到的結果匯出成 Excel（給路徑，如 D:\\out.xlsx）")
     p.add_argument("--timeout", type=int, default=60, help="連線/操作逾時秒數（預設 60）")
