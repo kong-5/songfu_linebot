@@ -55,6 +55,25 @@ def is_unchecked(rec: dict) -> bool:
     return str(rec.get("SP_CHECK", "")).strip().upper() in ("", "0", "N", "FALSE")
 
 
+def fetch_doc_details(icpno, kind, prefix, no):
+    """低階 LyDataOut 撈某單的明細行（LYDATADETAIL；訂貨單 OD_、銷貨單 SD_）。"""
+    from xml.etree import ElementTree as ET
+    icpno_r = lystk.resolve_icpno(icpno)
+    client = lystk.get_client()
+    resp = client.service.LyDataOut(
+        ikye=lystk.fresh_key(), icpno=icpno_r, idakd=kind,
+        ifld="", idetfields="*",
+        irwhere=f"{prefix}_NO='@v1@'", iwhval=no,
+        irec=0, imode=" " * 30, iorder=f"order by {prefix}_NO",
+        idtorder="", iswhere="", isifld="",
+        Isecgroup="", iseckindfg="", iseckind="", Isecorder="", Isecrec=0,
+    )
+    if str(resp["LyDataOutResult"]) != "0" or not resp["ixmlda"]:
+        return []
+    root = ET.fromstring(str(resp["ixmlda"]))
+    return [{c.tag: (c.text or "").strip() for c in d} for d in root.findall(".//LYDATADETAIL")]
+
+
 def print_table(rows, title):
     print(f"\n{title}（{len(rows)} 筆）：\n")
     print(f"  {'SP_NO':<16}{'日期':<12}{'客戶':<20}{'金額':>10}  審核  備註")
@@ -125,6 +144,13 @@ def run(args) -> int:
         print("  【全部欄位】")
         for k, v in r.items():
             print(f"    {k:<16} {v}")
+        if args.details:
+            dets = fetch_doc_details(icpno, kind, prefix, args.doc)
+            print(f"\n  【明細 {len(dets)} 行（OD_/SD_）】")
+            for i, d in enumerate(dets, 1):
+                print(f"  ── 明細 {i} ──")
+                for k, v in d.items():
+                    print(f"    {k:<16} {v}")
         if args.xlsx:
             export_xlsx(rows, args.xlsx)
         return 0
@@ -231,6 +257,7 @@ def build_parser():
     p.add_argument("--latest", type=int, metavar="N", help="不篩日期抓最新 N 張（診斷公司別/資料是否存在）")
     p.add_argument("--doc", help="診斷拋轉：撈某一張單的所有欄位（看少打什麼），配 --kind 指定單別")
     p.add_argument("--kind", help="搭配 --doc：0000A0 訂貨單（預設）、0000A1 銷貨單")
+    p.add_argument("--details", action="store_true", help="搭配 --doc：連明細行(OD_/SD_)一起印，用來比對倉別等")
     p.add_argument("--dump-kind", help="撈任意資料種類前幾筆的原始欄位，如 000009（庫存）、000000（貨品）")
     p.add_argument("--limit", type=int, help="搭配 --dump-kind：撈幾筆（預設 5）")
     p.add_argument("--xlsx", help="把查到的結果匯出成 Excel（給路徑，如 D:\\out.xlsx）")
