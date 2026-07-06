@@ -123,8 +123,8 @@ def customer_defaults(icpno: str, ctno: str) -> dict:
     return out
 
 
-def run_test_ctno(args, *, icpno, whno, price, create_name, date_str) -> int:
-    """為指定客戶寫一張測試訂貨單（標【API測試請刪除】），驗證付款方式/業務員有無帶入。"""
+def run_test_ctno(args, *, icpno, whno, price, create_name, check, maker, date_str) -> int:
+    """為指定客戶寫一張測試訂貨單（標【API測試請刪除】），驗證付款方式/業務員/審核有無帶入。"""
     ctno = args.test_ctno.strip()
     cust = customer_record(icpno, ctno)
     if not cust:
@@ -153,10 +153,11 @@ def run_test_ctno(args, *, icpno, whno, price, create_name, date_str) -> int:
         "items": [{"product_code": skno, "product_name": skname, "unit": "KG", "quantity": 1}],
     }
     row = map_order(order, icpno=icpno, whno=whno, price=price,
-                    create_name=create_name, rem_prefix=TEST_REM_PREFIX)
-    print(f"  即將寫入：OR_FKFS={row.get('OR_FKFS','')!r} OR_SALES={row.get('OR_SALES','')!r} "
-          f"OR_CREATEDATE={row.get('OR_CREATEDATE','')} OR_CREATENAME={row.get('OR_CREATENAME','')} "
-          f"料號={skno}")
+                    create_name=create_name, check=check, maker=maker,
+                    rem_prefix=TEST_REM_PREFIX)
+    print(f"  即將寫入：OR_CHECK={row.get('OR_CHECK','')!r} OR_MAKER={row.get('OR_MAKER','(ly_order預設)')!r} "
+          f"OR_FKFS={row.get('OR_FKFS','')!r} OR_SALES={row.get('OR_SALES','')!r} "
+          f"OR_CREATEDATE={row.get('OR_CREATEDATE','')} 料號={skno}")
     try:
         new_nos = ly_order.write_order(icpno=icpno, rows=[row], verbose=True)
     except RuntimeError as e:
@@ -209,7 +210,8 @@ def post_callback(base: str, key: str, results: list) -> dict:
 # ----------------------------------------------------------------------
 
 def map_order(order: dict, *, icpno: str, whno: str, price: str,
-              create_name: str, rem_prefix: str = "") -> dict:
+              create_name: str, check: str = "0", maker: str = "",
+              rem_prefix: str = "") -> dict:
     """把一張雲端 pending 訂單轉成 ly_order.write_order 需要的 row dict。"""
     details = []
     for it in order.get("items", []) or []:
@@ -250,11 +252,13 @@ def map_order(order: dict, *, icpno: str, whno: str, price: str,
         "OR_DATE1": order_date,
         "OR_DATE2": order_date,
         "OR_REM": rem,
-        "OR_CHECK": "0",                                      # 不審核，方便需要時刪除
+        "OR_CHECK": check,                                   # 0=未審核 / 1=已審核（--audited）
         "OR_CREATEDATE": create_dt,                          # 建立日期（拋轉依此抓單）
         "OR_CREATENAME": create_name,                        # 建立人代碼
         "details": details,
     }
+    if maker:
+        row["OR_MAKER"] = maker                              # 覆寫製單人（預設由 ly_order 帶 LY）
     # 付款方式(OR_FKFS)/業務員(OR_SALES)：凌越畫面選客戶會自動帶，API 需自己從客戶主檔補。
     row.update(customer_defaults(icpno, ctno))
     return row
@@ -271,12 +275,15 @@ def run(args) -> int:
     whno = args.warehouse if args.warehouse is not None else os.environ.get("LY_DEFAULT_WHNO", "")
     price = args.price if args.price is not None else os.environ.get("LY_DEFAULT_PRICE", "")
     create_name = (args.create_name or os.environ.get("LY_CREATE_NAME") or "052").strip()
+    check_val = "1" if args.audited else "0"
+    maker_val = (args.maker or os.environ.get("LY_MAKER") or "").strip()
     date_str = args.date or datetime.date.today().strftime("%Y-%m-%d")
 
     # 指定客戶寫測試單：不需雲端 pending，直接寫凌越驗證欄位帶入
     if args.test_ctno:
         return run_test_ctno(args, icpno=icpno, whno=whno, price=price,
-                             create_name=create_name, date_str=date_str)
+                             create_name=create_name, check=check_val, maker=maker_val,
+                             date_str=date_str)
 
     if not base or not key:
         print("❌ 請設定 LY_CLOUD_BASE 與 LY_WRITEBACK_KEY（或用 --base / --key）", file=sys.stderr)
@@ -292,7 +299,8 @@ def run(args) -> int:
     # ── dry-run：只組單印出，不寫凌越、不回填 ───────────────────────
     if args.dry_run:
         for o in orders:
-            row = map_order(o, icpno=icpno, whno=whno, price=price, create_name=create_name)
+            row = map_order(o, icpno=icpno, whno=whno, price=price, create_name=create_name,
+                            check=check_val, maker=maker_val)
             print(f"\n── order_id={o.get('order_id')}  客戶={row['OR_CTNO']} {row['OR_CTNAME']} ──")
             print(json.dumps(row, ensure_ascii=False, indent=2))
         print("\n(dry-run：未寫入凌越、未回填)")
@@ -302,7 +310,8 @@ def run(args) -> int:
     if args.test:
         o = orders[0]
         row = map_order(o, icpno=icpno, whno=whno, price=price,
-                        create_name=create_name, rem_prefix=TEST_REM_PREFIX)
+                        create_name=create_name, check=check_val, maker=maker_val,
+                        rem_prefix=TEST_REM_PREFIX)
         print(f"\n▶ 測試寫入第一張：order_id={o.get('order_id')}  客戶={row['OR_CTNO']} {row['OR_CTNAME']}")
         try:
             new_nos = ly_order.write_order(icpno=icpno, rows=[row], verbose=True)
@@ -361,6 +370,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--create-name", help="建立人代碼 OR_CREATENAME（預設 052，或 LY_CREATE_NAME）")
     p.add_argument("--test-ctno", help="測試：為指定客戶代碼寫一張測試訂貨單，驗證付款方式/業務員有無帶入")
     p.add_argument("--test-skno", help="搭配 --test-ctno：測試明細用的料號（省略則自動取一個）")
+    p.add_argument("--audited", action="store_true", help="寫入即設為已審核 OR_CHECK=1（省去人工審核）")
+    p.add_argument("--maker", help="覆寫製單人 OR_MAKER（預設由 ly_order 帶 LY；手打單多為操作員代碼如 052）")
     p.add_argument("--dry-run", action="store_true", help="只抓+組單印出，不寫凌越、不回填")
     p.add_argument("--test", action="store_true", help="只寫第一張(標記測試)→驗證→刪除；不回填")
     p.add_argument("--keep", action="store_true", help="搭配 --test：保留測試單不刪除")
