@@ -86,30 +86,34 @@ def query_sales(icpno: str, date_like: str, want_details: bool) -> list:
 
 def debug_probe(icpno: str, month: str) -> int:
     """用多種條件各打一次，印出凌越回傳碼 + 筆數 + 樣本，定位 0 筆原因。"""
+    ym = month.replace("-", "")            # 202607
+    # 輕量、精準的條件排前面（快、量小）；「整年 / 不加條件」這種重的放最後。
     probes = [
-        ("整個資料種類不加條件", "", ""),
-        (f"SP_NO like 'A{month.replace('-','')}%'（A前綴當月）", "SP_NO like '@v1@'", f"A{month.replace('-','')}%"),
-        (f"SP_DATE like '{month}%'", "SP_DATE like '@v1@'", f"{month}%"),
-        (f"SP_DATE like '{month.replace('-','/')}%'（斜線日期）", "SP_DATE like '@v1@'", f"{month.replace('-','/')}%"),
-        (f"SP_DATE like '{month.replace('-','')}%'（純數字日期）", "SP_DATE like '@v1@'", f"{month.replace('-','')}%"),
-        ("SP_DATE like '2026%'（整年）", "SP_DATE like '@v1@'", "2026%"),
+        (f"SP_NO like 'A{ym}%'（A前綴當月）", "SP_NO like '@v1@'", f"A{ym}%"),
+        (f"SP_DATE like '{month}%'（連字號）", "SP_DATE like '@v1@'", f"{month}%"),
+        (f"SP_DATE like '{month.replace('-','/')}%'（斜線）", "SP_DATE like '@v1@'", f"{month.replace('-','/')}%"),
+        (f"SP_DATE like '{ym}%'（純數字）", "SP_DATE like '@v1@'", f"{ym}%"),
+        ("SP_DATE like '2026%'（整年，較慢）", "SP_DATE like '@v1@'", "2026%"),
+        ("不加條件（全表，最慢，放最後）", "", ""),
     ]
     print(f"▶ DEBUG  ICPNO={icpno}（resolve 後={lystk.resolve_icpno(icpno)}）  idakd={IDAKD_SALES}\n")
+    sys.stdout.flush()
     for label, where, val in probes:
+        print(f"  ▸ {label} … 查詢中", flush=True)
         try:
             rc, xml, rows = _lydataout(icpno, where, val)
         except Exception as e:
-            print(f"  ✗ {label}\n      例外：{e}\n")
+            print(f"      例外：{e}\n", flush=True)
             continue
-        print(f"  ▸ {label}")
-        print(f"      rc={rc!r}  xml長度={len(xml)}  撈到 {len(rows)} 筆")
+        print(f"      rc={rc!r}  xml長度={len(xml)}  撈到 {len(rows)} 筆", flush=True)
         for r in rows[:8]:
             print(f"        {r.get(F_NO,''):<16} {r.get(F_DATE,''):<22} "
-                  f"CHECK={r.get(F_CHECK,''):<3} {r.get(F_CTNAME,'')}")
+                  f"CHECK={r.get(F_CHECK,''):<3} {r.get(F_CTNAME,'')}", flush=True)
         if len(rows) > 8:
-            print(f"        …其餘 {len(rows)-8} 筆")
-        print()
-    print("（rc=0 才是成功；-4=不合法, -5=無此欄位/公司；某條件撈到筆數就照它的 SP_DATE 格式/前綴調整）")
+            print(f"        …其餘 {len(rows)-8} 筆", flush=True)
+        print(flush=True)
+    print("（rc=0 才是成功；-4=不合法, -5=無此欄位/公司；某條件撈到筆數就照它的 SP_DATE 格式/前綴調整）",
+          flush=True)
     return 0
 
 
