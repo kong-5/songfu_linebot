@@ -45,40 +45,72 @@ def is_unchecked(rec: dict) -> bool:
     return str(rec.get(F_CHECK, "")).strip().upper() in ("", "0", "N", "FALSE")
 
 
-def query_sales(icpno: str, date_like: str, want_details: bool) -> list:
-    """
-    用 LyDataOut 撈 SP_DATE like <date_like> 的所有銷貨單主檔。
-    date_like 例：'2026-07%'（整月）、'2026-07-06%'（單日）。
-    回傳 list[dict]（每筆是一張單的 SP_* 欄位；want_details 時附 _details）。
-    """
+def _lydataout(icpno, irwhere, iwhval, want_details=False):
+    """低階呼叫 LyDataOut，回 (rc, xml, rows)。rc/xml 供 debug 檢視。"""
     icpno = lystk.resolve_icpno(icpno)
     client = lystk.get_client()
     key = lystk.fresh_key()
     resp = client.service.LyDataOut(
         ikye=key, icpno=icpno, idakd=IDAKD_SALES,
         ifld="", idetfields=("*" if want_details else ""),
-        irwhere="SP_DATE like '@v1@'", iwhval=date_like,
+        irwhere=irwhere, iwhval=iwhval,
         irec=0, imode=" " * 30,
         iorder="order by SP_NO", idtorder="",
         iswhere="", isifld="",
         Isecgroup="", iseckindfg="", iseckind="",
         Isecorder="", Isecrec=0,
     )
-    if str(resp["LyDataOutResult"]) != "0" or not resp["ixmlda"]:
-        return []
-    root = ET.fromstring(str(resp["ixmlda"]))
+    rc = str(resp["LyDataOutResult"]).strip()
+    xml = str(resp["ixmlda"]) if resp["ixmlda"] else ""
     rows = []
-    for t in root.findall(".//LYDATATITLE"):
-        rec = {child.tag: (child.text or "").strip() for child in t}
-        if want_details:
-            rec["_details"] = [
-                {c.tag: (c.text or "").strip() for c in d}
-                for d in root.findall(".//LYDATADETAIL")
-                if (d.find("SD_NO") is not None
-                    and (d.find("SD_NO").text or "").strip() == rec.get(F_NO, ""))
-            ]
-        rows.append(rec)
+    if rc == "0" and xml:
+        root = ET.fromstring(xml)
+        for t in root.findall(".//LYDATATITLE"):
+            rec = {child.tag: (child.text or "").strip() for child in t}
+            if want_details:
+                rec["_details"] = [
+                    {c.tag: (c.text or "").strip() for c in d}
+                    for d in root.findall(".//LYDATADETAIL")
+                    if (d.find("SD_NO") is not None
+                        and (d.find("SD_NO").text or "").strip() == rec.get(F_NO, ""))
+                ]
+            rows.append(rec)
+    return rc, xml, rows
+
+
+def query_sales(icpno: str, date_like: str, want_details: bool) -> list:
+    """用 LyDataOut 撈 SP_DATE like <date_like> 的所有銷貨單主檔。"""
+    _, _, rows = _lydataout(icpno, "SP_DATE like '@v1@'", date_like, want_details)
     return rows
+
+
+def debug_probe(icpno: str, month: str) -> int:
+    """用多種條件各打一次，印出凌越回傳碼 + 筆數 + 樣本，定位 0 筆原因。"""
+    probes = [
+        ("整個資料種類不加條件", "", ""),
+        (f"SP_NO like 'A{month.replace('-','')}%'（A前綴當月）", "SP_NO like '@v1@'", f"A{month.replace('-','')}%"),
+        (f"SP_DATE like '{month}%'", "SP_DATE like '@v1@'", f"{month}%"),
+        (f"SP_DATE like '{month.replace('-','/')}%'（斜線日期）", "SP_DATE like '@v1@'", f"{month.replace('-','/')}%"),
+        (f"SP_DATE like '{month.replace('-','')}%'（純數字日期）", "SP_DATE like '@v1@'", f"{month.replace('-','')}%"),
+        ("SP_DATE like '2026%'（整年）", "SP_DATE like '@v1@'", "2026%"),
+    ]
+    print(f"▶ DEBUG  ICPNO={icpno}（resolve 後={lystk.resolve_icpno(icpno)}）  idakd={IDAKD_SALES}\n")
+    for label, where, val in probes:
+        try:
+            rc, xml, rows = _lydataout(icpno, where, val)
+        except Exception as e:
+            print(f"  ✗ {label}\n      例外：{e}\n")
+            continue
+        print(f"  ▸ {label}")
+        print(f"      rc={rc!r}  xml長度={len(xml)}  撈到 {len(rows)} 筆")
+        for r in rows[:8]:
+            print(f"        {r.get(F_NO,''):<16} {r.get(F_DATE,''):<22} "
+                  f"CHECK={r.get(F_CHECK,''):<3} {r.get(F_CTNAME,'')}")
+        if len(rows) > 8:
+            print(f"        …其餘 {len(rows)-8} 筆")
+        print()
+    print("（rc=0 才是成功；-4=不合法, -5=無此欄位/公司；某條件撈到筆數就照它的 SP_DATE 格式/前綴調整）")
+    return 0
 
 
 def print_table(rows, show_details, title):
@@ -103,6 +135,10 @@ def print_table(rows, show_details, title):
 
 def run(args) -> int:
     icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
+
+    if args.debug:
+        month = (args.month or datetime.date.today().strftime("%Y-%m")).strip()
+        return debug_probe(icpno, month)
 
     if args.date:
         date_like = args.date.strip() + "%"
@@ -141,6 +177,7 @@ def build_parser():
     p.add_argument("--icpno", help="公司代碼（預設 00 松富，或 LY_ICPNO）")
     p.add_argument("--all", action="store_true", help="列出全部（含已審核），並統計未審核數")
     p.add_argument("--show-details", action="store_true", help="連同明細一起印")
+    p.add_argument("--debug", action="store_true", help="用多種條件試打，印回傳碼/筆數/樣本以定位")
     return p
 
 
