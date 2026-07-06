@@ -85,9 +85,31 @@ def query_days(icpno, start: datetime.date, end: datetime.date) -> list:
     return all_rows
 
 
+def export_xlsx(rows, path):
+    try:
+        p = lystk.dump_xlsx(rows, path)
+        print(f"\n📄 已匯出 Excel：{p}", flush=True)
+    except Exception as e:
+        print(f"\n⚠ 匯出 Excel 失敗：{e}（需要 pip install openpyxl）", flush=True)
+
+
 def run(args) -> int:
     icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
     ensure_timeout_client(args.timeout)
+
+    # 診斷：不管日期，抓最新 N 張。用來確認「公司別對不對／有沒有資料／日期長怎樣」
+    if args.latest:
+        print(f"▶ 抓最新 {args.latest} 張 0000A1  ICPNO={icpno}（不篩日期）…", flush=True)
+        rows = lystk.query(icpno=icpno, idakd=IDAKD_SALES,
+                           order="order by SP_NO desc", limit=args.latest)
+        if not rows:
+            print(f"\n⚠ ICPNO={icpno} 的 0000A1（銷貨單）完全沒有資料 → 多半是公司別不對。"
+                  f"\n  試試 --icpno 01（龍港）或 --icpno 03（桂田）再抓一次 --latest {args.latest}。")
+            return 0
+        print_table(rows, f"最新 {len(rows)} 張銷貨單（看 SP_DATE 實際落在哪些月份）")
+        if args.xlsx:
+            export_xlsx(rows, args.xlsx)
+        return 0
 
     if args.date:
         span = args.date.strip()
@@ -103,10 +125,14 @@ def run(args) -> int:
         rows = query_days(icpno, datetime.date(y, m, 1), datetime.date(y, m, last))
 
     if not rows:
-        print(f"\n⚠ {span} 查無銷貨單。可能：公司別 ICPNO={icpno} 不對、或該區間沒單。")
+        print(f"\n⚠ {span} 查無銷貨單。可能：公司別 ICPNO={icpno} 不對、或該區間沒單。"
+              f"\n  建議先跑 --latest 20 確認 ICPNO={icpno} 到底有沒有銷貨單資料。")
         return 0
 
     unchecked = [r for r in rows if is_unchecked(r)]
+
+    if args.xlsx:
+        export_xlsx(rows, args.xlsx)
 
     if args.all:
         print_table(rows, f"{span} 全部銷貨單")
@@ -126,6 +152,8 @@ def build_parser():
     p.add_argument("--date", help="查單日 YYYY-MM-DD（優先於 --month）")
     p.add_argument("--icpno", help="公司代碼（預設 00 松富；01 龍港、03 桂田，或 LY_ICPNO）")
     p.add_argument("--all", action="store_true", help="列出全部（含已審核），並統計未審核數")
+    p.add_argument("--latest", type=int, metavar="N", help="不篩日期抓最新 N 張（診斷公司別/資料是否存在）")
+    p.add_argument("--xlsx", help="把查到的結果匯出成 Excel（給路徑，如 D:\\out.xlsx）")
     p.add_argument("--timeout", type=int, default=60, help="連線/操作逾時秒數（預設 60）")
     return p
 
