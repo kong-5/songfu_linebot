@@ -85,28 +85,35 @@ def _timeout_client():
     return lystk._client
 
 
-def customer_fkfs(icpno: str, ctno: str) -> str:
-    """回該客戶（OR_CTNO）在客戶主檔的預設付款方式；查不到回空字串（不致命）。"""
+def customer_defaults(icpno: str, ctno: str) -> dict:
+    """
+    從客戶主檔(000001)帶該客戶預設值，回可直接併入訂貨單 row 的 dict：
+      CT_FKFS  → OR_FKFS （付款方式）
+      CT_SALES → OR_SALES（業務員）
+    凌越畫面選客戶會自動帶這些，API 寫入需自己補。查不到/空值就不帶（不致命）。
+    """
     if not ctno:
-        return ""
+        return {}
     ck = (icpno, ctno)
     if ck in _fkfs_cache:
         return _fkfs_cache[ck]
-    val = ""
+    out: dict = {}
     try:
         _timeout_client()
         rows = lystk.query(icpno=icpno, idakd="000001",
                            where="CT_NO='@v1@'", whval=ctno)
         if rows:
             r = rows[0]
-            # 凌越客戶主檔付款方式欄位多為 CT_FKFS；找不到就掃名字含 FKFS 的欄位
-            val = (r.get("CT_FKFS")
-                   or next((v for k, v in r.items() if "FKFS" in k.upper() and v), "")
-                   or "")
+            fkfs = (r.get("CT_FKFS") or "").strip()
+            sales = (r.get("CT_SALES") or "").strip()
+            if fkfs:
+                out["OR_FKFS"] = fkfs
+            if sales:
+                out["OR_SALES"] = sales
     except Exception as e:
-        print(f"    ⚠ 查客戶 {ctno} 付款方式失敗（略過）：{e}", file=sys.stderr)
-    _fkfs_cache[ck] = val
-    return val
+        print(f"    ⚠ 查客戶 {ctno} 主檔失敗（略過）：{e}", file=sys.stderr)
+    _fkfs_cache[ck] = out
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -182,9 +189,7 @@ def map_order(order: dict, *, icpno: str, whno: str, price: str,
     ctno = (order.get("customer_code") or "").strip()
     # 建立日期/建立人：API 寫入不會自動蓋，需自己帶；否則下游拋轉（依建立日期抓單）抓不到。
     create_dt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # 付款方式：從客戶主檔帶該客戶預設值（凌越畫面會自動帶，API 需自己補）。
-    fkfs = customer_fkfs(icpno, ctno)
-    return {
+    row = {
         "OR_CTNO": ctno,
         "OR_CTNAME": (order.get("customer_name") or "").strip(),
         "OR_DATE1": order_date,
@@ -193,9 +198,11 @@ def map_order(order: dict, *, icpno: str, whno: str, price: str,
         "OR_CHECK": "0",                                      # 不審核，方便需要時刪除
         "OR_CREATEDATE": create_dt,                          # 建立日期（拋轉依此抓單）
         "OR_CREATENAME": create_name,                        # 建立人代碼
-        "OR_FKFS": fkfs,                                      # 付款方式（帶自客戶主檔）
         "details": details,
     }
+    # 付款方式(OR_FKFS)/業務員(OR_SALES)：凌越畫面選客戶會自動帶，API 需自己從客戶主檔補。
+    row.update(customer_defaults(icpno, ctno))
+    return row
 
 
 # ----------------------------------------------------------------------
