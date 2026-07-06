@@ -60,8 +60,53 @@ import urllib.error
 # 讓本機找得到 ly_order（與探索工具同目錄）
 sys.path.insert(0, r"D:\Work\lystk_tool")
 import ly_order  # noqa: E402  提供 write_order / verify_or_no / delete_order
+import lystk     # noqa: E402  用來從客戶主檔(000001)帶付款方式
 
 TEST_REM_PREFIX = "【API測試請刪除】"
+
+
+# ----------------------------------------------------------------------
+#  從客戶主檔帶付款方式（凌越畫面選客戶會自動帶，API 寫入需自己補）
+# ----------------------------------------------------------------------
+
+_fkfs_cache: dict = {}
+
+
+def _timeout_client():
+    """lystk 預設用戶端沒設逾時、可能卡死；注入一個有逾時的。"""
+    if lystk._client is None:
+        from zeep import Client, Settings
+        from zeep.transports import Transport
+        lystk._client = Client(
+            lystk.API_URL,
+            settings=Settings(strict=False, xml_huge_tree=True),
+            transport=Transport(timeout=60, operation_timeout=60),
+        )
+    return lystk._client
+
+
+def customer_fkfs(icpno: str, ctno: str) -> str:
+    """回該客戶（OR_CTNO）在客戶主檔的預設付款方式；查不到回空字串（不致命）。"""
+    if not ctno:
+        return ""
+    ck = (icpno, ctno)
+    if ck in _fkfs_cache:
+        return _fkfs_cache[ck]
+    val = ""
+    try:
+        _timeout_client()
+        rows = lystk.query(icpno=icpno, idakd="000001",
+                           where="CT_NO='@v1@'", whval=ctno)
+        if rows:
+            r = rows[0]
+            # 凌越客戶主檔付款方式欄位多為 CT_FKFS；找不到就掃名字含 FKFS 的欄位
+            val = (r.get("CT_FKFS")
+                   or next((v for k, v in r.items() if "FKFS" in k.upper() and v), "")
+                   or "")
+    except Exception as e:
+        print(f"    ⚠ 查客戶 {ctno} 付款方式失敗（略過）：{e}", file=sys.stderr)
+    _fkfs_cache[ck] = val
+    return val
 
 
 # ----------------------------------------------------------------------
@@ -101,7 +146,8 @@ def post_callback(base: str, key: str, results: list) -> dict:
 #  雲端訂單 → 凌越 write_order row（訂貨單 OR_/OD_ 欄位）
 # ----------------------------------------------------------------------
 
-def map_order(order: dict, *, whno: str, price: str, rem_prefix: str = "") -> dict:
+def map_order(order: dict, *, icpno: str, whno: str, price: str,
+              create_name: str, rem_prefix: str = "") -> dict:
     """把一張雲端 pending 訂單轉成 ly_order.write_order 需要的 row dict。"""
     details = []
     for it in order.get("items", []) or []:
@@ -133,13 +179,21 @@ def map_order(order: dict, *, whno: str, price: str, rem_prefix: str = "") -> di
         rem = (rem_prefix + rem).strip()
 
     order_date = (order.get("order_date") or "").strip().replace("/", "-")  # 正規化成 YYYY-MM-DD（雲端可能給斜線）
+    ctno = (order.get("customer_code") or "").strip()
+    # 建立日期/建立人：API 寫入不會自動蓋，需自己帶；否則下游拋轉（依建立日期抓單）抓不到。
+    create_dt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 付款方式：從客戶主檔帶該客戶預設值（凌越畫面會自動帶，API 需自己補）。
+    fkfs = customer_fkfs(icpno, ctno)
     return {
-        "OR_CTNO": (order.get("customer_code") or "").strip(),
+        "OR_CTNO": ctno,
         "OR_CTNAME": (order.get("customer_name") or "").strip(),
         "OR_DATE1": order_date,
         "OR_DATE2": order_date,
         "OR_REM": rem,
         "OR_CHECK": "0",                                      # 不審核，方便需要時刪除
+        "OR_CREATEDATE": create_dt,                          # 建立日期（拋轉依此抓單）
+        "OR_CREATENAME": create_name,                        # 建立人代碼
+        "OR_FKFS": fkfs,                                      # 付款方式（帶自客戶主檔）
         "details": details,
     }
 
@@ -154,6 +208,7 @@ def run(args) -> int:
     icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
     whno = args.warehouse if args.warehouse is not None else os.environ.get("LY_DEFAULT_WHNO", "")
     price = args.price if args.price is not None else os.environ.get("LY_DEFAULT_PRICE", "")
+    create_name = (args.create_name or os.environ.get("LY_CREATE_NAME") or "052").strip()
     date_str = args.date or datetime.date.today().strftime("%Y-%m-%d")
 
     if not base or not key:
@@ -170,7 +225,7 @@ def run(args) -> int:
     # ── dry-run：只組單印出，不寫凌越、不回填 ───────────────────────
     if args.dry_run:
         for o in orders:
-            row = map_order(o, whno=whno, price=price)
+            row = map_order(o, icpno=icpno, whno=whno, price=price, create_name=create_name)
             print(f"\n── order_id={o.get('order_id')}  客戶={row['OR_CTNO']} {row['OR_CTNAME']} ──")
             print(json.dumps(row, ensure_ascii=False, indent=2))
         print("\n(dry-run：未寫入凌越、未回填)")
@@ -179,7 +234,8 @@ def run(args) -> int:
     # ── test：只寫第一張（標記測試）→ 驗證 →（預設）刪除；不回填 ──────
     if args.test:
         o = orders[0]
-        row = map_order(o, whno=whno, price=price, rem_prefix=TEST_REM_PREFIX)
+        row = map_order(o, icpno=icpno, whno=whno, price=price,
+                        create_name=create_name, rem_prefix=TEST_REM_PREFIX)
         print(f"\n▶ 測試寫入第一張：order_id={o.get('order_id')}  客戶={row['OR_CTNO']} {row['OR_CTNAME']}")
         try:
             new_nos = ly_order.write_order(icpno=icpno, rows=[row], verbose=True)
@@ -235,6 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--icpno", help="公司代碼（預設 00 松富，或 LY_ICPNO）")
     p.add_argument("--warehouse", help="預設倉別 OD_WARE（預設留空，或 LY_DEFAULT_WHNO）")
     p.add_argument("--price", help="預設單價 OD_PRICE（預設留空，或 LY_DEFAULT_PRICE）")
+    p.add_argument("--create-name", help="建立人代碼 OR_CREATENAME（預設 052，或 LY_CREATE_NAME）")
     p.add_argument("--dry-run", action="store_true", help="只抓+組單印出，不寫凌越、不回填")
     p.add_argument("--test", action="store_true", help="只寫第一張(標記測試)→驗證→刪除；不回填")
     p.add_argument("--keep", action="store_true", help="搭配 --test：保留測試單不刪除")
