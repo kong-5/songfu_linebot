@@ -69,6 +69,7 @@ const daily_summary_push_js_1 = require("../lib/daily-summary-push.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
+const line_conversation_js_1 = require("../lib/line-conversation.js");
 const announcement_templates_js_1 = require("../lib/announcement-templates.js");
 const announcement_image_js_1 = require("../lib/announcement-image.js");
 const calendar_holidays_js_1 = require("../lib/calendar-holidays.js");
@@ -940,8 +941,9 @@ const NOTION_STYLE = `
     /* 每列的「＋插入」與「⊘作廢」在手機卡片右上角並排 */
     table.order-detail-table tbody tr td:nth-child(10) .row-act-stack { flex-direction: row; gap: 10px; }
     table.order-detail-table tbody tr td:nth-child(10) .item-insert-btn { min-width: 1.85rem; font-size: 16px; padding: 2px 6px; }
-    /* 品項卡左右滑手勢：pan-y 讓直向捲動交給瀏覽器、橫向滑動交給 JS */
-    table.order-detail-table tbody tr[data-item-id] { touch-action: pan-y; }
+    /* 品項卡左右滑手勢已暫停用（使用回饋卡手）；重啟手勢時要一併恢復這條，
+       否則橫向 pointermove 會被瀏覽器攔走：
+       table.order-detail-table tbody tr[data-item-id] { touch-action: pan-y; } */
   }
   /* 訂單列表 mobile 卡片：桌面隱藏 */
   .order-mobile-only { display: none; }
@@ -2573,6 +2575,52 @@ function createAdminRouter() {
               <td>${btn}</td>
             </tr>`;
         }).join("");
+        // 群組發言成員（自動偵測）：曾在客戶群發言的 LINE 帳號。
+        // 主名單只留「未判定」的人；標成同事或按「非公司人員」排除後移到收合的「已處理」區，名單不會被客戶塞滿。
+        const speakers = await line_conversation_js_1.listGroupSpeakers(db, 200);
+        const boundByLineUserId = new Map();
+        for (const u of activeList) {
+            if (u.lineUserId) boundByLineUserId.set(String(u.lineUserId).trim(), u);
+        }
+        const speakerUserOpts = activeList.map(u => `<option value="${escapeAttr(u.username)}">${escapeHtml(u.name || u.username)}${u.title ? `（${escapeHtml(u.title)}）` : ""}</option>`).join("");
+        const renderSpeakerRow = (s) => {
+            const lu = String(s.line_user_id || "");
+            const bound = boundByLineUserId.get(lu);
+            const nameCell = s.display_name ? `<strong>${escapeHtml(s.display_name)}</strong>` : `<span style="color:var(--txt-3);">（取不到名稱）</span>`;
+            const luShort = `<code class="mono" style="font-size:11px;color:var(--txt-3);" title="${escapeAttr(lu)}">${escapeHtml(lu.slice(0, 6))}…${escapeHtml(lu.slice(-4))}</code>`;
+            const grp = s.customer_name ? escapeHtml(s.customer_name) : `<code class="mono" style="font-size:11px;color:var(--txt-3);" title="${escapeAttr(String(s.group_id || ""))}">${escapeHtml(String(s.group_id || "").slice(0, 8))}…</code>`;
+            const last = s.last_spoke_at ? escapeHtml(fmtTaipeiYMDHM(s.last_spoke_at)) : "—";
+            let statusCell, actionCell;
+            if (bound) {
+                statusCell = `<span class="sf-pill ok">同事：${escapeHtml(bound.name || bound.username)}</span>`;
+                actionCell = `<form method="post" action="/admin/users/line-unbind" style="display:inline;margin:0;" onsubmit="return confirm('解除 ${escapeAttr(bound.username)} 的 LINE 綁定？其訊息將回到一般客戶訊息處理。');"><input type="hidden" name="username" value="${escapeAttr(bound.username)}"><button type="submit" class="sf-btn sm">解除標記</button></form>`;
+            }
+            else if (s.dismissed_at) {
+                statusCell = `<span class="sf-pill">非公司人員</span>`;
+                actionCell = `<form method="post" action="/admin/users/speaker-visibility" style="display:inline;margin:0;"><input type="hidden" name="line_user_id" value="${escapeAttr(lu)}"><input type="hidden" name="visibility" value="restore"><button type="submit" class="sf-btn sm">恢復到名單</button></form>`;
+            }
+            else {
+                statusCell = `<span class="sf-pill warn">未判定</span>`;
+                actionCell = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                    <form method="post" action="/admin/users/bind-line-from-speaker" style="display:flex;gap:6px;align-items:center;margin:0;" onsubmit="return confirm('確定將此發言者標記為所選同事？\\n之後其在客戶群的訊息不做 AI 解析，並在訂單對話以「同事」樣式顯示。');">
+                      <input type="hidden" name="line_user_id" value="${escapeAttr(lu)}">
+                      <input type="hidden" name="display_name" value="${escapeAttr(s.display_name || "")}">
+                      <select name="username" class="sf-select" style="min-width:9rem;font-size:12px;height:30px;padding:2px 6px;">${speakerUserOpts}</select>
+                      <button type="submit" class="sf-btn sm primary">標記為同事</button>
+                    </form>
+                    <form method="post" action="/admin/users/speaker-visibility" style="display:inline;margin:0;">
+                      <input type="hidden" name="line_user_id" value="${escapeAttr(lu)}">
+                      <input type="hidden" name="visibility" value="dismiss">
+                      <button type="submit" class="sf-btn sm" title="標記為客戶／非公司人員，移到下方「已處理」收合區（可隨時恢復）">非公司人員</button>
+                    </form>
+                  </div>`;
+            }
+            return `<tr><td>${nameCell}<div>${luShort}</div></td><td>${grp}</td><td style="text-align:right;">${s.message_count ?? 0}</td><td style="white-space:nowrap;">${last}</td><td>${statusCell}</td><td>${actionCell}</td></tr>`;
+        };
+        const pendingSpeakers = (speakers || []).filter(s => !boundByLineUserId.get(String(s.line_user_id || "")) && !s.dismissed_at);
+        const handledSpeakers = (speakers || []).filter(s => boundByLineUserId.get(String(s.line_user_id || "")) || s.dismissed_at);
+        const pendingSpeakerRows = pendingSpeakers.map(renderSpeakerRow).join("");
+        const handledSpeakerRows = handledSpeakers.map(renderSpeakerRow).join("");
         const body = `
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
@@ -2623,6 +2671,33 @@ function createAdminRouter() {
               </table>
             </div>
           </details>` : ""}
+
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.users} 群組發言成員（自動偵測・待判定 ${pendingSpeakers.length}）</div>
+              <span class="sf-card-sub">曾在客戶群發言的 LINE 帳號——是同事就標記、不是就按「非公司人員」移出名單</span>
+            </div>
+            <div class="sf-table-wrap" style="border:0;border-radius:0;">
+              <table class="sf-table">
+                <thead><tr><th>LINE 名稱</th><th>群組（客戶）</th><th style="width:70px;">訊息數</th><th style="width:150px;">最後發言</th><th style="width:120px;">身份</th><th style="width:340px;">操作</th></tr></thead>
+                <tbody>${pendingSpeakerRows || `<tr><td colspan='6' style='padding:24px;text-align:center;color:var(--txt-3);'>沒有待判定的發言者${handledSpeakers.length ? "（已處理的收在下方）" : "——客戶群內有人發言就會自動出現在這裡"}</td></tr>`}</tbody>
+              </table>
+            </div>
+            ${handledSpeakers.length ? `
+            <details style="border-top:var(--hairline);">
+              <summary style="padding:10px 16px;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;">
+                <span style="font-size:11px;color:var(--txt-3);">▸</span>
+                <span style="font-size:13px;font-weight:600;color:var(--txt-2);">已處理（${handledSpeakers.length}）</span>
+                <span style="font-size:11px;color:var(--txt-3);">同事與已排除的非公司人員收在這裡，可解除或恢復</span>
+              </summary>
+              <div class="sf-table-wrap" style="border:0;border-radius:0;border-top:var(--hairline);">
+                <table class="sf-table">
+                  <thead><tr><th>LINE 名稱</th><th>群組（客戶）</th><th style="width:70px;">訊息數</th><th style="width:150px;">最後發言</th><th style="width:120px;">身份</th><th style="width:340px;">操作</th></tr></thead>
+                  <tbody>${handledSpeakerRows}</tbody>
+                </table>
+              </div>
+            </details>` : ""}
+          </div>
 
           <div class="sf-card">
             <div class="sf-card-head">
@@ -2926,6 +3001,54 @@ function createAdminRouter() {
             res.redirect("/admin/users?ok=status");
         } catch (e) {
             res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "解綁失敗"));
+        }
+    });
+    // 從「群組發言成員」名單直接把某 LINE 發言者標記為同事（免綁定碼／LIFF，沿用同一套綁定儲存）
+    router.post("/users/bind-line-from-speaker", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
+        const username = String(req.body?.username || "").trim();
+        const lineUserId = String(req.body?.line_user_id || "").trim();
+        const displayName = String(req.body?.display_name || "").trim() || null;
+        if (!username || !lineUserId) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        const users = await loadAdminUsers();
+        if (!users.find(u => u.username === username)) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        try {
+            await (0, employee_line_binding_js_1.bindLineUserIdToEmployee)(db, username, lineUserId, displayName);
+            await logDataChange(req, {
+                entityType: "employee_line_binding",
+                entityId: username,
+                action: "bind_from_speaker",
+                summary: `從群組發言名單將 ${displayName || lineUserId.slice(0, 8) + "…"} 標記為同事（帳號 ${username}）`,
+            });
+            res.redirect("/admin/users?ok=status");
+        } catch (e) {
+            res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "標記失敗"));
+        }
+    });
+    // 發言者「非公司人員」排除／恢復：判定過的人移出主名單，避免名單被客戶塞滿
+    router.post("/users/speaker-visibility", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
+        const lineUserId = String(req.body?.line_user_id || "").trim();
+        const visibility = String(req.body?.visibility || "").trim();
+        if (!lineUserId || !["dismiss", "restore"].includes(visibility)) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        try {
+            await line_conversation_js_1.setSpeakerDismissed(db, lineUserId, visibility === "dismiss");
+            await logDataChange(req, {
+                entityType: "line_group_speaker",
+                entityId: lineUserId.slice(0, 12),
+                action: visibility === "dismiss" ? "speaker_dismiss" : "speaker_restore",
+                summary: visibility === "dismiss" ? "發言者標記為非公司人員（移出名單）" : "發言者恢復到待判定名單",
+            });
+            res.redirect("/admin/users?ok=status");
+        } catch (e) {
+            res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "操作失敗"));
         }
     });
     router.post("/api/working-date", express_1.default.urlencoded({ extended: true }), async (req, res) => {
@@ -9381,7 +9504,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         // 連線對照：把每個品項的 raw_name 在原始文字中的實際位置框出來（<mark>），
         // 連線只連到「那個詞」而非整句/整行；沒對應到的品項就不畫線。長名先配對避免被短名吃掉。
         const rawTextForMatch = (order.raw_message || "").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && l !== "[圖片]").join("\n");
-        const buildRawMatchHtml = (rawText, itemList) => {
+        const buildRawMatchHtml = (rawText, itemList, alreadyMatched) => {
+            // alreadyMatched（可選 Set）：逐則訊息渲染對話時共用，讓每個品項只在第一次出現的訊息上錨點，
+            // 避免同一 item_id 產生重複 DOM id 造成連線對照錯亂。
+            const matchedSet = alreadyMatched || new Set();
             if (!rawText) return "";
             const normChar = (ch) => (/[\s,，、。.·:：*xX╳＊()（）]/.test(ch) ? "" : ch.toLowerCase());
             const normArr = [];
@@ -9395,7 +9521,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const ranges = [];
             const order2 = itemList
                 .map((it, i) => ({ it, i, n: String(it.raw_name || "").split("").map(normChar).join("") }))
-                .filter((x) => x.n.length >= 1)
+                .filter((x) => x.n.length >= 1 && !matchedSet.has(x.it.item_id))
                 .sort((a, b) => (b.n.length - a.n.length) || (a.i - b.i));
             const unmatched = [];
             // 第一輪：精確子字串（原文完整含品項名）
@@ -9412,6 +9538,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 if (pos < 0) { unmatched.push({ it, n }); continue; }
                 for (let k = pos; k < pos + n.length; k++) used[k] = true;
                 ranges.push({ start: idxMap[pos], end: idxMap[pos + n.length - 1] + 1, itemId: it.item_id });
+                matchedSet.add(it.item_id);
             }
             // 第二輪：最長連續共同子字串退路（品項名有夾字/括號描述時，仍連到重疊的那段）。
             // 門檻：重疊長度 ≥ max(2, 品項名一半) 才連，避免亂連。
@@ -9440,6 +9567,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 if (m.len < Math.max(2, Math.ceil(n.length * 0.5))) continue;
                 for (let k = m.start; k < m.end; k++) used[k] = true;
                 ranges.push({ start: idxMap[m.start], end: idxMap[m.end - 1] + 1, itemId: it.item_id });
+                matchedSet.add(it.item_id);
             }
             ranges.sort((a, b) => a.start - b.start);
             let html = "", cur = 0;
@@ -9453,6 +9581,28 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             return html;
         };
         const rawMatchHtml = buildRawMatchHtml(rawTextForMatch, items);
+        // 群組對話（含同事回覆）：有紀錄就以聊天式視圖取代純文字，客戶訊息逐則做品項藍底對應，
+        // 同事訊息用琥珀色卡標「姓名（同事）」。舊訂單沒有紀錄則維持原本的 pre 顯示。
+        const convoRows = await line_conversation_js_1.getConversationForOrder(db, orderId);
+        let convoHtml = "";
+        if (convoRows && convoRows.length) {
+            const convoMatched = new Set();
+            convoHtml = convoRows.map((m) => {
+                const full = fmtTaipeiYMDHM(m.created_at) || "";
+                const timeShort = full.length >= 16 ? full.slice(11, 16) : full;
+                if (String(m.sender_kind) === "employee") {
+                    return `<div style="background:#fffbeb;border:1px solid #fde68a;border-left:3px solid #d97706;border-radius:8px;padding:7px 10px;">
+                      <div style="font-size:11px;color:#92400e;font-weight:700;margin-bottom:2px;">🧑‍💼 ${escapeHtml(m.sender_name || "同事")}<span style="font-weight:600;">（同事）</span><span style="font-weight:400;color:#b45309;margin-left:6px;" title="${escapeAttr(full)}">${escapeHtml(timeShort)}</span></div>
+                      <div style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:#78350f;">${escapeHtml(m.text || "")}</div>
+                    </div>`;
+                }
+                const matchedBody = buildRawMatchHtml(String(m.text || ""), items, convoMatched);
+                return `<div style="background:var(--bg-2);border:var(--hairline);border-radius:8px;padding:7px 10px;">
+                  <div style="font-size:11px;color:var(--txt-3);margin-bottom:2px;">${escapeHtml(m.sender_name || "客戶")}<span style="margin-left:6px;" title="${escapeAttr(full)}">${escapeHtml(timeShort)}</span></div>
+                  <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:var(--txt-1);">${matchedBody}</div>
+                </div>`;
+            }).join("");
+        }
         // 供照片辨識框比對：本單所有品項的原始名稱（用來把 Vision 偵測到的詞上綠框）
         const ocrItemNamesJson = JSON.stringify(items.map((i) => String(i.raw_name || "")).filter(Boolean)).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
         const needReviewCount = items.filter((i) => i.need_review === 1).length;
@@ -9940,6 +10090,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 </div>
               ` : ""}
               ${(() => {
+                if (convoHtml) {
+                  return `
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">群組對話<span style="text-transform:none;letter-spacing:0;margin-left:6px;color:var(--txt-3);">（<span style="background:rgba(35,131,226,0.14);border-radius:3px;padding:0 3px;">藍底</span> = 已對應到明細・<span style="background:#fffbeb;border:1px solid #fde68a;border-radius:3px;padding:0 3px;color:#92400e;">琥珀色</span> = 同事回覆）</span></div>
+                    <div id="rawLinesPre" style="display:flex;flex-direction:column;gap:6px;font-family:var(--font-ui);">${convoHtml}</div>
+                  `;
+                }
                 if (rawMatchHtml) {
                   return `
                     <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">客戶打字內容<span style="text-transform:none;letter-spacing:0;margin-left:6px;color:var(--txt-3);">（<span style="background:rgba(35,131,226,0.14);border-radius:3px;padding:0 3px;">藍底</span> = 已對應到明細）</span></div>
@@ -10342,6 +10498,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                作廢會先跳原因確認視窗（可取消），插入是把新增表單移到該列下方（按「新增」才成立），
                所以不會有誤滑就直接改資料的問題。未過門檻放開會彈回。 */
             (function(){
+              var SWIPE_ENABLED = false; // 2026-07：使用回饋「有點卡手」→ 先停用；要重開改 true 即可
+              if (!SWIPE_ENABLED) return;
               if (!(window.matchMedia && window.matchMedia("(max-width: 760px)").matches)) return;
               var tbody = document.querySelector("table.order-detail-table tbody");
               if (!tbody) return;

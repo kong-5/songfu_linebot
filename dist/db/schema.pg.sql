@@ -392,3 +392,32 @@
   );
   CREATE INDEX IF NOT EXISTS idx_company_calendar_date ON company_calendar(date);
   CREATE INDEX IF NOT EXISTS idx_company_calendar_kind ON company_calendar(kind);
+
+  -- LINE 群組對話紀錄（訂單審核顯示對話用；含同事回覆與發話者名稱）
+  CREATE TABLE IF NOT EXISTS line_conversation_log (
+    id TEXT PRIMARY KEY,
+    group_id TEXT,
+    customer_id TEXT,
+    order_id TEXT,
+    sender_kind TEXT NOT NULL,
+    sender_line_user_id TEXT,
+    sender_name TEXT,
+    msg_type TEXT,
+    text TEXT,
+    created_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_line_convo_order ON line_conversation_log(order_id);
+  CREATE INDEX IF NOT EXISTS idx_line_convo_group ON line_conversation_log(group_id, created_at);
+
+  -- LINE 群組發言者（自動偵測；後台可從名單一鍵標記為同事）
+  CREATE TABLE IF NOT EXISTS line_group_speakers (
+    group_id TEXT NOT NULL,
+    line_user_id TEXT NOT NULL,
+    display_name TEXT,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    first_spoke_at TIMESTAMPTZ,
+    last_spoke_at TIMESTAMPTZ,
+    dismissed_at TIMESTAMPTZ,
+    PRIMARY KEY (group_id, line_user_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_line_speakers_last ON line_group_speakers(last_spoke_at);
