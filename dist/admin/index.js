@@ -1515,8 +1515,9 @@ function sfSidebar(active) {
         ${item("/admin/reminders", "reminders", "bell", "忘記叫貨提醒")}
         ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
       </details>
-      <details class="sf-nav-group" ${["env","inventory","logistics-procurement"].includes(active) ? "open" : ""}>
-        <summary><div class="sf-nav-group-title">庫存與物流</div></summary>
+      <details class="sf-nav-group" ${["env","inventory","inv-stock","logistics-procurement"].includes(active) ? "open" : ""}>
+        <summary><div class="sf-nav-group-title">庫存管理</div></summary>
+        ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
@@ -1813,6 +1814,145 @@ function fmtTaipeiYMDHM(v, fallback = "—") {
     const p = fmtTaipeiParts(v);
     return p ? `${p.y}-${p.mo}-${p.d} ${p.h}:${p.mi}` : fallback;
 }
+// ── 目前庫存頁：緊湊表樣式（品項多，行高壓到最小、表頭吸頂）─────────────
+const STK_STYLE = `
+.stk-wrap{max-width:100%;}
+.stk-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin:8px 0 10px;}
+.stk-toolbar-left,.stk-toolbar-right{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.stk-search{min-width:220px;flex:1 1 220px;padding:7px 10px;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;font-size:14px;background:var(--notion-card,#fff);color:inherit;}
+.stk-select{padding:7px 8px;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;font-size:13px;background:var(--notion-card,#fff);color:inherit;}
+.stk-seg{display:inline-flex;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;overflow:hidden;}
+.stk-seg button{border:0;background:var(--notion-card,#fff);color:inherit;padding:7px 12px;font-size:13px;cursor:pointer;}
+.stk-seg button.active{background:#2383e2;color:#fff;font-weight:700;}
+.stk-check{font-size:13px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;}
+.stk-meta{font-size:12px;color:var(--notion-text-light,#787774);white-space:nowrap;}
+.stk-status{margin:0 0 8px;padding:8px 12px;border-radius:7px;font-size:13px;}
+.stk-status-wait{background:#eef4ff;color:#1d4ed8;}
+.stk-status-ok{background:#e7f5e9;color:#2e7d32;}
+.stk-status-warn{background:#fff8e1;color:#8a6d1b;}
+.stk-tablewrap{max-height:calc(100vh - 220px);overflow:auto;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;}
+.stk-table{border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px;line-height:1.15;}
+.stk-table th,.stk-table td{padding:3px 8px;border-bottom:1px solid var(--notion-border,#efefee);white-space:nowrap;}
+.stk-table thead th{position:sticky;top:0;z-index:2;background:var(--notion-card,#f7f7f5);text-align:left;font-weight:700;color:var(--notion-text-light,#555);border-bottom:1px solid var(--notion-border,#e3e2e0);}
+.stk-table td.stk-qty,.stk-table th.stk-qty{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;}
+.stk-name{max-width:280px;overflow:hidden;text-overflow:ellipsis;}
+.stk-spec{max-width:180px;overflow:hidden;text-overflow:ellipsis;color:var(--notion-text-light,#787774);}
+.stk-code{color:var(--notion-text-light,#787774);font-variant-numeric:tabular-nums;}
+.stk-wh{color:var(--notion-text-light,#787774);}
+.stk-table tbody tr:hover{background:rgba(35,131,226,.06);}
+.stk-neg td.stk-qty{color:#c62828;}
+.stk-low{background:rgba(255,193,7,.10);}
+.stk-neg{background:rgba(198,40,40,.08);}
+.stk-grouphead td{position:sticky;top:26px;background:var(--notion-bg,#f1f1ef);font-weight:700;z-index:1;border-top:1px solid var(--notion-border,#e3e2e0);}
+.stk-gcount{font-weight:500;font-size:11px;color:var(--notion-text-light,#787774);margin-left:8px;}
+.stk-empty{text-align:center;color:var(--notion-text-light,#787774);padding:24px;}
+@media (max-width:640px){.stk-spec{display:none;}.stk-tablewrap{max-height:calc(100vh - 260px);}}
+`;
+// 目前庫存頁前端腳本（無 backtick、無 ${} 以免與外層樣板字面衝突）
+const STK_CLIENT_JS = `
+(function(){
+  var raw = document.getElementById('stkData');
+  var DATA = {items:[],assign:{}};
+  try { DATA = JSON.parse(raw.textContent || '{}'); } catch(e){ DATA = {items:[],assign:{}}; }
+  var ITEMS = DATA.items || [];
+  var ASSIGN = DATA.assign || {};
+  var els = {
+    search: document.getElementById('stkSearch'),
+    view: document.getElementById('stkView'),
+    source: document.getElementById('stkSource'),
+    lowOnly: document.getElementById('stkLowOnly'),
+    exportBtn: document.getElementById('stkExport'),
+    refresh: document.getElementById('stkRefresh'),
+    wrap: document.getElementById('stkTableWrap'),
+    count: document.getElementById('stkCount'),
+    status: document.getElementById('stkStatus')
+  };
+  var state = { view:'list', source:'ly', q:'', low:false };
+  try { var saved = JSON.parse(localStorage.getItem('stk.state')||'{}'); if(saved.view) state.view=saved.view; if(saved.source) state.source=saved.source; } catch(_){}
+  function save(){ try { localStorage.setItem('stk.state', JSON.stringify({view:state.view,source:state.source})); } catch(_){} }
+  function esc(s){ s=(s==null?'':String(s)); return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function safetyOf(code){ var a=ASSIGN[code]; if(!a||!a.length) return 0; var m=0; for(var i=0;i<a.length;i++){ if(a[i].safety>m) m=a[i].safety; } return m; }
+  function fmtQty(q){ if(q===0) return '0'; return String(q); }
+  function passFilter(it){
+    if(state.low){ var s=safetyOf(it.c); var low=it.q<=0||(s>0&&it.q<s); if(!low) return false; }
+    if(state.q){ var q=state.q; return (it.c.toLowerCase().indexOf(q)>=0)||(it.n.toLowerCase().indexOf(q)>=0)||(it.s.toLowerCase().indexOf(q)>=0); }
+    return true;
+  }
+  function rowHtml(it){
+    var s=safetyOf(it.c); var neg=it.q<0; var low=it.q<=0||(s>0&&it.q<s);
+    var cls=neg?'stk-neg':(low?'stk-low':'');
+    return '<tr class="'+cls+'"><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(it.w)+'</td></tr>';
+  }
+  var THEAD='<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>凌越倉別</th></tr></thead>';
+  function renderList(list){
+    var b=[]; for(var i=0;i<list.length;i++) b.push(rowHtml(list[i]));
+    return '<table class="stk-table">'+THEAD+'<tbody>'+(b.join('')||'<tr><td colspan="6" class="stk-empty">— 無符合條件的品項 —</td></tr>')+'</tbody></table>';
+  }
+  function renderGroup(list){
+    var groups={}; var order=[];
+    function ensure(key,sort){ if(!groups[key]){ groups[key]={rows:[],sum:0,sort:sort}; order.push(key); } return groups[key]; }
+    for(var i=0;i<list.length;i++){
+      var it=list[i];
+      if(state.source==='wh'){
+        var a=ASSIGN[it.c];
+        if(!a||!a.length){ var g=ensure('（未歸倉）',1e9); g.rows.push(it); g.sum+=it.q; }
+        else { for(var j=0;j<a.length;j++){ var g2=ensure(a[j].wh||'（未命名庫房）',a[j].sort||0); g2.rows.push(it); g2.sum+=it.q; } }
+      } else {
+        var key=it.w||'（未設倉別）'; var g3=ensure(key,it.w?0:1e9); g3.rows.push(it); g3.sum+=it.q;
+      }
+    }
+    order.sort(function(x,y){ var gx=groups[x],gy=groups[y]; if(gx.sort!==gy.sort) return gx.sort-gy.sort; return x<y?-1:(x>y?1:0); });
+    var out=['<table class="stk-table">'+THEAD+'<tbody>'];
+    if(!order.length) out.push('<tr><td colspan="6" class="stk-empty">— 無符合條件的品項 —</td></tr>');
+    for(var k=0;k<order.length;k++){
+      var key2=order[k]; var g4=groups[key2];
+      out.push('<tr class="stk-grouphead"><td colspan="6">'+esc(key2)+'<span class="stk-gcount">'+g4.rows.length+' 項 · Σ '+fmtQty(Math.round(g4.sum*100)/100)+'</span></td></tr>');
+      for(var r=0;r<g4.rows.length;r++) out.push(rowHtml(g4.rows[r]));
+    }
+    out.push('</tbody></table>');
+    return out.join('');
+  }
+  var _filtered=[];
+  function render(){
+    els.source.style.display=(state.view==='group')?'':'none';
+    var list=[]; for(var i=0;i<ITEMS.length;i++){ if(passFilter(ITEMS[i])) list.push(ITEMS[i]); }
+    _filtered=list;
+    els.count.textContent=list.length+(list.length!==ITEMS.length?(' / '+ITEMS.length):'');
+    els.wrap.innerHTML=(state.view==='group')?renderGroup(list):renderList(list);
+  }
+  var t=null;
+  els.search.addEventListener('input',function(){ if(t) clearTimeout(t); t=setTimeout(function(){ state.q=els.search.value.trim().toLowerCase(); render(); },120); });
+  Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(btn){
+    btn.addEventListener('click',function(){ state.view=btn.getAttribute('data-v'); Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); save(); render(); });
+    btn.classList.toggle('active', btn.getAttribute('data-v')===state.view);
+  });
+  els.source.value=state.source;
+  els.source.addEventListener('change',function(){ state.source=els.source.value; save(); render(); });
+  els.lowOnly.addEventListener('change',function(){ state.low=els.lowOnly.checked; render(); });
+  els.exportBtn.addEventListener('click',function(){
+    var lines=['料號,品名,規格,單位,目前庫存,凌越倉別'];
+    function q(x){ x=(x==null?'':String(x)); return '"'+x.replace(/"/g,'""')+'"'; }
+    for(var i=0;i<_filtered.length;i++){ var it=_filtered[i]; lines.push([q(it.c),q(it.n),q(it.s),q(it.u),it.q,q(it.w)].join(',')); }
+    var blob=new Blob(['\\ufeff'+lines.join('\\r\\n')],{type:'text/csv;charset=utf-8;'});
+    var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='stock.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  });
+  els.refresh.addEventListener('click',function(){
+    els.refresh.disabled=true;
+    els.status.style.display=''; els.status.className='stk-status stk-status-wait'; els.status.textContent='已送出更新請求，等待內網代理刷新…';
+    var baseline='';
+    fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){ baseline=m.snapshot_at||''; return fetch('/admin/inventory/stock/refresh',{method:'POST'}); }).then(function(r){return r.json();}).then(function(){
+      var tries=0; var iv=setInterval(function(){
+        tries++;
+        fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){
+          if(m.snapshot_at&&m.snapshot_at!==baseline){ clearInterval(iv); els.status.className='stk-status stk-status-ok'; els.status.textContent='已更新，重新載入…'; setTimeout(function(){ location.reload(); },600); return; }
+          if(tries>=24){ clearInterval(iv); els.refresh.disabled=false; els.status.className='stk-status stk-status-warn'; els.status.textContent='等待逾時：內網代理（ly_stock_agent）可能未執行。請求已記錄，代理下次上線會補刷新。'; }
+        }).catch(function(){});
+      },3000);
+    }).catch(function(){ els.refresh.disabled=false; els.status.className='stk-status stk-status-warn'; els.status.textContent='送出失敗，請稍後再試。'; });
+  });
+  render();
+})();
+`;
 async function getWorkingDate(database) {
     const row = await database.prepare("SELECT value FROM app_settings WHERE key = ?").get("working_date");
     if (row && row.value)
@@ -2408,6 +2548,7 @@ function createAdminRouter() {
         { title: "LINE 機器人", href: "/admin/line-bot", keywords: ["line", "bot", "排程"] },
         { title: "人員管理", href: "/admin/users", keywords: ["users", "帳號", "員工"] },
         { title: "冷凍／冷藏庫", href: "/admin/freezer-fridge", keywords: ["freezer", "fridge", "冰箱"] },
+        { title: "目前庫存", href: "/admin/inventory/stock", keywords: ["stock", "庫存", "凌越", "現有量", "nowqty"] },
         { title: "每日盤點", href: "/admin/inventory", keywords: ["inventory", "盤點"] },
         { title: "物流叫貨", href: "/admin/logistics/procurement", keywords: ["procurement", "採購"] },
         { title: "北農行情", href: "/admin/logistics/market", keywords: ["market", "北農", "價格"] },
@@ -6121,6 +6262,97 @@ function createAdminRouter() {
         }
         res.redirect("/admin/inventory/import-erp?ok=1&count=" + imported);
     });
+    // ── 目前庫存（凌越 SK_NOWQTY 快照）─────────────────────────────────
+    async function readStockMeta() {
+        const get = async (k) => {
+            const r = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(k);
+            return r && r.value != null ? String(r.value) : "";
+        };
+        return {
+            snapshot_at: await get("erp_stock_snapshot_at"),
+            item_count: await get("erp_stock_item_count"),
+            refresh_status: await get("erp_stock_refresh_status"),
+            refresh_requested_at: await get("erp_stock_refresh_requested_at"),
+        };
+    }
+    router.get("/inventory/stock", async (req, res) => {
+        const stockRows = await db.prepare("SELECT erp_code, name, spec, unit, qty, wh_code FROM erp_stock_items ORDER BY erp_code").all();
+        const assignRows = await db.prepare(`
+      SELECT p.erp_code AS code, w.name AS wh_name, w.sort_order AS wh_sort, COALESCE(iwp.safety_stock, 0) AS safety
+      FROM inventory_warehouse_products iwp
+      JOIN products p ON p.id = iwp.product_id
+      JOIN inventory_warehouses w ON w.id = iwp.warehouse_id
+      WHERE p.erp_code IS NOT NULL AND TRIM(p.erp_code) <> ''
+    `).all();
+        const assign = {};
+        for (const a of assignRows || []) {
+            const code = String(a.code || "").trim();
+            if (!code)
+                continue;
+            (assign[code] = assign[code] || []).push({ wh: String(a.wh_name || ""), sort: Number(a.wh_sort || 0), safety: Number(a.safety || 0) });
+        }
+        const items = (stockRows || []).map((r) => ({
+            c: String(r.erp_code || ""),
+            n: String(r.name || ""),
+            s: String(r.spec || ""),
+            u: String(r.unit || ""),
+            q: Number(r.qty || 0),
+            w: String(r.wh_code || ""),
+        }));
+        const dataJson = JSON.stringify({ items, assign }).replace(/</g, "\\u003c");
+        const meta = await readStockMeta();
+        const snapLabel = meta.snapshot_at ? fmtTaipeiYMDHM(meta.snapshot_at, "尚無資料") : "尚無資料";
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 目前庫存</div>
+      <style>${STK_STYLE}</style>
+      <div class="stk-wrap">
+        <div class="stk-toolbar no-print">
+          <div class="stk-toolbar-left">
+            <input type="search" id="stkSearch" class="stk-search" placeholder="搜尋料號 / 品名 / 規格…" autocomplete="off" spellcheck="false">
+            <div class="stk-seg" id="stkView">
+              <button type="button" data-v="list" class="active">列表</button>
+              <button type="button" data-v="group">依倉庫</button>
+            </div>
+            <select id="stkSource" class="stk-select" title="倉庫來源" style="display:none;">
+              <option value="ly">凌越倉別</option>
+              <option value="wh">自訂庫房</option>
+            </select>
+            <label class="stk-check"><input type="checkbox" id="stkLowOnly"> 只看低量/負量</label>
+          </div>
+          <div class="stk-toolbar-right">
+            <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項</span>
+            <button type="button" id="stkExport" class="btn">匯出目前檢視</button>
+            <button type="button" id="stkRefresh" class="btn btn-primary">庫存更新</button>
+          </div>
+        </div>
+        <div id="stkStatus" class="stk-status" style="display:none;"></div>
+        <div id="stkTableWrap" class="stk-tablewrap"></div>
+      </div>
+      <script id="stkData" type="application/json">${dataJson}</script>
+      <script>${STK_CLIENT_JS}</script>`;
+        res.type("text/html").send(notionPage("目前庫存", body, "inv-stock", res));
+    });
+    // 使用者點「庫存更新」→ 設定待處理旗標（內網 agent long-poll 撿走）
+    router.post("/inventory/stock/refresh", async (req, res) => {
+        try {
+            const now = new Date().toISOString();
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", now);
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "requested");
+            res.json({ ok: true, requested_at: now });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
+    // 前端輪詢：查最新快照時間 / 刷新狀態
+    router.get("/inventory/stock/status", async (_req, res) => {
+        try {
+            res.json(await readStockMeta());
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
     router.get("/inventory/variance-report", async (req, res) => {
         const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
         const dateFrom = (req.query.date_from || "").trim();
@@ -9306,6 +9538,97 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         catch (e) {
             console.error("[admin] lingyue-writeback/callback", e?.message || e);
             res.status(500).json({ error: "callback 失敗", detail: String(e?.message || e) });
+        }
+    });
+    /**
+     * 目前庫存快照 — 機器對機器端點（內網 agent 用，X-Writeback-Key 認證）。
+     *
+     * POST /admin/lingyue-writeback/inventory-push
+     *   body: { icpno, snapshot_at, items: [{ code, name, spec, unit, qty, wh_code }, ...] }
+     *   內網 agent 用 ly_query_stock.py --all 撈整張貨品主檔的 SK_NOWQTY，整批推上來 → 全表覆蓋。
+     */
+    router.post("/lingyue-writeback/inventory-push", express_1.default.json({ limit: "16mb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const items = Array.isArray(body.items) ? body.items : null;
+            if (!items) {
+                res.status(400).json({ error: "缺少 items 陣列" });
+                return;
+            }
+            const icpno = String(body.icpno || "00").trim() || "00";
+            const snapshotAt = (typeof body.snapshot_at === "string" && body.snapshot_at.trim())
+                ? body.snapshot_at.trim() : new Date().toISOString();
+            const rows = [];
+            for (const it of items) {
+                const code = String(it?.code ?? it?.erp_code ?? "").trim();
+                if (!code)
+                    continue;
+                const qtyNum = Number(it?.qty);
+                rows.push([
+                    code,
+                    String(it?.name ?? "").trim(),
+                    String(it?.spec ?? "").trim(),
+                    String(it?.unit ?? "").trim(),
+                    Number.isFinite(qtyNum) ? qtyNum : 0,
+                    String(it?.wh_code ?? "").trim(),
+                    icpno,
+                    snapshotAt,
+                ]);
+            }
+            // 全表覆蓋（DELETE + 分批 INSERT），跨 SQLite/PG 皆可
+            await db.prepare("DELETE FROM erp_stock_items").run();
+            const CHUNK = 100;
+            for (let i = 0; i < rows.length; i += CHUNK) {
+                const chunk = rows.slice(i, i + CHUNK);
+                const ph = chunk.map(() => "(?,?,?,?,?,?,?,?)").join(",");
+                const flat = [];
+                for (const r of chunk)
+                    flat.push(...r);
+                await db.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
+            }
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "done");
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", "");
+            res.json({ ok: true, count: rows.length, snapshot_at: snapshotAt });
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/inventory-push", e?.message || e);
+            res.status(500).json({ error: "inventory-push 失敗", detail: String(e?.message || e) });
+        }
+    });
+    /**
+     * GET /admin/lingyue-writeback/inventory-wait?timeout=25
+     *   長連線等待（long-poll）：內網 agent 掛一條線等「使用者在網站點了『庫存更新』」。
+     *   有待處理請求（app_settings.erp_stock_refresh_requested_at 非空）立刻回 {refresh:true}，
+     *   否則 hold 到 timeout 秒（預設 25、上限 50）回 {refresh:false}。agent 收到後撈凌越並 inventory-push。
+     */
+    router.get("/lingyue-writeback/inventory-wait", async (req, res) => {
+        let timeoutSec = parseInt(String(req.query.timeout || "25"), 10);
+        if (!Number.isFinite(timeoutSec) || timeoutSec <= 0)
+            timeoutSec = 25;
+        if (timeoutSec > 50)
+            timeoutSec = 50;
+        const deadline = Date.now() + timeoutSec * 1000;
+        try {
+            while (true) {
+                const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_stock_refresh_requested_at");
+                const reqAt = row && row.value ? String(row.value).trim() : "";
+                if (reqAt) {
+                    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "running");
+                    res.json({ refresh: true, requested_at: reqAt });
+                    return;
+                }
+                if (Date.now() >= deadline) {
+                    res.json({ refresh: false });
+                    return;
+                }
+                await new Promise((r) => setTimeout(r, 1500));
+            }
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/inventory-wait", e?.message || e);
+            res.status(500).json({ error: "inventory-wait 失敗", detail: String(e?.message || e) });
         }
     });
     /**
