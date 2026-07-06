@@ -78,23 +78,42 @@ def _lydataout(icpno, irwhere, iwhval, want_details=False):
     return rc, xml, rows
 
 
-def query_sales(icpno: str, date_like: str, want_details: bool) -> list:
-    """用 LyDataOut 撈 SP_DATE like <date_like> 的所有銷貨單主檔。"""
-    _, _, rows = _lydataout(icpno, "SP_DATE like '@v1@'", date_like, want_details)
+def query_month(icpno: str, month: str, prefix: str, want_details: bool) -> list:
+    """
+    撈某月（YYYY-MM）銷貨單主檔。
+    先走「快」路徑：SP_NO like '<prefix><YYYYMM>%'（SP_NO 有索引，秒回）。
+    撈不到再退回「慢」路徑：SP_DATE like 'YYYY-MM%'（整表掃描，較久）。
+    """
+    ym = month.replace("-", "")
+    # 快路徑（索引）
+    _, _, rows = _lydataout(icpno, "SP_NO like '@v1@'", f"{prefix}{ym}%", want_details)
+    if rows:
+        return rows
+    # 保底：改用 '_'（任一字元前綴）＋ 索引仍可能全掃，但涵蓋非 prefix 的單
+    print("    （SP_NO 前綴查無，改用日期整表查，稍等…）", flush=True)
+    _, _, rows = _lydataout(icpno, "SP_DATE like '@v1@'", f"{month}%", want_details)
+    return rows
+
+
+def query_day(icpno: str, day: str, prefix: str, want_details: bool) -> list:
+    """撈某日（YYYY-MM-DD）銷貨單主檔，快路徑同上。"""
+    ymd = day.replace("-", "")
+    _, _, rows = _lydataout(icpno, "SP_NO like '@v1@'", f"{prefix}{ymd}%", want_details)
+    if rows:
+        return rows
+    print("    （SP_NO 前綴查無，改用日期整表查，稍等…）", flush=True)
+    _, _, rows = _lydataout(icpno, "SP_DATE like '@v1@'", f"{day}%", want_details)
     return rows
 
 
 def debug_probe(icpno: str, month: str) -> int:
     """用多種條件各打一次，印出凌越回傳碼 + 筆數 + 樣本，定位 0 筆原因。"""
     ym = month.replace("-", "")            # 202607
-    # 輕量、精準的條件排前面（快、量小）；「整年 / 不加條件」這種重的放最後。
+    # 只留 3 條：A前綴(快) → 任一前綴當月(一次掃描、涵蓋所有前綴) → SP_DATE(以防單號格式不同)
     probes = [
-        (f"SP_NO like 'A{ym}%'（A前綴當月）", "SP_NO like '@v1@'", f"A{ym}%"),
-        (f"SP_DATE like '{month}%'（連字號）", "SP_DATE like '@v1@'", f"{month}%"),
-        (f"SP_DATE like '{month.replace('-','/')}%'（斜線）", "SP_DATE like '@v1@'", f"{month.replace('-','/')}%"),
-        (f"SP_DATE like '{ym}%'（純數字）", "SP_DATE like '@v1@'", f"{ym}%"),
-        ("SP_DATE like '2026%'（整年，較慢）", "SP_DATE like '@v1@'", "2026%"),
-        ("不加條件（全表，最慢，放最後）", "", ""),
+        (f"SP_NO like 'A{ym}%'（A前綴，索引快查）", "SP_NO like '@v1@'", f"A{ym}%"),
+        (f"SP_NO like '_{ym}%'（任一字元前綴，當月全部）", "SP_NO like '@v1@'", f"_{ym}%"),
+        (f"SP_DATE like '{month}%'（改用日期，較慢）", "SP_DATE like '@v1@'", f"{month}%"),
     ]
     print(f"▶ DEBUG  ICPNO={icpno}（resolve 後={lystk.resolve_icpno(icpno)}）  idakd={IDAKD_SALES}\n")
     sys.stdout.flush()
@@ -144,20 +163,22 @@ def run(args) -> int:
         month = (args.month or datetime.date.today().strftime("%Y-%m")).strip()
         return debug_probe(icpno, month)
 
+    prefix = (args.prefix or "A").strip().upper()
     if args.date:
-        date_like = args.date.strip() + "%"
         span = args.date.strip()
+        print(f"▶ 查詢銷貨單  ICPNO={icpno}  {span}（先查 SP_NO like '{prefix}{span.replace('-','')}%'）",
+              flush=True)
+        rows = query_day(icpno, span, prefix, args.show_details)
     else:
         month = (args.month or datetime.date.today().strftime("%Y-%m")).strip()
-        date_like = month + "%"
         span = month
-
-    print(f"▶ 查詢銷貨單  ICPNO={icpno}  SP_DATE like '{date_like}'")
-    rows = query_sales(icpno, date_like, args.show_details)
+        print(f"▶ 查詢銷貨單  ICPNO={icpno}  {span}（先查 SP_NO like '{prefix}{month.replace('-','')}%'）",
+              flush=True)
+        rows = query_month(icpno, month, prefix, args.show_details)
 
     if not rows:
-        print(f"\n⚠ {span} 查無銷貨單。可能：公司別 ICPNO={icpno} 不對、該區間沒單、"
-              f"或 SP_DATE 格式與 '{date_like}' 對不上。")
+        print(f"\n⚠ {span} 查無銷貨單。可能：公司別 ICPNO={icpno} 不對、該區間本來就沒單、"
+              f"或單號前綴不是 '{prefix}'（用 --debug 看真實格式）。")
         return 0
 
     unchecked = [r for r in rows if is_unchecked(r)]
@@ -179,6 +200,7 @@ def build_parser():
     p.add_argument("--month", help="查整個月 YYYY-MM（預設本月）")
     p.add_argument("--date", help="查單日 YYYY-MM-DD（優先於 --month）")
     p.add_argument("--icpno", help="公司代碼（預設 00 松富，或 LY_ICPNO）")
+    p.add_argument("--prefix", help="單號前綴，走 SP_NO 索引快查（預設 A）")
     p.add_argument("--all", action="store_true", help="列出全部（含已審核），並統計未審核數")
     p.add_argument("--show-details", action="store_true", help="連同明細一起印")
     p.add_argument("--debug", action="store_true", help="用多種條件試打，印回傳碼/筆數/樣本以定位")
