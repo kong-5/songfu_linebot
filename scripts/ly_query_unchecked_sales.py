@@ -97,6 +97,22 @@ def run(args) -> int:
     icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
     ensure_timeout_client(args.timeout)
 
+    # 診斷：撈任意資料種類的前幾筆，印出所有欄位名+值。用來看庫存(000009)等的真實欄位。
+    if args.dump_kind:
+        n = args.limit or 5
+        print(f"▶ 撈 {args.dump_kind} 前 {n} 筆原始欄位  ICPNO={icpno} …", flush=True)
+        rows = lystk.query(icpno=icpno, idakd=args.dump_kind, limit=n)
+        if not rows:
+            print(f"\n⚠ ICPNO={icpno} 的 {args.dump_kind} 沒有資料（可能公司別不對，或此種類需帶條件）。")
+            return 0
+        for i, r in enumerate(rows, 1):
+            print(f"\n── 第 {i} 筆 ── 共 {len(r)} 欄")
+            for k, v in r.items():
+                print(f"    {k:<16} {v}")
+        if args.xlsx:
+            export_xlsx(rows, args.xlsx)
+        return 0
+
     # 直接找「所有未審核」銷貨單（不分月份）＝ 盤點系統看到的那種。
     # 未審核單不管哪天開的都會一直存在，用月份反而框不到 → 這才是對的查法。
     if args.pending:
@@ -181,6 +197,8 @@ def build_parser():
     p.add_argument("--all", action="store_true", help="列出全部（含已審核），並統計未審核數")
     p.add_argument("--pending", action="store_true", help="不分月份找所有未審核銷貨單（同盤點系統；未指定公司則掃 00/01/03）")
     p.add_argument("--latest", type=int, metavar="N", help="不篩日期抓最新 N 張（診斷公司別/資料是否存在）")
+    p.add_argument("--dump-kind", help="撈任意資料種類前幾筆的原始欄位，如 000009（庫存）、000000（貨品）")
+    p.add_argument("--limit", type=int, help="搭配 --dump-kind：撈幾筆（預設 5）")
     p.add_argument("--xlsx", help="把查到的結果匯出成 Excel（給路徑，如 D:\\out.xlsx）")
     p.add_argument("--timeout", type=int, default=60, help="連線/操作逾時秒數（預設 60）")
     return p
