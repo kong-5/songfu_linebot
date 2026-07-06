@@ -45,14 +45,27 @@ def is_unchecked(rec: dict) -> bool:
     return str(rec.get(F_CHECK, "")).strip().upper() in ("", "0", "N", "FALSE")
 
 
-def _lydataout(icpno, irwhere, iwhval, want_details=False):
-    """低階呼叫 LyDataOut，回 (rc, xml, rows)。rc/xml 供 debug 檢視。"""
+# 只跟凌越要摘要需要的欄位（不要 ifld="" 全欄位，那會很大很慢）
+TITLE_FIELDS = "SP_NO,SP_DATE,SP_CTNAME,SP_TOTAL,SP_CHECK,SP_REM"
+DETAIL_FIELDS = "SD_NO,SD_SKNO,SD_NAME,SD_QTY,SD_UNIT"
+
+
+def _lydataout(icpno, irwhere, iwhval, want_details=False, progress=False):
+    """低階呼叫 LyDataOut，回 (rc, xml, rows)。progress=True 時逐步印進度。"""
+    def step(msg):
+        if progress:
+            print(f"      … {msg}", flush=True)
+
+    step("連線凌越 (get_client)")
     icpno = lystk.resolve_icpno(icpno)
     client = lystk.get_client()
+    step("取金鑰 (fresh_key)")
     key = lystk.fresh_key()
+    step(f"送出查詢 LyDataOut  where=\"{irwhere}\"  val=\"{iwhval}\"")
     resp = client.service.LyDataOut(
         ikye=key, icpno=icpno, idakd=IDAKD_SALES,
-        ifld="", idetfields=("*" if want_details else ""),
+        ifld=TITLE_FIELDS,
+        idetfields=(DETAIL_FIELDS if want_details else ""),
         irwhere=irwhere, iwhval=iwhval,
         irec=0, imode=" " * 30,
         iorder="order by SP_NO", idtorder="",
@@ -62,6 +75,7 @@ def _lydataout(icpno, irwhere, iwhval, want_details=False):
     )
     rc = str(resp["LyDataOutResult"]).strip()
     xml = str(resp["ixmlda"]) if resp["ixmlda"] else ""
+    step(f"收到回應 rc={rc!r} xml長度={len(xml)}，解析中")
     rows = []
     if rc == "0" and xml:
         root = ET.fromstring(xml)
@@ -86,23 +100,23 @@ def query_month(icpno: str, month: str, prefix: str, want_details: bool) -> list
     """
     ym = month.replace("-", "")
     # 快路徑（索引）
-    _, _, rows = _lydataout(icpno, "SP_NO like '@v1@'", f"{prefix}{ym}%", want_details)
+    _, _, rows = _lydataout(icpno, "SP_NO like '@v1@'", f"{prefix}{ym}%", want_details, progress=True)
     if rows:
         return rows
     # 保底：改用 '_'（任一字元前綴）＋ 索引仍可能全掃，但涵蓋非 prefix 的單
     print("    （SP_NO 前綴查無，改用日期整表查，稍等…）", flush=True)
-    _, _, rows = _lydataout(icpno, "SP_DATE like '@v1@'", f"{month}%", want_details)
+    _, _, rows = _lydataout(icpno, "SP_DATE like '@v1@'", f"{month}%", want_details, progress=True)
     return rows
 
 
 def query_day(icpno: str, day: str, prefix: str, want_details: bool) -> list:
     """撈某日（YYYY-MM-DD）銷貨單主檔，快路徑同上。"""
     ymd = day.replace("-", "")
-    _, _, rows = _lydataout(icpno, "SP_NO like '@v1@'", f"{prefix}{ymd}%", want_details)
+    _, _, rows = _lydataout(icpno, "SP_NO like '@v1@'", f"{prefix}{ymd}%", want_details, progress=True)
     if rows:
         return rows
     print("    （SP_NO 前綴查無，改用日期整表查，稍等…）", flush=True)
-    _, _, rows = _lydataout(icpno, "SP_DATE like '@v1@'", f"{day}%", want_details)
+    _, _, rows = _lydataout(icpno, "SP_DATE like '@v1@'", f"{day}%", want_details, progress=True)
     return rows
 
 
