@@ -244,8 +244,10 @@ def map_order(order: dict, *, icpno: str, whno: str, price: str,
 
     order_date = (order.get("order_date") or "").strip().replace("/", "-")  # 正規化成 YYYY-MM-DD（雲端可能給斜線）
     ctno = (order.get("customer_code") or "").strip()
-    # 建立日期/建立人：API 寫入不會自動蓋，需自己帶；否則下游拋轉（依建立日期抓單）抓不到。
-    create_dt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 比照手打單補齊「人/時間」欄位（API 寫入不會自動蓋，缺了下游拋轉抓不到）：
+    # 製單人/建立人/異動人統一帶操作員代碼（預設 --create-name，可用 --maker 覆寫），非 LY。
+    now_dt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    op = maker or create_name
     row = {
         "OR_CTNO": ctno,
         "OR_CTNAME": (order.get("customer_name") or "").strip(),
@@ -253,12 +255,13 @@ def map_order(order: dict, *, icpno: str, whno: str, price: str,
         "OR_DATE2": order_date,
         "OR_REM": rem,
         "OR_CHECK": check,                                   # 0=未審核 / 1=已審核（--audited）
-        "OR_CREATEDATE": create_dt,                          # 建立日期（拋轉依此抓單）
-        "OR_CREATENAME": create_name,                        # 建立人代碼
+        "OR_MAKER": op,                                      # 製單人（手打單為操作員代碼，非 LY）
+        "OR_CREATEDATE": now_dt,                             # 建立日期（拋轉依此抓單）
+        "OR_CREATENAME": op,                                 # 建立人
+        "OR_MODIFYDATE": now_dt,                             # 異動日期（比照手打單）
+        "OR_MODIFYNAME": op,                                 # 異動人（比照手打單）
         "details": details,
     }
-    if maker:
-        row["OR_MAKER"] = maker                              # 覆寫製單人（預設由 ly_order 帶 LY）
     # 付款方式(OR_FKFS)/業務員(OR_SALES)：凌越畫面選客戶會自動帶，API 需自己從客戶主檔補。
     row.update(customer_defaults(icpno, ctno))
     return row
