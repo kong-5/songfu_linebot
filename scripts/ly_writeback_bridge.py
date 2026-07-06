@@ -85,35 +85,90 @@ def _timeout_client():
     return lystk._client
 
 
-def customer_defaults(icpno: str, ctno: str) -> dict:
-    """
-    從客戶主檔(000001)帶該客戶預設值，回可直接併入訂貨單 row 的 dict：
-      CT_FKFS  → OR_FKFS （付款方式）
-      CT_SALES → OR_SALES（業務員）
-    凌越畫面選客戶會自動帶這些，API 寫入需自己補。查不到/空值就不帶（不致命）。
-    """
+def customer_record(icpno: str, ctno: str) -> dict:
+    """讀客戶主檔(000001)整筆，回 dict（快取；查不到/失敗回 {}）。"""
     if not ctno:
         return {}
     ck = (icpno, ctno)
     if ck in _fkfs_cache:
         return _fkfs_cache[ck]
-    out: dict = {}
+    rec: dict = {}
     try:
         _timeout_client()
         rows = lystk.query(icpno=icpno, idakd="000001",
                            where="CT_NO='@v1@'", whval=ctno)
         if rows:
-            r = rows[0]
-            fkfs = (r.get("CT_FKFS") or "").strip()
-            sales = (r.get("CT_SALES") or "").strip()
-            if fkfs:
-                out["OR_FKFS"] = fkfs
-            if sales:
-                out["OR_SALES"] = sales
+            rec = rows[0]
     except Exception as e:
         print(f"    ⚠ 查客戶 {ctno} 主檔失敗（略過）：{e}", file=sys.stderr)
-    _fkfs_cache[ck] = out
+    _fkfs_cache[ck] = rec
+    return rec
+
+
+def customer_defaults(icpno: str, ctno: str) -> dict:
+    """
+    從客戶主檔帶可直接併入訂貨單 row 的預設值（凌越畫面選客戶會自動帶，API 需自己補）：
+      CT_FKFS  → OR_FKFS （付款方式）
+      CT_SALES → OR_SALES（業務員）
+    空值就不帶。
+    """
+    rec = customer_record(icpno, ctno)
+    out: dict = {}
+    fkfs = (rec.get("CT_FKFS") or "").strip()
+    sales = (rec.get("CT_SALES") or "").strip()
+    if fkfs:
+        out["OR_FKFS"] = fkfs
+    if sales:
+        out["OR_SALES"] = sales
     return out
+
+
+def run_test_ctno(args, *, icpno, whno, price, create_name, date_str) -> int:
+    """為指定客戶寫一張測試訂貨單（標【API測試請刪除】），驗證付款方式/業務員有無帶入。"""
+    ctno = args.test_ctno.strip()
+    cust = customer_record(icpno, ctno)
+    if not cust:
+        print(f"❌ 查無客戶 {ctno}（ICPNO={icpno}）", file=sys.stderr)
+        return 1
+    ctname = (cust.get("CT_NAME") or "").strip()
+    print(f"▶ 客戶 {ctno} {ctname}｜客戶主檔 CT_FKFS={cust.get('CT_FKFS','')!r} "
+          f"CT_SALES={cust.get('CT_SALES','')!r}")
+
+    # 測試明細需要一個有效料號；沒指定就自動抓一個貨品主檔的料號
+    skno = (args.test_skno or "").strip()
+    skname = ""
+    if not skno:
+        _timeout_client()
+        prods = lystk.query(icpno=icpno, idakd="000000", limit=1)
+        if prods:
+            skno = (prods[0].get("SK_NO") or "").strip()
+            skname = (prods[0].get("SK_NAME") or "").strip()
+    if not skno:
+        print("❌ 找不到可用料號，請用 --test-skno 指定一個有效料號", file=sys.stderr)
+        return 1
+
+    order = {
+        "customer_code": ctno, "customer_name": ctname,
+        "order_date": date_str, "doc_remark": "",
+        "items": [{"product_code": skno, "product_name": skname, "unit": "KG", "quantity": 1}],
+    }
+    row = map_order(order, icpno=icpno, whno=whno, price=price,
+                    create_name=create_name, rem_prefix=TEST_REM_PREFIX)
+    print(f"  即將寫入：OR_FKFS={row.get('OR_FKFS','')!r} OR_SALES={row.get('OR_SALES','')!r} "
+          f"OR_CREATEDATE={row.get('OR_CREATEDATE','')} OR_CREATENAME={row.get('OR_CREATENAME','')} "
+          f"料號={skno}")
+    try:
+        new_nos = ly_order.write_order(icpno=icpno, rows=[row], verbose=True)
+    except RuntimeError as e:
+        print(f"❌ 寫入失敗：{e}", file=sys.stderr)
+        return 1
+    or_no = new_nos[0]
+    print(f"\n✅ 已寫入測試訂貨單 {or_no}（備註【API測試請刪除】）")
+    print(f"   查實際欄位：python ly_query_unchecked_sales.py --doc {or_no}")
+    print(f"   → 確認 OR_FKFS 有沒有帶到 {cust.get('CT_FKFS','')!r}；有帶到就代表匯入付款方式成功。")
+    print(f"   刪除測試單：python -c \"import sys;sys.path.insert(0,r'D:\\Work\\lystk_tool');"
+          f"import ly_order;print(ly_order.delete_order('{icpno}','{or_no}'))\"")
+    return 0
 
 
 # ----------------------------------------------------------------------
@@ -218,6 +273,11 @@ def run(args) -> int:
     create_name = (args.create_name or os.environ.get("LY_CREATE_NAME") or "052").strip()
     date_str = args.date or datetime.date.today().strftime("%Y-%m-%d")
 
+    # 指定客戶寫測試單：不需雲端 pending，直接寫凌越驗證欄位帶入
+    if args.test_ctno:
+        return run_test_ctno(args, icpno=icpno, whno=whno, price=price,
+                             create_name=create_name, date_str=date_str)
+
     if not base or not key:
         print("❌ 請設定 LY_CLOUD_BASE 與 LY_WRITEBACK_KEY（或用 --base / --key）", file=sys.stderr)
         return 2
@@ -299,6 +359,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--warehouse", help="預設倉別 OD_WARE（預設留空，或 LY_DEFAULT_WHNO）")
     p.add_argument("--price", help="預設單價 OD_PRICE（預設留空，或 LY_DEFAULT_PRICE）")
     p.add_argument("--create-name", help="建立人代碼 OR_CREATENAME（預設 052，或 LY_CREATE_NAME）")
+    p.add_argument("--test-ctno", help="測試：為指定客戶代碼寫一張測試訂貨單，驗證付款方式/業務員有無帶入")
+    p.add_argument("--test-skno", help="搭配 --test-ctno：測試明細用的料號（省略則自動取一個）")
     p.add_argument("--dry-run", action="store_true", help="只抓+組單印出，不寫凌越、不回填")
     p.add_argument("--test", action="store_true", help="只寫第一張(標記測試)→驗證→刪除；不回填")
     p.add_argument("--keep", action="store_true", help="搭配 --test：保留測試單不刪除")
