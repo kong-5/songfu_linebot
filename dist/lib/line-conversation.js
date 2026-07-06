@@ -83,12 +83,12 @@ async function getConversationForOrder(db, orderId) {
     }
 }
 
-/** 後台「群組發言成員」名單：帶出所屬客戶群名稱，最近發言在前 */
+/** 後台「群組發言成員」名單：帶出所屬客戶群名稱，最近發言在前（含 dismissed_at，由呼叫端分區顯示） */
 async function listGroupSpeakers(db, limit = 200) {
     if (!db) return [];
     try {
         return await db.prepare(`
-      SELECT s.group_id, s.line_user_id, s.display_name, s.message_count, s.first_spoke_at, s.last_spoke_at,
+      SELECT s.group_id, s.line_user_id, s.display_name, s.message_count, s.first_spoke_at, s.last_spoke_at, s.dismissed_at,
              c.name AS customer_name
       FROM line_group_speakers s
       LEFT JOIN customers c ON TRIM(COALESCE(c.line_group_id, '')) = s.group_id
@@ -99,3 +99,21 @@ async function listGroupSpeakers(db, limit = 200) {
         return [];
     }
 }
+
+/**
+ * 把某 LINE 帳號標記為「非公司人員」（或恢復）。以 line_user_id 為單位、
+ * 跨群組一次處理——判定過一次就不再佔用名單空間。可隨時從「已處理」區恢復。
+ */
+async function setSpeakerDismissed(db, lineUserId, dismissed) {
+    if (!db || !lineUserId) return false;
+    try {
+        const r = dismissed
+            ? await db.prepare("UPDATE line_group_speakers SET dismissed_at = datetime('now') WHERE line_user_id = ?").run(lineUserId)
+            : await db.prepare("UPDATE line_group_speakers SET dismissed_at = NULL WHERE line_user_id = ?").run(lineUserId);
+        return (r?.changes ?? 0) > 0;
+    } catch (e) {
+        console.warn("[convo] 發言者排除標記失敗:", e?.message || e);
+        return false;
+    }
+}
+exports.setSpeakerDismissed = setSpeakerDismissed;

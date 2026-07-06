@@ -447,6 +447,7 @@ CREATE TABLE IF NOT EXISTS line_group_speakers (
   message_count INTEGER NOT NULL DEFAULT 0,
   first_spoke_at TEXT,
   last_spoke_at TEXT,
+  dismissed_at TEXT,
   PRIMARY KEY (group_id, line_user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_line_speakers_last ON line_group_speakers(last_spoke_at);

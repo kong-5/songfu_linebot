@@ -70,6 +70,7 @@ function initSqlite(dbPath) {
     const schema = (0, fs_1.readFileSync)(schemaPath, "utf-8");
     sqlite.exec(schema);
     const alters = [
+        "ALTER TABLE line_group_speakers ADD COLUMN dismissed_at TEXT",
         "ALTER TABLE customers ADD COLUMN teraoka_code TEXT",
         "ALTER TABLE customers ADD COLUMN hq_cust_code TEXT",
         "ALTER TABLE customers ADD COLUMN line_group_name TEXT",
@@ -551,6 +552,8 @@ async function initPg() {
                 }
                 catch (_e) { /* column may exist */ }
             }
+            // 群組發言者「非公司人員」排除旗標
+            try { await client.query("ALTER TABLE line_group_speakers ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ"); } catch (_) {}
             // 作廢機制欄位（品項）
             try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ"); } catch (_) {}
             try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_by TEXT"); } catch (_) {}

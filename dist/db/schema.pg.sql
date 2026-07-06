@@ -417,6 +417,7 @@
     message_count INTEGER NOT NULL DEFAULT 0,
     first_spoke_at TIMESTAMPTZ,
     last_spoke_at TIMESTAMPTZ,
+    dismissed_at TIMESTAMPTZ,
     PRIMARY KEY (group_id, line_user_id)
   );
   CREATE INDEX IF NOT EXISTS idx_line_speakers_last ON line_group_speakers(last_spoke_at);

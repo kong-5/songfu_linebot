@@ -2575,33 +2575,52 @@ function createAdminRouter() {
               <td>${btn}</td>
             </tr>`;
         }).join("");
-        // 群組發言成員（自動偵測）：曾在客戶群發言的 LINE 帳號，可直接挑人標記為同事
+        // 群組發言成員（自動偵測）：曾在客戶群發言的 LINE 帳號。
+        // 主名單只留「未判定」的人；標成同事或按「非公司人員」排除後移到收合的「已處理」區，名單不會被客戶塞滿。
         const speakers = await line_conversation_js_1.listGroupSpeakers(db, 200);
         const boundByLineUserId = new Map();
         for (const u of activeList) {
             if (u.lineUserId) boundByLineUserId.set(String(u.lineUserId).trim(), u);
         }
         const speakerUserOpts = activeList.map(u => `<option value="${escapeAttr(u.username)}">${escapeHtml(u.name || u.username)}${u.title ? `（${escapeHtml(u.title)}）` : ""}</option>`).join("");
-        const speakersRows = (speakers || []).map(s => {
+        const renderSpeakerRow = (s) => {
             const lu = String(s.line_user_id || "");
             const bound = boundByLineUserId.get(lu);
             const nameCell = s.display_name ? `<strong>${escapeHtml(s.display_name)}</strong>` : `<span style="color:var(--txt-3);">（取不到名稱）</span>`;
             const luShort = `<code class="mono" style="font-size:11px;color:var(--txt-3);" title="${escapeAttr(lu)}">${escapeHtml(lu.slice(0, 6))}…${escapeHtml(lu.slice(-4))}</code>`;
             const grp = s.customer_name ? escapeHtml(s.customer_name) : `<code class="mono" style="font-size:11px;color:var(--txt-3);" title="${escapeAttr(String(s.group_id || ""))}">${escapeHtml(String(s.group_id || "").slice(0, 8))}…</code>`;
             const last = s.last_spoke_at ? escapeHtml(fmtTaipeiYMDHM(s.last_spoke_at)) : "—";
-            const statusCell = bound
-                ? `<span class="sf-pill ok">同事：${escapeHtml(bound.name || bound.username)}</span>`
-                : `<span class="sf-pill">未標記</span>`;
-            const actionCell = bound
-                ? `<form method="post" action="/admin/users/line-unbind" style="display:inline;margin:0;" onsubmit="return confirm('解除 ${escapeAttr(bound.username)} 的 LINE 綁定？其訊息將回到一般客戶訊息處理。');"><input type="hidden" name="username" value="${escapeAttr(bound.username)}"><button type="submit" class="sf-btn sm">解除標記</button></form>`
-                : `<form method="post" action="/admin/users/bind-line-from-speaker" style="display:flex;gap:6px;align-items:center;margin:0;flex-wrap:wrap;" onsubmit="return confirm('確定將此發言者標記為所選同事？\\n之後其在客戶群的訊息不做 AI 解析，並在訂單對話以「同事」樣式顯示。');">
-                    <input type="hidden" name="line_user_id" value="${escapeAttr(lu)}">
-                    <input type="hidden" name="display_name" value="${escapeAttr(s.display_name || "")}">
-                    <select name="username" class="sf-select" style="min-width:9rem;font-size:12px;height:30px;padding:2px 6px;">${speakerUserOpts}</select>
-                    <button type="submit" class="sf-btn sm primary">標記為同事</button>
-                  </form>`;
+            let statusCell, actionCell;
+            if (bound) {
+                statusCell = `<span class="sf-pill ok">同事：${escapeHtml(bound.name || bound.username)}</span>`;
+                actionCell = `<form method="post" action="/admin/users/line-unbind" style="display:inline;margin:0;" onsubmit="return confirm('解除 ${escapeAttr(bound.username)} 的 LINE 綁定？其訊息將回到一般客戶訊息處理。');"><input type="hidden" name="username" value="${escapeAttr(bound.username)}"><button type="submit" class="sf-btn sm">解除標記</button></form>`;
+            }
+            else if (s.dismissed_at) {
+                statusCell = `<span class="sf-pill">非公司人員</span>`;
+                actionCell = `<form method="post" action="/admin/users/speaker-visibility" style="display:inline;margin:0;"><input type="hidden" name="line_user_id" value="${escapeAttr(lu)}"><input type="hidden" name="visibility" value="restore"><button type="submit" class="sf-btn sm">恢復到名單</button></form>`;
+            }
+            else {
+                statusCell = `<span class="sf-pill warn">未判定</span>`;
+                actionCell = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                    <form method="post" action="/admin/users/bind-line-from-speaker" style="display:flex;gap:6px;align-items:center;margin:0;" onsubmit="return confirm('確定將此發言者標記為所選同事？\\n之後其在客戶群的訊息不做 AI 解析，並在訂單對話以「同事」樣式顯示。');">
+                      <input type="hidden" name="line_user_id" value="${escapeAttr(lu)}">
+                      <input type="hidden" name="display_name" value="${escapeAttr(s.display_name || "")}">
+                      <select name="username" class="sf-select" style="min-width:9rem;font-size:12px;height:30px;padding:2px 6px;">${speakerUserOpts}</select>
+                      <button type="submit" class="sf-btn sm primary">標記為同事</button>
+                    </form>
+                    <form method="post" action="/admin/users/speaker-visibility" style="display:inline;margin:0;">
+                      <input type="hidden" name="line_user_id" value="${escapeAttr(lu)}">
+                      <input type="hidden" name="visibility" value="dismiss">
+                      <button type="submit" class="sf-btn sm" title="標記為客戶／非公司人員，移到下方「已處理」收合區（可隨時恢復）">非公司人員</button>
+                    </form>
+                  </div>`;
+            }
             return `<tr><td>${nameCell}<div>${luShort}</div></td><td>${grp}</td><td style="text-align:right;">${s.message_count ?? 0}</td><td style="white-space:nowrap;">${last}</td><td>${statusCell}</td><td>${actionCell}</td></tr>`;
-        }).join("");
+        };
+        const pendingSpeakers = (speakers || []).filter(s => !boundByLineUserId.get(String(s.line_user_id || "")) && !s.dismissed_at);
+        const handledSpeakers = (speakers || []).filter(s => boundByLineUserId.get(String(s.line_user_id || "")) || s.dismissed_at);
+        const pendingSpeakerRows = pendingSpeakers.map(renderSpeakerRow).join("");
+        const handledSpeakerRows = handledSpeakers.map(renderSpeakerRow).join("");
         const body = `
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
@@ -2655,15 +2674,29 @@ function createAdminRouter() {
 
           <div class="sf-card">
             <div class="sf-card-head">
-              <div class="sf-card-title">${SF_ICONS.users} 群組發言成員（自動偵測）</div>
-              <span class="sf-card-sub">曾在客戶群發言的 LINE 帳號會自動列出——直接挑人「標記為同事」，免綁定碼</span>
+              <div class="sf-card-title">${SF_ICONS.users} 群組發言成員（自動偵測・待判定 ${pendingSpeakers.length}）</div>
+              <span class="sf-card-sub">曾在客戶群發言的 LINE 帳號——是同事就標記、不是就按「非公司人員」移出名單</span>
             </div>
             <div class="sf-table-wrap" style="border:0;border-radius:0;">
               <table class="sf-table">
-                <thead><tr><th>LINE 名稱</th><th>群組（客戶）</th><th style="width:70px;">訊息數</th><th style="width:150px;">最後發言</th><th style="width:150px;">身份</th><th style="width:280px;">操作</th></tr></thead>
-                <tbody>${speakersRows || `<tr><td colspan='6' style='padding:24px;text-align:center;color:var(--txt-3);'>尚無發言紀錄——部署此版本後，客戶群內有人發言就會自動出現在這裡</td></tr>`}</tbody>
+                <thead><tr><th>LINE 名稱</th><th>群組（客戶）</th><th style="width:70px;">訊息數</th><th style="width:150px;">最後發言</th><th style="width:120px;">身份</th><th style="width:340px;">操作</th></tr></thead>
+                <tbody>${pendingSpeakerRows || `<tr><td colspan='6' style='padding:24px;text-align:center;color:var(--txt-3);'>沒有待判定的發言者${handledSpeakers.length ? "（已處理的收在下方）" : "——客戶群內有人發言就會自動出現在這裡"}</td></tr>`}</tbody>
               </table>
             </div>
+            ${handledSpeakers.length ? `
+            <details style="border-top:var(--hairline);">
+              <summary style="padding:10px 16px;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;">
+                <span style="font-size:11px;color:var(--txt-3);">▸</span>
+                <span style="font-size:13px;font-weight:600;color:var(--txt-2);">已處理（${handledSpeakers.length}）</span>
+                <span style="font-size:11px;color:var(--txt-3);">同事與已排除的非公司人員收在這裡，可解除或恢復</span>
+              </summary>
+              <div class="sf-table-wrap" style="border:0;border-radius:0;border-top:var(--hairline);">
+                <table class="sf-table">
+                  <thead><tr><th>LINE 名稱</th><th>群組（客戶）</th><th style="width:70px;">訊息數</th><th style="width:150px;">最後發言</th><th style="width:120px;">身份</th><th style="width:340px;">操作</th></tr></thead>
+                  <tbody>${handledSpeakerRows}</tbody>
+                </table>
+              </div>
+            </details>` : ""}
           </div>
 
           <div class="sf-card">
@@ -2995,6 +3028,27 @@ function createAdminRouter() {
             res.redirect("/admin/users?ok=status");
         } catch (e) {
             res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "標記失敗"));
+        }
+    });
+    // 發言者「非公司人員」排除／恢復：判定過的人移出主名單，避免名單被客戶塞滿
+    router.post("/users/speaker-visibility", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
+        const lineUserId = String(req.body?.line_user_id || "").trim();
+        const visibility = String(req.body?.visibility || "").trim();
+        if (!lineUserId || !["dismiss", "restore"].includes(visibility)) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        try {
+            await line_conversation_js_1.setSpeakerDismissed(db, lineUserId, visibility === "dismiss");
+            await logDataChange(req, {
+                entityType: "line_group_speaker",
+                entityId: lineUserId.slice(0, 12),
+                action: visibility === "dismiss" ? "speaker_dismiss" : "speaker_restore",
+                summary: visibility === "dismiss" ? "發言者標記為非公司人員（移出名單）" : "發言者恢復到待判定名單",
+            });
+            res.redirect("/admin/users?ok=status");
+        } catch (e) {
+            res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "操作失敗"));
         }
     });
     router.post("/api/working-date", express_1.default.urlencoded({ extended: true }), async (req, res) => {
