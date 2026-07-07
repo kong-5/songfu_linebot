@@ -6824,14 +6824,24 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
         const orderId = (0, id_js_1.newId)("log");
         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-        await db.prepare("INSERT INTO logistics_orders (id, order_date, customer_id, raw_message, created_at) VALUES (?, ?, ?, ?, " + nowSql + ")").run(orderId, orderDate, customerIdPost, rawMessage);
-        for (const it of items) {
-            const itemId = (0, id_js_1.newId)("logitem");
-            const qty = parseFloat(it.quantity);
-            const needReview = it.needReview === 1 || it.needReview === true ? 1 : 0;
-            const amountVal = it.amount != null && String(it.amount).trim() !== "" ? String(it.amount).trim() : null;
-            const remarkVal = it.remark != null && String(it.remark).trim() !== "" ? String(it.remark).trim() : null;
-            await db.prepare("INSERT INTO logistics_order_items (id, order_id, product_id, raw_name, quantity, unit, remark, amount, need_review) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(itemId, orderId, it.productId || null, it.rawName || "", Number.isFinite(qty) ? qty : 0, it.unit || null, remarkVal, amountVal, needReview);
+        // [fix 2026-07-08] 物流訂單主檔＋明細多筆 INSERT 包進單一交易，中途失敗整批回滾，
+        // 不留下「有主檔沒明細」的殘缺物流單。
+        const doSave = async (h) => {
+            await h.prepare("INSERT INTO logistics_orders (id, order_date, customer_id, raw_message, created_at) VALUES (?, ?, ?, ?, " + nowSql + ")").run(orderId, orderDate, customerIdPost, rawMessage);
+            for (const it of items) {
+                const itemId = (0, id_js_1.newId)("logitem");
+                const qty = parseFloat(it.quantity);
+                const needReview = it.needReview === 1 || it.needReview === true ? 1 : 0;
+                const amountVal = it.amount != null && String(it.amount).trim() !== "" ? String(it.amount).trim() : null;
+                const remarkVal = it.remark != null && String(it.remark).trim() !== "" ? String(it.remark).trim() : null;
+                await h.prepare("INSERT INTO logistics_order_items (id, order_id, product_id, raw_name, quantity, unit, remark, amount, need_review) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(itemId, orderId, it.productId || null, it.rawName || "", Number.isFinite(qty) ? qty : 0, it.unit || null, remarkVal, amountVal, needReview);
+            }
+        };
+        if (typeof db.transaction === "function") {
+            await db.transaction(doSave);
+        }
+        else {
+            await doSave(db);
         }
         res.redirect("/admin/orders?date_from=" + encodeURIComponent(orderDate) + "&date_to=" + encodeURIComponent(orderDate) + "&ok=log_saved");
     });
@@ -11184,6 +11194,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           SELECT id FROM orders
           WHERE customer_id = ? AND order_date = ?
           AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key, '')) = '')
+          AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')
           ORDER BY id ASC LIMIT 1
         `).get(sourceOrder.customer_id, sourceOrder.order_date);
                 targetOrderId = row?.id ?? null;
@@ -11193,34 +11204,51 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           SELECT id FROM orders
           WHERE customer_id = ? AND order_date = ?
           AND TRIM(order_sub_split_key) = ?
+          AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')
           ORDER BY id ASC LIMIT 1
         `).get(sourceOrder.customer_id, sourceOrder.order_date, targetSubCustomer);
                 targetOrderId = row?.id ?? null;
             }
-            if (!targetOrderId) {
-                const newOid = (0, id_js_1.newId)("ord");
-                const orderNo = await getNextOrderNoAdmin(db, sourceOrder.order_date);
-                const remarkNew = targetSubCustomer ? `[子單拆分: ${targetSubCustomer}]` : null;
-                const splitKeyNew = targetSubCustomer ? targetSubCustomer : null;
-                await db.prepare(`
+            // [fix 2026-07-08] 建新單＋複製附件＋搬移品項包進單一交易，中途失敗整批回滾，
+            // 不會留下「空殼新訂單」或「附件複製了但品項沒搬過去」的半套狀態。
+            const phUp = itemIds.map(() => "?").join(",");
+            const needNewOrder = !targetOrderId;
+            let orderNo = null;
+            if (needNewOrder) {
+                orderNo = await getNextOrderNoAdmin(db, sourceOrder.order_date);
+            }
+            const attRows = needNewOrder
+                ? await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ?").all(orderId)
+                : [];
+            const doMove = async (h) => {
+                if (needNewOrder) {
+                    const newOid = (0, id_js_1.newId)("ord");
+                    const remarkNew = targetSubCustomer ? `[子單拆分: ${targetSubCustomer}]` : null;
+                    const splitKeyNew = targetSubCustomer ? targetSubCustomer : null;
+                    await h.prepare(`
           INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, line_message_id, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ` + nowSql + `)
         `).run(newOid, orderNo, sourceOrder.customer_id, sourceOrder.order_date, sourceOrder.line_group_id ?? null, sourceOrder.raw_message ?? "", remarkNew, splitKeyNew);
-                const attRows = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ?").all(orderId);
-                for (const ar of attRows) {
-                    if (!ar?.line_message_id)
-                        continue;
-                    const attId = (0, id_js_1.newId)("att");
-                    await db.prepare(`INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, ` + nowSql + `)`).run(attId, newOid, ar.line_message_id);
+                    for (const ar of attRows) {
+                        if (!ar?.line_message_id)
+                            continue;
+                        const attId = (0, id_js_1.newId)("att");
+                        await h.prepare(`INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, ` + nowSql + `)`).run(attId, newOid, ar.line_message_id);
+                    }
+                    targetOrderId = newOid;
                 }
-                targetOrderId = newOid;
-            }
-            const phUp = itemIds.map(() => "?").join(",");
-            if (targetOrderId === orderId) {
-                await db.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
+                if (targetOrderId === orderId) {
+                    await h.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
+                }
+                else {
+                    await h.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(targetOrderId, subVal, orderId, ...itemIds);
+                }
+            };
+            if (typeof db.transaction === "function") {
+                await db.transaction(doMove);
             }
             else {
-                await db.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(targetOrderId, subVal, orderId, ...itemIds);
+                await doMove(db);
             }
             res.json({ ok: true, targetOrderId });
         }

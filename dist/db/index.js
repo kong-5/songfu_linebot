@@ -38,6 +38,72 @@ function createPgWrapper(pool) {
                 },
             };
         },
+        // [fix 2026-07-08] 交易：從 pool 取單一 client 跑 BEGIN/COMMIT，中途丟錯自動 ROLLBACK。
+        // fn 收到與 db 相同的 prepare 介面（get/all/run），所有語句共用同一連線＝原子性。
+        // 只放「純寫入」進來（先在外面把解析/讀取算完），交易越短越好，避免長時間佔住連線。
+        async transaction(fn) {
+            const client = await pool.connect();
+            try {
+                await client.query("BEGIN");
+                const tx = {
+                    prepare(sql) {
+                        return {
+                            get: (...params) => client.query(sqlForPg(sql), params).then((r) => r.rows[0] ?? null),
+                            all: (...params) => client.query(sqlForPg(sql), params).then((r) => r.rows),
+                            run: (...params) => client.query(sqlForPg(sql), params).then((r) => ({ changes: r.rowCount ?? 0 })),
+                        };
+                    },
+                };
+                const result = await fn(tx);
+                await client.query("COMMIT");
+                return result;
+            }
+            catch (e) {
+                try { await client.query("ROLLBACK"); } catch (_) { /* 連線已壞，rollback 也會失敗，忽略 */ }
+                throw e;
+            }
+            finally {
+                client.release();
+            }
+        },
+    };
+}
+/** 建立 SQLite 版 db 介面（含交易）；兩處建立點共用，避免重複。 */
+function makeSqliteWrapper(sqlite) {
+    return {
+        prepare(sql) {
+            const stmt = sqlite.prepare(sql);
+            return {
+                get(...params) { return Promise.resolve(stmt.get(...params)); },
+                all(...params) { return Promise.resolve(stmt.all(...params)); },
+                run(...params) { return Promise.resolve(stmt.run(...params)); },
+            };
+        },
+        // [fix 2026-07-08] SQLite 交易：better-sqlite3 為同步單連線，BEGIN/COMMIT 包住寫入即可；
+        // 失敗 ROLLBACK。僅用於本機開發，正式為 PostgreSQL。
+        async transaction(fn) {
+            sqlite.exec("BEGIN");
+            try {
+                const tx = {
+                    prepare(sql) {
+                        const stmt = sqlite.prepare(sql);
+                        return {
+                            get: (...params) => Promise.resolve(stmt.get(...params)),
+                            all: (...params) => Promise.resolve(stmt.all(...params)),
+                            run: (...params) => Promise.resolve(stmt.run(...params)),
+                        };
+                    },
+                };
+                const result = await fn(tx);
+                sqlite.exec("COMMIT");
+                return result;
+            }
+            catch (e) {
+                try { sqlite.exec("ROLLBACK"); } catch (_) { /* ignore */ }
+                throw e;
+            }
+        },
+        close() { sqlite.close(); },
     };
 }
 function getDb(dbPath) {
@@ -50,17 +116,7 @@ function getDb(dbPath) {
     if (!db) {
         const sqlite = new better_sqlite3_1.default(dbPath);
         sqlite.pragma("journal_mode = WAL");
-        db = {
-            prepare(sql) {
-                const stmt = sqlite.prepare(sql);
-                return {
-                    get(...params) { return Promise.resolve(stmt.get(...params)); },
-                    all(...params) { return Promise.resolve(stmt.all(...params)); },
-                    run(...params) { return Promise.resolve(stmt.run(...params)); },
-                };
-            },
-            close() { sqlite.close(); },
-        };
+        db = makeSqliteWrapper(sqlite);
     }
     return db;
 }
@@ -466,17 +522,7 @@ function initSqlite(dbPath) {
         }
         catch (_) { /* column may already exist */ }
     }
-    db = {
-        prepare(sql) {
-            const stmt = sqlite.prepare(sql);
-            return {
-                get(...params) { return Promise.resolve(stmt.get(...params)); },
-                all(...params) { return Promise.resolve(stmt.all(...params)); },
-                run(...params) { return Promise.resolve(stmt.run(...params)); },
-            };
-        },
-        close() { sqlite.close(); },
-    };
+    db = makeSqliteWrapper(sqlite);
 }
 function pgPoolOptions() {
     const raw = (DATABASE_URL || "").trim();

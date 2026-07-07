@@ -21,7 +21,11 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
     const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
     const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
     const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
-    await db.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
+    // [fix 2026-07-08] 先把每一列（含料號對應、單位換算等純讀取）算好，收成待插入陣列；
+    // 再把 DELETE + 逐筆 INSERT 包進單一交易。過去是「先 DELETE 再逐筆 INSERT，無交易」，
+    // 中途任一步失敗（DB 瞬斷、料號對應時連線壞）明細會直接消失或只剩一半。
+    // 讀取放交易外＝交易只含純寫入、時間短，不長時間佔住連線。
+    const rows = [];
     for (const p of parsed) {
         const itemId = (0, id_js_1.newId)("item");
         let qty = Number.isFinite(Number(p.quantity)) ? Number(p.quantity) : 0;
@@ -50,7 +54,19 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
         const confidence = p.confidenceScore != null && Number.isFinite(Number(p.confidenceScore))
             ? Math.max(0, Math.min(100, Math.round(Number(p.confidenceScore))))
             : null;
-        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, include_export, sub_customer, confidence_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)").run(itemId, orderId, resolved?.productId ?? null, p.rawName || "", qty, unit, needReview, itemRemark, subCust, confidence);
+        rows.push([itemId, orderId, resolved?.productId ?? null, p.rawName || "", qty, unit, needReview, itemRemark, subCust, confidence]);
+    }
+    const doWrite = async (h) => {
+        await h.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
+        for (const r of rows) {
+            await h.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, include_export, sub_customer, confidence_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)").run(...r);
+        }
+    };
+    if (typeof db.transaction === "function") {
+        await db.transaction(doWrite);
+    }
+    else {
+        await doWrite(db);
     }
 }
 /**
