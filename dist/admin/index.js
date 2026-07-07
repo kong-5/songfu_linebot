@@ -7415,6 +7415,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND (oi.include_export IS NULL OR oi.include_export = 1) AND oi.voided_at IS NULL) AS export_item_count,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.voided_at IS NULL) AS total_item_count,
         o.sheet_exported_at, o.lingyue_exported_at, o.lingyue_doc_no, o.lingyue_written_at, o.lingyue_queued_by,
+        o.lingyue_queued_at, o.lingyue_last_error,
         o.raw_message AS source_raw_message,
         o.approved_by, o.approved_at,
         (SELECT COUNT(*) FROM order_attachments oa WHERE oa.order_id = o.id) AS source_attachment_count
@@ -7684,7 +7685,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <td style="white-space:nowrap;" data-label="狀態">${statusPill}${expIcons ? " " + expIcons : ""}</td>
             <td style="text-align:right;white-space:nowrap;" data-label="">${o.lingyue_doc_no
                 ? `<span class="sf-pill" style="background:#e0f2f1;color:#00695c;font-weight:700;" title="已轉入凌越，單據號 ${escapeAttr(String(o.lingyue_doc_no))}${o.lingyue_queued_by ? "，由 " + escapeAttr(nameOf(o.lingyue_queued_by)) + " 轉入" : ""}（如需重轉請進明細）">✓已轉入 ↩${escapeHtml(String(o.lingyue_doc_no))}${o.lingyue_queued_by ? " ·" + escapeHtml(nameOf(o.lingyue_queued_by)) : ""}</span>`
-                : `<button type="button" class="sf-btn sm lingyue-transfer-btn" data-id="${escapeAttr(o.id)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no || ""))}" title="轉入凌越（顯示凌越料號並轉入）">轉入凌越</button>`} <a class="sf-btn sm" href="${detailUrl}">明細</a></td>
+                : `${(o.lingyue_last_error && !o.lingyue_queued_at) ? `<span class="sf-pill" style="background:#fef2f2;color:#b91c1c;font-weight:700;" title="轉入失敗：${escapeAttr(String(o.lingyue_last_error))}">⚠ 轉入失敗</span> ` : ""}<button type="button" class="sf-btn sm lingyue-transfer-btn" data-id="${escapeAttr(o.id)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no || ""))}" title="${o.lingyue_last_error ? escapeAttr("上次失敗：" + String(o.lingyue_last_error) + "。修正後可再轉入") : "轉入凌越（顯示凌越料號並轉入）"}">轉入凌越</button>`} <a class="sf-btn sm" href="${detailUrl}">明細</a></td>
             <td class="order-mobile-only">${mobileCardHtml}</td>
           </tr>`;
             })
@@ -9244,11 +9245,27 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     continue;
                 }
                 if (!ok || !docNo) {
-                    failed.push({ order_id: orderId, reason: r?.error ? String(r.error) : "寫入未成功或缺少 doc_no" });
+                    // [fix 2026-07-08] 失敗出口：記錄錯誤。permanent（如缺料號）或累計 >=3 次即移出佇列（清 queued/claimed），
+                    // 否則保留佇列讓租約到期後自動重試（不清 claimed_at＝維持 90 秒節流，不狂重試）。
+                    const errMsg = (r?.error ? String(r.error) : "寫入未成功或缺少 doc_no").slice(0, 500);
+                    const permanent = r?.permanent === true;
+                    try {
+                        const cur = await db.prepare("SELECT COALESCE(lingyue_write_attempts, 0) AS n FROM orders WHERE id = ?").get(orderId);
+                        const n = (cur?.n || 0) + 1;
+                        if (permanent || n >= 3) {
+                            await db.prepare("UPDATE orders SET lingyue_write_attempts = ?, lingyue_last_error = ?, lingyue_queued_at = NULL, lingyue_claimed_at = NULL WHERE id = ?").run(n, errMsg, orderId);
+                        }
+                        else {
+                            await db.prepare("UPDATE orders SET lingyue_write_attempts = ?, lingyue_last_error = ? WHERE id = ?").run(n, errMsg, orderId);
+                        }
+                    }
+                    catch (_) { /* 記錄失敗不影響其他項回填 */ }
+                    failed.push({ order_id: orderId, reason: errMsg, permanent, exited_queue: permanent });
                     continue;
                 }
                 try {
-                    const ret = await db.prepare("UPDATE orders SET lingyue_doc_no = ?, lingyue_written_at = ? WHERE id = ?").run(docNo, now, orderId);
+                    // 成功：回填單號＋時間，並清掉失敗計數/錯誤與認領。
+                    const ret = await db.prepare("UPDATE orders SET lingyue_doc_no = ?, lingyue_written_at = ?, lingyue_last_error = NULL, lingyue_write_attempts = 0, lingyue_claimed_at = NULL WHERE id = ?").run(docNo, now, orderId);
                     if (ret && (ret.changes === 0)) {
                         failed.push({ order_id: orderId, reason: "查無此訂單" });
                         continue;
@@ -9381,12 +9398,22 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.json({ ok: false, error: "此訂單無可轉入品項" });
                 return;
             }
+            // [fix 2026-07-08] 缺料號整單拒寫（老闆決策）：任一品項無凌越料號就不排隊/不寫入，
+            // 直接回報請先補料號。放在轉入入口＝單一把關點，直寫與佇列兩條路徑都涵蓋，也避免被拒單在佇列無限重試。
+            if (preview.missing_count > 0) {
+                const missNames = preview.items.filter((i) => !i.product_code).map((i) => i.product_name).filter(Boolean);
+                res.json({
+                    ok: false,
+                    error: `有 ${preview.missing_count} 項無凌越料號，請先到品項主檔補上料號再轉入：${missNames.slice(0, 5).join("、")}${missNames.length > 5 ? " 等" : ""}`,
+                });
+                return;
+            }
             const writeCmd = (process.env.LINGYUE_WRITE_CMD || "").trim();
             if (!writeCmd) {
                 // 這台沒接凌越橋接（雲端 Cloud Run 打不進內網）→ 標記排隊，由內網 agent 長連線等待後寫入。
                 // 清掉舊單號／回寫時間（重轉時），讓 /wait 重新撿到；記錄是誰轉的。
                 const now = new Date().toISOString();
-                await db.prepare("UPDATE orders SET lingyue_queued_at = ?, lingyue_queued_by = ?, lingyue_doc_no = NULL, lingyue_written_at = NULL, lingyue_claimed_at = NULL WHERE id = ?").run(now, actor, order.id);
+                await db.prepare("UPDATE orders SET lingyue_queued_at = ?, lingyue_queued_by = ?, lingyue_doc_no = NULL, lingyue_written_at = NULL, lingyue_claimed_at = NULL, lingyue_write_attempts = 0, lingyue_last_error = NULL WHERE id = ?").run(now, actor, order.id);
                 res.json({ ok: true, queued: true, message: "已排入凌越匯入佇列，內網小幫手會在數秒內寫入並回填單號。", ...preview });
                 return;
             }

@@ -170,6 +170,9 @@ function initSqlite(dbPath) {
         "ALTER TABLE orders ADD COLUMN lingyue_queued_by TEXT",
         // [fix 2026-07-08] 凌越 /wait 認領租約：agent 撿走時蓋時間戳，其他 agent／同一 agent 重啟在租約內不會重撿→防重複開單
         "ALTER TABLE orders ADD COLUMN lingyue_claimed_at TEXT",
+        // [fix 2026-07-08] 凌越寫入失敗出口：累計嘗試次數與最後錯誤；permanent 或超過上限即移出佇列並顯示原因
+        "ALTER TABLE orders ADD COLUMN lingyue_write_attempts INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE orders ADD COLUMN lingyue_last_error TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -658,6 +661,15 @@ async function initPg() {
             // [fix 2026-07-08] 凌越 /wait 認領租約欄位（防多 agent／重啟重複開單）
             try {
                 await client.query("ALTER TABLE orders ADD COLUMN lingyue_claimed_at TIMESTAMPTZ");
+            }
+            catch (_) { /* column may already exist */ }
+            // [fix 2026-07-08] 凌越寫入失敗出口欄位
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_write_attempts INTEGER NOT NULL DEFAULT 0");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_last_error TEXT");
             }
             catch (_) { /* column may already exist */ }
             try {
