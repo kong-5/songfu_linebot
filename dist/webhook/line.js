@@ -1103,7 +1103,10 @@ function createLineWebhook() {
                                     lineMessageId: curLineMessageId,
                                 });
                                 newOrderIds.push(oid);
-                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, oid);
+                                // [fix 2026-07-08] 收單中圖片拆單的新訂單 raw_message 只放本次 OCR，
+                                // 不繼承 session 主訂單的既有 raw（newRawAppend），否則結單 rebuild 時
+                                // 主訂單既有品項會落入拆單主客戶桶造成跨單重複（同未收單拆單修法）。
+                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(ocrLine, oid);
                                 await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
                                 await insertParsedItemsForOrder(db, oid, session.customerId, items, fallbackUnitImg);
                             }
