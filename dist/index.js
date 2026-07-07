@@ -85,8 +85,8 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         }
         next();
     }, lineWebhookRouter);
-    app.use(express_1.default.json());
-    app.use(express_1.default.urlencoded({ extended: true }));
+    app.use(express_1.default.json({ limit: "20mb" }));
+    app.use(express_1.default.urlencoded({ extended: true, limit: "20mb" }));
     /** Cloud Tasks Worker：同步處理單一 LINE event（需 LINE_USE_CLOUD_TASKS=1 時由佇列呼叫） */
     app.post("/api/worker/process-line-event", async (req, res) => {
         try {
