@@ -104,7 +104,14 @@
     const q = searchInput.value.trim();
     if (!q){ resultsEl.innerHTML = ""; setStatus("請輸入客戶名稱開始查詢"); return; }
     setStatus("搜尋中…");
-    const r = await api("/liff/api/customer-lookup/search?q="+encodeURIComponent(q));
+    // [fix 2026-07-08] api() 內 fetch 網路錯誤會 throw，過去沒接住 → 永遠停在「搜尋中…」。
+    let r;
+    try {
+      r = await api("/liff/api/customer-lookup/search?q="+encodeURIComponent(q));
+    } catch(e){
+      setStatus("搜尋失敗：網路異常，請重試（"+(e?.message||e)+"）");
+      return;
+    }
     if (r.status !== 200 || !r.body.ok){
       setStatus("搜尋失敗："+(r.body.error || "HTTP "+r.status));
       return;
@@ -127,7 +134,14 @@
     detailView.style.display = "block";
     backBtn.style.display = "inline-block";
     detailView.innerHTML = '<div class="empty">載入中…</div>';
-    const r = await api("/liff/api/customer-lookup/detail?id="+encodeURIComponent(id));
+    // [fix 2026-07-08] try/catch 保證網路錯誤時顯示錯誤而非永遠卡在「載入中…」。
+    let r;
+    try {
+      r = await api("/liff/api/customer-lookup/detail?id="+encodeURIComponent(id));
+    } catch(e){
+      detailView.innerHTML = '<div class="empty" style="color:var(--bad);">載入失敗：網路異常，請返回重試</div>';
+      return;
+    }
     if (r.status !== 200 || !r.body.ok){
       detailView.innerHTML = '<div class="empty" style="color:var(--bad);">'+escapeHtml(r.body.error || "載入失敗")+'</div>';
       return;

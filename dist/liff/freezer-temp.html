@@ -240,18 +240,27 @@
     });
     saveBtn.disabled = true;
     saveBtn.textContent = "儲存中…";
-    const r = await api("/liff/api/freezer-temp/save", {
-      method:"POST",
-      body: JSON.stringify({date, fillerName:filler, entries:payload})
-    });
-    saveBtn.disabled = false;
-    saveBtn.textContent = "儲存所有溫度";
-    if (r.status !== 200 || !r.body.ok){
-      toast("儲存失敗："+(r.body.error || "HTTP "+r.status));
-      return;
+    // [fix 2026-07-08] api() 內 fetch 網路錯誤會 throw，過去沒接住 → 按鈕永遠卡在「儲存中…」。
+    // 用 try/finally 保證按鈕一定復原；成功才 reload。
+    let ok = false;
+    try {
+      const r = await api("/liff/api/freezer-temp/save", {
+        method:"POST",
+        body: JSON.stringify({date, fillerName:filler, entries:payload})
+      });
+      if (r.status !== 200 || !r.body.ok){
+        toast("儲存失敗："+(r.body.error || "HTTP "+r.status));
+      } else {
+        ok = true;
+        toast("✓ 已儲存"+(r.body.anomaly?"（含異常將提醒主管）":""));
+      }
+    } catch(e){
+      toast("儲存失敗：網路異常，請重試（"+(e?.message||e)+"）");
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "儲存所有溫度";
     }
-    toast("✓ 已儲存"+(r.body.anomaly?"（含異常將提醒主管）":""));
-    await load();
+    if (ok) await load();
   }
 })();
 </script>

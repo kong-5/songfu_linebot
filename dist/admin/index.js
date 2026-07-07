@@ -15965,10 +15965,15 @@ YY小吃, C5678...,</pre>
           const data = collectFormData(recipientIds);
           const btn = document.getElementById('send-confirm-btn');
           btn.disabled = true; btn.textContent = '傳送中…';
-          const r = await fetch('/admin/broadcast/send', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
-          const j = await r.json();
-          if (j.ok) { location.href = '/admin/broadcast?sent=' + (j.sent||0); }
-          else { btn.disabled = false; btn.textContent = '確定送出'; alert('傳送失敗：' + (j.error || '')); }
+          // [fix 2026-07-08] fetch/json 網路錯誤過去沒接住 → 按鈕永遠卡在「傳送中…」。
+          try {
+            const r = await fetch('/admin/broadcast/send', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
+            const j = await r.json();
+            if (j.ok) { location.href = '/admin/broadcast?sent=' + (j.sent||0); return; }
+            btn.disabled = false; btn.textContent = '確定送出'; alert('傳送失敗：' + (j.error || ''));
+          } catch(e){
+            btn.disabled = false; btn.textContent = '確定送出'; alert('傳送失敗：網路異常，請重試（' + (e && e.message || e) + '）');
+          }
         }
         renderColorSwatches();
         updatePreview();
@@ -16578,7 +16583,7 @@ ${sentInfo}
 
 <div class="notion-card" style="margin-top:24px;padding:20px;max-width:760px;">
   <h3 style="margin:0 0 12px;font-size:15px;">傳送至 LINE 群組</h3>
-  <form method="post" action="/admin/announcements/${encodeURIComponent(id)}/send" onsubmit="return confirm('確定傳送至選定的 LINE 群組？');">
+  <form method="post" action="/admin/announcements/${encodeURIComponent(id)}/send" onsubmit="if(this.dataset.submitting)return false;if(!confirm('確定傳送至選定的 LINE 群組？'))return false;this.dataset.submitting='1';return true;">
     <div class="field" style="margin-bottom:14px;">
       <label class="fl">傳送對象</label>
       <select name="recipients" style="width:100%;max-width:340px;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:6px;background:#fafafa;">
