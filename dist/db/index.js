@@ -201,6 +201,12 @@ function initSqlite(dbPath) {
         )`);
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_line_sessions_last_activity ON line_collect_sessions(last_activity_at)");
     } catch (e) { console.warn("[migration] line_collect_sessions(SQLite) 建立失敗:", e?.message || e); }
+    // [fix 2026-07-08] 訊息層級持久化去重表：line_message_id 只在「新建訂單」時落地，
+    // 累加品項的訊息僅存記憶體 Set，跨實例／重啟／Cloud Tasks at-least-once 重投遞時 DB 去重查不到 → 品項重複寫入。
+    // 這張表在每則訊息入口先 INSERT，衝突即代表已處理過，直接略過（冪等）。
+    try {
+        sqlite.exec("CREATE TABLE IF NOT EXISTS processed_line_messages (message_id TEXT PRIMARY KEY, processed_at TEXT NOT NULL)");
+    } catch (e) { console.warn("[migration] processed_line_messages(SQLite) 建立失敗:", e?.message || e); }
     try {
         sqlite.exec("ALTER TABLE inventory_warehouse_products ADD COLUMN safety_stock REAL NOT NULL DEFAULT 0");
     }
@@ -676,6 +682,10 @@ async function initPg() {
                 )`);
                 await client.query("CREATE INDEX IF NOT EXISTS idx_line_sessions_last_activity ON line_collect_sessions(last_activity_at)");
             } catch (e) { console.warn("[migration] line_collect_sessions(PG) 建立失敗:", e?.message || e); }
+            // [fix 2026-07-08] 訊息層級持久化去重表（PG 版，同 SQLite）：跨實例／重啟／Cloud Tasks 重投遞冪等去重。
+            try {
+                await client.query("CREATE TABLE IF NOT EXISTS processed_line_messages (message_id TEXT PRIMARY KEY, processed_at TIMESTAMPTZ NOT NULL)");
+            } catch (e) { console.warn("[migration] processed_line_messages(PG) 建立失敗:", e?.message || e); }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), line_message_id TEXT NOT NULL, created_at TIMESTAMPTZ)");
             }
