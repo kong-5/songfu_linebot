@@ -61,22 +61,27 @@ def _timeout_client():
         )
 
 
-def product_warehouse(icpno, skno):
-    """依料號帶貨品主檔預設倉 SK_RKWHNO（凌越內部設定）；查不到回空。"""
+def product_info(icpno, skno):
+    """依料號帶貨品主檔的預設倉 SK_RKWHNO 與正規單位 SK_UNIT（凌越內部設定）。
+    回 {'whno':..., 'unit':...}；查不到回 {}。"""
     if not skno:
-        return ""
+        return {}
     ck = (icpno, skno)
     if ck in _ware_cache:
         return _ware_cache[ck]
-    val = ""
+    info = {}
     try:
         rows = lystk.query(icpno=icpno, idakd="000000", where="SK_NO='@v1@'", whval=skno)
         if rows:
-            val = (rows[0].get("SK_RKWHNO") or "").strip()
+            r = rows[0]
+            info = {
+                "whno": (r.get("SK_RKWHNO") or "").strip(),
+                "unit": (r.get("SK_UNIT") or "").strip(),
+            }
     except Exception as e:
-        print(f"    ⚠ 查品項 {skno} 預設倉失敗（略過）：{e}", file=sys.stderr)
-    _ware_cache[ck] = val
-    return val
+        print(f"    ⚠ 查品項 {skno} 主檔失敗（略過）：{e}", file=sys.stderr)
+    _ware_cache[ck] = info
+    return info
 
 
 def customer_defaults(icpno, ctno):
@@ -112,12 +117,15 @@ def map_order(order, icpno, whno, price, create_name, check, maker):
             print(f"    ⚠ 跳過無料號品項：{name or '(無名)'}（{order.get('customer_name')}）")
             continue
         qty = it.get("quantity")
+        pinfo = product_info(icpno, skno)
         det = {
             "OD_SKNO": skno,
             "OD_NAME": name,
-            "OD_UNIT": (it.get("unit") or "KG").strip(),
+            # 單位：用貨品主檔正規單位 SK_UNIT（如 KG），沒有才退回雲端叫貨單位。
+            # 抄雲端單位（如「公斤」）會讓凌越把 OD_IS_PACK 設成論件，寺岡(秤重)點不了。
+            "OD_UNIT": pinfo.get("unit") or (it.get("unit") or "KG").strip(),
             # 倉別：依料號帶貨品主檔預設倉 SK_RKWHNO；沒有才用 LY_DEFAULT_WHNO
-            "OD_WARE": product_warehouse(icpno, skno) or whno,
+            "OD_WARE": pinfo.get("whno") or whno,
             "OD_QTY": qty if qty is not None else 0,
         }
         if price not in (None, ""):
