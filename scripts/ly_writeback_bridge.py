@@ -123,6 +123,29 @@ def customer_defaults(icpno: str, ctno: str) -> dict:
     return out
 
 
+_ware_cache: dict = {}
+
+
+def product_warehouse(icpno: str, skno: str) -> str:
+    """從貨品主檔(000000)帶該品項的預設倉別 SK_RKWHNO（凌越內部設定）；查不到回空。"""
+    if not skno:
+        return ""
+    ck = (icpno, skno)
+    if ck in _ware_cache:
+        return _ware_cache[ck]
+    val = ""
+    try:
+        _timeout_client()
+        rows = lystk.query(icpno=icpno, idakd="000000",
+                           where="SK_NO='@v1@'", whval=skno)
+        if rows:
+            val = (rows[0].get("SK_RKWHNO") or "").strip()
+    except Exception as e:
+        print(f"    ⚠ 查品項 {skno} 預設倉失敗（略過）：{e}", file=sys.stderr)
+    _ware_cache[ck] = val
+    return val
+
+
 def run_test_ctno(args, *, icpno, whno, price, create_name, check, maker, date_str) -> int:
     """為指定客戶寫一張測試訂貨單（標【API測試請刪除】），驗證付款方式/業務員/審核有無帶入。"""
     ctno = args.test_ctno.strip()
@@ -229,7 +252,9 @@ def map_order(order: dict, *, icpno: str, whno: str, price: str,
             "OD_SKNO": skno,
             "OD_NAME": name,
             "OD_UNIT": (it.get("unit") or "KG").strip(),
-            "OD_WARE": whno,                       # 預設留空（之後在凌越補倉別）
+            # 倉別：依料號帶貨品主檔的預設倉 SK_RKWHNO（凌越內部設定）；沒有才用 --warehouse。
+            # 拋轉要扣庫存，明細倉別空白會拋不過。
+            "OD_WARE": product_warehouse(icpno, skno) or whno,
             "OD_QTY": qty if qty is not None else 0,
         }
         # 單價：叫貨單無價。留空（不送 OD_PRICE）→ 讓凌越依「客戶售價表」自動帶價。
