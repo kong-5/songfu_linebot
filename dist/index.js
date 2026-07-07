@@ -301,3 +301,5 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     console.error("[startup] 無法啟動:", e);
     process.exit(1);
 });
+
+// redeploy-sync 20260708
