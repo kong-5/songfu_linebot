@@ -1817,36 +1817,41 @@ function fmtTaipeiYMDHM(v, fallback = "—") {
 // ── 目前庫存頁：緊湊表樣式（品項多，行高壓到最小、表頭吸頂）─────────────
 const STK_STYLE = `
 .stk-wrap{max-width:100%;}
-.stk-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin:8px 0 10px;}
-.stk-toolbar-left,.stk-toolbar-right{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
-.stk-search{min-width:220px;flex:1 1 220px;padding:7px 10px;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;font-size:14px;background:var(--notion-card,#fff);color:inherit;}
-.stk-select{padding:7px 8px;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;font-size:13px;background:var(--notion-card,#fff);color:inherit;}
+.stk-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin:6px 0 8px;}
+.stk-toolbar-left,.stk-toolbar-right{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.stk-search{min-width:200px;flex:1 1 200px;padding:6px 10px;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;font-size:13px;background:var(--notion-card,#fff);color:inherit;}
 .stk-seg{display:inline-flex;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;overflow:hidden;}
-.stk-seg button{border:0;background:var(--notion-card,#fff);color:inherit;padding:7px 12px;font-size:13px;cursor:pointer;}
+.stk-seg button{border:0;background:var(--notion-card,#fff);color:inherit;padding:6px 11px;font-size:12.5px;cursor:pointer;}
 .stk-seg button.active{background:#2383e2;color:#fff;font-weight:700;}
-.stk-check{font-size:13px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;}
+.stk-check{font-size:12.5px;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer;}
 .stk-meta{font-size:12px;color:var(--notion-text-light,#787774);white-space:nowrap;}
+.stk-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;max-height:110px;overflow:auto;}
+.stk-chip{border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:inherit;border-radius:999px;padding:2px 10px;font-size:12px;cursor:pointer;white-space:nowrap;line-height:1.5;}
+.stk-chip:hover{border-color:#2383e2;}
+.stk-chip.active{background:#2383e2;border-color:#2383e2;color:#fff;font-weight:700;}
+.stk-chipn{opacity:.6;font-size:11px;margin-left:2px;}
+.stk-chip.active .stk-chipn{opacity:.85;}
 .stk-status{margin:0 0 8px;padding:8px 12px;border-radius:7px;font-size:13px;}
 .stk-status-wait{background:#eef4ff;color:#1d4ed8;}
 .stk-status-ok{background:#e7f5e9;color:#2e7d32;}
 .stk-status-warn{background:#fff8e1;color:#8a6d1b;}
-.stk-tablewrap{max-height:calc(100vh - 220px);overflow:auto;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;}
-.stk-table{border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px;line-height:1.15;}
-.stk-table th,.stk-table td{padding:3px 8px;border-bottom:1px solid var(--notion-border,#efefee);white-space:nowrap;}
+.stk-tablewrap{max-height:calc(100vh - 190px);overflow:auto;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;}
+.stk-table{border-collapse:separate;border-spacing:0;width:100%;font-size:12px;line-height:1.1;}
+.stk-table th,.stk-table td{padding:2px 8px;border-bottom:1px solid var(--notion-border,#efefee);white-space:nowrap;}
 .stk-table thead th{position:sticky;top:0;z-index:2;background:var(--notion-card,#f7f7f5);text-align:left;font-weight:700;color:var(--notion-text-light,#555);border-bottom:1px solid var(--notion-border,#e3e2e0);}
 .stk-table td.stk-qty,.stk-table th.stk-qty{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;}
-.stk-name{max-width:280px;overflow:hidden;text-overflow:ellipsis;}
-.stk-spec{max-width:180px;overflow:hidden;text-overflow:ellipsis;color:var(--notion-text-light,#787774);}
+.stk-name{max-width:300px;overflow:hidden;text-overflow:ellipsis;}
+.stk-spec{max-width:170px;overflow:hidden;text-overflow:ellipsis;color:var(--notion-text-light,#787774);}
 .stk-code{color:var(--notion-text-light,#787774);font-variant-numeric:tabular-nums;}
 .stk-wh{color:var(--notion-text-light,#787774);}
 .stk-table tbody tr:hover{background:rgba(35,131,226,.06);}
 .stk-neg td.stk-qty{color:#c62828;}
-.stk-low{background:rgba(255,193,7,.10);}
+.stk-low{background:rgba(255,193,7,.12);}
 .stk-neg{background:rgba(198,40,40,.08);}
-.stk-grouphead td{position:sticky;top:26px;background:var(--notion-bg,#f1f1ef);font-weight:700;z-index:1;border-top:1px solid var(--notion-border,#e3e2e0);}
+.stk-grouphead td{position:sticky;top:20px;background:var(--notion-bg,#f1f1ef);font-weight:700;z-index:1;border-top:1px solid var(--notion-border,#e3e2e0);cursor:default;}
 .stk-gcount{font-weight:500;font-size:11px;color:var(--notion-text-light,#787774);margin-left:8px;}
 .stk-empty{text-align:center;color:var(--notion-text-light,#787774);padding:24px;}
-@media (max-width:640px){.stk-spec{display:none;}.stk-tablewrap{max-height:calc(100vh - 260px);}}
+@media (max-width:640px){.stk-spec{display:none;}.stk-tablewrap{max-height:calc(100vh - 240px);}}
 `;
 // 目前庫存頁前端腳本（無 backtick、無 ${} 以免與外層樣板字面衝突）
 const STK_CLIENT_JS = `
@@ -1860,49 +1865,57 @@ const STK_CLIENT_JS = `
     search: document.getElementById('stkSearch'),
     view: document.getElementById('stkView'),
     source: document.getElementById('stkSource'),
+    hideZero: document.getElementById('stkHideZero'),
     lowOnly: document.getElementById('stkLowOnly'),
     exportBtn: document.getElementById('stkExport'),
     refresh: document.getElementById('stkRefresh'),
+    chips: document.getElementById('stkChips'),
     wrap: document.getElementById('stkTableWrap'),
     count: document.getElementById('stkCount'),
     status: document.getElementById('stkStatus')
   };
-  var state = { view:'list', source:'ly', q:'', low:false };
-  try { var saved = JSON.parse(localStorage.getItem('stk.state')||'{}'); if(saved.view) state.view=saved.view; if(saved.source) state.source=saved.source; } catch(_){}
-  function save(){ try { localStorage.setItem('stk.state', JSON.stringify({view:state.view,source:state.source})); } catch(_){} }
+  var UNSET_LY='（未設倉別）', UNSET_WH='（未歸倉）';
+  var state = { view:'list', source:'ly', q:'', hideZero:false, low:false, wh:'' };
+  try { var saved = JSON.parse(localStorage.getItem('stk.state')||'{}'); if(saved.view) state.view=saved.view; if(saved.source) state.source=saved.source; if(saved.hideZero) state.hideZero=!!saved.hideZero; } catch(_){}
+  function save(){ try { localStorage.setItem('stk.state', JSON.stringify({view:state.view,source:state.source,hideZero:state.hideZero})); } catch(_){} }
   function esc(s){ s=(s==null?'':String(s)); return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function safetyOf(code){ var a=ASSIGN[code]; if(!a||!a.length) return 0; var m=0; for(var i=0;i<a.length;i++){ if(a[i].safety>m) m=a[i].safety; } return m; }
   function fmtQty(q){ if(q===0) return '0'; return String(q); }
-  function passFilter(it){
+  // 一個品項屬於哪些倉（依來源）：自訂庫房可能多個；沒名字就用代號
+  function whsOf(it){
+    if(state.source==='wh'){
+      var a=ASSIGN[it.c]; if(!a||!a.length) return [UNSET_WH];
+      var out=[]; for(var i=0;i<a.length;i++){ out.push(a[i].wh||UNSET_WH); } return out;
+    }
+    return [it.w||UNSET_LY];
+  }
+  function whSort(it){ if(state.source==='wh'){ var a=ASSIGN[it.c]; return (a&&a.length)?(a[0].sort||0):1e9; } return it.w?0:1e9; }
+  // 搜尋 + 隱藏0 + 只看低量（不含倉別選取）
+  function baseFilter(it){
+    if(state.hideZero && it.q===0) return false;
     if(state.low){ var s=safetyOf(it.c); var low=it.q<=0||(s>0&&it.q<s); if(!low) return false; }
-    if(state.q){ var q=state.q; return (it.c.toLowerCase().indexOf(q)>=0)||(it.n.toLowerCase().indexOf(q)>=0)||(it.s.toLowerCase().indexOf(q)>=0); }
+    if(state.q){ var q=state.q; if(!((it.c.toLowerCase().indexOf(q)>=0)||(it.n.toLowerCase().indexOf(q)>=0)||(it.s.toLowerCase().indexOf(q)>=0))) return false; }
     return true;
   }
   function rowHtml(it){
-    var s=safetyOf(it.c); var neg=it.q<0; var low=it.q<=0||(s>0&&it.q<s);
+    var s=safetyOf(it.c); var neg=it.q<0; var low=(it.q>0&&s>0&&it.q<s);
     var cls=neg?'stk-neg':(low?'stk-low':'');
-    return '<tr class="'+cls+'"><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(it.w)+'</td></tr>';
+    return '<tr class="'+cls+'"><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).join('、'))+'</td></tr>';
   }
-  var THEAD='<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>凌越倉別</th></tr></thead>';
+  function theadHtml(){ var wl=(state.source==='wh'?'庫房':'凌越倉別'); return '<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>'+wl+'</th></tr></thead>'; }
   function renderList(list){
     var b=[]; for(var i=0;i<list.length;i++) b.push(rowHtml(list[i]));
-    return '<table class="stk-table">'+THEAD+'<tbody>'+(b.join('')||'<tr><td colspan="6" class="stk-empty">— 無符合條件的品項 —</td></tr>')+'</tbody></table>';
+    return '<table class="stk-table">'+theadHtml()+'<tbody>'+(b.join('')||'<tr><td colspan="6" class="stk-empty">— 無符合條件的品項 —</td></tr>')+'</tbody></table>';
   }
   function renderGroup(list){
     var groups={}; var order=[];
     function ensure(key,sort){ if(!groups[key]){ groups[key]={rows:[],sum:0,sort:sort}; order.push(key); } return groups[key]; }
     for(var i=0;i<list.length;i++){
-      var it=list[i];
-      if(state.source==='wh'){
-        var a=ASSIGN[it.c];
-        if(!a||!a.length){ var g=ensure('（未歸倉）',1e9); g.rows.push(it); g.sum+=it.q; }
-        else { for(var j=0;j<a.length;j++){ var g2=ensure(a[j].wh||'（未命名庫房）',a[j].sort||0); g2.rows.push(it); g2.sum+=it.q; } }
-      } else {
-        var key=it.w||'（未設倉別）'; var g3=ensure(key,it.w?0:1e9); g3.rows.push(it); g3.sum+=it.q;
-      }
+      var it=list[i]; var whs=whsOf(it); var st=whSort(it);
+      for(var j=0;j<whs.length;j++){ var g=ensure(whs[j],st); g.rows.push(it); g.sum+=it.q; }
     }
     order.sort(function(x,y){ var gx=groups[x],gy=groups[y]; if(gx.sort!==gy.sort) return gx.sort-gy.sort; return x<y?-1:(x>y?1:0); });
-    var out=['<table class="stk-table">'+THEAD+'<tbody>'];
+    var out=['<table class="stk-table">'+theadHtml()+'<tbody>'];
     if(!order.length) out.push('<tr><td colspan="6" class="stk-empty">— 無符合條件的品項 —</td></tr>');
     for(var k=0;k<order.length;k++){
       var key2=order[k]; var g4=groups[key2];
@@ -1912,10 +1925,22 @@ const STK_CLIENT_JS = `
     out.push('</tbody></table>');
     return out.join('');
   }
+  function renderChips(base){
+    var counts={}, order=[];
+    for(var i=0;i<base.length;i++){ var whs=whsOf(base[i]); for(var j=0;j<whs.length;j++){ var w=whs[j]; if(counts[w]==null){ counts[w]=0; order.push(w); } counts[w]++; } }
+    order.sort(function(x,y){ return x<y?-1:(x>y?1:0); });
+    var html='<button class="stk-chip'+(state.wh===''?' active':'')+'" data-w="">全部<span class="stk-chipn">'+base.length+'</span></button>';
+    for(var k=0;k<order.length;k++){ var w=order[k]; html+='<button class="stk-chip'+(state.wh===w?' active':'')+'" data-w="'+esc(w)+'">'+esc(w)+'<span class="stk-chipn">'+counts[w]+'</span></button>'; }
+    els.chips.innerHTML=html;
+    Array.prototype.forEach.call(els.chips.querySelectorAll('.stk-chip'),function(c){ c.addEventListener('click',function(){ state.wh=c.getAttribute('data-w'); render(); }); });
+  }
   var _filtered=[];
   function render(){
-    els.source.style.display=(state.view==='group')?'':'none';
-    var list=[]; for(var i=0;i<ITEMS.length;i++){ if(passFilter(ITEMS[i])) list.push(ITEMS[i]); }
+    var base=[]; for(var i=0;i<ITEMS.length;i++){ if(baseFilter(ITEMS[i])) base.push(ITEMS[i]); }
+    renderChips(base);
+    var list;
+    if(state.wh===''){ list=base; }
+    else { list=[]; for(var i2=0;i2<base.length;i2++){ if(whsOf(base[i2]).indexOf(state.wh)>=0) list.push(base[i2]); } }
     _filtered=list;
     els.count.textContent=list.length+(list.length!==ITEMS.length?(' / '+ITEMS.length):'');
     els.wrap.innerHTML=(state.view==='group')?renderGroup(list):renderList(list);
@@ -1926,13 +1951,18 @@ const STK_CLIENT_JS = `
     btn.addEventListener('click',function(){ state.view=btn.getAttribute('data-v'); Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); save(); render(); });
     btn.classList.toggle('active', btn.getAttribute('data-v')===state.view);
   });
-  els.source.value=state.source;
-  els.source.addEventListener('change',function(){ state.source=els.source.value; save(); render(); });
-  els.lowOnly.addEventListener('change',function(){ state.low=els.lowOnly.checked; render(); });
+  Array.prototype.forEach.call(els.source.querySelectorAll('button'),function(btn){
+    btn.addEventListener('click',function(){ state.source=btn.getAttribute('data-s'); state.wh=''; Array.prototype.forEach.call(els.source.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); save(); render(); });
+    btn.classList.toggle('active', btn.getAttribute('data-s')===state.source);
+  });
+  els.hideZero.checked=state.hideZero;
+  els.hideZero.addEventListener('change',function(){ state.hideZero=els.hideZero.checked; state.wh=''; save(); render(); });
+  els.lowOnly.addEventListener('change',function(){ state.low=els.lowOnly.checked; state.wh=''; render(); });
   els.exportBtn.addEventListener('click',function(){
-    var lines=['料號,品名,規格,單位,目前庫存,凌越倉別'];
+    var wl=(state.source==='wh'?'庫房':'凌越倉別');
+    var lines=['料號,品名,規格,單位,目前庫存,'+wl];
     function q(x){ x=(x==null?'':String(x)); return '"'+x.replace(/"/g,'""')+'"'; }
-    for(var i=0;i<_filtered.length;i++){ var it=_filtered[i]; lines.push([q(it.c),q(it.n),q(it.s),q(it.u),it.q,q(it.w)].join(',')); }
+    for(var i=0;i<_filtered.length;i++){ var it=_filtered[i]; lines.push([q(it.c),q(it.n),q(it.s),q(it.u),it.q,q(whsOf(it).join(' '))].join(',')); }
     var blob=new Blob(['\\ufeff'+lines.join('\\r\\n')],{type:'text/csv;charset=utf-8;'});
     var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='stock.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   });
@@ -6313,18 +6343,20 @@ function createAdminRouter() {
               <button type="button" data-v="list" class="active">列表</button>
               <button type="button" data-v="group">依倉庫</button>
             </div>
-            <select id="stkSource" class="stk-select" title="倉庫來源" style="display:none;">
-              <option value="ly">凌越倉別</option>
-              <option value="wh">自訂庫房</option>
-            </select>
+            <div class="stk-seg" id="stkSource" title="倉別來源">
+              <button type="button" data-s="ly" class="active">凌越倉別</button>
+              <button type="button" data-s="wh">自訂庫房</button>
+            </div>
+            <label class="stk-check"><input type="checkbox" id="stkHideZero"> 隱藏 0</label>
             <label class="stk-check"><input type="checkbox" id="stkLowOnly"> 只看低量/負量</label>
           </div>
           <div class="stk-toolbar-right">
             <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項</span>
-            <button type="button" id="stkExport" class="btn">匯出目前檢視</button>
+            <button type="button" id="stkExport" class="btn">匯出</button>
             <button type="button" id="stkRefresh" class="btn btn-primary">庫存更新</button>
           </div>
         </div>
+        <div id="stkChips" class="stk-chips no-print"></div>
         <div id="stkStatus" class="stk-status" style="display:none;"></div>
         <div id="stkTableWrap" class="stk-tablewrap"></div>
       </div>
