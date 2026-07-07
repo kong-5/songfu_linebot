@@ -1733,7 +1733,7 @@ function renderTopBar(workingDate, canUndo) {
         </form>
       </div>
       <div>
-        ${canUndo ? `<form method="post" action="/admin/api/rollover-undo" style="display:inline;"><button type="submit" class="btn">反悔結轉</button></form> ` : ""}
+        ${canUndo ? `<form method="post" action="/admin/api/rollover-undo" style="display:inline;" onsubmit="return confirm('確定要反悔上一次結轉？工作日期會退回前一日。');"><button type="submit" class="btn">反悔結轉</button></form> ` : ""}
         <button type="button" class="notion-rollover-btn" onclick="if(confirm('確定要結轉？結轉後工作日期將改為下一日。')) document.getElementById('rolloverForm').submit();">結轉</button>
         <form id="rolloverForm" method="post" action="/admin/api/rollover" style="display:none;"></form>
       </div>
@@ -2740,6 +2740,11 @@ function createAdminRouter() {
         const newPwd = String(req.body.new_password || "");
         if (!target || newPwd.length < 4) {
             res.redirect("/admin/users?err=weak");
+            return;
+        }
+        // [fix 2026-07-08] 只有負責人本人能重設負責人密碼，否則任一經理可重設負責人密碼奪權
+        if (isAdminOwnerUsername(target) && !isAdminOwnerUsername(req.adminUsername)) {
+            res.redirect("/admin/users?err=" + encodeURIComponent("僅負責人本人可重設負責人密碼"));
             return;
         }
         const users = await loadAdminUsers();
@@ -16317,7 +16322,7 @@ YY小吃, C5678...,</pre>
         res.type("text/html").send(notionPage("公告管理", body, "announcements", res));
     });
 
-    router.get("/announcements/new", async (req, res) => {
+    router.get("/announcements/new", requireManager, async (req, res) => {
         const templateId = String(req.query.template || "").trim();
         if (!templateId) {
             const cards = announcement_templates_js_1.listTemplates().map((t) =>
@@ -16426,7 +16431,7 @@ function annAddItemRow(id){
         res.type("text/html").send(notionPage("新增公告", body, "announcements", res));
     });
 
-    router.post("/announcements", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+    router.post("/announcements", requireManager, express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const templateId = String(req.body.template_id || "").trim();
         const tpl = announcement_templates_js_1.getTemplate(templateId);
         if (!tpl) { res.status(400).send("未知的模板"); return; }
@@ -16495,7 +16500,7 @@ ${sentInfo}
         res.type("text/html").send(notionPage(row.title, body, "announcements", res));
     });
 
-    router.post("/announcements/:id/delete", async (req, res) => {
+    router.post("/announcements/:id/delete", requireManager, async (req, res) => {
         await db.prepare("DELETE FROM announcements WHERE id = ?").run(req.params.id);
         res.redirect("/admin/announcements");
     });
@@ -16516,7 +16521,7 @@ ${sentInfo}
         }
     });
 
-    router.post("/announcements/:id/send", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+    router.post("/announcements/:id/send", requireManager, express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const id = req.params.id;
         const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
         const row = await db.prepare("SELECT template_id, title, payload_json FROM announcements WHERE id = ?").get(id);
