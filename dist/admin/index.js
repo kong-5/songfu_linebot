@@ -7663,8 +7663,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const dateShortForCard = (() => {
                     const m = String(o.order_date || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
                     if (!m) return o.order_date || "—";
-                    const dt = new Date(o.order_date + "T00:00:00+08:00");
-                    const wd = "日一二三四五六"[dt.getDay()] || "";
+                    // [fix 2026-07-08] 用 Date.UTC + getUTCDay 從日期本身算星期，
+                    // 過去用 new Date("...+08:00").getDay() 在 UTC 伺服器上會差一天。
+                    const dt = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+                    const wd = "日一二三四五六"[dt.getUTCDay()] || "";
                     return `${Number(m[2])}/${Number(m[3])}` + (wd ? `（${wd}）` : "");
                 })();
                 const mobileSrcText = o.is_logistics ? "紙本" : (hasText && hasImg ? "字+圖" : (hasText ? "字" : (hasImg ? "圖" : "")));
@@ -8813,15 +8815,19 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
 .order-sheet-print .order-sheet-inner { width: 100%; max-width: 190mm; margin: 0 auto; padding: 4mm 6mm; }
 </style>`;
         const parts = [];
+        const renderedIds = []; // [fix 2026-07-08] 只對「真的印出來」的訂單蓋已匯出章
         let firstOrderMeta = null;
         for (let i = 0; i < ids.length; i++) {
             const orderId = ids[i];
+            // [fix 2026-07-08] 改 LEFT JOIN：沒選客戶的訂單也要印出來（原 INNER JOIN 會整筆略過），
+            // 否則該筆不出現在揀貨稿卻照樣被蓋「已匯出」章 → 倉庫以為處理過 → 這批貨永遠沒被揀。
             const order = await db.prepare(`
       SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code
-      FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
+      FROM orders o LEFT JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
             if (!order)
                 continue;
+            renderedIds.push(orderId);
             if (!firstOrderMeta) {
                 firstOrderMeta = { date: order.order_date || new Date().toISOString().slice(0, 10), customer: order.customer_name || "客戶", orderNo: order.order_no || order.id };
             }
@@ -8853,7 +8859,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div class="order-sheet-head">
           <div class="order-sheet-head-L">
             <h1>訂貨單</h1>
-            <p class="os-meta">訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name)}</p>
+            <p class="os-meta">訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name || "（未選客戶）")}</p>
           </div>
           ${orderBcImg}
         </div>
@@ -8871,7 +8877,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             return;
         }
         const tsSheet = new Date().toISOString();
-        for (const oid of ids) {
+        for (const oid of renderedIds) {
             try {
                 await db.prepare("UPDATE orders SET sheet_exported_at = ? WHERE id = ?").run(tsSheet, oid);
             }
@@ -9756,8 +9762,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const orderDateShort = (() => {
             const mm = String(order.order_date || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
             if (!mm) return order.order_date || "—";
-            const dt = new Date(order.order_date + "T00:00:00+08:00");
-            const wd = "日一二三四五六"[dt.getDay()] || "";
+            // [fix 2026-07-08] Date.UTC + getUTCDay，避免 UTC 伺服器上星期差一天
+            const dt = new Date(Date.UTC(Number(mm[1]), Number(mm[2]) - 1, Number(mm[3])));
+            const wd = "日一二三四五六"[dt.getUTCDay()] || "";
             return `${Number(mm[2])}/${Number(mm[3])}` + (wd ? `（${wd}）` : "");
         })();
         // 客戶名 fallback
@@ -12746,7 +12753,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div class="order-sheet-head">
           <div class="order-sheet-head-L">
             <h1>訂貨單</h1>
-            <p class="os-meta">訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name)}</p>
+            <p class="os-meta">訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name || "（未選客戶）")}</p>
           </div>
           ${orderBcHeader}
         </div>
@@ -12803,6 +12810,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         if (!name) {
             res.redirect("/admin/customers/new?err=name");
             return;
+        }
+        // [fix 2026-07-08] 同一 LINE 群組不可綁到兩個客戶（會造成叫貨歸屬錯亂）。
+        if (lineGroupId) {
+            const clash = await db.prepare("SELECT id, name FROM customers WHERE line_group_id = ? LIMIT 1").get(lineGroupId);
+            if (clash) {
+                res.redirect("/admin/customers/new?err=" + encodeURIComponent(`此 LINE 群組已綁定客戶「${clash.name || clash.id}」，不能重複綁定`));
+                return;
+            }
         }
         const id = (0, id_js_1.newId)("cust");
         await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, known_sub_customers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, knownSubCustomers);
@@ -13283,6 +13298,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             if (wantsJson) { res.status(400).json({ ok: false, error: "請填客戶名稱" }); return; }
             res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=name");
             return;
+        }
+        // [fix 2026-07-08] 同一 LINE 群組不可綁到兩個客戶，否則該群組叫貨歸屬會錯亂。
+        if (lineGroupId) {
+            const clash = await db.prepare("SELECT id, name FROM customers WHERE line_group_id = ? AND id != ? LIMIT 1").get(lineGroupId, id);
+            if (clash) {
+                const msg = `此 LINE 群組已綁定客戶「${clash.name || clash.id}」，不能重複綁定（會造成叫貨歸屬錯亂）。請先解除該客戶的群組綁定。`;
+                if (wantsJson) { res.status(409).json({ ok: false, error: msg }); return; }
+                res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=" + encodeURIComponent(msg));
+                return;
+            }
         }
         try {
             const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
@@ -13888,9 +13913,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     res.redirect("/admin/customers?err=" + encodeURIComponent("請選擇要綁定的客戶"));
                     return;
                 }
-                const target = await db.prepare("SELECT id, line_group_name, name FROM customers WHERE id = ?").get(customerId);
+                const target = await db.prepare("SELECT id, line_group_name, line_group_id, name FROM customers WHERE id = ?").get(customerId);
                 if (!target) {
                     res.redirect("/admin/customers?err=" + encodeURIComponent("客戶不存在"));
+                    return;
+                }
+                // [fix 2026-07-08] 該客戶若已綁「別的」群組，直接覆寫會讓舊群組叫貨失效。先擋下請人工確認。
+                if (target.line_group_id && String(target.line_group_id).trim() && String(target.line_group_id).trim() !== groupId) {
+                    res.redirect("/admin/customers?err=" + encodeURIComponent(`客戶「${target.name}」已綁定另一個 LINE 群組，若確定要改綁請先到該客戶編輯頁清除舊群組再操作`));
                     return;
                 }
                 const keepName = target.line_group_name && String(target.line_group_name).trim() !== "" ? target.line_group_name : groupName;
