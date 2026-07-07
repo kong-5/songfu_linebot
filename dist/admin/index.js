@@ -6211,6 +6211,10 @@ function createAdminRouter() {
               .catch(function(){ recognizeBtn.disabled = false; recognizeBtn.textContent = '解析並預覽品項'; showErr('請求失敗（請檢查網路或稍後再試）'); });
           });
           saveOrderBtn.addEventListener('click', function(){
+            // [fix 2026-07-08] 防連點重複送出：按下即 disable，避免建立兩筆重複紙本訂單
+            if (saveOrderBtn.dataset.submitting) return;
+            saveOrderBtn.dataset.submitting = '1';
+            saveOrderBtn.disabled = true;
             itemsJson.value = JSON.stringify(currentItems);
             form.submit();
           });
@@ -7914,15 +7918,19 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           })();
           (function(){
             function allCbs(){ return document.querySelectorAll(".order-batch-cb"); }
+            // [fix 2026-07-08] 只作用在「目前可見」的列（被篩選隱藏的列 offsetParent 為 null），
+            // 全選不再勾到看不見的訂單。
+            function cbVisible(c){ var tr = c.closest("tr"); return !!(tr && tr.offsetParent !== null); }
+            function visibleCbs(){ return Array.prototype.filter.call(allCbs(), cbVisible); }
             var allEl = document.getElementById("orderSelectAllCb");
-            if (allEl) allEl.addEventListener("change", function(){ allCbs().forEach(function(c){ c.checked = allEl.checked; }); updateBar(); });
+            if (allEl) allEl.addEventListener("change", function(){ visibleCbs().forEach(function(c){ c.checked = allEl.checked; }); updateBar(); });
             var b1 = document.getElementById("orderSelectAll");
             var b2 = document.getElementById("orderSelectNone");
             var b2b = document.getElementById("orderSelectNone2");
             var batchBar = document.getElementById("orderBatchBar");
             var obbCount = document.getElementById("obbCount");
             var selHint = document.getElementById("batchSelectedHint");
-            function countChecked(){ var n = 0; allCbs().forEach(function(c){ if (c.checked) n++; }); return n; }
+            function countChecked(){ var n = 0; allCbs().forEach(function(c){ if (c.checked && cbVisible(c)) n++; }); return n; }
             function updateBar(){
               var n = countChecked();
               if (obbCount) obbCount.textContent = n;
@@ -7930,14 +7938,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               if (batchBar) batchBar.style.display = n ? "flex" : "none";
             }
             function clearSel(){ allCbs().forEach(function(c){ c.checked = false; }); if (allEl) allEl.checked = false; updateBar(); }
-            if (b1) b1.onclick = function(){ allCbs().forEach(function(c){ c.checked = true; }); if (allEl) allEl.checked = true; updateBar(); };
+            if (b1) b1.onclick = function(){ visibleCbs().forEach(function(c){ c.checked = true; }); if (allEl) allEl.checked = true; updateBar(); };
             if (b2) b2.onclick = clearSel;
             if (b2b) b2b.onclick = clearSel;
             document.addEventListener("change", function(e){ if (e.target && e.target.classList && e.target.classList.contains("order-batch-cb")) updateBar(); });
             updateBar();
             function selectedIds(){
               var a = [];
-              allCbs().forEach(function(c){ if (c.checked) a.push(c.value); });
+              allCbs().forEach(function(c){ if (c.checked && cbVisible(c)) a.push(c.value); });
               return a;
             }
             function openBatch(kind){
@@ -8070,7 +8078,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 var okNo = !qNo || no.indexOf(qNo) >= 0;
                 var okCust = !qCust || cust.indexOf(qCust) >= 0;
                 var okRoute = !qRoute || (qRoute === "__none__" ? route === "" : route === qRoute);
-                tr.style.display = okNo && okCust && okRoute ? "" : "none";
+                var show = okNo && okCust && okRoute;
+                tr.style.display = show ? "" : "none";
+                // [fix 2026-07-08] 被篩選隱藏的列一律取消勾選，避免批次作廢/確認/改期
+                // 波及使用者看不到的訂單。dispatch change 讓批次列與計數同步更新。
+                if (!show) {
+                  var _cb = tr.querySelector("input.order-batch-cb");
+                  if (_cb && _cb.checked) { _cb.checked = false; _cb.dispatchEvent(new Event("change", { bubbles: true })); }
+                }
               });
             }
             var fo = document.getElementById("orderFilterOrderNo");
@@ -12461,7 +12476,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品項</div>
         <h1 class="notion-page-title">增加品項</h1>
         <div class="notion-card">
-          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add" id="addItemForm">
+          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add" id="addItemForm" onsubmit="if(this.dataset.submitting)return false;this.dataset.submitting='1';return true;">
             <div class="review-product-picker" style="position:relative;max-width:520px;margin-bottom:14px;">
               <label style="display:block;margin-bottom:6px;font-weight:500;">品項（打字搜尋，支援模糊比對）</label>
               <input type="text" class="review-product-search" autocomplete="off" placeholder="輸入品名、料號或條碼…" style="width:100%;box-sizing:border-box;padding:8px 12px;" />
