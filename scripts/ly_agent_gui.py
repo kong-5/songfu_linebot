@@ -38,10 +38,24 @@ import urllib.error
 import tkinter as tk
 from tkinter import ttk
 
-# ── 讓本機找得到凌越模組（與原代理相同的位置）────────────────────────
+# ── 模組搜尋路徑（順序很重要）─────────────────────────────────────────
+# 1) 本程式所在資料夾「最優先」：使用隨附的 ly_stock_push / ly_writeback_bridge，
+#    避免被 D:\Work\lystk_tool 內可能存在的「舊版」蓋掉
+#    （舊版 run() 參數不同，會造成回寫時 SimpleNamespace ... no attribute 的錯誤）。
+# 2) 凌越底層模組 lystk / ly_order 只在 D:\Work\lystk_tool，放在「最後面」補進來。
+def _self_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+_APP_DIR = _self_dir()
+if _APP_DIR and _APP_DIR not in sys.path:
+    sys.path.insert(0, _APP_DIR)
+
 LYSTK_DIR = os.environ.get("LYSTK_DIR", r"D:\Work\lystk_tool")
 if LYSTK_DIR and LYSTK_DIR not in sys.path:
-    sys.path.insert(0, LYSTK_DIR)
+    sys.path.append(LYSTK_DIR)
 
 # 這些子模組會在載入時 import lystk / ly_order；在沒有凌越環境的機器上會失敗，
 # 因此改成「用到時才載入」（lazy import），視窗照樣能開、能改設定。
@@ -53,14 +67,7 @@ APP_VER = "1.0"
 #  設定檔（存在 exe / 腳本旁邊）
 # ======================================================================
 
-def app_dir() -> str:
-    """打包成 exe 後用執行檔所在資料夾；否則用本檔所在資料夾。"""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-CONFIG_PATH = os.path.join(app_dir(), "ly_agent_config.json")
+CONFIG_PATH = os.path.join(_self_dir(), "ly_agent_config.json")
 
 DEFAULT_CONFIG = {
     "cloud_base": os.environ.get("LY_CLOUD_BASE", ""),
@@ -95,6 +102,12 @@ def save_config(cfg: dict) -> None:
 # ======================================================================
 #  小工具：時間、雲端連線
 # ======================================================================
+
+def _short(e, n: int = 160) -> str:
+    """把例外訊息壓成單行、限長，避免整頁 HTML 錯誤塞爆記錄框。"""
+    s = " ".join(str(e).split())
+    return s if len(s) <= n else s[:n] + " …"
+
 
 def now_hms() -> str:
     return datetime.datetime.now().strftime("%H:%M:%S")
@@ -146,6 +159,42 @@ def cloud_poll_wait(base: str, key: str, timeout_sec: int = 25) -> bool:
     return bool(res.get("refresh"))
 
 
+def cloud_test(base: str, key: str, timeout: int = 8) -> tuple:
+    """一次性連線測試。回 (ok, 訊息)。用『待回寫訂單 pending』當探針，因為
+    即使後台是舊版、沒有庫存端點，pending 仍在 → 可分辨『網址/金鑰對不對』與
+    『只是缺庫存端點』。"""
+    base = (base or "").strip()
+    key = (key or "").strip()
+    if not base:
+        return False, "尚未填入雲端後台網址。"
+    if not key:
+        return False, "尚未填入回寫金鑰。"
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    url = base.rstrip("/") + f"/admin/lingyue-writeback/pending?date={today}"
+    req = urllib.request.Request(
+        url, method="GET",
+        headers={"X-Writeback-Key": key, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            res = json.loads(resp.read().decode("utf-8") or "{}")
+        cnt = res.get("count", len(res.get("orders", []) or []))
+        return True, f"✅ 連線成功、金鑰正確。今日待回寫訂單 {cnt} 張。"
+    except urllib.error.HTTPError as e:
+        hint = {
+            401: "金鑰不正確（與後台 LINGYUE_WRITEBACK_KEY 不符）。",
+            403: "被拒絕（金鑰或權限問題）。",
+            404: "找不到端點：網址填錯，或後台版本過舊。",
+            503: "後台尚未設定 LINGYUE_WRITEBACK_KEY 環境變數。",
+        }.get(e.code, "")
+        return False, f"❌ HTTP {e.code} {e.reason}。{hint}\n{url}"
+    except urllib.error.URLError as e:
+        return False, (f"❌ 連不到伺服器：{_short(getattr(e, 'reason', e), 80)}。\n"
+                       f"確認網址正確、且此機能連到外網。\n{url}")
+    except Exception as e:
+        return False, f"❌ 測試失敗：{_short(e)}\n{url}"
+
+
 # ======================================================================
 #  把所有 print 導進視窗記錄框（原本兩支代理的輸出都會顯示出來）
 # ======================================================================
@@ -186,6 +235,33 @@ class AgentEngine:
         self.stop_event = threading.Event()
         self.erp_lock = threading.Lock()  # 序列化所有「碰凌越」的操作
         self._threads = []
+        self._realtime_off = False        # 後台若無 inventory-wait 端點，改定時模式
+
+    # ── 記錄去重：同一則訊息只印一次，狀態改變再印 ──────────────
+    def _log_once(self, tag: str, msg):
+        skey = f"_once_{tag}"
+        if msg is None:
+            self.state[skey] = None
+            return
+        if self.state.get(skey) != msg:
+            self.log(msg)
+            self.state[skey] = msg
+
+    def _scheduled_stock_push(self, pushed: set):
+        """到達每日定時點就自動推（每個時間點每天只推一次）。"""
+        now = datetime.datetime.now()
+        today = now.date().isoformat()
+        for (h, m) in parse_times(self.cfg["stock_times"]):
+            slot = (today, h, m)
+            if slot in pushed:
+                continue
+            if (now.hour, now.minute) >= (h, m):
+                self.do_stock_push(reason=f"定時 {h:02d}:{m:02d}")
+                pushed.add(slot)
+        if len(pushed) > 8:
+            leftover = {k for k in pushed if k[0] == today}
+            pushed.clear()
+            pushed.update(leftover)
 
     # ── 生命週期 ───────────────────────────────────────────────
     def start(self):
@@ -225,8 +301,13 @@ class AgentEngine:
                 n = ly_stock_push.push_once(base, key, icpno)
                 self.state["erp"] = "ok"
                 self.state["stock_last_push"] = f"{now_full()}（{n} 品項）"
+                self._log_once("stockpush", None)
             except Exception as e:
-                self.log(f"❌ 推庫存失敗：{e}")
+                self._log_once(
+                    "stockpush",
+                    f"❌ 推庫存失敗（後台 inventory-push）：{_short(e)}"
+                    "；可能後台版本較舊或該端點異常，需更新後台版本。",
+                )
 
     def do_writeback(self, *, date=None, dry_run=False, test=False, keep=False):
         base, key, icpno = self.cfg["cloud_base"], self.cfg["writeback_key"], self.cfg["icpno"]
@@ -300,33 +381,49 @@ class AgentEngine:
                 self.state["cloud"] = "unknown"
                 self.stop_event.wait(3)
                 continue
+
+            self.state["stock_next"] = next_time_label(parse_times(self.cfg["stock_times"]))
+
+            # 後台若沒有『即時刷新』端點（舊版），不再長輪詢，改定時模式即可
+            if self._realtime_off:
+                self._scheduled_stock_push(pushed)
+                self.stop_event.wait(30)
+                continue
+
             try:
                 got = cloud_poll_wait(base, key, 25)
                 self.state["cloud"] = "ok"
                 self.state["cloud_last"] = now_full()
+                self._log_once("cloud", None)
                 if got:
                     self.do_stock_push(reason="按鈕觸發")
-
-                # 定時推送
-                now = datetime.datetime.now()
-                today = now.date().isoformat()
-                times = parse_times(self.cfg["stock_times"])
-                for (h, m) in times:
-                    slot = (today, h, m)
-                    if slot in pushed:
-                        continue
-                    if (now.hour, now.minute) >= (h, m):
-                        self.do_stock_push(reason=f"定時 {h:02d}:{m:02d}")
-                        pushed.add(slot)
-                if len(pushed) > 8:
-                    pushed = {k for k in pushed if k[0] == today}
-                self.state["stock_next"] = next_time_label(times)
+                self._scheduled_stock_push(pushed)
+            except urllib.error.HTTPError as e:
+                # 伺服器有回應＝連得到；只是這支端點/金鑰的問題
+                if e.code == 404:
+                    self.state["cloud"] = "ok"
+                    self._realtime_off = True
+                    self.log("ℹ 後台沒有『庫存即時刷新』端點（inventory-wait 404）——多半是雲端後台"
+                             "版本較舊。已改為『定時推送』模式；要即時刷新請更新後台版本。")
+                elif e.code == 401:
+                    self.state["cloud"] = "down"
+                    self._log_once("cloud", "⚠ 金鑰不正確（與後台 LINGYUE_WRITEBACK_KEY 不符），請按⚙設定修正。")
+                    self.stop_event.wait(20)
+                elif e.code == 503:
+                    self.state["cloud"] = "ok"
+                    self._log_once("cloud", "⚠ 後台尚未設定 LINGYUE_WRITEBACK_KEY 環境變數（端點停用）。")
+                    self.stop_event.wait(20)
+                else:
+                    self.state["cloud"] = "ok"
+                    self._log_once("cloud", f"⚠ 雲端回應 HTTP {e.code} {e.reason}；5 秒後重試。")
+                    self.stop_event.wait(5)
             except urllib.error.URLError as e:
                 self.state["cloud"] = "down"
-                self.log(f"⚠ 雲端連線問題，5 秒後重試：{getattr(e, 'reason', e)}")
+                self._log_once("cloud", f"⚠ 連不到伺服器（{_short(getattr(e, 'reason', e), 80)}）；"
+                                        "請確認網址正確、此機能連外網。")
                 self.stop_event.wait(5)
             except Exception as e:
-                self.log(f"⚠ 庫存迴圈錯誤，5 秒後重試：{e}")
+                self._log_once("cloud", f"⚠ 庫存迴圈錯誤：{_short(e)}；5 秒後重試。")
                 self.stop_event.wait(5)
 
     # ── 背景迴圈：訂單回寫（間隔檢查）──────────────────────────
@@ -472,6 +569,7 @@ class App(tk.Tk):
             b.pack(side="left", padx=4)
             return b
 
+        opbtn("測試連線", self.test_connection, GREEN)
         opbtn("立即推庫存", lambda: self._async(self.engine.do_stock_push, reason="手動"), BLUE)
         opbtn("回寫試跑(dry-run)", lambda: self._async(self.engine.do_writeback, dry_run=True))
         opbtn("回寫測一張", lambda: self._async(self.engine.do_writeback, test=True))
@@ -522,14 +620,21 @@ class App(tk.Tk):
             {"ok": "已連線", "down": "連線中斷（重試中）", "unknown": "未連線"}.get(s["cloud"], "未連線"),
             f"最後連上：{s['cloud_last']}",
         )
+        realtime_off = getattr(self.engine, "_realtime_off", False)
         self.card_erp.set(
             s["erp"],
             {"ok": "凌越模組已載入", "missing": "凌越模組未載入", "unknown": "尚未使用"}.get(s["erp"], ""),
             "" if s["erp"] == "ok" else "（需在 D:\\Work\\lystk_tool 那台電腦執行）" if s["erp"] == "missing" else "",
         )
+        if not s["stock_running"]:
+            stock_l1 = "已停止"
+        elif realtime_off:
+            stock_l1 = "運作中（定時模式；後台無即時端點）"
+        else:
+            stock_l1 = "運作中（長連線即時）"
         self.card_stock.set(
             s["stock_running"],
-            "運作中（長連線）" if s["stock_running"] else "已停止",
+            stock_l1,
             f"最後推送：{s['stock_last_push']}   下次定時：{s['stock_next']}",
         )
         self.card_wb.set(
@@ -560,6 +665,18 @@ class App(tk.Tk):
     # ── 手動動作：丟到背景執行緒，避免卡住視窗 ──────────────────
     def _async(self, fn, **kw):
         threading.Thread(target=fn, kwargs=kw, daemon=True).start()
+
+    def test_connection(self):
+        self.log("🔌 測試雲端連線中 …")
+
+        def worker():
+            ok, msg = cloud_test(self.cfg.get("cloud_base"), self.cfg.get("writeback_key"))
+            self.state_data["cloud"] = "ok" if ok else "down"
+            if ok:
+                self.state_data["cloud_last"] = now_full()
+            for line in msg.splitlines():
+                self.log(("　　" + line) if line.startswith(("http", "https")) else line)
+        threading.Thread(target=worker, daemon=True).start()
 
     def _probe_erp(self):
         def worker():
@@ -638,6 +755,11 @@ class SettingsDialog(tk.Toplevel):
         row("預設倉別 (LY_DEFAULT_WHNO)", "wb_default_whno", "留空＝之後在凌越補；凌越不收空倉別才填")
         row("預設單價 (LY_DEFAULT_PRICE)", "wb_default_price", "留空＝讓凌越依客戶售價表帶價")
 
+        # 連線測試結果
+        self.test_result = tk.Label(self, text="", fg=MUTED, bg=BG, anchor="w", justify="left",
+                                    wraplength=520, font=("Microsoft JhengHei UI", 9))
+        self.test_result.pack(fill="x", side="bottom", padx=16, pady=(0, 2))
+
         # 底部按鈕
         btns = tk.Frame(self, bg=BG)
         btns.pack(fill="x", side="bottom", pady=12)
@@ -647,6 +769,19 @@ class SettingsDialog(tk.Toplevel):
         tk.Button(btns, text="取消", command=self.destroy, bg=PANEL2, fg=FG, relief="flat",
                   padx=16, pady=6, font=("Microsoft JhengHei UI", 10),
                   activebackground=GREY, cursor="hand2").pack(side="right")
+        tk.Button(btns, text="測試連線", command=self._test, bg=BLUE, fg="#0b1220", relief="flat",
+                  padx=16, pady=6, font=("Microsoft JhengHei UI", 10, "bold"),
+                  activebackground="#4899f0", cursor="hand2").pack(side="left", padx=16)
+
+    def _test(self):
+        self.test_result.config(text="測試中 …", fg=MUTED)
+        base = self.vars["cloud_base"].get().strip()
+        key = self.vars["writeback_key"].get().strip()
+
+        def worker():
+            ok, msg = cloud_test(base, key)
+            self.test_result.config(text=msg, fg=(GREEN if ok else RED))
+        threading.Thread(target=worker, daemon=True).start()
 
     def _save(self):
         out = {}
