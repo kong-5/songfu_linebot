@@ -2048,6 +2048,30 @@ function fuzzyProductScore(p, qNorm) {
 }
 function createAdminRouter() {
     const router = express_1.default.Router();
+    // [fix 2026-07-08] 全域包裹 async handler：Express 4 不會自動接住 async handler / async 中介層
+    // 丟出的 rejection，未兜底時 Node 20 預設會直接終止整個程序（Cloud Run 重啟、所有進行中請求一起死），
+    // 或請求永遠 hang。這裡攔截 router 的動詞方法與 use，把每個 handler 用 Promise.resolve().catch(next) 包起來，
+    // 讓錯誤轉交 dist/index.js:225 的全域錯誤中介層（回 500 頁）而不是 crash / hang。
+    // length >= 4 的錯誤中介層 (err,req,res,next) 不包；同步 middleware 不回傳 promise，包了也透明無副作用。
+    for (const _m of ["get", "post", "put", "delete", "patch", "all", "use"]) {
+        const _orig = router[_m].bind(router);
+        router[_m] = function (...args) {
+            const wrapped = args.map((h) => (typeof h === "function" && h.length < 4)
+                ? function (req, res, next) {
+                    try {
+                        const r = h(req, res, next);
+                        if (r && typeof r.then === "function")
+                            r.catch(next);
+                        return r;
+                    }
+                    catch (e) {
+                        next(e);
+                    }
+                }
+                : h);
+            return _orig(...wrapped);
+        };
+    }
     const db = (0, index_js_1.getDb)(dbPath);
     async function logDataChange(req, opts) {
         const logId = (0, id_js_1.newId)("dcl");

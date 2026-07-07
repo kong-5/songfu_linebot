@@ -4,6 +4,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__importDefault) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+// [fix 2026-07-08] 最後防線：Node 20 預設遇到 unhandledRejection / uncaughtException 會直接終止程序。
+// router 層已把 async handler 錯誤導向全域錯誤中介層，這裡再兜住任何漏網之魚（背景 setInterval、
+// webhook 非同步等），只記 log 不讓整台 Cloud Run 崩潰重啟、拖垮其他進行中的請求。
+process.on("unhandledRejection", (reason) => {
+    console.error("[app] unhandledRejection（已忽略，不終止程序）:", reason && reason.stack ? reason.stack : reason);
+});
+process.on("uncaughtException", (err) => {
+    console.error("[app] uncaughtException（已忽略，不終止程序）:", err && err.stack ? err.stack : err);
+});
 try {
     require("dotenv/config");
     console.log("[startup] dotenv 已載入");
