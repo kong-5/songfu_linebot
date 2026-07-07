@@ -118,12 +118,15 @@ def map_order(order, icpno, whno, price, create_name, check, maker):
             continue
         qty = it.get("quantity")
         pinfo = product_info(icpno, skno)
+        # 單位：用貨品主檔正規單位 SK_UNIT（如 KG），沒有才退回雲端叫貨單位。
+        # 抄雲端單位（如「公斤」）會讓凌越把 OD_IS_PACK 設成論件，寺岡(秤重)點不了。
+        unit = (pinfo.get("unit") or (it.get("unit") or "KG")).strip()
+        if unit == "公斤":                       # 保險：退回雲端單位時把「公斤」正規化成 KG
+            unit = "KG"
         det = {
             "OD_SKNO": skno,
             "OD_NAME": name,
-            # 單位：用貨品主檔正規單位 SK_UNIT（如 KG），沒有才退回雲端叫貨單位。
-            # 抄雲端單位（如「公斤」）會讓凌越把 OD_IS_PACK 設成論件，寺岡(秤重)點不了。
-            "OD_UNIT": pinfo.get("unit") or (it.get("unit") or "KG").strip(),
+            "OD_UNIT": unit,
             # 倉別：依料號帶貨品主檔預設倉 SK_RKWHNO；沒有才用 LY_DEFAULT_WHNO
             "OD_WARE": pinfo.get("whno") or whno,
             "OD_QTY": qty if qty is not None else 0,
