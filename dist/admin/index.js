@@ -1515,9 +1515,10 @@ function sfSidebar(active) {
         ${item("/admin/reminders", "reminders", "bell", "忘記叫貨提醒")}
         ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
       </details>
-      <details class="sf-nav-group" ${["env","inventory","inv-stock","logistics-procurement"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","logistics-procurement"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
+        ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "box", "倉庫設定")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
@@ -1861,6 +1862,7 @@ const STK_CLIENT_JS = `
   try { DATA = JSON.parse(raw.textContent || '{}'); } catch(e){ DATA = {items:[],assign:{}}; }
   var ITEMS = DATA.items || [];
   var ASSIGN = DATA.assign || {};
+  var WHNAME = DATA.whname || {};
   var els = {
     search: document.getElementById('stkSearch'),
     view: document.getElementById('stkView'),
@@ -1884,6 +1886,8 @@ const STK_CLIENT_JS = `
   // 依凌越倉庫號碼（貨品主檔 SK_RKWHNO）分組；沒設倉別的歸「（未設倉別）」
   function whsOf(it){ return [it.w||UNSET_LY]; }
   function whSort(it){ return it.w?0:1e9; }
+  // 顯示標籤：有中文名就顯示「代號 中文名」，否則只顯示代號
+  function whLabel(code){ if(code===UNSET_LY) return code; var nm=WHNAME[code]; return nm?(code+' '+nm):code; }
   // 搜尋 + 隱藏0 + 只看低量（不含倉別選取）
   function baseFilter(it){
     if(state.hideZero && it.q===0) return false;
@@ -1894,7 +1898,7 @@ const STK_CLIENT_JS = `
   function rowHtml(it){
     var s=safetyOf(it.c); var neg=it.q<0; var low=(it.q>0&&s>0&&it.q<s);
     var cls=neg?'stk-neg':(low?'stk-low':'');
-    return '<tr class="'+cls+'"><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).join('、'))+'</td></tr>';
+    return '<tr class="'+cls+'"><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td></tr>';
   }
   function theadHtml(){ return '<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>凌越倉別</th></tr></thead>'; }
   function renderList(list){
@@ -1913,7 +1917,7 @@ const STK_CLIENT_JS = `
     if(!order.length) out.push('<tr><td colspan="6" class="stk-empty">— 無符合條件的品項 —</td></tr>');
     for(var k=0;k<order.length;k++){
       var key2=order[k]; var g4=groups[key2];
-      out.push('<tr class="stk-grouphead"><td colspan="6">'+esc(key2)+'<span class="stk-gcount">'+g4.rows.length+' 項 · Σ '+fmtQty(Math.round(g4.sum*100)/100)+'</span></td></tr>');
+      out.push('<tr class="stk-grouphead"><td colspan="6">'+esc(whLabel(key2))+'<span class="stk-gcount">'+g4.rows.length+' 項 · Σ '+fmtQty(Math.round(g4.sum*100)/100)+'</span></td></tr>');
       for(var r=0;r<g4.rows.length;r++) out.push(rowHtml(g4.rows[r]));
     }
     out.push('</tbody></table>');
@@ -1924,7 +1928,7 @@ const STK_CLIENT_JS = `
     for(var i=0;i<base.length;i++){ var whs=whsOf(base[i]); for(var j=0;j<whs.length;j++){ var w=whs[j]; if(counts[w]==null){ counts[w]=0; order.push(w); } counts[w]++; } }
     order.sort(function(x,y){ return x<y?-1:(x>y?1:0); });
     var html='<button class="stk-chip'+(state.wh===''?' active':'')+'" data-w="">全部<span class="stk-chipn">'+base.length+'</span></button>';
-    for(var k=0;k<order.length;k++){ var w=order[k]; html+='<button class="stk-chip'+(state.wh===w?' active':'')+'" data-w="'+esc(w)+'">'+esc(w)+'<span class="stk-chipn">'+counts[w]+'</span></button>'; }
+    for(var k=0;k<order.length;k++){ var w=order[k]; html+='<button class="stk-chip'+(state.wh===w?' active':'')+'" data-w="'+esc(w)+'">'+esc(whLabel(w))+'<span class="stk-chipn">'+counts[w]+'</span></button>'; }
     els.chips.innerHTML=html;
     Array.prototype.forEach.call(els.chips.querySelectorAll('.stk-chip'),function(c){ c.addEventListener('click',function(){ state.wh=c.getAttribute('data-w'); render(); }); });
   }
@@ -6318,7 +6322,15 @@ function createAdminRouter() {
             q: Number(r.qty || 0),
             w: String(r.wh_code || ""),
         }));
-        const dataJson = JSON.stringify({ items, assign }).replace(/</g, "\\u003c");
+        // 倉別代號→中文名（倉庫設定頁維護），給前端把標籤/欄位顯示成「代號 中文名」
+        const whRows = await db.prepare("SELECT code, name FROM erp_warehouse").all();
+        const whname = {};
+        for (const w of whRows || []) {
+            const nm = String(w.name || "").trim();
+            if (nm)
+                whname[String(w.code)] = nm;
+        }
+        const dataJson = JSON.stringify({ items, assign, whname }).replace(/</g, "\\u003c");
         const meta = await readStockMeta();
         const snapLabel = meta.snapshot_at ? fmtTaipeiYMDHM(meta.snapshot_at, "尚無資料") : "尚無資料";
         const body = `
@@ -6368,6 +6380,80 @@ function createAdminRouter() {
         }
         catch (e) {
             res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
+    // ── 倉庫設定：凌越倉別代號 → 中文名、是否納入盤點 ─────────────────────
+    async function loadWarehouseRows() {
+        const snap = await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' GROUP BY wh_code").all();
+        const saved = await db.prepare("SELECT code, name, include_stocktake, sort_order FROM erp_warehouse").all();
+        const savedMap = {}, cntMap = {}, codes = {};
+        for (const s of saved || []) { savedMap[String(s.code)] = s; codes[String(s.code)] = true; }
+        for (const r of snap || []) { cntMap[String(r.code)] = Number(r.cnt || 0); codes[String(r.code)] = true; }
+        const list = Object.keys(codes).map((code) => {
+            const s = savedMap[code] || {};
+            return {
+                code,
+                name: s.name != null ? String(s.name) : "",
+                include: s.include_stocktake == null ? 1 : Number(s.include_stocktake),
+                sort: s.sort_order != null ? Number(s.sort_order) : 0,
+                cnt: cntMap[code] || 0,
+            };
+        });
+        list.sort((a, b) => (a.sort - b.sort) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+        return list;
+    }
+    router.get("/inventory/warehouse-settings", async (req, res) => {
+        const list = await loadWarehouseRows();
+        const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存。</div>` : "";
+        const rowsHtml = list.map((w) => `
+      <tr>
+        <td style="font-variant-numeric:tabular-nums;font-weight:600;">${escapeHtml(w.code)}</td>
+        <td><input type="text" name="name[${escapeAttr(w.code)}]" value="${escapeAttr(w.name)}" placeholder="輸入中文名，如 松富冷藏備貨庫" style="width:100%;max-width:260px;padding:6px 8px;border:1px solid var(--notion-border,#e3e2e0);border-radius:6px;background:var(--notion-card,#fff);color:inherit;"></td>
+        <td style="text-align:right;color:#787774;">${w.cnt}</td>
+        <td style="text-align:center;"><input type="checkbox" name="inc[${escapeAttr(w.code)}]" value="1" ${w.include ? "checked" : ""}></td>
+      </tr>`).join("");
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 倉庫設定</div>
+      <h1 style="font-size:20px;margin:8px 0 4px;">倉庫設定</h1>
+      <p class="notion-hint" style="margin:0 0 14px;">倉別代號自動來自凌越（貨品主檔的入庫倉別）。填中文名、勾選要「納入盤點」的倉即可；換倉、新增倉都會自動出現，不用手動維護。</p>
+      ${ok}
+      <form method="post" action="/admin/inventory/warehouse-settings">
+        <table class="notion-table" style="width:100%;max-width:720px;border-collapse:collapse;">
+          <thead><tr>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">凌越倉別</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">中文名稱</th>
+            <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">品項數</th>
+            <th style="text-align:center;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">納入盤點</th>
+          </tr></thead>
+          <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:#787774;padding:20px;">目前庫存快照還沒有資料，請先讓內網代理推一次庫存。</td></tr>'}</tbody>
+        </table>
+        <p style="margin-top:14px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+      </form>`;
+        res.type("text/html").send(notionPage("倉庫設定", body, "inv-wh-settings", res));
+    });
+    router.post("/inventory/warehouse-settings", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const nameMap = (req.body && typeof req.body.name === "object" && req.body.name) ? req.body.name : {};
+            const incMap = (req.body && typeof req.body.inc === "object" && req.body.inc) ? req.body.inc : {};
+            const codes = {};
+            for (const k of Object.keys(nameMap)) codes[k] = true;
+            for (const k of Object.keys(incMap)) codes[k] = true;
+            const now = new Date().toISOString();
+            await db.prepare("DELETE FROM erp_warehouse").run();
+            let sort = 0;
+            for (const code of Object.keys(codes)) {
+                const c = String(code).trim();
+                if (!c)
+                    continue;
+                const name = String(nameMap[code] != null ? nameMap[code] : "").trim();
+                const include = incMap[code] ? 1 : 0;
+                await db.prepare("INSERT INTO erp_warehouse (code, name, include_stocktake, sort_order, updated_at) VALUES (?, ?, ?, ?, ?)").run(c, name, include, sort++, now);
+            }
+            res.redirect("/admin/inventory/warehouse-settings?ok=1");
+        }
+        catch (e) {
+            console.error("[admin] warehouse-settings save", e?.message || e);
+            res.status(500).send("儲存失敗：" + String(e?.message || e));
         }
     });
     router.get("/inventory/variance-report", async (req, res) => {
