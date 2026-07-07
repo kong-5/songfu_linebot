@@ -204,6 +204,23 @@ def run(args) -> int:
             export_xlsx(rows, args.xlsx)
         return 0
 
+    # ── 模式 1b：撈任意資料種類前 N 筆全欄位（如 000004 倉庫主檔、000009 庫存）─────
+    if args.dump_kind:
+        kind = args.dump_kind.strip()
+        n = args.limit or 20
+        print(f"▶ 撈資料種類 {kind} 前 {n} 筆原始欄位  ICPNO={icpno} …", flush=True)
+        rows = lystk.query(icpno=icpno, idakd=kind, limit=n)
+        if not rows:
+            print(f"\n⚠ ICPNO={icpno} 的 {kind} 沒有資料（公司別可能不對，或此種類需帶條件）。")
+            return 0
+        for i, r in enumerate(rows, 1):
+            print(f"\n── 第 {i} 筆 ── 共 {len(r)} 欄")
+            for k, v in r.items():
+                print(f"    {k:<18} {v}")
+        if args.xlsx:
+            export_xlsx(rows, args.xlsx)
+        return 0
+
     # ── 模式 2：查單一品項（「到該品項去關聯」）— 全欄位＋標候選欄 ──────────
     if args.item:
         print(f"▶ 查品項 {args.item}  貨品主檔 {KIND_GOODS}  ICPNO={icpno}"
@@ -278,6 +295,7 @@ def build_parser():
     p.add_argument("--items", help="批次查：逗號/空白分隔的料號清單")
     p.add_argument("--items-file", dest="items_file", help="批次查：檔案，每行一個料號（# 開頭略過）")
     p.add_argument("--all", action="store_true", help="全品項：撈整張貨品主檔的 料號/品名/目前庫存")
+    p.add_argument("--dump-kind", dest="dump_kind", help="撈任意資料種類前 N 筆全欄位（如 000004 倉庫主檔、000009 庫存）")
     p.add_argument("--code-field", dest="code_field", help=f"料號欄名（預設 {DEFAULT_CODE_FIELD}，用 --dump 確認後改）")
     p.add_argument("--name-field", dest="name_field", help=f"品名欄名（預設 {DEFAULT_NAME_FIELD}）")
     p.add_argument("--stock-field", dest="stock_field", help="目前庫存欄名（批次/全品項必填；用 --dump 找出）")
