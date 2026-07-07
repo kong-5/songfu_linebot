@@ -171,8 +171,10 @@ async function loadProductSpecKgPerUnit(db, productId, orderUnit) {
     if (!db || !productId || !u)
         return null;
     try {
+        // [fix 2026-07-08] 加 ORDER BY id 讓「同品項同單位有多筆 spec」時取值固定，
+        // 不再因 DB 回傳順序不定而換算係數飄移（治本需 (product_id,unit) 唯一鍵＋去重，另案處理）。
         const row = await db
-            .prepare("SELECT conversion_kg FROM product_unit_specs WHERE product_id = ? AND unit = ? AND conversion_kg IS NOT NULL AND conversion_kg > 0 LIMIT 1")
+            .prepare("SELECT conversion_kg FROM product_unit_specs WHERE product_id = ? AND unit = ? AND conversion_kg IS NOT NULL AND conversion_kg > 0 ORDER BY id LIMIT 1")
             .get(productId, u);
         if (row?.conversion_kg != null) {
             const x = Number(row.conversion_kg);

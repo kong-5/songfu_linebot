@@ -11642,17 +11642,37 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             };
             for (const row of existingItems) {
                 const itemId = row.id;
+                // [fix 2026-07-08] 只更新「表單有送出欄位」的品項。作廢品項在明細頁不會渲染
+                // qty/unit/remark/sub_customer 輸入框，若照樣進迴圈會把它的單位重設成公斤、
+                // 備註與子客戶清空。沒有任何對應欄位就跳過該列。
+                if (!(("qty_" + itemId) in body) && !(("unit_" + itemId) in body) &&
+                    !(("remark_" + itemId) in body) && !(("sub_customer_" + itemId) in body) &&
+                    !(("ord_" + itemId) in body)) {
+                    continue;
+                }
                 const qtyRaw = body["qty_" + itemId];
                 const qtyParsed = parseFloat(qtyRaw);
                 const nextQty = Number.isFinite(qtyParsed) && qtyParsed >= 0 ? qtyParsed : (Number.isFinite(Number(row.quantity)) ? Number(row.quantity) : 0);
                 const unitRaw = (body["unit_" + itemId] ?? "").trim();
-                const nextUnit = unitRaw || "公斤";
+                const inputUnit = unitRaw || "公斤";
                 const remarkInput = (body["remark_" + itemId] ?? "").trim();
                 const subCustomerInput = (body["sub_customer_" + itemId] ?? "").trim();
                 const prevUnit = String(row.unit || "").trim();
                 const prevRemark = String(row.remark || "").trim();
+                // [fix 2026-07-08] 手動輸入質量單位（斤/台斤/克/兩）比照 LINE 進單一律換成公斤，
+                // 避免「3斤」被原樣存成 3斤、下游當成 3公斤計（斤仍被當公斤的殘留路徑）。
+                // resolved 傳 null → applyOrderUnitConversion 只套內建物理換算，不動品項規則，行為可預期。
+                const enteredQty = nextQty;
+                const massConv = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, { rules: [] }, null, enteredQty, inputUnit);
+                nextQty = Number.isFinite(Number(massConv.quantity)) ? Number(massConv.quantity) : enteredQty;
+                const nextUnit = (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(massConv.unit || inputUnit, "公斤");
                 let nextRemark = remarkInput;
-                const convertedToKg = prevUnit && prevUnit !== "公斤" && nextUnit === "公斤";
+                // 因質量換算而變成公斤：備註補記原始「Ｎ<單位>」（如 3斤）
+                if (nextUnit === "公斤" && (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(inputUnit, "公斤") !== "公斤") {
+                    nextRemark = (0, unit_conversion_js_1.withOriginCallRemark)(nextRemark || null, enteredQty, inputUnit, nextUnit);
+                }
+                // 使用者手動把單位改成公斤（本身非質量換算單位，如把→公斤）時，沿用舊行為補原始單位標記
+                const convertedToKg = prevUnit && prevUnit !== "公斤" && nextUnit === "公斤" && (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(inputUnit, "公斤") === "公斤";
                 if (convertedToKg && !nextRemark) {
                     const originTag = fmtQty(row.quantity) + prevUnit;
                     nextRemark = prevRemark
@@ -14251,9 +14271,19 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const noteLabel = (req.body?.note_label ?? "").trim() || null;
         const conversionKg = req.body?.conversion_kg !== undefined && req.body.conversion_kg !== "" ? parseFloat(req.body.conversion_kg) : null;
         const syncLine = conversionKg != null && Number.isFinite(conversionKg) && conversionKg > 0;
-        const specId = (0, id_js_1.newId)("pus");
+        let specId = (0, id_js_1.newId)("pus");
         try {
-            await db.prepare("INSERT INTO product_unit_specs (id, product_id, unit, note_label, conversion_kg) VALUES (?, ?, ?, ?, ?)").run(specId, productId, unit, noteLabel, conversionKg);
+            // [fix 2026-07-08] 同品項同單位已存在就改成更新，不再新增重複列。
+            // 過去無查重也無唯一鍵，重複列會讓換算取值不定。
+            const existingSpec = await db.prepare("SELECT id FROM product_unit_specs WHERE product_id = ? AND unit = ? ORDER BY id LIMIT 1").get(productId, unit);
+            if (existingSpec?.id) {
+                specId = existingSpec.id;
+                const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+                await db.prepare("UPDATE product_unit_specs SET note_label = ?, conversion_kg = ?, updated_at = " + nowSql + " WHERE id = ?").run(noteLabel, conversionKg, specId);
+            }
+            else {
+                await db.prepare("INSERT INTO product_unit_specs (id, product_id, unit, note_label, conversion_kg) VALUES (?, ?, ?, ?, ?)").run(specId, productId, unit, noteLabel, conversionKg);
+            }
         }
         catch (e) {
             if (redirectToEdit) {
