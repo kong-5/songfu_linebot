@@ -1864,7 +1864,6 @@ const STK_CLIENT_JS = `
   var els = {
     search: document.getElementById('stkSearch'),
     view: document.getElementById('stkView'),
-    source: document.getElementById('stkSource'),
     hideZero: document.getElementById('stkHideZero'),
     lowOnly: document.getElementById('stkLowOnly'),
     exportBtn: document.getElementById('stkExport'),
@@ -1874,22 +1873,17 @@ const STK_CLIENT_JS = `
     count: document.getElementById('stkCount'),
     status: document.getElementById('stkStatus')
   };
-  var UNSET_LY='（未設倉別）', UNSET_WH='（未歸倉）';
-  var state = { view:'list', source:'ly', q:'', hideZero:false, low:false, wh:'' };
-  try { var saved = JSON.parse(localStorage.getItem('stk.state')||'{}'); if(saved.view) state.view=saved.view; if(saved.source) state.source=saved.source; if(saved.hideZero) state.hideZero=!!saved.hideZero; } catch(_){}
-  function save(){ try { localStorage.setItem('stk.state', JSON.stringify({view:state.view,source:state.source,hideZero:state.hideZero})); } catch(_){} }
+  var UNSET_LY='（未設倉別）';
+  var state = { view:'list', q:'', hideZero:false, low:false, wh:'' };
+  try { var saved = JSON.parse(localStorage.getItem('stk.state')||'{}'); if(saved.view) state.view=saved.view; if(saved.hideZero) state.hideZero=!!saved.hideZero; } catch(_){}
+  function save(){ try { localStorage.setItem('stk.state', JSON.stringify({view:state.view,hideZero:state.hideZero})); } catch(_){} }
   function esc(s){ s=(s==null?'':String(s)); return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function safetyOf(code){ var a=ASSIGN[code]; if(!a||!a.length) return 0; var m=0; for(var i=0;i<a.length;i++){ if(a[i].safety>m) m=a[i].safety; } return m; }
   function fmtQty(q){ if(q===0) return '0'; return String(q); }
   // 一個品項屬於哪些倉（依來源）：自訂庫房可能多個；沒名字就用代號
-  function whsOf(it){
-    if(state.source==='wh'){
-      var a=ASSIGN[it.c]; if(!a||!a.length) return [UNSET_WH];
-      var out=[]; for(var i=0;i<a.length;i++){ out.push(a[i].wh||UNSET_WH); } return out;
-    }
-    return [it.w||UNSET_LY];
-  }
-  function whSort(it){ if(state.source==='wh'){ var a=ASSIGN[it.c]; return (a&&a.length)?(a[0].sort||0):1e9; } return it.w?0:1e9; }
+  // 依凌越倉庫號碼（貨品主檔 SK_RKWHNO）分組；沒設倉別的歸「（未設倉別）」
+  function whsOf(it){ return [it.w||UNSET_LY]; }
+  function whSort(it){ return it.w?0:1e9; }
   // 搜尋 + 隱藏0 + 只看低量（不含倉別選取）
   function baseFilter(it){
     if(state.hideZero && it.q===0) return false;
@@ -1902,7 +1896,7 @@ const STK_CLIENT_JS = `
     var cls=neg?'stk-neg':(low?'stk-low':'');
     return '<tr class="'+cls+'"><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).join('、'))+'</td></tr>';
   }
-  function theadHtml(){ var wl=(state.source==='wh'?'庫房':'凌越倉別'); return '<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>'+wl+'</th></tr></thead>'; }
+  function theadHtml(){ return '<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>凌越倉別</th></tr></thead>'; }
   function renderList(list){
     var b=[]; for(var i=0;i<list.length;i++) b.push(rowHtml(list[i]));
     return '<table class="stk-table">'+theadHtml()+'<tbody>'+(b.join('')||'<tr><td colspan="6" class="stk-empty">— 無符合條件的品項 —</td></tr>')+'</tbody></table>';
@@ -1951,16 +1945,11 @@ const STK_CLIENT_JS = `
     btn.addEventListener('click',function(){ state.view=btn.getAttribute('data-v'); Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); save(); render(); });
     btn.classList.toggle('active', btn.getAttribute('data-v')===state.view);
   });
-  Array.prototype.forEach.call(els.source.querySelectorAll('button'),function(btn){
-    btn.addEventListener('click',function(){ state.source=btn.getAttribute('data-s'); state.wh=''; Array.prototype.forEach.call(els.source.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); save(); render(); });
-    btn.classList.toggle('active', btn.getAttribute('data-s')===state.source);
-  });
   els.hideZero.checked=state.hideZero;
   els.hideZero.addEventListener('change',function(){ state.hideZero=els.hideZero.checked; state.wh=''; save(); render(); });
   els.lowOnly.addEventListener('change',function(){ state.low=els.lowOnly.checked; state.wh=''; render(); });
   els.exportBtn.addEventListener('click',function(){
-    var wl=(state.source==='wh'?'庫房':'凌越倉別');
-    var lines=['料號,品名,規格,單位,目前庫存,'+wl];
+    var lines=['料號,品名,規格,單位,目前庫存,凌越倉別'];
     function q(x){ x=(x==null?'':String(x)); return '"'+x.replace(/"/g,'""')+'"'; }
     for(var i=0;i<_filtered.length;i++){ var it=_filtered[i]; lines.push([q(it.c),q(it.n),q(it.s),q(it.u),it.q,q(whsOf(it).join(' '))].join(',')); }
     var blob=new Blob(['\\ufeff'+lines.join('\\r\\n')],{type:'text/csv;charset=utf-8;'});
@@ -6342,10 +6331,6 @@ function createAdminRouter() {
             <div class="stk-seg" id="stkView">
               <button type="button" data-v="list" class="active">列表</button>
               <button type="button" data-v="group">依倉庫</button>
-            </div>
-            <div class="stk-seg" id="stkSource" title="倉別來源">
-              <button type="button" data-s="ly" class="active">凌越倉別</button>
-              <button type="button" data-s="wh">自訂庫房</button>
             </div>
             <label class="stk-check"><input type="checkbox" id="stkHideZero"> 隱藏 0</label>
             <label class="stk-check"><input type="checkbox" id="stkLowOnly"> 只看低量/負量</label>
