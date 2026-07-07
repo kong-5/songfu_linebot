@@ -168,6 +168,8 @@ function initSqlite(dbPath) {
         // 凌越按需匯入：使用者在網站點「轉入凌越」→ 標記排隊，內網 agent 長連線等待後寫入
         "ALTER TABLE orders ADD COLUMN lingyue_queued_at TEXT",
         "ALTER TABLE orders ADD COLUMN lingyue_queued_by TEXT",
+        // [fix 2026-07-08] 凌越 /wait 認領租約：agent 撿走時蓋時間戳，其他 agent／同一 agent 重啟在租約內不會重撿→防重複開單
+        "ALTER TABLE orders ADD COLUMN lingyue_claimed_at TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -651,6 +653,11 @@ async function initPg() {
             catch (_) { /* column may already exist */ }
             try {
                 await client.query("ALTER TABLE orders ADD COLUMN lingyue_queued_by TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            // [fix 2026-07-08] 凌越 /wait 認領租約欄位（防多 agent／重啟重複開單）
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_claimed_at TIMESTAMPTZ");
             }
             catch (_) { /* column may already exist */ }
             try {

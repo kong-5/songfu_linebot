@@ -9118,6 +9118,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         SELECT oi.quantity, oi.unit, oi.remark, oi.raw_name, p.erp_code, p.name AS product_name
         FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
         WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1)
+          AND oi.voided_at IS NULL
         ORDER BY COALESCE(oi.display_order, 999999), oi.id
       `).all(order.id);
                 const items = (itemRows || []).map((it) => {
@@ -9163,24 +9164,42 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         if (timeoutSec > 50)
             timeoutSec = 50;
         const deadline = Date.now() + timeoutSec * 1000;
+        // [fix 2026-07-08] 認領租約：過去 /wait 對「已排隊未回寫」的單無條件回傳，
+        // 多個 agent 或 agent 重啟同時 /wait 會拿到同一批單 → 各自寫入凌越 → 重複開單。
+        // 改成每張單先用條件式 UPDATE 蓋 claimed_at 認領；只有 changes=1（本次真的搶到）才回傳。
+        // 租約 90 秒內其他 /wait 不會再撿到同一張；agent 若掛掉沒回填，租約到期後自動重新可撿（自帶重試）。
+        const LEASE_MS = 90000;
         try {
             while (true) {
+                const claimBefore = new Date(Date.now() - LEASE_MS).toISOString();
                 const rows = await db.prepare(`
           SELECT o.id, o.order_no, o.order_date, o.remark, o.lingyue_queued_at, c.name AS customer_name, c.hq_cust_code, c.teraoka_code
           FROM orders o JOIN customers c ON c.id = o.customer_id
           WHERE o.lingyue_queued_at IS NOT NULL
             AND o.lingyue_written_at IS NULL
             AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
+            AND (o.lingyue_claimed_at IS NULL OR o.lingyue_claimed_at < ?)
           ORDER BY o.lingyue_queued_at ASC, o.id ASC
           LIMIT 20
-        `).all();
+        `).all(claimBefore);
                 if (rows && rows.length) {
                     const orders = [];
                     for (const order of rows) {
+                        // 條件式認領：單一 UPDATE 語句在 pg/sqlite 皆為原子，兩個並發只會有一個 changes=1。
+                        const nowIso = new Date().toISOString();
+                        const claim = await db.prepare(
+                            "UPDATE orders SET lingyue_claimed_at = ? WHERE id = ? AND lingyue_written_at IS NULL AND (lingyue_claimed_at IS NULL OR lingyue_claimed_at < ?)"
+                        ).run(nowIso, order.id, claimBefore);
+                        if (!claim || Number(claim.changes || 0) !== 1)
+                            continue; // 已被別的 agent 認領
                         const preview = await buildLingyuePreview(order);
                         if (preview.items.length) {
                             preview.queued_at = order.lingyue_queued_at ? String(order.lingyue_queued_at) : "";
                             orders.push(preview);
+                        }
+                        else {
+                            // 無可轉品項（全作廢等）：釋放認領，避免佔住租約
+                            await db.prepare("UPDATE orders SET lingyue_claimed_at = NULL WHERE id = ?").run(order.id);
                         }
                     }
                     if (orders.length) {
@@ -9258,6 +9277,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         SELECT oi.quantity, oi.unit, oi.remark, oi.raw_name, p.erp_code, p.name AS product_name
         FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
         WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1)
+          AND oi.voided_at IS NULL
         ORDER BY COALESCE(oi.display_order, 999999), oi.id
       `).all(order.id);
         let missing_count = 0;
@@ -9366,7 +9386,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 // 這台沒接凌越橋接（雲端 Cloud Run 打不進內網）→ 標記排隊，由內網 agent 長連線等待後寫入。
                 // 清掉舊單號／回寫時間（重轉時），讓 /wait 重新撿到；記錄是誰轉的。
                 const now = new Date().toISOString();
-                await db.prepare("UPDATE orders SET lingyue_queued_at = ?, lingyue_queued_by = ?, lingyue_doc_no = NULL, lingyue_written_at = NULL WHERE id = ?").run(now, actor, order.id);
+                await db.prepare("UPDATE orders SET lingyue_queued_at = ?, lingyue_queued_by = ?, lingyue_doc_no = NULL, lingyue_written_at = NULL, lingyue_claimed_at = NULL WHERE id = ?").run(now, actor, order.id);
                 res.json({ ok: true, queued: true, message: "已排入凌越匯入佇列，內網小幫手會在數秒內寫入並回填單號。", ...preview });
                 return;
             }
