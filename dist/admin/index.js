@@ -5651,9 +5651,18 @@ function createAdminRouter() {
     });
     router.post("/inventory/warehouses/:id/delete", async (req, res) => {
         const id = req.params.id;
-        await db.prepare("DELETE FROM inventory_warehouse_products WHERE warehouse_id = ?").run(id);
-        await db.prepare("DELETE FROM daily_inventory WHERE warehouse_id = ?").run(id);
-        await db.prepare("DELETE FROM inventory_warehouses WHERE id = ?").run(id);
+        // [fix 2026-07-08] 三段 DELETE 包進單一交易，中途失敗整批回滾，不留下「歸倉/盤點刪了但庫房還在」的半刪狀態。
+        const doDelete = async (h) => {
+            await h.prepare("DELETE FROM inventory_warehouse_products WHERE warehouse_id = ?").run(id);
+            await h.prepare("DELETE FROM daily_inventory WHERE warehouse_id = ?").run(id);
+            await h.prepare("DELETE FROM inventory_warehouses WHERE id = ?").run(id);
+        };
+        if (typeof db.transaction === "function") {
+            await db.transaction(doDelete);
+        }
+        else {
+            await doDelete(db);
+        }
         res.redirect("/admin/inventory/warehouses?ok=del");
     });
     router.get("/inventory/assign", async (req, res) => {
@@ -5904,7 +5913,10 @@ function createAdminRouter() {
         const productByName = Object.fromEntries(products.map((p) => [p.name, p]));
         const now = process.env.DATABASE_URL ? new Date().toISOString() : new Date().toISOString();
         const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-        let imported = 0;
+        // [fix 2026-07-08] 先解析成待寫入列，再「先刪同(日期,倉別)範圍舊資料、後插入」包進交易＝可重複匯入(冪等)。
+        // 過去每列都 INSERT 新 id，重匯同一份 CSV 會把銷貨量加倍、盤差報表全錯。
+        const parsedRows = [];
+        const scopeKeys = new Set();
         for (let i = 0; i < lines.length; i++) {
             const cells = lines[i].split(",").map((c) => c.trim());
             if (cells.length < 3)
@@ -5919,14 +5931,27 @@ function createAdminRouter() {
             const wh = (whKey && (whById[whKey] || whByName[whKey])) || (defaultWhId && whById[defaultWhId]);
             if (!product || !wh)
                 continue;
-            const wid = wh.id;
-            const pid = product.id;
-            const id = (0, id_js_1.newId)("erp");
-            try {
-                await db.prepare("INSERT INTO erp_sales (id, record_date, warehouse_id, product_id, qty_sold, imported_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, dateStr, wid, pid, qty, now);
+            parsedRows.push({ dateStr, wid: wh.id, pid: product.id, qty });
+            scopeKeys.add(wh.id + " " + dateStr);
+        }
+        let imported = 0;
+        const doImport = async (h) => {
+            // 先清掉本次匯入涵蓋的每個(倉別,日期)既有資料，再插入 → 重匯是「取代」而非「累加」
+            for (const key of scopeKeys) {
+                const [wid, dateStr] = key.split(" ");
+                await h.prepare("DELETE FROM erp_sales WHERE warehouse_id = ? AND record_date = ?").run(wid, dateStr);
+            }
+            for (const r of parsedRows) {
+                const id = (0, id_js_1.newId)("erp");
+                await h.prepare("INSERT INTO erp_sales (id, record_date, warehouse_id, product_id, qty_sold, imported_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, r.dateStr, r.wid, r.pid, r.qty, now);
                 imported++;
             }
-            catch (_) { /* duplicate or constraint */ }
+        };
+        if (typeof db.transaction === "function") {
+            await db.transaction(doImport);
+        }
+        else {
+            await doImport(db);
         }
         res.redirect("/admin/inventory/import-erp?ok=1&count=" + imported);
     });
@@ -11668,12 +11693,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const merge = String(req.body?.merge_mode || "replace").trim() === "append";
             const prev = String(order.raw_message || "").trim();
             const finalRaw = merge && prev ? `${prev}\n${pasted}` : pasted;
-            await db.prepare("UPDATE orders SET raw_message = ? WHERE id = ?").run(finalRaw, orderId);
+            // [fix 2026-07-08] 先用傳入的 finalRaw 解析重建明細，成功才覆寫 raw_message。
+            // 過去先覆寫 raw 再解析，解析失敗時原始訊息已被蓋掉、永久遺失且與明細不一致。
             const result = await rebuildOrderItemsFromRawText(orderId, order.customer_id, finalRaw);
             if (!result.ok) {
                 res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=apply_raw_parse&back=" + encodeURIComponent(backTo) + "#pasteRaw");
                 return;
             }
+            await db.prepare("UPDATE orders SET raw_message = ? WHERE id = ?").run(finalRaw, orderId);
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=raw_applied&back=" + encodeURIComponent(backTo) + "#items");
         }
         catch (e) {
@@ -11833,6 +11860,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.status(404).send("訂單不存在");
             return;
         }
+        // [fix 2026-07-08] 狀態機前置守衛：作廢單／客訴單不可被「確認」直接復活成 approved。
+        // 過去無檢查，一鍵確認會把 deleted/complaint 單改成 approved，留下矛盾狀態並讓作廢單重新出貨。
+        const curStatus = String(order.status || "").toLowerCase().trim();
+        if (curStatus === "deleted" || curStatus === "complaint") {
+            const msg = curStatus === "deleted" ? "此訂單已作廢，請先『取消作廢』再確認" : "此訂單為客訴狀態，請先由客訴頁還原為訂單再確認";
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent(msg) + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+            return;
+        }
         const actor = req.adminUsername || "system";
         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
         await db.prepare("UPDATE orders SET status = ?, approved_by = ?, approved_at = " + nowSql + " WHERE id = ?").run("approved", actor, orderId);
@@ -11929,6 +11964,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const order = await db.prepare("SELECT id, order_no, status FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
+            return;
+        }
+        // [fix 2026-07-08] 作廢單不可直接轉客訴（會把 deleted 單復活進客訴佇列）。
+        if (String(order.status || "").toLowerCase().trim() === "deleted") {
+            const wantsJson0 = (req.get("x-requested-with") === "XMLHttpRequest") || String(req.get("accept") || "").indexOf("application/json") >= 0;
+            if (wantsJson0) { res.status(400).json({ ok: false, error: "此訂單已作廢，請先取消作廢再轉客訴" }); return; }
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent("此訂單已作廢，請先取消作廢再轉客訴"));
             return;
         }
         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
