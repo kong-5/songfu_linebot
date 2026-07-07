@@ -6535,12 +6535,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
             // 沒設路線＝自取，不補任何空籃（含固定四角籃 C0100065）
             if (routeLine == null) return;
-            const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
+            // 號碼籃料號跳過 4 號（無 4 號籃）：C0100057=1號…C0100059=3號、C0100060=5號…C0100064=9號；
+            // 不可用 56+路線號 連號計算，會從 5 號線起全部對錯、9 號線算到四角籃 C0100065。
+            const EMPTY_BASKET_ERP_BY_ROUTE = { 1: "C0100057", 2: "C0100058", 3: "C0100059", 5: "C0100060", 6: "C0100061", 7: "C0100062", 8: "C0100063", 9: "C0100064" };
+            const emptyBasketErp = EMPTY_BASKET_ERP_BY_ROUTE[routeLine] || null; // 路線 4 無號碼籃，只補四角籃
             const erps = [];
             if (emptyBasketErp)
                 erps.push(emptyBasketErp);
-            if (!erps.includes("C0100065"))
-                erps.push("C0100065");
+            erps.push("C0100065");
             for (const erp of erps) {
                 const prod = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(erp);
                 if (!prod)
@@ -7551,7 +7553,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     || (o.customer_id ? `客戶 ${String(o.customer_id).slice(0, 6)}` : "未選客戶");
                 const custFallback = !rawCustName;
                 const custLink = o.customer_id
-                    ? `<a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders" style="color:var(--txt-1);font-weight:500;${custFallback ? "font-style:italic;color:var(--txt-3);" : ""}">${escapeHtml(custDisp)}</a>${custFallback ? ' <span class="sf-pill bad" style="font-size:10px;padding:0 6px;">缺名</span>' : ""}`
+                    ? `<a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders" class="cust-pop-link" data-cid="${escapeAttr(o.customer_id)}" title="查看客戶提醒卡" style="color:var(--txt-1);font-weight:500;border-bottom:1px dashed var(--txt-3);${custFallback ? "font-style:italic;color:var(--txt-3);" : ""}">${escapeHtml(custDisp)}</a>${custFallback ? ' <span class="sf-pill bad" style="font-size:10px;padding:0 6px;">缺名</span>' : ""}`
                     : `<span style="color:var(--txt-3);">${escapeHtml(custDisp)}</span>`;
                 const backBase = `/admin/orders?date_from=${encodeURIComponent(filterDateFrom)}&date_to=${encodeURIComponent(filterDateTo)}${onlyNeedReview ? "&need_review=1" : ""}`;
                 const detailUrl = o.is_logistics
@@ -8123,6 +8125,109 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           confirmBtn.addEventListener("click", function(){ if (!curId) return; lySubmit(false); });
           document.getElementById("lyTransferClose").addEventListener("click", closeModal);
           document.getElementById("lyTransferCancel").addEventListener("click", closeModal);
+          modal.addEventListener("click", function(e){ if (e.target===modal) closeModal(); });
+          document.addEventListener("keydown", function(e){ if (e.key==="Escape" && modal.style.display==="flex") closeModal(); });
+        })();
+        </script>
+        <div id="custPopModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:flex-start;justify-content:center;padding:32px 16px;overflow:auto;">
+          <div class="sf-card" style="max-width:560px;width:100%;margin:auto;" onclick="event.stopPropagation();">
+            <div class="sf-card-head">
+              <div class="sf-card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">👤 <span id="custPopName">客戶</span><span id="custPopPills"></span></div>
+              <button type="button" class="sf-btn sm ghost" id="custPopClose" title="關閉">✕</button>
+            </div>
+            <div style="padding:14px 16px;">
+              <div id="custPopLoading" style="color:var(--txt-3);font-size:13px;">讀取中…</div>
+              <div id="custPopContent" style="display:none;"></div>
+            </div>
+            <div style="padding:12px 16px;border-top:var(--hairline);display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;">
+              <a id="custPopEditLink" class="sf-btn sm" href="#">✏️ 編輯客戶</a>
+              <a id="custPop360Link" class="sf-btn sm" href="#">📊 360 完整檔案</a>
+              <button type="button" class="sf-btn sm ghost" id="custPopCancel">關閉</button>
+            </div>
+          </div>
+        </div>
+        <script>
+        (function(){
+          var modal = document.getElementById("custPopModal");
+          if (!modal) return;
+          var nameEl = document.getElementById("custPopName");
+          var pillsEl = document.getElementById("custPopPills");
+          var loading = document.getElementById("custPopLoading");
+          var content = document.getElementById("custPopContent");
+          var editLink = document.getElementById("custPopEditLink");
+          var link360 = document.getElementById("custPop360Link");
+          var cache = {};
+          function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+          function openModal(){ modal.style.display="flex"; document.body.style.overflow="hidden"; }
+          function closeModal(){ modal.style.display="none"; document.body.style.overflow=""; }
+          function statusPill(s){
+            var lc = String(s||"").toLowerCase();
+            if (lc === "approved") return '<span class="sf-pill ok">已確認</span>';
+            if (lc === "complaint") return '<span class="sf-pill bad">客訴</span>';
+            return '<span class="sf-pill warn">待確認</span>';
+          }
+          function render(d){
+            var c = d.customer || {};
+            nameEl.textContent = c.name || "客戶";
+            var pills = [];
+            if (c.route_line != null && c.route_line !== "") pills.push('<span class="sf-pill" style="background:#eef2ff;color:#3730a3;font-weight:600;">' + esc(c.route_line) + ' 號線</span>');
+            else pills.push('<span class="sf-pill" title="未設定路線＝自取，訂單不補空籃">自取／未設路線</span>');
+            if (!c.line_bound) pills.push('<span class="sf-pill warn">LINE 未綁定</span>');
+            if (c.active === 0 || c.active === false) pills.push('<span class="sf-pill bad">已停用</span>');
+            if (d.open_complaints > 0) pills.push('<span class="sf-pill bad">' + d.open_complaints + ' 件客訴未結</span>');
+            pillsEl.innerHTML = pills.join(" ");
+            var html = "";
+            if (c.order_notes) {
+              html += '<div style="margin-bottom:12px;padding:10px 12px;background:#fffbeb;border:1px solid #f59e0b;border-radius:6px;font-size:13px;color:#92400e;white-space:pre-wrap;"><strong>📌 叫貨備註</strong><br>' + esc(c.order_notes) + '</div>';
+            }
+            html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 16px;font-size:13px;margin-bottom:12px;">'
+              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">聯絡</span>' + esc(c.contact || "—") + '</div>'
+              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">預設單位（未填時）</span>' + esc(c.default_unit || "公斤") + '</div>'
+              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">寺岡／凌越編號</span><span class="mono">' + esc(c.teraoka_code || "—") + '／' + esc(c.hq_cust_code || "—") + '</span></div>'
+              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">LINE 群組</span>' + esc(c.line_group_name || "—") + (c.line_bound ? '（已綁定）' : '（未綁定）') + '</div>'
+              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">近 90 天叫貨</span>' + (d.orders90 || 0) + ' 張</div>'
+              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">距上次叫貨</span>' + (d.days_since_last_order == null ? "—" : d.days_since_last_order + " 天") + '</div>'
+              + '</div>';
+            var rows = (d.recent_orders || []).map(function(o){
+              return '<tr style="cursor:pointer;" onclick="location.href=\\'/admin/orders/' + encodeURIComponent(o.id) + '\\'">'
+                + '<td class="mono" style="font-size:12px;">' + esc(o.order_date) + '</td>'
+                + '<td class="mono" style="font-size:12px;">' + esc(o.order_no || "—") + '</td>'
+                + '<td style="text-align:right;">' + o.item_count + ' 項</td>'
+                + '<td>' + statusPill(o.status) + '</td></tr>';
+            }).join("");
+            html += '<div style="font-size:12px;color:var(--txt-2);font-weight:600;margin-bottom:4px;">最近叫貨</div>'
+              + '<div style="overflow-x:auto;"><table class="sf-table" style="font-size:12px;"><thead><tr><th>出貨日</th><th>單號</th><th style="text-align:right;">品項</th><th>狀態</th></tr></thead><tbody>'
+              + (rows || '<tr><td colspan="4" style="text-align:center;color:var(--txt-3);padding:12px;">尚無訂單</td></tr>')
+              + '</tbody></table></div>';
+            content.innerHTML = html;
+            content.style.display = "block"; loading.style.display = "none";
+          }
+          function show(cid){
+            editLink.href = "/admin/customers/" + encodeURIComponent(cid) + "/edit?from=orders";
+            link360.href = "/admin/customers/" + encodeURIComponent(cid) + "/360";
+            loading.style.display = "block"; loading.textContent = "讀取中…";
+            content.style.display = "none"; content.innerHTML = "";
+            nameEl.textContent = "客戶"; pillsEl.innerHTML = "";
+            openModal();
+            if (cache[cid]) { render(cache[cid]); return; }
+            fetch("/admin/api/customers/" + encodeURIComponent(cid) + "/summary", { credentials: "same-origin" })
+              .then(function(r){ return r.json(); })
+              .then(function(d){
+                if (!d || d.ok === false) { loading.textContent = "讀取失敗：" + ((d && d.error) || ""); return; }
+                cache[cid] = d; render(d);
+              })
+              .catch(function(){ loading.textContent = "讀取失敗，請重試。"; });
+          }
+          document.addEventListener("click", function(e){
+            var a = e.target.closest ? e.target.closest(".cust-pop-link") : null;
+            if (!a) return;
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; // 新分頁等原生行為照舊
+            e.preventDefault(); e.stopPropagation();
+            var cid = a.dataset.cid;
+            if (cid) show(cid);
+          }, true);
+          document.getElementById("custPopClose").addEventListener("click", closeModal);
+          document.getElementById("custPopCancel").addEventListener("click", closeModal);
           modal.addEventListener("click", function(e){ if (e.target===modal) closeModal(); });
           document.addEventListener("keydown", function(e){ if (e.key==="Escape" && modal.style.display==="flex") closeModal(); });
         })();
@@ -12527,6 +12632,55 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             catch (_) { /* 表可能尚未建立 */ }
         }
         res.redirect("/admin/customers?ok=1");
+    });
+    /** 訂單審核頁「客戶提醒卡」彈窗用：回傳客戶摘要 JSON，免跳頁。 */
+    router.get("/api/customers/:id/summary", async (req, res) => {
+        try {
+            const c = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active, route_line FROM customers WHERE id = ?").get(req.params.id);
+            if (!c) { res.status(404).json({ ok: false, error: "客戶不存在" }); return; }
+            const isPg = Boolean(process.env.DATABASE_URL);
+            const p90 = isPg
+                ? "AND o.order_date >= to_char((CURRENT_DATE - INTERVAL '90 day'), 'YYYY-MM-DD')"
+                : "AND o.order_date >= date('now', '-90 day')";
+            const cntRow = await db.prepare("SELECT COUNT(*) AS n FROM orders o WHERE o.customer_id = ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') " + p90).get(c.id);
+            const recentOrders = await db.prepare(
+                "SELECT o.id, o.order_no, o.order_date, o.status, " +
+                "(SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.voided_at IS NULL) AS item_count " +
+                "FROM orders o WHERE o.customer_id = ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted') ORDER BY o.order_date DESC, o.id DESC LIMIT 5"
+            ).all(c.id);
+            const lastRow = await db.prepare("SELECT order_date FROM orders WHERE customer_id = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_date DESC LIMIT 1").get(c.id);
+            let daysSinceLastOrder = null;
+            if (lastRow?.order_date) {
+                const todayIso = getTaipeiCalendarDateYYYYMMDD();
+                daysSinceLastOrder = Math.round((new Date(todayIso + "T00:00:00+08:00") - new Date(String(lastRow.order_date) + "T00:00:00+08:00")) / 86400000);
+            }
+            let openComplaints = 0;
+            try {
+                const r = await db.prepare(
+                    "SELECT COUNT(*) AS n FROM orders o LEFT JOIN complaint_handling ch ON ch.order_id = o.id " +
+                    "WHERE o.customer_id = ? AND LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND COALESCE(ch.handle_status,'pending') != 'resolved'"
+                ).get(c.id);
+                openComplaints = Number(r?.n) || 0;
+            } catch (_) { /* complaint_handling 表不存在時忽略 */ }
+            res.json({
+                ok: true,
+                customer: {
+                    id: c.id, name: c.name, route_line: c.route_line ?? null,
+                    contact: c.contact || "", default_unit: c.default_unit || "公斤",
+                    teraoka_code: c.teraoka_code || "", hq_cust_code: c.hq_cust_code || "",
+                    line_bound: Boolean(c.line_group_id), line_group_name: c.line_group_name || "",
+                    order_notes: c.order_notes || "", active: c.active,
+                },
+                orders90: Number(cntRow?.n) || 0,
+                days_since_last_order: daysSinceLastOrder,
+                open_complaints: openComplaints,
+                recent_orders: recentOrders.map(o => ({ id: o.id, order_no: o.order_no || "", order_date: o.order_date, status: o.status || "", item_count: Number(o.item_count) || 0 })),
+            });
+        }
+        catch (e) {
+            console.error("[admin] GET /api/customers/:id/summary:", e?.message || e);
+            res.status(500).json({ ok: false, error: "讀取失敗" });
+        }
     });
     router.get("/customers/:id/quick-view", async (req, res) => {
         const customer = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);

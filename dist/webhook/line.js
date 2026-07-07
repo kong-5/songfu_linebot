@@ -46,12 +46,14 @@ async function insertEmptyBaskets(db, customerId, orderIds) {
         const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
         // 沒設路線＝自取，不補任何空籃（含固定四角籃 C0100065）
         if (routeLine == null) return;
-        const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
+        // 號碼籃料號跳過 4 號（無 4 號籃）：C0100057=1號…C0100059=3號、C0100060=5號…C0100064=9號；
+        // 不可用 56+路線號 連號計算，會從 5 號線起全部對錯、9 號線算到四角籃 C0100065。
+        const EMPTY_BASKET_ERP_BY_ROUTE = { 1: "C0100057", 2: "C0100058", 3: "C0100059", 5: "C0100060", 6: "C0100061", 7: "C0100062", 8: "C0100063", 9: "C0100064" };
+        const emptyBasketErp = EMPTY_BASKET_ERP_BY_ROUTE[routeLine] || null; // 路線 4 無號碼籃，只補四角籃
         // 要補的空籃料號：路線號碼籃（有設路線才有）＋ 固定四角籃 C0100065。
-        // 路線 9 的號碼籃剛好等於 C0100065，去重避免同一料號插兩次。
         const erps = [];
         if (emptyBasketErp) erps.push(emptyBasketErp);
-        if (!erps.includes("C0100065")) erps.push("C0100065");
+        erps.push("C0100065");
         for (const erp of erps) {
             const prod = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(erp);
             if (!prod) continue;
