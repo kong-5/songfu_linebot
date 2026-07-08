@@ -7335,11 +7335,38 @@ function createAdminRouter() {
         }
         const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_price_prefix_rules");
         const rulesText = row?.value || JSON.stringify({ "*": 2, LM: 10 }, null, 2);
-        const fmtNum = (v) => (v == null ? "—" : Number(v).toLocaleString("en-US", { maximumFractionDigits: 1 }));
+        // 價格一律顯示 1 位小數；交易量顯示整數（千分位）
+        const fmtP = (v) => (v == null ? "—" : Number(v).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
+        const fmtV = (v) => (v == null ? "—" : Number(v).toLocaleString("en-US", { maximumFractionDigits: 0 }));
+        // 較前日／較前月：抓「前一個有資料日」與「約前 28 天最接近日」的中價做對照（依 料號|市場 比對）
+        let prevDay = null, prevMonth = null, dayMap = null, monMap = null;
+        if (prices.length && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+            try {
+                const dts = await db.prepare("SELECT DISTINCT record_date FROM wholesale_market_snapshots WHERE record_date < ? ORDER BY record_date DESC").all(dateStr);
+                const dlist = (dts || []).map((r) => r.record_date);
+                prevDay = dlist[0] || null;
+                const target = new Date(dateStr + "T00:00:00Z").getTime() - 28 * 86400000;
+                for (const d of dlist) { if (new Date(d + "T00:00:00Z").getTime() <= target) { prevMonth = d; break; } }
+                const buildMap = async (d) => { if (!d) return null; const list = await (0, wholesale_snapshot_js_1.loadWholesaleMarketSnapshot)(db, d); const m = {}; for (const p of list) { m[(p.cropCode || p.cropName) + "|" + (p.marketName || "")] = p.midPrice; } return m; };
+                dayMap = await buildMap(prevDay);
+                monMap = await buildMap(prevMonth);
+            } catch (_) { /* 對照資料缺就略過 */ }
+        }
+        const chgCell = (cur, prev) => {
+            if (cur == null || prev == null || !prev) return `<td style="text-align:right;color:var(--txt-3);font-size:12px;">—</td>`;
+            const pct = (cur - prev) / prev * 100;
+            const up = pct > 0.05, dn = pct < -0.05;
+            const col = up ? "#dc2626" : (dn ? "#16a34a" : "#787774");
+            return `<td style="text-align:right;font-variant-numeric:tabular-nums;color:${col};font-size:12px;white-space:nowrap;">${up ? "▲" : (dn ? "▼" : "")}${pct > 0 ? "+" : ""}${pct.toFixed(1)}%</td>`;
+        };
         const rows = prices.slice(0, 2000).map((p) => {
             const key = `${(p.cropCode || "")} ${(p.cropName || "")} ${(p.marketName || "")}`.toLowerCase();
-            return `<tr data-k="${escapeAttr(key)}"><td style="font-variant-numeric:tabular-nums;color:var(--txt-3);">${escapeHtml(p.cropCode || "—")}</td><td>${escapeHtml(p.cropName || "")}</td><td style="color:var(--txt-3);font-size:12px;">${escapeHtml(p.marketName || "")}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtNum(p.highPrice)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtNum(p.midPrice)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtNum(p.lowPrice)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtNum(p.avgPrice)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--txt-3);">${fmtNum(p.volume)}</td></tr>`;
+            const mkKey = (p.cropCode || p.cropName) + "|" + (p.marketName || "");
+            const dCell = dayMap ? chgCell(p.midPrice, dayMap[mkKey]) : "";
+            const mCell = monMap ? chgCell(p.midPrice, monMap[mkKey]) : "";
+            return `<tr data-k="${escapeAttr(key)}"><td style="font-variant-numeric:tabular-nums;color:var(--txt-3);">${escapeHtml(p.cropCode || "—")}</td><td>${escapeHtml(p.cropName || "")}</td><td style="color:var(--txt-3);font-size:12px;">${escapeHtml(p.marketName || "")}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtP(p.highPrice)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtP(p.midPrice)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtP(p.lowPrice)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtP(p.avgPrice)}</td>${dCell}${mCell}<td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--txt-3);">${fmtV(p.volume)}</td></tr>`;
         }).join("");
+        const colCount = 8 + (dayMap ? 1 : 0) + (monMap ? 1 : 0);
         const sourceTag = snapSource === "api" ? `<span class="sf-pill" style="background:#e7f5e9;color:#047857;">即時 API</span>`
             : snapSource === "snapshot" ? `<span class="sf-pill" style="background:#fef3c7;color:#92400e;">本地快照</span>`
             : "";
@@ -7358,13 +7385,13 @@ function createAdminRouter() {
           <label>日期 <input type="date" name="date" value="${escapeAttr(reqDate)}"></label>
           <button type="submit" class="btn">查詢</button>
           <a href="/admin/logistics/market?date=${escapeAttr(reqDate)}&refresh=1" class="btn btn-primary" title="即時向農業部 API 抓取（可能需數秒）">更新最新</a>
-          <a href="/admin/logistics/market/history" class="btn" title="查單一品項的每日走勢與折線圖">📈 歷史查詢</a>
+          <a href="/admin/logistics/market/history" class="btn" title="查品項的每日走勢與折線圖">歷史查詢</a>
           ${prices.length ? `<a href="/admin/logistics/market/export.csv?date=${escapeAttr(dateStr)}" class="btn">下載 CSV</a><a href="/admin/logistics/market/export.xlsx?date=${escapeAttr(dateStr)}" class="btn">下載 Excel</a>` : ""}
         </form>
         ${msg ? `<p class="notion-msg warn" style="margin:8px 0;padding:8px 12px;border-radius:6px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;">${escapeHtml(msg)}</p>` : ""}
-        ${prices.length ? `<input id="mktSearch" type="search" placeholder="🔍 搜尋品名或品號…" oninput="(function(q){q=q.toLowerCase();document.querySelectorAll('#mktTable tbody tr').forEach(function(tr){tr.style.display=(!q||(tr.getAttribute('data-k')||'').indexOf(q)>=0)?'':'none';});})(this.value)" style="width:100%;max-width:360px;padding:8px 12px;margin-bottom:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">` : ""}
+        ${prices.length ? `<input id="mktSearch" type="search" placeholder="搜尋品名或品號…" oninput="(function(q){q=q.toLowerCase();document.querySelectorAll('#mktTable tbody tr').forEach(function(tr){tr.style.display=(!q||(tr.getAttribute('data-k')||'').indexOf(q)>=0)?'':'none';});})(this.value)" style="width:100%;max-width:360px;padding:8px 12px;margin-bottom:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">` : ""}
         <div class="notion-card" style="padding:0;overflow-x:auto;">
-          <table id="mktTable" style="min-width:640px;"><thead><tr><th>品號</th><th>品名</th><th>市場</th><th style="text-align:right;">上價</th><th style="text-align:right;">中價</th><th style="text-align:right;">下價</th><th style="text-align:right;">平均</th><th style="text-align:right;">交易量(kg)</th></tr></thead><tbody>${rows || "<tr><td colspan='8' style='color:#999;text-align:center;padding:24px;'>無資料</td></tr>"}</tbody></table>
+          <table id="mktTable" style="min-width:640px;"><thead><tr><th>品號</th><th>品名</th><th>市場</th><th style="text-align:right;">上價</th><th style="text-align:right;">中價</th><th style="text-align:right;">下價</th><th style="text-align:right;">平均</th>${dayMap ? `<th style="text-align:right;" title="與 ${escapeAttr(prevDay || "")} 中價相比">較前日</th>` : ""}${monMap ? `<th style="text-align:right;" title="與 ${escapeAttr(prevMonth || "")} 中價相比">較前月</th>` : ""}<th style="text-align:right;">交易量(kg)</th></tr></thead><tbody>${rows || `<tr><td colspan='${colCount}' style='color:#999;text-align:center;padding:24px;'>無資料</td></tr>`}</tbody></table>
         </div>
         <div class="notion-card" style="margin-top:16px;">
           <h2 style="margin-top:0;">LINE 報價加價規則</h2>
@@ -7421,66 +7448,119 @@ function createAdminRouter() {
         res.send(buf);
     });
 
-    // ── 北農歷史查詢（單品項每日走勢＋折線圖）──────────────────
-    router.get("/logistics/market/history", async (req, res) => {
-        const crop = (req.query.crop || "").toString().trim();
-        const daysRaw = parseInt((req.query.days || "90").toString(), 10);
-        const days = [30, 60, 90, 180, 365].includes(daysRaw) ? daysRaw : 90;
-        const crops = await (0, wholesale_snapshot_js_1.listWholesaleCrops)(db);
-        let series = [];
-        if (crop) series = await (0, wholesale_snapshot_js_1.loadWholesaleCropHistory)(db, crop, days);
-        const options = crops.map((c) => `<option value="${escapeAttr(c.cropName)}"${c.cropName === crop ? " selected" : ""}>${escapeHtml(c.cropCode ? c.cropCode + " " : "")}${escapeHtml(c.cropName)}（${c.dayCount} 天）</option>`).join("");
-        // 折線圖（中價；重量加權合併台北一/二）＋日期軸＋游標 title
-        const chart = (() => {
-            const pts = series.filter((s) => s.mid != null).map((s) => ({ d: s.date, v: Number(s.mid) }));
-            if (pts.length < 2) return `<div style="height:220px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);">${crop ? "此品項的歷史資料需 2 天以上才畫得出折線（可先按下方『回補歷史』抓過去資料）" : "請先選擇品項"}</div>`;
-            const W = 900, H = 240, padL = 44, padR = 16, padT = 16, padB = 30;
-            const vals = pts.map((p) => p.v);
-            let mn = Math.min(...vals), mx = Math.max(...vals);
-            if (mn === mx) { mn -= 1; mx += 1; }
-            const X = (i) => padL + (W - padL - padR) * (i / (pts.length - 1));
-            const Y = (v) => padT + (H - padT - padB) * (1 - (v - mn) / (mx - mn));
-            const line = pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(" ");
-            const area = `M${X(0).toFixed(1)},${(H - padB).toFixed(1)} ` + pts.map((p, i) => `L${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(" ") + ` L${X(pts.length - 1).toFixed(1)},${(H - padB).toFixed(1)} Z`;
-            const mmdd = (d) => (d || "").slice(5).replace("-", "/");
-            let dots = "", hovers = "";
-            for (let i = 0; i < pts.length; i++) {
-                if (i > 0) {
-                    const pct = pts[i - 1].v ? ((pts[i].v - pts[i - 1].v) / pts[i - 1].v) * 100 : 0;
-                    if (Math.abs(pct) >= 10) { const up = pct > 0; dots += `<circle cx="${X(i).toFixed(1)}" cy="${Y(pts[i].v).toFixed(1)}" r="3.5" fill="${up ? "#dc2626" : "#16a34a"}"/>`; }
-                }
-                const pctTxt = i > 0 && pts[i - 1].v ? `（${((pts[i].v - pts[i - 1].v) / pts[i - 1].v * 100) >= 0 ? "+" : ""}${((pts[i].v - pts[i - 1].v) / pts[i - 1].v * 100).toFixed(1)}%）` : "";
-                hovers += `<circle cx="${X(i).toFixed(1)}" cy="${Y(pts[i].v).toFixed(1)}" r="8" fill="transparent" style="pointer-events:all;cursor:crosshair;"><title>${escapeHtml(pts[i].d)}　中價 ${pts[i].v} 元/kg${pctTxt}</title></circle>`;
+    // ── 北農行情 歷史查詢 JSON（供互動折線圖）──────────────────
+    router.get("/logistics/market/history.json", async (req, res) => {
+        try {
+            const cropsParam = (req.query.crops || "").toString();
+            let crops = cropsParam.split(",").map((s) => s.trim()).filter(Boolean);
+            if (req.query.crop) crops.push(String(req.query.crop).trim());
+            crops = [...new Set(crops)].slice(0, 8);
+            const start = (req.query.start || "").toString();
+            const end = (req.query.end || "").toString();
+            const series = {};
+            for (const c of crops) {
+                let s = await (0, wholesale_snapshot_js_1.loadWholesaleCropHistory)(db, c, 0);
+                if (/^\d{4}-\d{2}-\d{2}$/.test(start)) s = s.filter((x) => x.date >= start);
+                if (/^\d{4}-\d{2}-\d{2}$/.test(end)) s = s.filter((x) => x.date <= end);
+                series[c] = s.map((x) => ({ date: x.date, mid: x.mid, high: x.high, low: x.low, avg: x.avg, volume: x.volume }));
             }
-            const col = (pts[pts.length - 1].v - pts[0].v) >= 0 ? "#dc2626" : "#16a34a";
-            // Y 軸刻度（3 條）
-            let yaxis = "";
-            for (let k = 0; k <= 2; k++) { const v = mn + (mx - mn) * (k / 2); const y = Y(v); yaxis += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#eee" stroke-width="1"/><text x="${padL - 6}" y="${(y + 3).toFixed(1)}" font-size="10" fill="#9b9a97" text-anchor="end">${v.toFixed(0)}</text>`; }
-            // X 軸日期（最多 7 個標籤）
-            let xaxis = "";
-            const step = Math.max(1, Math.ceil(pts.length / 7));
-            for (let i = 0; i < pts.length; i += step) xaxis += `<text x="${X(i).toFixed(1)}" y="${H - 8}" font-size="10" fill="#9b9a97" text-anchor="middle">${mmdd(pts[i].d)}</text>`;
-            xaxis += `<text x="${X(pts.length - 1).toFixed(1)}" y="${H - 8}" font-size="10" fill="#9b9a97" text-anchor="end">${mmdd(pts[pts.length - 1].d)}</text>`;
-            return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible;">${yaxis}<path d="${area}" fill="${col}" opacity="0.06"/><path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${dots}${xaxis}${hovers}</svg>`;
-        })();
-        const histRows = [...series].reverse().map((s) => {
-            const fx = (v) => (v == null ? "—" : Number(v).toLocaleString("en-US", { maximumFractionDigits: 1 }));
-            return `<tr><td style="font-variant-numeric:tabular-nums;">${escapeHtml(s.date)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fx(s.high)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fx(s.mid)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fx(s.low)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fx(s.avg)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--txt-3);">${fx(s.volume)}</td></tr>`;
-        }).join("");
+            res.json({ ok: true, crops, series });
+        }
+        catch (e) {
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 300) });
+        }
+    });
+
+    // ── 北農行情 歷史查詢頁（模糊搜尋＋多選＋區間＋多線折線圖＋游標詳情）──────
+    router.get("/logistics/market/history", async (req, res) => {
+        const cropList = await (0, wholesale_snapshot_js_1.listWholesaleCrops)(db);
+        const latestDate = (await (0, wholesale_snapshot_js_1.getLatestWholesaleSnapshotDate)(db)) || new Date().toISOString().slice(0, 10);
+        // 預選品項（支援 ?crops=a,b 或舊的 ?crop=a）
+        let selected = (req.query.crops || "").toString().split(",").map((s) => s.trim()).filter(Boolean);
+        if (req.query.crop) selected.push(String(req.query.crop).trim());
+        selected = [...new Set(selected)].slice(0, 8);
+        const selSet = new Set(selected);
+        const isoDate = (s) => (/^\d{4}-\d{2}-\d{2}$/.test((s || "").toString()) ? s.toString() : null);
+        const endDefault = isoDate(req.query.end) || latestDate;
+        const startDefault = isoDate(req.query.start) || new Date(new Date(latestDate + "T00:00:00Z").getTime() - 90 * 86400000).toISOString().slice(0, 10);
+        const checklist = cropList.map((c) => `<label class="crop-item" data-t="${escapeAttr(((c.cropCode || "") + " " + c.cropName).toLowerCase())}" style="display:flex;align-items:center;gap:7px;padding:4px 6px;font-size:13px;cursor:pointer;border-radius:5px;">`
+            + `<input type="checkbox" class="crop-cb" value="${escapeAttr(c.cropName)}"${selSet.has(c.cropName) ? " checked" : ""}>`
+            + `<span style="color:var(--txt-3);font-variant-numeric:tabular-nums;min-width:32px;">${escapeHtml(c.cropCode || "")}</span>`
+            + `<span>${escapeHtml(c.cropName)}</span>`
+            + `<span style="color:var(--txt-3);font-size:11px;margin-left:auto;">${c.dayCount}天</span></label>`).join("");
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / <a href="/admin/logistics/market">北農行情</a> / 歷史查詢</div>
         <h1 class="notion-page-title">北農行情 — 歷史走勢查詢</h1>
-        <p class="notion-hint">選一個品項看它的每日中價走勢（台北一/二以交易量加權合併）。折線圖游標指到看當日價格與漲跌，紅點為單日漲逾 10%、綠點為跌逾 10%。</p>
+        <p class="notion-hint">左側勾選品項（可搜尋、可多選對照），選日期區間後看每日中價折線走勢（台北一／二以交易量加權合併）。游標移到圖上即顯示當日各品項價格。</p>
         ${req.query.msg ? `<p class="notion-msg ok" style="padding:10px 12px;background:#e7f5e9;border:1px solid #b7e0c0;border-radius:6px;color:#047857;">${escapeHtml((req.query.msg || "").toString().slice(0, 200))}</p>` : ""}
-        <form method="get" action="/admin/logistics/market/history" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
-          <label>品項 <select name="crop" style="padding:7px 10px;border:1px solid var(--border);border-radius:8px;min-width:220px;"><option value="">— 請選擇 —</option>${options}</select></label>
-          <label>天數 <select name="days" style="padding:7px 10px;border:1px solid var(--border);border-radius:8px;">${[30, 60, 90, 180, 365].map((d) => `<option value="${d}"${d === days ? " selected" : ""}>${d} 天</option>`).join("")}</select></label>
-          <button type="submit" class="btn btn-primary">查詢</button>
-          <a href="/admin/logistics/market/history/backfill?days=90${crop ? "&crop=" + encodeURIComponent(crop) : ""}" class="btn" title="向農業部抓過去 90 天資料存入本地（首次使用需要）" onclick="this.textContent='回補中…請稍候';">⤓ 回補歷史（90 天）</a>
-        </form>
-        ${crops.length === 0 ? `<p class="notion-msg warn" style="padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;color:#92400e;">目前本地還沒有歷史資料。請先按上方「⤓ 回補歷史（90 天）」抓過去資料。</p>` : ""}
-        ${crop ? `<div class="notion-card" style="margin-bottom:16px;"><h2 style="margin:0 0 4px;">${escapeHtml(crop)}　中價走勢（近 ${days} 天）</h2>${chart}</div>` : ""}
-        ${crop && series.length ? `<div class="notion-card" style="padding:0;overflow-x:auto;"><table style="min-width:520px;"><thead><tr><th>日期</th><th style="text-align:right;">上價</th><th style="text-align:right;">中價</th><th style="text-align:right;">下價</th><th style="text-align:right;">平均</th><th style="text-align:right;">交易量(kg)</th></tr></thead><tbody>${histRows}</tbody></table></div>` : ""}
+        ${cropList.length === 0 ? `<p class="notion-msg warn" style="padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;color:#92400e;">目前還沒有歷史資料，請先按下方「回補歷史」抓過去資料。</p>` : ""}
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
+          <div class="notion-card" style="flex:0 0 260px;max-width:100%;">
+            <input id="cropFilter" type="search" placeholder="搜尋品名或品號…" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:8px;">
+            <div style="max-height:360px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:4px;">${checklist || '<div style="padding:16px;color:var(--txt-3);font-size:13px;">無品項</div>'}</div>
+            <p style="font-size:11px;color:var(--txt-3);margin:8px 0 0;">最多同時比較 8 項</p>
+          </div>
+          <div style="flex:1;min-width:320px;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
+              <label>起 <input id="startD" type="date" value="${escapeAttr(startDefault)}" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;"></label>
+              <label>迄 <input id="endD" type="date" value="${escapeAttr(endDefault)}" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;"></label>
+              <button id="drawBtn" type="button" class="btn btn-primary">更新圖表</button>
+              <form method="get" action="/admin/logistics/market/history/backfill" style="display:inline-flex;gap:6px;align-items:center;margin-left:auto;">
+                <select name="days" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;"><option value="90">90 天</option><option value="180">180 天</option><option value="365" selected>365 天（一年）</option></select>
+                <button type="submit" class="btn" title="向農業部抓過去區間資料存入本地" onclick="this.textContent='回補中…';">回補歷史</button>
+              </form>
+            </div>
+            <div class="notion-card" style="position:relative;margin-bottom:12px;">
+              <div id="histLegend" style="margin-bottom:6px;"></div>
+              <div id="histChart"></div>
+              <div id="histTip" style="position:absolute;display:none;pointer-events:none;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.12);padding:8px 10px;font-size:12px;z-index:10;min-width:120px;"></div>
+            </div>
+            <div id="histTable" class="notion-card" style="padding:0;overflow-x:auto;"></div>
+          </div>
+        </div>
+        <script>
+        (function(){
+          var PALETTE=["#2563eb","#dc2626","#16a34a","#d97706","#7c3aed","#0891b2","#db2777","#65a30d"];
+          var chartBox=document.getElementById("histChart"),legendBox=document.getElementById("histLegend"),tableBox=document.getElementById("histTable"),tip=document.getElementById("histTip");
+          var fbox=document.getElementById("cropFilter");
+          if(fbox)fbox.addEventListener("input",function(){var q=this.value.toLowerCase(),items=document.querySelectorAll(".crop-item");for(var i=0;i<items.length;i++){var t=items[i].getAttribute("data-t")||"";items[i].style.display=(!q||t.indexOf(q)>=0)?"flex":"none";}});
+          function selected(){var cbs=document.querySelectorAll(".crop-cb"),out=[];for(var i=0;i<cbs.length;i++){if(cbs[i].checked)out.push(cbs[i].value);}return out;}
+          function msg(t){chartBox.innerHTML='<div style="height:260px;display:flex;align-items:center;justify-content:center;color:#9b9a97;text-align:center;padding:0 16px;">'+t+'</div>';legendBox.innerHTML="";tableBox.innerHTML="";}
+          function draw(data){
+            var crops=data.crops||[],series=data.series||{};
+            if(!crops.length){msg("請在左側勾選品項（可多選對照）");return;}
+            var dset={};crops.forEach(function(c){(series[c]||[]).forEach(function(p){dset[p.date]=1;});});
+            var dates=Object.keys(dset).sort();
+            if(dates.length<2){msg("此區間資料不足 2 天，畫不出折線（可換更長區間或先按右上『回補歷史』）");return;}
+            var maps={},allv=[];
+            crops.forEach(function(c){var m={};(series[c]||[]).forEach(function(p){if(p.mid!=null){m[p.date]=p.mid;allv.push(p.mid);}});maps[c]=m;});
+            if(!allv.length){msg("無中價資料");return;}
+            var mn=Math.min.apply(null,allv),mx=Math.max.apply(null,allv);if(mn===mx){mn-=1;mx+=1;}
+            var W=900,H=280,padL=46,padR=14,padT=14,padB=28;
+            function X(i){return padL+(W-padL-padR)*(i/(dates.length-1));}
+            function Y(v){return padT+(H-padT-padB)*(1-(v-mn)/(mx-mn));}
+            var svg='<svg viewBox="0 0 '+W+' '+H+'" width="100%" style="display:block;">';
+            for(var k=0;k<=3;k++){var vv=mn+(mx-mn)*(k/3),yy=Y(vv);svg+='<line x1="'+padL+'" y1="'+yy.toFixed(1)+'" x2="'+(W-padR)+'" y2="'+yy.toFixed(1)+'" stroke="#eee"/><text x="'+(padL-6)+'" y="'+(yy+3).toFixed(1)+'" font-size="10" fill="#9b9a97" text-anchor="end">'+vv.toFixed(0)+'</text>';}
+            var step=Math.max(1,Math.ceil(dates.length/7));
+            for(var i=0;i<dates.length;i+=step){svg+='<text x="'+X(i).toFixed(1)+'" y="'+(H-8)+'" font-size="10" fill="#9b9a97" text-anchor="middle">'+dates[i].slice(5).replace("-","/")+'</text>';}
+            crops.forEach(function(c,ci){var col=PALETTE[ci%PALETTE.length],m=maps[c],d="",started=false;for(var i=0;i<dates.length;i++){var v=m[dates[i]];if(v==null)continue;d+=(started?"L":"M")+X(i).toFixed(1)+","+Y(v).toFixed(1)+" ";started=true;}svg+='<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="2" stroke-linejoin="round"/>';});
+            svg+='<line id="hg" x1="0" y1="'+padT+'" x2="0" y2="'+(H-padB)+'" stroke="#bbb" stroke-dasharray="3,3" style="display:none"/>';
+            svg+='<rect id="cap" x="'+padL+'" y="'+padT+'" width="'+(W-padL-padR)+'" height="'+(H-padT-padB)+'" fill="transparent"/></svg>';
+            chartBox.innerHTML=svg;
+            legendBox.innerHTML=crops.map(function(c,ci){return '<span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;font-size:13px;"><span style="width:11px;height:11px;border-radius:2px;background:'+PALETTE[ci%PALETTE.length]+';display:inline-block;"></span>'+c+'</span>';}).join("");
+            var th='<tr><th>日期</th>'+crops.map(function(c){return '<th style="text-align:right;">'+c+'</th>';}).join("")+'</tr>';
+            var tb="";for(var j=dates.length-1;j>=0;j--){var dd=dates[j];tb+='<tr><td style="font-variant-numeric:tabular-nums;">'+dd+'</td>'+crops.map(function(c){var v=maps[c][dd];return '<td style="text-align:right;font-variant-numeric:tabular-nums;">'+(v==null?"—":Number(v).toFixed(1))+'</td>';}).join("")+'</tr>';}
+            tableBox.innerHTML='<table style="min-width:'+(120+crops.length*90)+'px;"><thead>'+th+'</thead><tbody>'+tb+'</tbody></table>';
+            var svgEl=chartBox.querySelector("svg"),cap=document.getElementById("cap"),hg=document.getElementById("hg");
+            cap.addEventListener("mousemove",function(ev){var r=svgEl.getBoundingClientRect(),sx=(ev.clientX-r.left)/r.width*W,i=Math.round((sx-padL)/((W-padL-padR)/(dates.length-1)));if(i<0)i=0;if(i>dates.length-1)i=dates.length-1;var xx=X(i);hg.setAttribute("x1",xx);hg.setAttribute("x2",xx);hg.style.display="";var html='<div style="font-weight:600;margin-bottom:3px;">'+dates[i]+'</div>';crops.forEach(function(c,ci){var v=maps[c][dates[i]];html+='<div style="display:flex;justify-content:space-between;gap:12px;"><span style="color:'+PALETTE[ci%PALETTE.length]+';">'+c+'</span><span style="font-variant-numeric:tabular-nums;">'+(v==null?"—":Number(v).toFixed(1))+'</span></div>';});tip.innerHTML=html;tip.style.display="block";var bx=chartBox.getBoundingClientRect(),px=ev.clientX-bx.left+14;if(px>bx.width-150)px=ev.clientX-bx.left-140;tip.style.left=px+"px";tip.style.top=(ev.clientY-bx.top+14)+"px";});
+            cap.addEventListener("mouseleave",function(){hg.style.display="none";tip.style.display="none";});
+          }
+          function load(){var crops=selected().slice(0,8),s=document.getElementById("startD").value,e=document.getElementById("endD").value;if(!crops.length){draw({crops:[],series:{}});return;}msg("載入中…");var url="/admin/logistics/market/history.json?crops="+encodeURIComponent(crops.join(","))+"&start="+encodeURIComponent(s)+"&end="+encodeURIComponent(e);fetch(url).then(function(r){return r.json();}).then(function(j){if(!j.ok){msg("載入失敗："+(j.error||""));return;}draw(j);}).catch(function(err){msg("載入失敗："+err);});}
+          document.getElementById("drawBtn").addEventListener("click",load);
+          var cbs=document.querySelectorAll(".crop-cb");for(var i=0;i<cbs.length;i++){cbs[i].addEventListener("change",load);}
+          if(selected().length)load();else draw({crops:[],series:{}});
+        })();
+        </script>
       `;
         res.type("text/html").send(notionPage("北農行情歷史", body, "logistics-market", res));
     });
@@ -7489,11 +7569,11 @@ function createAdminRouter() {
     router.get("/logistics/market/history/backfill", async (req, res) => {
         const daysRaw = parseInt((req.query.days || "90").toString(), 10);
         const days = daysRaw > 0 && daysRaw <= 400 ? daysRaw : 90;
-        const crop = (req.query.crop || "").toString().trim();
+        const crops = (req.query.crops || req.query.crop || "").toString();
         try {
             const r = await (0, wholesale_snapshot_js_1.backfillWholesaleHistory)(db, days);
-            const q = crop ? `?crop=${encodeURIComponent(crop)}&days=90&msg=` : "?msg=";
-            res.redirect(`/admin/logistics/market/history${q}${encodeURIComponent(`已回補 ${r.days} 天、${r.total} 筆`)}`);
+            const q = crops ? `?crops=${encodeURIComponent(crops)}&msg=` : "?msg=";
+            res.redirect(`/admin/logistics/market/history${q}${encodeURIComponent(`已回補 ${r.days} 個交易日、${r.total} 筆`)}`);
         }
         catch (e) {
             res.redirect(`/admin/logistics/market/history?msg=${encodeURIComponent("回補失敗：" + (e?.message || String(e)).slice(0, 120))}`);
