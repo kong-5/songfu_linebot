@@ -10541,25 +10541,39 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             return html;
         };
         const rawMatchHtml = buildRawMatchHtml(rawTextForMatch, items);
-        // 群組對話（含同事回覆）：有紀錄就以聊天式視圖取代純文字，客戶訊息逐則做品項藍底對應，
-        // 同事訊息用琥珀色卡標「姓名（同事）」。舊訂單沒有紀錄則維持原本的 pre 顯示。
+        // 群組對話（含同事回覆）：有紀錄就以聊天式視圖取代純文字，客戶訊息用黃色卡逐則做品項藍底對應，
+        // 同事訊息用灰色卡標「姓名（同事）」。舊訂單沒有紀錄則維持原本的 pre 顯示。
         const convoRows = await line_conversation_js_1.getConversationForOrder(db, orderId);
         let convoHtml = "";
         if (convoRows && convoRows.length) {
             const convoMatched = new Set();
-            convoHtml = convoRows.map((m) => {
+            // 對話紀錄可能只掛到同事回覆（例如拆單後的子單、或客戶叫貨訊息未逐則入庫），
+            // 若直接以對話取代純文字，叫貨內容會整段消失。先把「對話沒涵蓋到的訂單全文行」
+            // 補成一張客戶卡放最前面；錨點與逐則對話共用同一個 Set，避免重複 DOM id 弄亂連線。
+            const normForCover = (s) => String(s || "").replace(/[\s,，、。.·:：*xX╳＊()（）]/g, "").toLowerCase();
+            const customerJoined = normForCover(convoRows.filter((m) => String(m.sender_kind) !== "employee").map((m) => m.text || "").join("\n"));
+            const missingLines = rawTextForMatch.split("\n").filter((l) => l.trim() && !customerJoined.includes(normForCover(l)));
+            let missingCard = "";
+            if (missingLines.length) {
+                const missingBody = buildRawMatchHtml(missingLines.join("\n"), items, convoMatched);
+                missingCard = `<div style="background:#fffbeb;border:1px solid #fde68a;border-left:3px solid #d97706;border-radius:8px;padding:7px 10px;">
+                  <div style="font-size:11px;color:#92400e;font-weight:700;margin-bottom:2px;">📄 客戶叫貨內容<span style="font-weight:400;color:#b45309;margin-left:6px;">（取自訂單全文，對話紀錄未逐則記錄）</span></div>
+                  <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:#78350f;">${missingBody}</div>
+                </div>`;
+            }
+            convoHtml = missingCard + convoRows.map((m) => {
                 const full = fmtTaipeiYMDHM(m.created_at) || "";
                 const timeShort = full.length >= 16 ? full.slice(11, 16) : full;
                 if (String(m.sender_kind) === "employee") {
-                    return `<div style="background:#fffbeb;border:1px solid #fde68a;border-left:3px solid #d97706;border-radius:8px;padding:7px 10px;">
-                      <div style="font-size:11px;color:#92400e;font-weight:700;margin-bottom:2px;">🧑‍💼 ${escapeHtml(m.sender_name || "同事")}<span style="font-weight:600;">（同事）</span><span style="font-weight:400;color:#b45309;margin-left:6px;" title="${escapeAttr(full)}">${escapeHtml(timeShort)}</span></div>
-                      <div style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:#78350f;">${escapeHtml(m.text || "")}</div>
+                    return `<div style="background:#f3f4f6;border:1px solid #e5e7eb;border-left:3px solid #9ca3af;border-radius:8px;padding:7px 10px;">
+                      <div style="font-size:11px;color:#4b5563;font-weight:700;margin-bottom:2px;">🧑‍💼 ${escapeHtml(m.sender_name || "同事")}<span style="font-weight:600;">（同事）</span><span style="font-weight:400;color:#6b7280;margin-left:6px;" title="${escapeAttr(full)}">${escapeHtml(timeShort)}</span></div>
+                      <div style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:#374151;">${escapeHtml(m.text || "")}</div>
                     </div>`;
                 }
                 const matchedBody = buildRawMatchHtml(String(m.text || ""), items, convoMatched);
-                return `<div style="background:var(--bg-2);border:var(--hairline);border-radius:8px;padding:7px 10px;">
-                  <div style="font-size:11px;color:var(--txt-3);margin-bottom:2px;">${escapeHtml(m.sender_name || "客戶")}<span style="margin-left:6px;" title="${escapeAttr(full)}">${escapeHtml(timeShort)}</span></div>
-                  <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:var(--txt-1);">${matchedBody}</div>
+                return `<div style="background:#fffbeb;border:1px solid #fde68a;border-left:3px solid #d97706;border-radius:8px;padding:7px 10px;">
+                  <div style="font-size:11px;color:#92400e;font-weight:700;margin-bottom:2px;">${escapeHtml(m.sender_name || "客戶")}<span style="font-weight:400;color:#b45309;margin-left:6px;" title="${escapeAttr(full)}">${escapeHtml(timeShort)}</span></div>
+                  <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:#78350f;">${matchedBody}</div>
                 </div>`;
             }).join("");
         }
@@ -11053,7 +11067,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               ${(() => {
                 if (convoHtml) {
                   return `
-                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">群組對話<span style="text-transform:none;letter-spacing:0;margin-left:6px;color:var(--txt-3);">（<span style="background:rgba(35,131,226,0.14);border-radius:3px;padding:0 3px;">藍底</span> = 已對應到明細・<span style="background:#fffbeb;border:1px solid #fde68a;border-radius:3px;padding:0 3px;color:#92400e;">琥珀色</span> = 同事回覆）</span></div>
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">群組對話<span style="text-transform:none;letter-spacing:0;margin-left:6px;color:var(--txt-3);">（<span style="background:rgba(35,131,226,0.14);border-radius:3px;padding:0 3px;">藍底</span> = 已對應到明細・<span style="background:#fffbeb;border:1px solid #fde68a;border-radius:3px;padding:0 3px;color:#92400e;">黃底</span> = 客戶・<span style="background:#f3f4f6;border:1px solid #d1d5db;border-radius:3px;padding:0 3px;color:#4b5563;">灰底</span> = 同事回覆）</span></div>
                     <div id="rawLinesPre" style="display:flex;flex-direction:column;gap:6px;font-family:var(--font-ui);">${convoHtml}</div>
                   `;
                 }
