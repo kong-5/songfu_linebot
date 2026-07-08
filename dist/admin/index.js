@@ -1092,6 +1092,18 @@ const SF_TOKENS = `
   --info-soft: oklch(0.74 0.12 230 / 0.14);
   --shadow-kpi: 0 1px 2px rgba(0,0,0,.35);
   --shadow-kpi-hover: 0 10px 28px rgba(0,0,0,.5);
+  /* Notion 系底層變數（頁首／側欄／邊框／文字）也要跟著深色，否則標題列／側欄仍是白底 */
+  --notion-bg: #11141a;
+  --notion-canvas: #0a0c10;
+  --notion-sidebar: #0d1016;
+  --notion-border: rgba(255, 255, 255, 0.10);
+  --notion-border-strong: rgba(255, 255, 255, 0.18);
+  --notion-text: #f4f6f8;
+  --notion-text-muted: #9aa1ae;
+  --notion-accent: #5b9fdb;
+  --notion-hover: rgba(255, 255, 255, 0.07);
+  --notion-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --notion-shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.5);
 }
 /* base */
 .sf-root, .sf-root * { box-sizing: border-box; }
@@ -4179,7 +4191,6 @@ function createAdminRouter() {
               </div>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <a class="sf-btn" href="/admin">${SF_ICONS.refresh}<span>重新整理</span></a>
               <a class="sf-btn" href="/admin/export">${SF_ICONS.dl}<span>當日報表</span></a>
               ${(process.env.LIFF_ID_ORDER_REVIEW||"").trim() ? `<button type="button" class="sf-btn" onclick="(async()=>{try{await navigator.clipboard.writeText('https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');this.querySelector('span').textContent='已複製，請貼到 LINE';setTimeout(()=>this.querySelector('span').textContent='手機審核連結',2000);}catch(e){prompt('複製失敗，請手動複製：','https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');}})();" title="複製訂單審核 LIFF 連結，貼到 LINE 開啟"><span>📱 手機審核連結</span></button>` : ""}
               <a class="sf-btn primary" href="/admin/orders?need_review=1">${SF_ICONS.check}<span>批次簽核 (${pendingOrders})</span></a>
