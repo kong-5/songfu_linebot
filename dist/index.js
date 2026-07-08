@@ -196,6 +196,14 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             const dateStr = String(req.query.date || req.body?.date || "").trim() || new Date().toISOString().slice(0, 10);
             if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).json({ ok: false, error: "invalid date" }); return; }
             const db = (0, index_js_1.getDb)(dbPath);
+            // 帶 days 參數時做區間回補（供歷史報表一次抓過去 N 天）；否則只抓當日
+            const daysRaw = parseInt(String(req.query.days || req.body?.days || "").trim(), 10);
+            if (Number.isFinite(daysRaw) && daysRaw > 1) {
+                const days = Math.min(daysRaw, 400);
+                const bf = await (0, wholesale_snapshot_js_1.backfillWholesaleHistory)(db, days);
+                res.json({ ok: true, mode: "backfill", days: bf.days, total: bf.total, status: bf.status, errors: bf.errors });
+                return;
+            }
             const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
             res.json({
                 ok: true,
