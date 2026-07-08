@@ -18762,6 +18762,23 @@ document.addEventListener('keydown',function(e){
     // ===================================================================
     const QUOTE_STATUS_LABEL = { draft: "草稿", finalized: "已完成" };
 
+    // 報價單字型選項（非宋體；以圓體為主，附系統字型 fallback）。存 app_settings.quote_font。
+    const QUOTE_FONTS = {
+        rounded:  { label: "圓體", css: "'Yuanti TC','Yuanti SC','YuanTi TC','Hiragino Maru Gothic ProN','jf-openhuninn','Noto Sans TC','PingFang TC',sans-serif" },
+        gothic:   { label: "黑體", css: "'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif" },
+        pingfang: { label: "蘋方黑", css: "'PingFang TC','Noto Sans TC','Microsoft JhengHei',sans-serif" },
+        rounded2: { label: "圓潤黑", css: "'Hiragino Maru Gothic ProN','Yuanti TC','jf-openhuninn','Noto Sans TC','PingFang TC',sans-serif" },
+    };
+    const QUOTE_FONT_DEFAULT = "rounded";
+    async function getQuoteFontKey() {
+        try {
+            const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("quote_font");
+            const k = row && row.value ? String(row.value) : "";
+            return QUOTE_FONTS[k] ? k : QUOTE_FONT_DEFAULT;
+        } catch (_) { return QUOTE_FONT_DEFAULT; }
+    }
+    function quoteFontCss(key) { return (QUOTE_FONTS[key] || QUOTE_FONTS[QUOTE_FONT_DEFAULT]).css; }
+
     // 報價頁 icon：採 Feather Icons（線條/outline 風格；MIT）內嵌 SVG，
     // 統一 viewBox 0 0 24 24、stroke-width 2、圓角端點，與線條感一致（不拉外部 CDN）。
     const _fi = (paths) => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
@@ -18782,7 +18799,9 @@ document.addEventListener('keydown',function(e){
      * 報價單列印頁（獨立 HTML，A4 兩欄，供瀏覽器「儲存成 PDF」）。
      * 字級放大方便年長客戶閱讀；品項多時自動分成多頁（每頁重印表頭與頁次）。
      */
-    function renderQuoteSheetHtml(report, groups, logo) {
+    function renderQuoteSheetHtml(report, groups, logo, fontKey) {
+        const fkey = QUOTE_FONTS[fontKey] ? fontKey : QUOTE_FONT_DEFAULT;
+        const fontCss = quoteFontCss(fkey);
         const rows = quote_report_js_1.buildDisplayRows(groups);
         const itemCount = rows.filter(r => r.type === "item").length;
         // 每頁列數：兩欄合計；抓約可容納一整頁 A4 的量（保留邊界避免溢出到下一頁），讓內容自動分頁。
@@ -18833,9 +18852,11 @@ document.addEventListener('keydown',function(e){
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(report.company || "報價單")} ${escapeHtml(report.roc_label || report.ym || "")}</title>
 <style>
-  :root{ --green:#1e7a5e; --line:#c8d0da; }
+  :root{ --green:#1a6fb5; --line:#c8d0da; }
   *{ box-sizing:border-box; }
-  body{ font-family:"Noto Sans TC","Microsoft JhengHei","PingFang TC",sans-serif; margin:0; color:#1c1c1c; background:#f3f4f6; }
+  body{ font-family:${fontCss}; margin:0; color:#1c1c1c; background:#f3f4f6; }
+  .toolbar select{ font:inherit; font-size:13px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:#fff; color:#333; }
+  .toolbar .fontlbl{ font-size:12px; color:#889; }
   .toolbar{ position:sticky; top:0; background:#fff; border-bottom:1px solid var(--line); padding:10px 16px; display:flex; gap:8px; align-items:center; z-index:5; }
   .toolbar a,.toolbar button{ font:inherit; font-size:13px; padding:7px 14px; border:1px solid var(--line); border-radius:6px; background:#fff; color:#333; text-decoration:none; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
   .toolbar svg{ width:15px; height:15px; }
@@ -18871,10 +18892,18 @@ document.addEventListener('keydown',function(e){
   <button class="primary" onclick="window.print()">${QI.print}<span>列印 / 存成 PDF</span></button>
   <a href="/admin/quotes/${escapeAttr(report.id)}/image.jpg" download>${QI.image}<span>下載 JPG 圖</span></a>
   <a href="/admin/quotes/${escapeAttr(report.id)}">${QI.back}<span>回編輯</span></a>
+  <span class="fontlbl">字型</span>
+  <select id="qfont" onchange="qSetFont(this.value)" title="選擇報價單字型（會套用到列印與 JPG）">
+    ${Object.entries(QUOTE_FONTS).map(([k, v]) => `<option value="${k}"${k === fkey ? " selected" : ""}>${escapeHtml(v.label)}</option>`).join("")}
+  </select>
   <span class="sp"></span>
   <span style="font-size:12px;color:#889;">共 ${itemCount} 項 · ${totalPages} 頁 · ${escapeHtml(QUOTE_STATUS_LABEL[report.status] || report.status)}</span>
 </div>
 ${pagesHtml}
+<script>
+var QFONTS = ${JSON.stringify(Object.fromEntries(Object.entries(QUOTE_FONTS).map(([k, v]) => [k, v.css])))};
+function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QFONTS[v]; try{ fetch('/admin/quotes/font',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'font='+encodeURIComponent(v),credentials:'same-origin'}); }catch(e){} }
+</script>
 </body></html>`;
     }
 
@@ -19320,12 +19349,27 @@ ${pagesHtml}
     }
 
     // 列印頁（A4 / 存 PDF）
+    // 儲存報價單字型偏好（列印頁字型下拉會呼叫）
+    router.post("/quotes/font", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const key = String(req.body.font || "").trim();
+            if (QUOTE_FONTS[key]) {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("quote_font", key);
+            }
+            res.json({ ok: true });
+        } catch (e) {
+            console.error("[admin] /quotes/font failed", e);
+            res.status(400).json({ ok: false });
+        }
+    });
+
     router.get("/quotes/:id/sheet", async (req, res) => {
         try {
             const data = await loadQuoteForRender(req.params.id);
             if (!data) { res.status(404).type("text/html").send("找不到此報價"); return; }
             const logo = await quote_report_js_1.getDefaultLogoDataUri();
-            res.type("text/html").send(renderQuoteSheetHtml(data.report, data.groups, logo));
+            const fontKey = await getQuoteFontKey();
+            res.type("text/html").send(renderQuoteSheetHtml(data.report, data.groups, logo, fontKey));
         } catch (e) {
             console.error("[admin] /quotes/:id/sheet failed", e);
             res.status(500).type("text/html").send("產生失敗：" + escapeHtml(String(e && e.message || e)));
@@ -19338,7 +19382,8 @@ ${pagesHtml}
             const data = await loadQuoteForRender(req.params.id);
             if (!data) { res.status(404).send("找不到此報價"); return; }
             const logo = await quote_report_js_1.getDefaultLogoDataUri();
-            const buf = await quote_report_js_1.renderQuoteImage(data.report, data.groups, { logoDataUri: logo });
+            const fontCss = quoteFontCss(await getQuoteFontKey());
+            const buf = await quote_report_js_1.renderQuoteImage(data.report, data.groups, { logoDataUri: logo, fontCss });
             res.setHeader("Content-Type", "image/jpeg");
             res.setHeader("Content-Disposition", `inline; filename="quote-${encodeURIComponent(data.report.ym || req.params.id)}.jpg"`);
             res.send(buf);

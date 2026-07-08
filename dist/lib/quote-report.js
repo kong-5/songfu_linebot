@@ -668,7 +668,9 @@ function renderQuoteSvg(report, groups, opts) {
     const footerH = 60;
     const H = Math.max(1754, bodyTop + maxRows * rowH + footerH);
 
-    const FONT = "'Noto Sans CJK TC','Noto Sans TC','Microsoft JhengHei','PingFang TC',sans-serif";
+    // 字型：可由 opts.fontCss 指定（報價單字型選擇）；一律保留 Noto 作 fallback，
+    // 伺服器無圓體時仍以 Noto 渲染（不會變豆腐框）。
+    const FONT = (opts.fontCss ? opts.fontCss + "," : "") + "'Noto Sans CJK TC','Noto Sans TC','Microsoft JhengHei','PingFang TC',sans-serif";
 
     // 欄位寬度（欄內）：序號 / 品名 / 規格 / 單價
     const cSeq = 46, cName = colW * 0.46, cSpec = colW * 0.30, cPrice = colW - cSeq - (colW * 0.46) - (colW * 0.30);
@@ -689,9 +691,9 @@ function renderQuoteSvg(report, groups, opts) {
         const baseY = rowH - 14; // 文字基線位置
         for (const r of colRows) {
             if (r.type === "cat") {
-                out += `<rect x="${x0}" y="${y}" width="${colW}" height="${rowH}" fill="#1e7a5e"/>`;
+                out += `<rect x="${x0}" y="${y}" width="${colW}" height="${rowH}" fill="#1a6fb5"/>`;
                 out += `<text x="${x0 + 12}" y="${y + baseY}" font-size="20" font-weight="700" fill="#ffffff" font-family="${FONT}">${escapeXml(r.category)}</text>`;
-                out += `<text x="${x0 + colW - 10}" y="${y + baseY}" font-size="15" fill="#cdebd9" text-anchor="end" font-family="${FONT}">${r.count} 項</text>`;
+                out += `<text x="${x0 + colW - 10}" y="${y + baseY}" font-size="15" fill="#cfe3f5" text-anchor="end" font-family="${FONT}">${r.count} 項</text>`;
             } else {
                 out += `<rect x="${x0}" y="${y}" width="${colW}" height="${rowH}" fill="${r.seq % 2 ? "#ffffff" : "#f7f9fb"}" stroke="#e3e8ee"/>`;
                 let ix = x0;
@@ -722,13 +724,13 @@ function renderQuoteSvg(report, groups, opts) {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <rect width="${W}" height="${H}" fill="#ffffff"/>
 ${logoBox}
-<text x="${centerX}" y="76" text-anchor="middle" font-size="46" font-weight="800" fill="#1e7a5e" font-family="${FONT}" letter-spacing="8">${escapeXml(report.title || DEFAULT_HEADER.title)}</text>
+<text x="${centerX}" y="76" text-anchor="middle" font-size="46" font-weight="800" fill="#1a6fb5" font-family="${FONT}" letter-spacing="8">${escapeXml(report.title || DEFAULT_HEADER.title)}</text>
 <text x="${centerX}" y="122" text-anchor="middle" font-size="27" font-weight="600" fill="#334" font-family="${FONT}" letter-spacing="10">${escapeXml(report.subtitle || DEFAULT_HEADER.subtitle)}</text>
 <text x="${centerX}" y="160" text-anchor="middle" font-size="23" font-weight="600" fill="#333" font-family="${FONT}">${escapeXml((report.company || "") + "　" + (report.roc_label || ""))}</text>
 <text x="${W - MARGIN}" y="74" text-anchor="end" font-size="15" fill="#667" font-family="${FONT}">${escapeXml(report.address || "")}</text>
 <text x="${W - MARGIN}" y="98" text-anchor="end" font-size="15" fill="#667" font-family="${FONT}">Tel：${escapeXml(report.tel || "")}</text>
 <text x="${W - MARGIN}" y="122" text-anchor="end" font-size="15" fill="#667" font-family="${FONT}">Fax：${escapeXml(report.fax || "")}</text>
-<line x1="${MARGIN}" y1="${headerH - 8}" x2="${W - MARGIN}" y2="${headerH - 8}" stroke="#1e7a5e" stroke-width="3"/>
+<line x1="${MARGIN}" y1="${headerH - 8}" x2="${W - MARGIN}" y2="${headerH - 8}" stroke="#1a6fb5" stroke-width="3"/>
 ${renderColumn(colL, MARGIN)}
 ${renderColumn(colR, MARGIN + colW + colGap)}
 <text x="${centerX}" y="${H - 26}" text-anchor="middle" font-size="15" fill="#99a" font-family="${FONT}">松富物流 · 本報價單為 ${escapeXml(report.roc_label || report.ym || "")}　單位：新台幣元　「—」表該項本月不報價</text>
