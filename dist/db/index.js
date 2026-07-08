@@ -322,6 +322,9 @@ function initSqlite(dbPath) {
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS wholesale_market_snapshots (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, market_name TEXT NOT NULL, crop_name TEXT NOT NULL, category TEXT, high_price REAL, mid_price REAL, low_price REAL, created_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_wholesale_snap_date ON wholesale_market_snapshots(record_date)");
+        // [feat 2026-07-08] 畜產／家禽（毛豬/白肉雞/雞蛋）行情快照
+        sqlite.exec("CREATE TABLE IF NOT EXISTS livestock_price_snapshots (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, category TEXT NOT NULL, item_label TEXT NOT NULL, price REAL, unit TEXT, market_name TEXT, extra_json TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_livestock_price_date ON livestock_price_snapshots(record_date)");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -861,6 +864,22 @@ async function initPg() {
             created_at TIMESTAMPTZ
           )`);
                 await client.query("CREATE INDEX IF NOT EXISTS idx_wholesale_snap_date ON wholesale_market_snapshots(record_date)");
+            }
+            catch (_) { /* table may already exist */ }
+            // [feat 2026-07-08] 畜產／家禽行情快照
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS livestock_price_snapshots (
+            id TEXT PRIMARY KEY,
+            record_date TEXT NOT NULL,
+            category TEXT NOT NULL,
+            item_label TEXT NOT NULL,
+            price DOUBLE PRECISION,
+            unit TEXT,
+            market_name TEXT,
+            extra_json TEXT,
+            created_at TIMESTAMPTZ
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_livestock_price_date ON livestock_price_snapshots(record_date)");
             }
             catch (_) { /* table may already exist */ }
             try {

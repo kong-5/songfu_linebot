@@ -204,6 +204,29 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         }
     });
 
+    const livestock_price_js_1 = require("./lib/livestock-price.js");
+    /** Cloud Scheduler 預抓畜產／家禽（毛豬/白肉雞/雞蛋）行情：建議每日 07:00 / 11:00 / 15:00。
+     *  與 wholesale-prefetch 同一 job secret 機制。 */
+    app.post("/api/jobs/livestock-prefetch", async (req, res) => {
+        try {
+            if (!dbReady) { res.status(503).json({ ok: false, error: "db not ready" }); return; }
+            const secret = (process.env.WHOLESALE_JOB_SECRET || process.env.RHYTHM_JOB_SECRET || process.env.LINE_WORKER_SECRET || "").trim();
+            if (secret) {
+                const got = String(req.headers["x-wholesale-job-secret"] || req.headers["x-rhythm-job-secret"] || "").trim();
+                if (got !== secret) { res.status(401).type("text/plain").send("Unauthorized"); return; }
+            }
+            const dateStr = String(req.query.date || req.body?.date || "").trim() || new Date().toISOString().slice(0, 10);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).json({ ok: false, error: "invalid date" }); return; }
+            const db = (0, index_js_1.getDb)(dbPath);
+            const r = await (0, livestock_price_js_1.loadOrFetchLivestockPrices)(db, dateStr);
+            res.json({ ok: true, date: dateStr, dataDate: r.dataDate, source: r.source, status: r.status, count: (r.prices || []).length, errors: r.errors || [] });
+        }
+        catch (e) {
+            console.error("[livestock-prefetch]", e?.message || e);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 400) });
+        }
+    });
+
     const rhythm_analysis_js_1 = require("./lib/rhythm-analysis.js");
     app.post("/api/jobs/rhythm-daily", async (_req, res) => {
         try {

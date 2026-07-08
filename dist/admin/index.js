@@ -48,6 +48,7 @@ const resolve_product_js_1 = require("../lib/resolve-product.js");
 const vision_ocr_js_1 = require("../lib/vision-ocr.js");
 const wholesale_price_js_1 = require("../lib/wholesale-price.js");
 const wholesale_snapshot_js_1 = require("../lib/wholesale-snapshot.js");
+const livestock_price_js_1 = require("../lib/livestock-price.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
 const unit_conversion_js_1 = require("../lib/unit-conversion.js");
 const gemini_order_helpers_js_1 = require("../lib/gemini-order-helpers.js");
@@ -1629,6 +1630,7 @@ const NOTION_SIDEBAR = (active) => `
       <div class="sidebar-links">
         <a href="/admin/logistics/procurement" class="${active === "logistics-procurement" ? "active" : ""}">採購分析</a>
         <a href="/admin/logistics/market" class="${active === "logistics-market" ? "active" : ""}">北農行情</a>
+        <a href="/admin/logistics/livestock" class="${active === "logistics-livestock" ? "active" : ""}">畜產雞蛋行情</a>
         <a href="/admin/logistics/commodities" class="${active === "logistics-commodities" ? "active" : ""}">原物料行情</a>
       </div>
     </details>
@@ -2636,6 +2638,7 @@ function createAdminRouter() {
         { title: "每日盤點", href: "/admin/inventory", keywords: ["inventory", "盤點"] },
         { title: "物流叫貨", href: "/admin/logistics/procurement", keywords: ["procurement", "採購"] },
         { title: "北農行情", href: "/admin/logistics/market", keywords: ["market", "北農", "價格"] },
+        { title: "畜產雞蛋行情", href: "/admin/logistics/livestock", keywords: ["livestock", "毛豬", "豬價", "雞", "白肉雞", "雞蛋", "蛋價", "畜產", "行情", "價格"] },
         { title: "資料匯出", href: "/admin/export", keywords: ["export", "csv", "匯出"] },
         { title: "LINE 綁定檢查", href: "/admin/line-binding", keywords: ["binding", "綁定"] },
         { title: "Gemini Prompt", href: "/admin/gemini-prompts", keywords: ["prompt", "gemini", "ab"] },
@@ -6994,6 +6997,100 @@ function createAdminRouter() {
         res.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         res.set("Content-Disposition", `attachment; filename="wholesale_${dateStr}.xlsx"`);
         res.send(buf);
+    });
+
+    // ============================================================
+    // 畜產／家禽行情（毛豬、白肉雞、雞蛋）— 農業部開放資料，自動抓＋每日快照
+    // ============================================================
+    const LIVESTOCK_CAT_LABEL = { pig: "🐖 毛豬", chicken: "🐓 白肉雞", egg: "🥚 雞蛋" };
+    /** 取要顯示的資料：優先今日快照；沒有就即時抓一次（並寫快照）。 */
+    async function getLivestockForDisplay(dateStr) {
+        const today = dateStr || new Date().toISOString().slice(0, 10);
+        const snap = await (0, livestock_price_js_1.loadLivestockSnapshot)(db, today);
+        if (snap.length) return { prices: snap, dataDate: today, source: "snapshot" };
+        // 今日還沒有快照 → 找最近一天快照
+        const latest = await db.prepare("SELECT record_date FROM livestock_price_snapshots ORDER BY record_date DESC LIMIT 1").get();
+        if (latest?.record_date) {
+            const s2 = await (0, livestock_price_js_1.loadLivestockSnapshot)(db, latest.record_date);
+            if (s2.length) return { prices: s2, dataDate: latest.record_date, source: "snapshot" };
+        }
+        // 完全沒快照 → 即時抓一次
+        const r = await (0, livestock_price_js_1.loadOrFetchLivestockPrices)(db, today);
+        return { prices: r.prices, dataDate: r.dataDate, source: r.source, errors: r.errors };
+    }
+    router.get("/logistics/livestock", async (req, res) => {
+        const okMsg = req.query.ok === "updated" ? "已更新為最新行情。" : "";
+        const errMsg = req.query.err ? String(req.query.err) : "";
+        const view = await getLivestockForDisplay();
+        const prices = view.prices || [];
+        const byCat = { pig: [], chicken: [], egg: [] };
+        for (const p of prices) { if (byCat[p.category]) byCat[p.category].push(p); }
+        const fmtP = (v) => (v == null ? "—" : (Math.round(Number(v) * 100) / 100).toString());
+        const pigRows = byCat.pig
+            .sort((a, b) => (Number(b.price) || 0) - (Number(a.price) || 0))
+            .map((p) => {
+            let d = "";
+            try { d = p.extraJson ? (JSON.parse(p.extraJson).資料日 || "") : ""; } catch (_) { }
+            return `<tr><td>${escapeHtml(p.marketName || "—")}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtP(p.price)}</td><td style="color:var(--txt-3);font-size:12px;">${escapeHtml(d)}</td></tr>`;
+        }).join("");
+        const simpleRows = (arr) => arr.map((p) => `<tr><td>${escapeHtml(p.itemLabel)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtP(p.price)}</td></tr>`).join("");
+        const card = (title, headRight, bodyHtml, unit) => `
+      <div class="notion-card" style="flex:1;min-width:260px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+          <h3 style="margin:0;font-size:15px;">${title}</h3><span style="font-size:12px;color:var(--txt-3);">${unit}</span>
+        </div>
+        <table class="notion-table" style="width:100%;border-collapse:collapse;font-size:14px;">
+          <thead><tr><th style="text-align:left;">${headRight}</th><th style="text-align:right;">價格</th>${title.includes("毛豬") ? "<th></th>" : ""}</tr></thead>
+          <tbody>${bodyHtml || `<tr><td colspan="3" style="color:var(--txt-3);padding:12px;text-align:center;">— 無資料 —</td></tr>`}</tbody>
+        </table>
+      </div>`;
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 畜產雞蛋行情</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <h1 style="font-size:20px;margin:6px 0;">畜產雞蛋行情</h1>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span style="font-size:13px;color:var(--txt-3);">資料日：<strong>${escapeHtml(view.dataDate || "—")}</strong>${view.source === "snapshot" ? "（快照）" : ""}</span>
+          <form method="post" action="/admin/logistics/livestock/refresh" style="display:inline;" onsubmit="var b=this.querySelector('button');if(b){b.disabled=true;b.textContent='更新中…';}"><button type="submit" class="btn btn-primary">更新</button></form>
+          ${prices.length ? `<a href="/admin/logistics/livestock/export.csv" class="btn">下載 CSV</a>` : ""}
+        </div>
+      </div>
+      ${okMsg ? `<div style="background:#e7f5e9;color:#2e7d32;padding:8px 12px;border-radius:8px;margin:6px 0;">${escapeHtml(okMsg)}</div>` : ""}
+      ${errMsg ? `<div style="background:#fef2f2;color:#b91c1c;padding:8px 12px;border-radius:8px;margin:6px 0;">${escapeHtml(errMsg)}</div>` : ""}
+      <p class="notion-hint" style="margin:2px 0 12px;">資料來源：<a href="${livestock_price_js_1.SOURCE_URL}" target="_blank" rel="noopener">農業部開放資料</a>（毛豬各肉品市場成交均價、白肉雞與雞蛋產地價）。每日自動更新，也可按「更新」即時抓取。毛豬各市場顯示其最新交易日。</p>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;">
+        ${card(LIVESTOCK_CAT_LABEL.egg, "品項", simpleRows(byCat.egg), "元/台斤")}
+        ${card(LIVESTOCK_CAT_LABEL.chicken, "品項", simpleRows(byCat.chicken), "元/台斤")}
+        ${card(LIVESTOCK_CAT_LABEL.pig + "（各肉品市場）", "市場", pigRows, "元/公斤")}
+      </div>`;
+        res.type("text/html").send(notionPage("畜產雞蛋行情", body, "logistics-livestock", res));
+    });
+    router.post("/logistics/livestock/refresh", express_1.default.urlencoded({ extended: true }), async (_req, res) => {
+        try {
+            const r = await (0, livestock_price_js_1.loadOrFetchLivestockPrices)(db, new Date().toISOString().slice(0, 10));
+            if (!r.prices.length) {
+                const detail = (r.errors && r.errors.length) ? r.errors.join("；") : "農業部 API 目前無資料（可能休市或尚未更新）";
+                res.redirect("/admin/logistics/livestock?err=" + encodeURIComponent("更新失敗：" + detail));
+                return;
+            }
+            res.redirect("/admin/logistics/livestock?ok=updated");
+        }
+        catch (e) {
+            console.error("[admin] livestock refresh", e?.message || e);
+            res.redirect("/admin/logistics/livestock?err=" + encodeURIComponent("更新失敗：" + String(e?.message || e).slice(0, 200)));
+        }
+    });
+    router.get("/logistics/livestock/export.csv", async (_req, res) => {
+        const view = await getLivestockForDisplay();
+        const lines = ["類別,品項/市場,價格,單位,資料日"];
+        const q = (x) => '"' + String(x == null ? "" : x).replace(/"/g, '""') + '"';
+        for (const p of (view.prices || [])) {
+            let d = view.dataDate;
+            try { if (p.extraJson) d = JSON.parse(p.extraJson).資料日 || view.dataDate; } catch (_) { }
+            lines.push([q(LIVESTOCK_CAT_LABEL[p.category] || p.category), q(p.marketName || p.itemLabel), q(p.price), q(p.unit), q(d)].join(","));
+        }
+        res.set("Content-Type", "text/csv; charset=utf-8");
+        res.set("Content-Disposition", `attachment; filename="livestock_${view.dataDate || "prices"}.csv"`);
+        res.send("﻿" + lines.join("\r\n"));
     });
 
     // ============================================================
