@@ -95,20 +95,34 @@ async function backfillWholesaleHistory(db, days = 30, endIso = null, skipExisti
     const end = endIso && /^\d{4}-\d{2}-\d{2}$/.test(endIso) ? endIso : new Date().toISOString().slice(0, 10);
     const endMs = new Date(end + "T00:00:00Z").getTime();
     const n = Math.max(1, Math.min(days, 400));
-    let total = 0, daysWithData = 0, empties = 0;
+    // 先算出目標日期，並（可選）過濾掉已有快照的日子
+    const targets = [];
     for (let k = 0; k < n; k++) {
         const iso = new Date(endMs - k * 86400000).toISOString().slice(0, 10);
         if (skipExisting) {
             const has = await db.prepare("SELECT 1 AS x FROM wholesale_market_snapshots WHERE record_date = ? LIMIT 1").get(iso);
-            if (has) { continue; }
+            if (has) continue;
         }
-        const r = await (0, wholesale_price_js_1.fetchTaipeiWholesalePricesDetailed)(iso);
-        if (r.prices && r.prices.length) {
-            await saveWholesaleMarketSnapshot(db, iso, r.prices);
-            total += r.prices.length;
-            daysWithData++;
-        } else {
-            empties++; // 休市／該日無資料
+        targets.push(iso);
+    }
+    let total = 0, daysWithData = 0, empties = 0;
+    const CONC = 6; // 併發抓取（單日查詢穩定；適度併發避免壓垮農業部 API）
+    for (let i = 0; i < targets.length; i += CONC) {
+        const batch = targets.slice(i, i + CONC);
+        const results = await Promise.all(batch.map(async (iso) => {
+            try {
+                const r = await (0, wholesale_price_js_1.fetchTaipeiWholesalePricesDetailed)(iso);
+                return { iso, prices: (r.prices || []) };
+            } catch (_) { return { iso, prices: [] }; }
+        }));
+        for (const { iso, prices } of results) {
+            if (prices.length) {
+                await saveWholesaleMarketSnapshot(db, iso, prices);
+                total += prices.length;
+                daysWithData++;
+            } else {
+                empties++;
+            }
         }
     }
     const startIso = new Date(endMs - (n - 1) * 86400000).toISOString().slice(0, 10);
