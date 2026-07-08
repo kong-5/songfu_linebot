@@ -7182,7 +7182,19 @@ function createAdminRouter() {
         let apiErrors = [];
         if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
             try {
-                const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
+                // [fix 2026-07-08] 預設先讀本地快照（秒開），不每次都同步打農業部 API（API 慢時會卡 15-30 秒像當機）。
+                // 按「更新」(?refresh=1) 或該日尚無快照時，才即時抓 API。
+                const forceApi = req.query.refresh === "1";
+                let snap = null;
+                if (!forceApi) {
+                    const cached = await (0, wholesale_snapshot_js_1.loadWholesaleMarketSnapshot)(db, dateStr);
+                    if (cached && cached.length) {
+                        snap = { prices: cached, source: "snapshot", status: "snapshot", hint: "", apiErrors: [], rawCount: cached.length };
+                    }
+                }
+                if (!snap) {
+                    snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
+                }
                 prices = snap.prices || [];
                 snapHint = snap.hint || "";
                 snapSource = snap.source || "";
@@ -7219,6 +7231,7 @@ function createAdminRouter() {
         <form method="get" action="/admin/logistics/market" style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
           <label>日期 <input type="date" name="date" value="${escapeAttr(dateStr)}"></label>
           <button type="submit" class="btn">查詢</button>
+          <a href="/admin/logistics/market?date=${escapeAttr(dateStr)}&refresh=1" class="btn btn-primary" title="即時向農業部 API 抓取（可能需數秒）">更新</a>
           ${prices.length ? `<a href="/admin/logistics/market/export.csv?date=${escapeAttr(dateStr)}" class="btn">下載 CSV</a><a href="/admin/logistics/market/export.xlsx?date=${escapeAttr(dateStr)}" class="btn">下載 Excel</a>` : ""}
           ${sourceTag}
         </form>

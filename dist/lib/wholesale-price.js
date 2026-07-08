@@ -77,11 +77,13 @@ async function fetchTaipeiWholesalePricesDetailed(dateStr) {
     const all = [];
     const errors = [];
     let networkOk = false;
-    for (const market of markets) {
+    // [fix 2026-07-08] 兩市場改「並行」抓＋逾時縮短 8 秒（原本序列 2×15s，API 慢時整頁卡到 30 秒像當機）。
+    const TIMEOUT_MS = 8000;
+    const fetchMarket = async (market) => {
         try {
             const url = `${MOA_API}?StartDate=${encodeURIComponent(repDate)}&EndDate=${encodeURIComponent(repDate)}&Market=${encodeURIComponent(market)}&$top=9999`;
             const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 15000);
+            const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
             let resp;
             try {
                 resp = await fetch(url, { signal: ctrl.signal });
@@ -90,13 +92,13 @@ async function fetchTaipeiWholesalePricesDetailed(dateStr) {
             }
             if (!resp.ok) {
                 errors.push(`${market}: HTTP ${resp.status}`);
-                continue;
+                return;
             }
             networkOk = true;
             const data = await resp.json();
             if (!Array.isArray(data)) {
                 errors.push(`${market}: 回應格式異常（非陣列）`);
-                continue;
+                return;
             }
             for (const row of data) {
                 all.push({
@@ -112,9 +114,10 @@ async function fetchTaipeiWholesalePricesDetailed(dateStr) {
         }
         catch (e) {
             const isTimeout = e?.name === "AbortError";
-            errors.push(`${market}: ${isTimeout ? "連線逾時 15s" : (e?.message || String(e))}`);
+            errors.push(`${market}: ${isTimeout ? `連線逾時 ${TIMEOUT_MS / 1000}s` : (e?.message || String(e))}`);
         }
-    }
+    };
+    await Promise.all(markets.map(fetchMarket));
     let status;
     if (all.length > 0) status = "ok";
     else if (!networkOk) status = "network_error";
