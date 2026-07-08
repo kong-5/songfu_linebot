@@ -135,11 +135,15 @@ function createLiffRouter() {
             let resumed = false;
             const sess = await db.prepare("SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ?").get(code, date);
             if (sess) {
-                const cRows = await db.prepare("SELECT erp_code, counted_qty, expiry_json FROM stocktake_count WHERE session_id = ?").all(sess.id);
+                const cRows = await db.prepare("SELECT erp_code, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ?").all(sess.id);
                 for (const r of cRows || []) {
                     let expiry = [];
                     try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
-                    saved[String(r.erp_code || "")] = { counted: (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty), expiry };
+                    const totalv = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty);
+                    const midv = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
+                    // counted 存的是合計；還原「上貨」= 合計 − 中貨
+                    const goodv = totalv == null ? null : Math.round((totalv - (midv || 0)) * 100) / 100;
+                    saved[String(r.erp_code || "")] = { counted: goodv, mid: midv, expiry };
                 }
                 resumed = (cRows || []).length > 0;
             }
@@ -169,9 +173,12 @@ function createLiffRouter() {
             await db.prepare("INSERT INTO stocktake_session (id, wh_code, wh_name, count_date, status, group_id, created_by, created_by_name, item_count, counted_count, created_at, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 .run(sid, code, wh ? String(wh.name || "") : "", date, "submitted", null, v.sub || "", name, total, counts.length, now, now);
             for (const c of counts) {
-                const cv = (c.counted == null || c.counted === "") ? null : Number(c.counted);
-                await db.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, expiry_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                    .run(newId("stc"), sid, String(c.code || ""), String(c.name || ""), String(c.spec || ""), String(c.unit || ""), Number(c.sys || 0), cv, JSON.stringify(c.expiry || []), now);
+                // counted=上貨(good)、mid=中貨；counted_qty 存兩者合計，mid_qty 單獨保留供品質標注
+                const good = (c.counted == null || c.counted === "") ? null : Number(c.counted);
+                const mid = (c.mid == null || c.mid === "") ? null : Number(c.mid);
+                const cv = (good == null && mid == null) ? null : ((good || 0) + (mid || 0));
+                await db.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    .run(newId("stc"), sid, String(c.code || ""), String(c.name || ""), String(c.spec || ""), String(c.unit || ""), Number(c.sys || 0), cv, mid, JSON.stringify(c.expiry || []), now);
             }
             res.json({ ok: true, counted: counts.length, total });
         } catch (e) { console.error("[liff stocktake submit]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }

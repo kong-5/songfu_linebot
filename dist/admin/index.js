@@ -5828,14 +5828,15 @@ function createAdminRouter() {
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
         for (const s of sessions || []) {
-            const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, expiry_json FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
+            const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
             const items = (rows || []).map((r) => {
                 const sys = Number(r.sys_qty || 0);
                 const counted = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty);
+                const mid = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
                 const diff = counted == null ? null : Math.round((counted - sys) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
-                return { code: String(r.erp_code || ""), name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, diff, expiry };
+                return { code: String(r.erp_code || ""), name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, expiry };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
             out.push({ session: s, items, diffCount });
@@ -5868,7 +5869,7 @@ function createAdminRouter() {
                 <td class="stk-code">${escapeHtml(it.code)}</td>
                 <td>${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
                 <td class="stk-num">${fmtN(it.sys)}</td>
-                <td class="stk-num">${fmtN(it.counted)}</td>
+                <td class="stk-num">${fmtN(it.counted)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}</td>
                 <td class="stk-num stk-diff">${it.diff == null ? "—" : (it.diff > 0 ? "+" : "") + it.diff}</td>
                 <td class="stk-num">${diffPct(it)}</td>
                 <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
@@ -5885,7 +5886,7 @@ function createAdminRouter() {
               </div>
             </div>
             <table class="stk-tbl">
-              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統</th><th class="stk-num">實盤</th><th class="stk-num">盤差</th><th class="stk-num">盤差%</th><th>效期</th></tr></thead>
+              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統</th><th class="stk-num">實盤（含中）</th><th class="stk-num">盤差</th><th class="stk-num">盤差%</th><th>效期</th></tr></thead>
               <tbody>${rowsHtml || `<tr><td colspan="7" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
             </table>
           </div>`;
@@ -5923,6 +5924,7 @@ function createAdminRouter() {
         .stk-code{font-variant-numeric:tabular-nums;color:#787774;white-space:nowrap;}
         .stk-spec{margin-left:6px;font-size:11px;color:#9b9a97;}
         .stk-exp{font-size:11.5px;color:#8a5a10;max-width:220px;}
+        .stk-mid{display:block;font-size:10.5px;color:#2383e2;font-weight:600;}
         tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}
         tr.stk-p .stk-diff{color:#1f7a46;font-weight:700;}
         tr.stk-z .stk-diff{color:#9b9a97;}
@@ -5965,12 +5967,12 @@ function createAdminRouter() {
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
         const day = await loadStocktakeDay(date);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
-        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量,實盤量,盤差,盤差%,效期明細,盤點人,送出時間"];
+        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量,實盤量(含中),其中中貨,盤差,盤差%,效期明細,盤點人,送出時間"];
         for (const { session: s, items } of day) {
             for (const it of items) {
                 const dp = it.diff == null ? "" : (it.sys === 0 ? "" : ((it.diff / it.sys) * 100).toFixed(1) + "%");
                 const exp = (it.expiry || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"}x${b.qty || "?"}`).join(" / ");
-                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.diff == null ? "" : it.diff, dp, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
+                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
             }
         }
         res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
