@@ -38,6 +38,7 @@
   .pk-i .n{font-size:15px;font-weight:700;line-height:1.2;}
   .pk-i .m{font-size:12px;color:var(--txt-3);margin-top:2px;font-variant-numeric:tabular-nums;}
   .pk-done{font-size:11px;font-weight:700;color:var(--pos);background:var(--pos-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
+  .pk-draft{font-size:11px;font-weight:700;color:var(--warn);background:var(--warn-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
   .pk-arrow{color:var(--txt-3);font-size:20px;flex:none;}
   /* count header */
   header{position:sticky;top:0;z-index:20;background:var(--card);border-bottom:1px solid var(--line);}
@@ -141,6 +142,7 @@
       midChip:'中',midTitle:'中價貨（品質較差）數量',midPh:'中價數量',midDone:'完成收起 ▴',
       sumLine:function(g,m,tot){return '上 '+g+'  ＋  中 '+m+'  ＝  合計 '+tot;},
       showZero:'顯示庫存0',hiddenN:function(n){return '另有 '+n+' 項庫存 0 已隱藏';},
+      draftResumed:'已回復未送出',drafting:'盤點中(未送出)',
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
       progN:function(d,a){return '已盤 '+d+'/'+a;},barN:function(d,a){return '已盤 '+d+'/'+a+' · 未盤 '+(a-d);},
       confirm:function(wh,d,a){return '送出盤點？\n\n倉庫：'+wh+'\n已盤 '+d+'/'+a+' 項（未盤的會標「未盤」）';},
@@ -175,6 +177,25 @@
   function api(path){return fetch(path,{headers:{'Authorization':'Bearer '+(S.idToken||'')}}).then(function(r){return r.json();});}
   function showCenter(html){app.innerHTML='<div class="center">'+html+'</div>';}
 
+  // ---------- 自動暫存（防電話中斷 / LIFF 重載遺失盤點）----------
+  // 一邊盤一邊把「上貨/中貨/效期/展開狀態」存進本機，重開同倉同日自動接回。
+  function draftKey(code,date){ return 'stk_draft_'+(code||'')+'_'+(date||''); }
+  function draftKeyCur(){ return S.wh?draftKey(S.wh.code,S.date):''; }
+  var _saveT=null;
+  function saveDraft(){
+    if(!S.wh) return;
+    if(_saveT) clearTimeout(_saveT);
+    _saveT=setTimeout(function(){
+      try{
+        var d={counts:S.counts,mid:S.mid,midOpen:S.midOpen,batches:S.batches,expanded:S.expanded};
+        localStorage.setItem(draftKeyCur(),JSON.stringify(d));
+      }catch(_){}
+    },250);
+  }
+  function loadDraft(code,date){ try{ var s=localStorage.getItem(draftKey(code,date)); return s?JSON.parse(s):null; }catch(_){ return null; } }
+  function clearDraft(){ try{ localStorage.removeItem(draftKeyCur()); }catch(_){} }
+  function hasDraft(code,date){ try{ return !!localStorage.getItem(draftKey(code,date)); }catch(_){ return false; } }
+
   // ---------- 開始 ----------
   function boot(){
     if(!LIFF_ID){ showCenter('<div>'+t('liffNotSet')+'</div>'); return; }
@@ -204,11 +225,13 @@
         +'<div class="sub">'+esc(t('countDay'))+' '+esc(res.date||'')+(S.name?' · '+esc(S.name):'')+'</div></div>';
       if(!whs.length){ html+='<div class="empty">'+t('noWh')+'</div>'; }
       else{
+        var pkDate=res.date||'';
         html+='<div class="pk-list">'+whs.map(function(w){
+          var draft=hasDraft(w.code,pkDate);
           return '<button class="pk" data-w="'+esc(w.code)+'">'
             +'<div class="pk-ic">📦</div>'
             +'<div class="pk-i"><div class="n">'+esc(w.name||w.code)+'</div><div class="m">'+esc(w.code)+' · '+esc(t('itemsN')(w.items))+'</div></div>'
-            +(w.countedToday?'<span class="pk-done">'+esc(t('countedToday'))+'</span>':'')
+            +(draft?'<span class="pk-draft">'+esc(t('drafting'))+'</span>':(w.countedToday?'<span class="pk-done">'+esc(t('countedToday'))+'</span>':''))
             +'<span class="pk-arrow">›</span></button>';
         }).join('')+'</div>';
       }
@@ -234,6 +257,17 @@
         if(s.mid!=null){ S.mid[it.c]=String(s.mid); S.midOpen[it.c]=true; }
         if(s.expiry&&s.expiry.length){ S.batches[it.c]=s.expiry.map(function(b){return {date:b.date||'',qty:(b.qty==null?'':String(b.qty))};}); }
       });
+      // 本機暫存（未送出的盤點）優先：電話中斷/重載後接回，不用重盤
+      S.draftRestored=false;
+      var dr=loadDraft(S.wh.code,S.date);
+      if(dr){
+        if(dr.counts) S.counts=dr.counts;
+        if(dr.mid) S.mid=dr.mid;
+        if(dr.midOpen) S.midOpen=dr.midOpen;
+        if(dr.batches) S.batches=dr.batches;
+        if(dr.expanded) S.expanded=dr.expanded;
+        S.draftRestored=true;
+      }
       renderCount();
     }).catch(function(){ showCenter('<div>'+t('loadItemsFail')+'</div>'); });
   }
@@ -305,7 +339,7 @@
     var done=S.items.filter(isCounted).length, all=S.items.length;
     app.innerHTML=''
       +'<header><div class="head-main"><button class="back" id="stBack">'+esc(t('backWh'))+'</button>'
-        +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(t('countDay'))+' '+esc(S.date)+' · '+esc(t('totalN')(all))+(S.resumed?' · <b style="color:var(--accent)">'+esc(t('resumed'))+'</b>':'')+'</div></div>'
+        +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(t('countDay'))+' '+esc(S.date)+' · '+esc(t('totalN')(all))+(S.draftRestored?' · <b style="color:var(--pos)">'+esc(t('draftResumed'))+'</b>':(S.resumed?' · <b style="color:var(--accent)">'+esc(t('resumed'))+'</b>':''))+'</div></div>'
         +'<button class="lang" id="stLang">'+esc(t('langBtn'))+'</button></div>'
         +'<div class="prog"><div class="prog-bar"><div class="prog-fill" id="stFill"></div></div><div class="prog-num"><span id="stProgTxt"></span></div></div>'
         +'<div class="tools"><div class="search"><input id="stQ" placeholder="'+esc(t('searchPh'))+'" autocomplete="off"></div>'
@@ -317,7 +351,7 @@
         +'<button class="submit" id="stSubmit">'+esc(t('submit'))+'</button></div></div>';
     bindCount(); updateProg();
   }
-  function relist(){ document.getElementById('stListWrap').innerHTML=listHtml(); }
+  function relist(){ document.getElementById('stListWrap').innerHTML=listHtml(); saveDraft(); }
   function updateProg(){
     var done=S.items.filter(isCounted).length, all=S.items.length;
     document.getElementById('stProgTxt').textContent=t('progN')(done,all);
@@ -353,6 +387,7 @@
         var item=el.closest('.item'), c=item.getAttribute('data-c'), i=+el.closest('.brow').getAttribute('data-i');
         S.batches[c][i][el.getAttribute('data-k')]=el.value; item.querySelector('.b-sum b').textContent=fmt(batchSum(c));
       }
+      saveDraft();
     });
     wrap.addEventListener('click',function(e){
       var add=e.target.closest('[data-add]'),del=e.target.closest('[data-del]'),done=e.target.closest('[data-done]'),tg=e.target.closest('[data-toggle]');
@@ -385,6 +420,7 @@
       body:JSON.stringify({warehouse:S.wh.code,date:S.date,name:S.name,counts:counts})
     }).then(function(r){return r.json();}).then(function(res){
       if(res.error){ btn.disabled=false; btn.textContent=t('submit'); alert(t('submitFail')+res.error); return; }
+      clearDraft(); // 已送出，清掉本機暫存
       showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(t('sent'))+'</div>'
         +'<div>'+esc(S.wh.name||S.wh.code)+' · '+esc(S.date)+'</div>'
         +'<div style="font-size:13px;color:var(--txt-3)">'+esc(t('recorded')(res.counted,res.total))+'</div>'
