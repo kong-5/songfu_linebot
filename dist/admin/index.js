@@ -7475,6 +7475,9 @@ function createAdminRouter() {
         let statusCode = "";
         let apiErrors = [];
         let fellBack = false;       // 是否退回到最近營業日
+        // 蔬菜／水果 分類（比照官網；預設看蔬菜）。農業部種類代碼 N05=水果、N04=蔬菜。
+        const catParam = (req.query.cat || "veg").toString();
+        const cat = ["veg", "fruit", "all"].includes(catParam) ? catParam : "veg";
         if (/^\d{4}-\d{2}-\d{2}$/.test(reqDate)) {
             try {
                 // [fix 2026-07-08] 預設先讀本地快照（秒開）；按「更新」(?refresh=1) 才即時打農業部 API。
@@ -7545,7 +7548,11 @@ function createAdminRouter() {
             const col = up ? "#dc2626" : (dn ? "#16a34a" : "#787774");
             return `<td style="text-align:right;font-variant-numeric:tabular-nums;color:${col};font-size:12px;white-space:nowrap;">${up ? "▲" : (dn ? "▼" : "")}${pct > 0 ? "+" : ""}${pct.toFixed(1)}%</td>`;
         };
-        const rows = prices.slice(0, 2000).map((p) => {
+        // 依蔬菜／水果篩選要顯示的列（種類代碼 N05=水果）
+        const isFruit = (p) => (p.categoryCode || "") === "N05";
+        const catFilter = cat === "fruit" ? isFruit : (cat === "all" ? () => true : (p) => !isFruit(p));
+        const shown = prices.filter(catFilter);
+        const rows = shown.slice(0, 2000).map((p) => {
             const key = `${(p.cropCode || "")} ${(p.cropName || "")} ${(p.marketName || "")}`.toLowerCase();
             const mkKey = (p.cropCode || p.cropName) + "|" + (p.marketName || "");
             const dCell = dayMap ? chgCell(p.midPrice, dayMap[mkKey]) : "";
@@ -7563,18 +7570,20 @@ function createAdminRouter() {
         <div style="display:flex;align-items:center;gap:10px;margin:4px 0 10px;flex-wrap:wrap;">
           <span style="font-size:15px;font-weight:600;">資料日期 ${escapeHtml(dateStr)}</span>${sourceTag}
           ${fellBack ? `<span class="sf-pill" style="background:#eef2ff;color:#3730a3;">已自動顯示最近營業日（${escapeHtml(reqDate)} 尚無資料）</span>` : ""}
-          ${prices.length ? `<span style="font-size:12px;color:var(--txt-3);">共 ${prices.length} 筆</span>` : ""}
+          ${prices.length ? `<span style="font-size:12px;color:var(--txt-3);">${cat === "fruit" ? "水果" : cat === "all" ? "全部" : "蔬菜"} ${shown.length} 筆</span>` : ""}
         </div>
         ${req.query.ok === "1" ? '<p class="notion-msg ok">已儲存加價規則。</p>' : ""}
         ${req.query.err === "rules" ? '<p class="notion-msg err">規則格式錯誤，請輸入 JSON 物件。</p>' : ""}
         <form method="get" action="/admin/logistics/market" style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
           <label>日期 <input type="date" name="date" value="${escapeAttr(reqDate)}"></label>
+          <input type="hidden" name="cat" value="${escapeAttr(cat)}">
           <button type="submit" class="btn">查詢</button>
-          <a href="/admin/logistics/market?date=${escapeAttr(reqDate)}&refresh=1" class="btn btn-primary" title="即時向農業部 API 抓取（可能需數秒）">更新最新</a>
+          <a href="/admin/logistics/market?date=${escapeAttr(reqDate)}&cat=${cat}&refresh=1" class="btn btn-primary" title="即時向農業部 API 抓取（可能需數秒）">更新最新</a>
           <a href="/admin/logistics/market/history" class="btn" title="查品項的每日走勢與折線圖">歷史查詢</a>
-          ${prices.length ? `<a href="/admin/logistics/market/export.csv?date=${escapeAttr(dateStr)}" class="btn">下載 CSV</a><a href="/admin/logistics/market/export.xlsx?date=${escapeAttr(dateStr)}" class="btn">下載 Excel</a>` : ""}
+          ${shown.length ? `<a href="/admin/logistics/market/export.csv?date=${escapeAttr(dateStr)}&cat=${cat}" class="btn">下載 CSV</a><a href="/admin/logistics/market/export.xlsx?date=${escapeAttr(dateStr)}&cat=${cat}" class="btn">下載 Excel</a>` : ""}
         </form>
         ${msg ? `<p class="notion-msg warn" style="margin:8px 0;padding:8px 12px;border-radius:6px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;">${escapeHtml(msg)}</p>` : ""}
+        ${prices.length ? `<div style="display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:10px;">${[["veg", "蔬菜"], ["fruit", "水果"], ["all", "全部"]].map(([v, label], i) => `<a href="/admin/logistics/market?date=${escapeAttr(dateStr)}&cat=${v}" style="padding:7px 18px;font-size:14px;text-decoration:none;${i < 2 ? "border-right:1px solid var(--border);" : ""}${cat === v ? "background:#2563eb;color:#fff;font-weight:600;" : "color:var(--txt-2);background:#fff;"}">${label}</a>`).join("")}</div>` : ""}
         ${prices.length ? `<input id="mktSearch" type="search" placeholder="搜尋品名或品號…" oninput="(function(q){q=q.toLowerCase();document.querySelectorAll('#mktTable tbody tr').forEach(function(tr){tr.style.display=(!q||(tr.getAttribute('data-k')||'').indexOf(q)>=0)?'':'none';});})(this.value)" style="width:100%;max-width:360px;padding:8px 12px;margin-bottom:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">` : ""}
         <div class="notion-card" style="padding:0;overflow-x:auto;">
           <table id="mktTable" style="min-width:640px;"><thead><tr><th>品號</th><th>品名</th><th>市場</th><th style="text-align:right;">上價</th><th style="text-align:right;">中價</th><th style="text-align:right;">下價</th><th style="text-align:right;">平均</th>${dayMap ? `<th style="text-align:right;" title="與 ${escapeAttr(prevDay || "")} 中價相比">較前日</th>` : ""}${monMap ? `<th style="text-align:right;" title="與 ${escapeAttr(prevMonth || "")} 中價相比">較前月</th>` : ""}<th style="text-align:right;">交易量(kg)</th></tr></thead><tbody>${rows || `<tr><td colspan='${colCount}' style='color:#999;text-align:center;padding:24px;'>無資料</td></tr>`}</tbody></table>
@@ -7591,19 +7600,22 @@ function createAdminRouter() {
         res.type("text/html").send(notionPage("北農行情", body, "logistics-market", res));
     });
 
-    // 匯出讀本地快照（秒回）；該日無快照才即時抓一次
-    async function getWholesaleForExport(dateStr) {
+    // 匯出讀本地快照（秒回）；該日無快照才即時抓一次。cat: veg/fruit/all（種類代碼 N05=水果）
+    async function getWholesaleForExport(dateStr, cat = "all") {
         let list = await (0, wholesale_snapshot_js_1.loadWholesaleMarketSnapshot)(db, dateStr);
         if (!list || !list.length) {
             const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
             list = snap.prices || [];
         }
+        if (cat === "fruit") return list.filter((p) => (p.categoryCode || "") === "N05");
+        if (cat === "veg") return list.filter((p) => (p.categoryCode || "") !== "N05");
         return list;
     }
+    const exportCat = (req) => { const c = (req.query.cat || "all").toString(); return ["veg", "fruit", "all"].includes(c) ? c : "all"; };
     router.get("/logistics/market/export.csv", async (req, res) => {
         const dateStr = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).send("date 格式錯誤"); return; }
-        const list = await getWholesaleForExport(dateStr);
+        const list = await getWholesaleForExport(dateStr, exportCat(req));
         const lines = ["日期,品號,品名,市場,上價,中價,下價,平均價,交易量(kg)"];
         for (const p of list) {
             const cells = [dateStr, p.cropCode || "", p.cropName || "", p.marketName || "", p.highPrice ?? "", p.midPrice ?? "", p.lowPrice ?? "", p.avgPrice ?? "", p.volume ?? ""].map((v) => {
@@ -7620,7 +7632,7 @@ function createAdminRouter() {
     router.get("/logistics/market/export.xlsx", async (req, res) => {
         const dateStr = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).send("date 格式錯誤"); return; }
-        const list = await getWholesaleForExport(dateStr);
+        const list = await getWholesaleForExport(dateStr, exportCat(req));
         const data = [["日期", "品號", "品名", "市場", "上價", "中價", "下價", "平均價", "交易量(kg)"]];
         for (const p of list) {
             data.push([dateStr, p.cropCode || "", p.cropName || "", p.marketName || "", p.highPrice ?? null, p.midPrice ?? null, p.lowPrice ?? null, p.avgPrice ?? null, p.volume ?? null]);
