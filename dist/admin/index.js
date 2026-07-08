@@ -2032,21 +2032,33 @@ const STK_CLIENT_JS = `
   _drawer.querySelector('#stkDwClose').addEventListener('click',dwClose);
   _back.addEventListener('click',dwClose);
   var _pt=null;
-  function kvTable(obj,strong,small){
-    var ks=Object.keys(obj||{}); if(!ks.length) return '';
-    var fs=small?'12px':'13px';
-    var h='<table style="width:100%;border-collapse:collapse;">';
-    for(var i=0;i<ks.length;i++){ h+='<tr><td style="padding:3px 6px;color:var(--notion-text-light,#888);white-space:nowrap;font-size:'+fs+';">'+esc(ks[i])+'</td><td style="padding:3px 6px;font-size:'+fs+';'+(strong?'font-weight:600;text-align:right;':'')+'">'+esc(obj[ks[i]])+'</td></tr>'; }
-    return h+'</table>';
-  }
+  function fmtN(v){ if(v==null||v==='') return ''; return String(v); }
   function dwRender(body,m){
-    var d=m.data||{}; var h='';
-    if(m.fetched_at){ h+='<div style="color:var(--notion-text-light,#999);font-size:11px;margin-bottom:10px;">資料時間 '+esc(String(m.fetched_at).replace('T',' ').slice(0,19))+(m.cached?'（快取）':'')+'</div>'; }
-    var sum=kvTable(d.summary,true,false);
-    if(sum) h+='<div style="margin-bottom:14px;">'+sum+'</div>';
-    var fld=kvTable(d.fields,false,true);
-    if(fld) h+='<details'+(sum?'':' open')+'><summary style="cursor:pointer;color:#2383e2;margin-bottom:6px;">凌越全部欄位（'+Object.keys(d.fields||{}).length+'）</summary>'+fld+'</details>';
-    if(!sum&&!fld) h+='<div style="color:var(--notion-text-light,#888);">凌越查無此品項資料。</div>';
+    var d=m.data||{}; var recs=d.records||[]; var h='';
+    if(m.fetched_at){ h+='<div style="color:var(--notion-text-light,#999);font-size:11px;margin-bottom:8px;">資料時間 '+esc(String(m.fetched_at).replace('T',' ').slice(0,19))+(m.cached?'（快取）':'')+'　共 '+recs.length+' 筆</div>'; }
+    if(d.note){ h+='<div style="color:#b7791f;font-size:12px;margin-bottom:8px;">'+esc(d.note)+'</div>'; }
+    if(!recs.length){ h+='<div style="color:var(--notion-text-light,#888);">近期查無進銷紀錄。</div>'; body.innerHTML=h; return; }
+    h+='<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    h+='<thead><tr>'
+      +'<th style="text-align:left;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">日期</th>'
+      +'<th style="text-align:left;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">類型</th>'
+      +'<th style="text-align:left;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">客戶</th>'
+      +'<th style="text-align:right;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">數量</th>'
+      +'<th style="text-align:right;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">單價</th>'
+      +'<th style="text-align:right;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">金額</th>'
+      +'</tr></thead><tbody>';
+    for(var i=0;i<recs.length;i++){ var r=recs[i];
+      var kc=(r.kind==='進貨')?'#2e7d32':'#1d4ed8';
+      h+='<tr>'
+        +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);white-space:nowrap;font-variant-numeric:tabular-nums;">'+esc(r.date||'')+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);color:'+kc+';font-weight:600;white-space:nowrap;">'+esc(r.kind||'')+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);max-width:150px;overflow:hidden;text-overflow:ellipsis;" title="'+esc(r.customer||'')+'">'+esc(r.customer||'')+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);text-align:right;font-variant-numeric:tabular-nums;">'+esc(fmtN(r.qty))+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);text-align:right;font-variant-numeric:tabular-nums;color:var(--notion-text-light,#888);">'+esc(fmtN(r.price))+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);text-align:right;font-variant-numeric:tabular-nums;">'+esc(fmtN(r.amount))+'</td>'
+        +'</tr>';
+    }
+    h+='</tbody></table>';
     body.innerHTML=h;
   }
   function dwOpen(code,name){
@@ -2054,7 +2066,7 @@ const STK_CLIENT_JS = `
     _drawer.style.transform='translateX(0)'; _back.style.opacity='1'; _back.style.pointerEvents='auto';
     document.getElementById('stkDwTitle').textContent=(code||'')+'　'+(name||'');
     var body=document.getElementById('stkDwBody');
-    body.innerHTML='<div style="color:var(--notion-text-light,#888);">查詢凌越進銷存中…（經內網小幫手，約數秒）</div>';
+    body.innerHTML='<div style="color:var(--notion-text-light,#888);">查詢近期進銷紀錄中…（經內網小幫手，約數秒）</div>';
     fetch('/admin/inventory/stock/txn-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})}).catch(function(){});
     var tries=0;
     function tick(){

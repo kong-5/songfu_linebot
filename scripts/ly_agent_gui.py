@@ -100,6 +100,7 @@ DEFAULT_CONFIG = {
     "wb_mark_checked": True,      # 寫入即標「已審核」OR_CHECK=1（拋轉需要；關閉=未審核）
     "wb_create_name": os.environ.get("LY_CREATE_NAME", "052"),  # 建立人/製單人操作員代碼
     "wb_maker": os.environ.get("LY_MAKER", ""),                 # 覆寫製單人（通常留空）
+    "purchase_idakd": os.environ.get("LY_PURCHASE_IDAKD", ""),  # 進貨單種類（給進銷紀錄查進貨；空=只查銷貨）
     "wb_default_whno": os.environ.get("LY_DEFAULT_WHNO", ""),
     "wb_default_price": os.environ.get("LY_DEFAULT_PRICE", ""),
     "autostart": True,          # 開啟程式就自動啟動代理
@@ -580,11 +581,12 @@ class AgentEngine:
             if not reqs:
                 continue
             try:
-                sp = local_import("ly_stock_push")
+                itx = local_import("ly_item_txn")
             except Exception as e:
                 self.state["erp"] = "missing"
-                self._log_once("txnerp", f"⚠ 載入庫存模組失敗：{_short(e)}")
+                self._log_once("txnerp", f"⚠ 載入進銷紀錄模組失敗：{_short(e)}")
                 continue
+            pkind = (self.cfg.get("purchase_idakd") or "").strip()
             results = []
             with self.erp_lock:
                 for c in reqs:
@@ -593,12 +595,13 @@ class AgentEngine:
                     if not code:
                         continue
                     try:
-                        rec = sp.fetch_product_record(cicp, code)
-                        results.append({"code": code, "icpno": cicp, "data": sp.build_txn_payload(rec)})
-                        self.log(f"🔎 進銷存查詢 {code} → {'有資料' if rec else '查無'}")
+                        data = itx.fetch_item_records(cicp, code, limit=60, purchase_idakd=pkind)
+                        results.append({"code": code, "icpno": cicp, "data": data})
+                        self.log(f"🔎 進銷紀錄 {code} → {data.get('count', 0)} 筆"
+                                 + (f"（{data['note']}）" if data.get("note") else ""))
                     except Exception as e:
                         results.append({"code": code, "icpno": cicp, "error": _short(e)})
-                        self.log(f"❌ 進銷存查詢 {code} 失敗：{_short(e)}")
+                        self.log(f"❌ 進銷紀錄查詢 {code} 失敗：{_short(e)}")
                 self.state["erp"] = "ok"
             try:
                 cloud_txn_callback(base, key, results)
