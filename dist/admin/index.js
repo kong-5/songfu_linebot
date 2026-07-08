@@ -5932,7 +5932,7 @@ function createAdminRouter() {
         .stk-empty{background:var(--notion-card,#fff);border:1px dashed var(--notion-border,#e3e2e0);border-radius:12px;padding:34px 16px;text-align:center;color:#787774;}
       </style>
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 每日盤點</div>
-      <h1 style="font-size:20px;margin:8px 0 10px;">每日盤點</h1>
+      <h1 class="notion-page-title" style="margin-bottom:14px;">每日盤點</h1>
       <form method="get" action="/admin/inventory" class="stk-bar">
         <input type="date" name="date" value="${escapeAttr(date)}" onchange="this.form.submit()">
         <button type="button" class="stk-togbtn" id="stkOnlyDiff">只看盤差</button>
@@ -6570,27 +6570,26 @@ function createAdminRouter() {
         const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存。</div>` : "";
         const rowsHtml = list.map((w) => `
       <tr>
-        <td style="font-variant-numeric:tabular-nums;font-weight:600;">${escapeHtml(w.code)}</td>
-        <td><input type="text" name="name[${escapeAttr(w.code)}]" value="${escapeAttr(w.name)}" placeholder="輸入中文名，如 松富冷藏備貨庫" style="width:100%;max-width:260px;padding:6px 8px;border:1px solid var(--notion-border,#e3e2e0);border-radius:6px;background:var(--notion-card,#fff);color:inherit;"></td>
-        <td style="text-align:right;color:#787774;">${w.cnt}</td>
+        <td style="font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap;">${escapeHtml(w.code)}</td>
+        <td><input type="text" name="name[${escapeAttr(w.code)}]" value="${escapeAttr(w.name)}" placeholder="輸入中文名，如 松富冷藏備貨庫" class="sf-input" style="width:100%;max-width:280px;"></td>
+        <td style="text-align:right;color:var(--notion-text-muted);font-variant-numeric:tabular-nums;">${w.cnt}</td>
         <td style="text-align:center;"><input type="checkbox" name="inc[${escapeAttr(w.code)}]" value="1" ${w.include ? "checked" : ""}></td>
       </tr>`).join("");
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 倉庫設定</div>
-      <h1 style="font-size:20px;margin:8px 0 4px;">倉庫設定</h1>
-      <p class="notion-hint" style="margin:0 0 14px;">倉別代號自動來自凌越（貨品主檔的入庫倉別）。填中文名、勾選要「納入盤點」的倉即可；換倉、新增倉都會自動出現，不用手動維護。</p>
+      <h1 class="notion-page-title">倉庫設定</h1>
+      <p class="notion-hint" style="margin:-2px 0 18px;">倉別代號自動來自凌越（貨品主檔的入庫倉別）。填中文名、勾選要「納入盤點」的倉即可；換倉、新增倉都會自動出現，不用手動維護。</p>
       ${ok}
       <form method="post" action="/admin/inventory/warehouse-settings">
-        <table class="notion-table" style="width:100%;max-width:720px;border-collapse:collapse;">
-          <thead><tr>
-            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">凌越倉別</th>
-            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">中文名稱</th>
-            <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">品項數</th>
-            <th style="text-align:center;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">納入盤點</th>
-          </tr></thead>
-          <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:#787774;padding:20px;">目前庫存快照還沒有資料，請先讓內網代理推一次庫存。</td></tr>'}</tbody>
-        </table>
-        <p style="margin-top:14px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+        <div class="notion-card" style="padding:0;overflow:hidden;">
+          <table>
+            <thead><tr>
+              <th>凌越倉別</th><th>中文名稱</th><th style="text-align:right;">品項數</th><th style="text-align:center;">納入盤點</th>
+            </tr></thead>
+            <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:var(--notion-text-muted);padding:22px;">目前庫存快照還沒有資料，請先讓內網代理推一次庫存。</td></tr>'}</tbody>
+          </table>
+        </div>
+        <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
       </form>`;
         res.type("text/html").send(notionPage("倉庫設定", body, "inv-wh-settings", res));
     });
@@ -6640,32 +6639,34 @@ function createAdminRouter() {
     }
     router.get("/inventory/stocktake-groups", async (req, res) => {
         const list = await loadStocktakeGroupCandidates();
-        const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存。</div>` : "";
+        const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:16px;">已儲存。</div>` : "";
         const rowsHtml = list.map((g) => `
       <tr>
         <td style="text-align:center;"><input type="checkbox" name="grp[${escapeAttr(g.group_id)}]" value="1" ${g.whitelisted ? "checked" : ""}></td>
         <td>${escapeHtml(g.name || "（未命名群組）")}</td>
-        <td style="font-variant-numeric:tabular-nums;color:#787774;font-size:12px;word-break:break-all;">${escapeHtml(g.group_id)}</td>
-        <td style="color:#787774;font-size:12px;">${g.sources.map((s) => escapeHtml(s)).join("、")}</td>
+        <td style="font-variant-numeric:tabular-nums;color:var(--notion-text-muted);font-size:12px;word-break:break-all;">${escapeHtml(g.group_id)}</td>
+        <td style="color:var(--notion-text-muted);font-size:12px;">${g.sources.map((s) => escapeHtml(s)).join("、")}</td>
       </tr>`).join("");
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 盤點群組</div>
-      <h1 style="font-size:20px;margin:8px 0 4px;">盤點群組白名單</h1>
-      <p class="notion-hint" style="margin:0 0 14px;">只有勾選的 LINE 群組，成員打「<b>#盤點</b>」才會跳出倉庫盤點按鈕。清單自動收集機器人所在的群組；若你的內部群沒出現，先在群裡對機器人傳一句話讓它露出，或把群組 ID 貼到下方手動加入。</p>
+      <h1 class="notion-page-title">盤點群組</h1>
+      <p class="notion-hint" style="margin:-2px 0 18px;">列在這裡的 LINE 群組視為「內部群組」：成員打「<b>#盤點</b>」會跳出倉庫盤點按鈕，且機器人<b>不辨識訂單、不回「無法收單」</b>。清單自動收集機器人所在的群組；若內部群沒出現，先在群裡對機器人傳一句話讓它露出，或把群組 ID 貼到下方手動加入。</p>
       ${ok}
       <form method="post" action="/admin/inventory/stocktake-groups">
-        <table class="notion-table" style="width:100%;max-width:820px;border-collapse:collapse;">
-          <thead><tr>
-            <th style="text-align:center;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);width:64px;">納入盤點</th>
-            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">群組名稱</th>
-            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">群組 ID</th>
-            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">來源</th>
-          </tr></thead>
-          <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:#787774;padding:20px;">還沒有偵測到任何群組。請把機器人加入盤點群組後，於群內傳一句話。</td></tr>'}</tbody>
-        </table>
-        <p style="margin:14px 0 6px;font-weight:600;">手動加入群組 ID（每行一個，選填）</p>
-        <textarea name="manual_ids" rows="3" placeholder="Cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" style="width:100%;max-width:820px;padding:8px;border:1px solid var(--notion-border,#e3e2e0);border-radius:6px;background:var(--notion-card,#fff);color:inherit;font-family:monospace;font-size:12px;"></textarea>
-        <p style="margin-top:14px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+        <div class="notion-card" style="padding:0;overflow:hidden;">
+          <table>
+            <thead><tr>
+              <th style="text-align:center;width:72px;">納入盤點</th><th>群組名稱</th><th>群組 ID</th><th>來源</th>
+            </tr></thead>
+            <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:var(--notion-text-muted);padding:22px;">還沒有偵測到任何群組。請把機器人加入盤點群組後，於群內傳一句話。</td></tr>'}</tbody>
+          </table>
+        </div>
+        <div class="notion-card" style="margin-top:16px;">
+          <h2>手動加入群組 ID</h2>
+          <p class="notion-hint" style="margin:-6px 0 10px;">每行一個，選填。適用於內部群沒自動出現時。</p>
+          <textarea name="manual_ids" rows="3" placeholder="Cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" class="sf-textarea" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
+        </div>
+        <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
       </form>`;
         res.type("text/html").send(notionPage("盤點群組", body, "inv-stk-groups", res));
     });
