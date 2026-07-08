@@ -101,8 +101,30 @@ def post_callback(base: str, key: str, results: list) -> dict:
 #  雲端訂單 → 凌越 write_order row（訂貨單 OR_/OD_ 欄位）
 # ----------------------------------------------------------------------
 
-def map_order(order: dict, *, whno: str, price: str, rem_prefix: str = "") -> dict:
-    """把一張雲端 pending 訂單轉成 ly_order.write_order 需要的 row dict。"""
+# 單位正規化：雲端多半給中文「公斤」，凌越要「KG」。其餘未列出的原樣送出。
+UNIT_MAP = {
+    "公斤": "KG", "kg": "KG", "Kg": "KG", "kG": "KG", "KG": "KG",
+}
+
+
+def norm_unit(u: str) -> str:
+    u = (u or "").strip()
+    if not u:
+        return "KG"
+    return UNIT_MAP.get(u, UNIT_MAP.get(u.upper(), u))
+
+
+def map_order(order: dict, *, whno: str, price: str, rem_prefix: str = "",
+              wh_map: dict = None, or_check: str = "0") -> dict:
+    """把一張雲端 pending 訂單轉成 ly_order.write_order 需要的 row dict。
+
+    倉別（OD_WARE）規則：
+      - 有給 wh_map（料號→凌越預設倉別 SK_RKWHNO）→ 逐品項帶該品項的預設倉別；
+      - 該品項在 wh_map 查不到 → 退回固定倉別 whno（LY_DEFAULT_WHNO）；
+      - 沒給 wh_map → 全部用固定倉別 whno。
+
+    審核（OR_CHECK）：or_check="0"=未審核（預設，方便需要時刪除）、"1"=已審核。
+    """
     details = []
     for it in order.get("items", []) or []:
         skno = (it.get("product_code") or "").strip()
@@ -112,11 +134,14 @@ def map_order(order: dict, *, whno: str, price: str, rem_prefix: str = "") -> di
             print(f"    ⚠ 跳過無凌越料號品項：{name or '(無名)'}（客戶 {order.get('customer_name')}）", file=sys.stderr)
             continue
         qty = it.get("quantity")
+        ware = whno
+        if wh_map:
+            ware = (wh_map.get(skno) or whno)      # 逐品項帶凌越預設倉別，查不到用固定倉別補
         det = {
             "OD_SKNO": skno,
             "OD_NAME": name,
-            "OD_UNIT": (it.get("unit") or "KG").strip(),
-            "OD_WARE": whno,                       # 預設留空（之後在凌越補倉別）
+            "OD_UNIT": norm_unit(it.get("unit")),  # 公斤→KG
+            "OD_WARE": ware,
             "OD_QTY": qty if qty is not None else 0,
         }
         # 單價：叫貨單無價。留空（不送 OD_PRICE）→ 讓凌越依「客戶售價表」自動帶價。
@@ -139,7 +164,7 @@ def map_order(order: dict, *, whno: str, price: str, rem_prefix: str = "") -> di
         "OR_DATE1": order_date,
         "OR_DATE2": order_date,
         "OR_REM": rem,
-        "OR_CHECK": "0",                                      # 不審核，方便需要時刪除
+        "OR_CHECK": "1" if str(or_check).strip() == "1" else "0",  # 0=未審核(預設) / 1=已審核
         "details": details,
     }
 
