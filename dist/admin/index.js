@@ -1541,7 +1541,7 @@ function sfSidebar(active) {
         ${item("/admin/complaints", "complaints", "warn", "客訴處理")}
         ${item("/admin/reminders", "reminders", "bell", "忘記叫貨提醒")}
         ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
-        ${item("/admin/quotes", "quotes", "list", "客戶報價")}
+        ${item("/admin/quotes", "quotes", "list", "報價管理")}
       </details>
       <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","inv-stk-groups","logistics-procurement","logistics-market","logistics-livestock"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
@@ -3752,7 +3752,7 @@ function createAdminRouter() {
                 <div class="sf-card" style="border-left:4px solid #f59e0b;">
                   <div class="sf-card-head">
                     <a href="/admin/quotes" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
-                      <div class="sf-card-title">🗓️ 月底提醒：製作 ${escapeHtml(qr.rocLabel)} 客戶報價</div>
+                      <div class="sf-card-title">🗓️ 月底提醒：製作 ${escapeHtml(qr.rocLabel)} 月報報價</div>
                     </a>
                     <a href="/admin/quotes" class="sf-card-sub">前往製作 →</a>
                   </div>
@@ -18473,115 +18473,313 @@ document.addEventListener('keydown',function(e){
 </body></html>`;
     }
 
-    // 列表頁
+    // 報價分兩種：月報（quote_report，id 前綴 qr_）與飯店客戶報價（hotel_quote，id 前綴 hq_）。
+    // 品項都存在 quote_item（report_id = 各自表頭 id），因此編輯／存檔／輸出邏輯可共用。
+    function quoteKindOf(id) { return String(id || "").startsWith("hq_") ? "hotel" : "monthly"; }
+    async function resolveQuoteRow(id) {
+        if (quoteKindOf(id) === "hotel") return { kind: "hotel", row: await quote_report_js_1.getHotelQuote(db, id) };
+        return { kind: "monthly", row: await quote_report_js_1.getReport(db, id) };
+    }
+
+    // 分頁列（月報 / 飯店客戶報價）
+    function renderQuoteTabs(active) {
+        const tab = (key, label, href) => `<a class="sf-qtab ${active === key ? "on" : ""}" href="${href}">${label}</a>`;
+        return `<div class="sf-qtabs">
+          ${tab("monthly", "月報", "/admin/quotes")}
+          ${tab("hotel", "飯店客戶報價", "/admin/quotes?tab=hotel")}
+        </div>`;
+    }
+
+    // 報價管理共用樣式（列表 + 分頁 + 編輯頁）
+    const QUOTE_STYLE = `<style>
+      .sf-qwrap{ padding:24px 32px; max-width:1000px; margin:0 auto; display:flex; flex-direction:column; gap:16px; }
+      .sf-qhead h1{ margin:0; font-size:22px; font-weight:600; }
+      .sf-qhead p{ margin:6px 0 0; color:var(--txt-3); font-size:13px; line-height:1.6; max-width:600px; }
+      .sf-qtabs{ display:flex; gap:4px; border-bottom:var(--hairline); }
+      .sf-qtab{ padding:9px 16px; font-size:14px; color:var(--txt-3); text-decoration:none; border-bottom:2px solid transparent; margin-bottom:-1px; }
+      .sf-qtab:hover{ color:var(--txt-1); }
+      .sf-qtab.on{ color:var(--notion-accent,#1a6fb5); border-bottom-color:var(--notion-accent,#1a6fb5); font-weight:600; }
+      .sf-qbar{ display:flex; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+      .sf-qnew{ margin:0; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; }
+      .sf-qnew label{ display:flex; flex-direction:column; gap:4px; font-size:11px; color:var(--txt-3); }
+      .sf-qnew input, .sf-qnew select{ font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; color:var(--txt-1); }
+      .sf-qflash{ border-left:4px solid #16a34a; padding:10px 16px; font-size:13px; }
+      .sf-qlist{ padding:0; overflow:hidden; }
+      .sf-qlist-head, .sf-qrow{ display:grid; grid-template-columns:1fr auto minmax(220px,auto); gap:16px; align-items:center; padding:12px 18px; }
+      .sf-qlist-head{ font-size:12px; color:var(--txt-3); border-bottom:var(--hairline); }
+      .sf-qrow{ border-top:var(--hairline); }
+      .sf-qrow:first-of-type{ border-top:none; }
+      .sf-qrow:hover{ background:var(--bg-1); }
+      .sf-qrow-name{ display:flex; flex-direction:column; text-decoration:none; }
+      .sf-qrow-t1{ font-weight:600; color:var(--txt-1); }
+      .sf-qrow-t2{ font-size:11px; color:var(--txt-3); }
+      .sf-qrow-actions{ display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap; }
+      .sf-qempty{ text-align:center; padding:40px 24px; display:flex; flex-direction:column; align-items:center; gap:8px; }
+      .sf-qempty-icon{ font-size:40px; }
+      .sf-qempty-title{ font-size:16px; font-weight:600; }
+      .sf-qempty-desc{ color:var(--txt-3); font-size:13px; line-height:1.7; max-width:460px; margin:0 0 6px; }
+      .sf-qremind{ display:flex; align-items:center; gap:12px; padding:14px 18px; border-left:4px solid #f59e0b; }
+      /* 編輯頁 */
+      .qe-modebar{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+      .qe-seg{ display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+      .qe-seg a{ padding:7px 14px; font-size:13px; text-decoration:none; color:var(--txt-2); background:var(--bg-0); }
+      .qe-seg a.on{ background:var(--notion-accent,#1a6fb5); color:#fff; }
+      .qe-cat{ display:flex; align-items:center; gap:8px; padding:9px 12px; margin-top:10px; background:var(--bg-1); border-radius:8px; font-weight:600; font-size:13px; color:#1a6fb5; }
+      .qe-cat .n{ color:var(--txt-3); font-weight:400; font-size:12px; }
+      .qe-row{ display:grid; align-items:center; gap:10px; padding:7px 12px; border-bottom:var(--hairline); }
+      .qe-row:hover{ background:var(--bg-1); }
+      .qe-price-mode .qe-row{ grid-template-columns:34px 1fr 96px 82px; }
+      .qe-manage-mode .qe-row{ grid-template-columns:34px 1.5fr 1.2fr 1fr 88px 76px 40px; }
+      .qe-seq{ color:var(--txt-3); font-size:12px; text-align:center; }
+      .qe-name{ display:flex; flex-direction:column; min-width:0; }
+      .qe-nm{ font-size:14px; overflow:hidden; text-overflow:ellipsis; }
+      .qe-spec{ font-size:11px; color:var(--txt-3); }
+      .qe-in{ width:100%; font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; box-sizing:border-box; }
+      .qe-price{ text-align:right; }
+      .qe-noq{ font-size:12px; color:var(--txt-3); display:flex; align-items:center; gap:4px; white-space:nowrap; justify-content:center; }
+      .qe-del{ color:#b91c1c; }
+      @media (max-width:640px){
+        .sf-qwrap{ padding:16px; }
+        .sf-qlist-head{ display:none; }
+        .sf-qrow{ grid-template-columns:1fr auto; row-gap:10px; }
+        .sf-qrow-actions{ grid-column:1 / -1; justify-content:flex-start; }
+        .qe-manage-mode .qe-row{ grid-template-columns:34px 1fr 1fr; }
+      }
+    </style>`;
+
+    /**
+     * 編輯頁本體。kind='monthly'|'hotel'；manage=true 時顯示可改品名/規格/分類/刪除的「管理品項」模式，
+     * 否則為「價格模式」——品名規格純文字、只編輯單價與不報價（每月主要操作）。
+     */
+    function renderQuoteEditor(row, groups, opts) {
+        const kind = opts.kind;
+        const manage = !!opts.manage;
+        const okMsg = opts.okMsg || "";
+        const id = row.id;
+        const items = groups.flatMap(g => g.items);
+        const allCats = Array.from(new Set([...quote_report_js_1.CATEGORY_ORDER, ...groups.map(g => g.category)]));
+        const catOptions = (sel) => allCats.map(c => `<option value="${escapeAttr(c)}"${c === sel ? " selected" : ""}>${escapeHtml(c)}</option>`).join("");
+        const enc = encodeURIComponent(id);
+        const isHotel = kind === "hotel";
+        const titleMain = isHotel ? escapeHtml(row.customer_name || "飯店") : escapeHtml(row.roc_label || row.ym || "");
+        const backHref = isHotel ? "/admin/quotes?tab=hotel" : "/admin/quotes";
+        const backLabel = isHotel ? "飯店客戶報價" : "月報";
+        const statusPill = row.status === "finalized"
+            ? `<span class="sf-pill ok" style="vertical-align:middle;">已完成</span>`
+            : `<span class="sf-pill warn" style="vertical-align:middle;">草稿</span>`;
+
+        let groupsHtml = "";
+        let seq = 0;
+        for (const g of groups) {
+            let rows = "";
+            for (const it of g.items) {
+                seq++;
+                const quoted = !!it.is_quoted;
+                const priceVal = escapeAttr(quoted ? (it.price == null ? "" : it.price) : "");
+                const hidden = `<input type="hidden" name="row__${escapeAttr(it.id)}" value="1">`;
+                if (manage) {
+                    rows += `<div class="qe-row">
+                        <span class="qe-seq">${seq}</span>
+                        <input class="qe-in" name="name__${escapeAttr(it.id)}" value="${escapeAttr(it.name)}">
+                        <input class="qe-in" name="spec__${escapeAttr(it.id)}" value="${escapeAttr(it.spec || "")}">
+                        <select class="qe-in" name="cat__${escapeAttr(it.id)}">${catOptions(it.category)}</select>
+                        <input class="qe-in qe-price" name="price__${escapeAttr(it.id)}" value="${priceVal}" inputmode="decimal" placeholder="${quoted ? "價格" : "—"}">
+                        <label class="qe-noq"><input type="checkbox" name="noq__${escapeAttr(it.id)}"${quoted ? "" : " checked"}> 不報價</label>
+                        <button type="submit" formaction="/admin/quotes/${enc}/item/${encodeURIComponent(it.id)}/delete" formnovalidate class="sf-btn sm qe-del" onclick="return confirm('刪除此品項？')">刪</button>
+                        ${hidden}
+                      </div>`;
+                } else {
+                    rows += `<div class="qe-row">
+                        <span class="qe-seq">${seq}</span>
+                        <div class="qe-name"><span class="qe-nm">${escapeHtml(it.name)}</span>${it.spec ? `<span class="qe-spec">${escapeHtml(it.spec)}</span>` : ""}</div>
+                        <input class="qe-in qe-price" name="price__${escapeAttr(it.id)}" value="${priceVal}" inputmode="decimal" placeholder="${quoted ? "價格" : "—"}"${quoted ? "" : " disabled"}>
+                        <label class="qe-noq"><input type="checkbox" name="noq__${escapeAttr(it.id)}" onchange="var p=this.closest('.qe-row').querySelector('.qe-price');p.disabled=this.checked;if(this.checked)p.value='';"${quoted ? "" : " checked"}> 不報價</label>
+                        ${hidden}
+                      </div>`;
+                }
+            }
+            groupsHtml += `<div class="qe-cat">${escapeHtml(g.category)} <span class="n">${g.items.length} 項</span></div>${rows}`;
+        }
+
+        const headerFields = isHotel
+            ? [["customer_name", "飯店名稱", row.customer_name], ["title", "標題", row.title], ["subtitle", "副標", row.subtitle], ["company", "公司", row.company], ["address", "地址", row.address], ["tel", "電話", row.tel], ["fax", "傳真", row.fax]]
+            : [["title", "標題", row.title], ["subtitle", "副標", row.subtitle], ["company", "公司", row.company], ["address", "地址", row.address], ["tel", "電話", row.tel], ["fax", "傳真", row.fax]];
+
+        return `${QUOTE_STYLE}
+          <div class="sf-qwrap">
+            <div class="sf-qbar">
+              <div class="sf-qhead">
+                <div class="sf-breadcrumb" style="margin-bottom:6px;">報價管理 / <a href="${backHref}" style="color:inherit;">${backLabel}</a> / ${titleMain}</div>
+                <h1>${titleMain} 報價單 ${statusPill}</h1>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <a class="sf-btn" href="/admin/quotes/${enc}/sheet" target="_blank">🖨️ 預覽 / PDF</a>
+                <a class="sf-btn" href="/admin/quotes/${enc}/image.jpg" target="_blank">🖼️ 下載 JPG</a>
+              </div>
+            </div>
+            ${okMsg === "created" ? `<div class="sf-card sf-qflash">✅ 已建立，${items.length ? "已帶入品項與價格，請逐項確認單價。" : "目前尚無品項，請切到「管理品項」新增。"}</div>` : ""}
+            ${okMsg === "saved" ? `<div class="sf-card sf-qflash">✅ 已儲存。</div>` : ""}
+
+            <div class="qe-modebar">
+              <div class="qe-seg">
+                <a href="/admin/quotes/${enc}" class="${manage ? "" : "on"}">💰 價格</a>
+                <a href="/admin/quotes/${enc}?manage=1" class="${manage ? "on" : ""}">🧷 管理品項</a>
+              </div>
+              <span style="font-size:12px;color:var(--txt-3);">${manage ? "可改品名／規格／分類、刪除或新增品項。" : "只編輯單價；勾「不報價」則留白仍列出。要改品名或增減品項請切到「管理品項」。"}</span>
+            </div>
+
+            <details class="sf-card" style="padding:0;">
+              <summary style="padding:12px 16px;cursor:pointer;font-weight:600;">表頭設定（${isHotel ? "飯店名稱、" : ""}公司、地址、電話…）</summary>
+              <form method="post" action="/admin/quotes/${enc}/header" style="padding:0 16px 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">
+                ${headerFields.map(([k, label, v]) => `<label style="font-size:12px;color:var(--txt-3);">${label}<input name="${k}" value="${escapeAttr(v || "")}" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;color:var(--txt-1);"></label>`).join("")}
+                <div style="grid-column:1/-1;"><button class="sf-btn" type="submit">儲存表頭</button></div>
+              </form>
+            </details>
+
+            <form method="post" action="/admin/quotes/${enc}/save${manage ? "?manage=1" : ""}">
+              <div class="sf-card ${manage ? "qe-manage-mode" : "qe-price-mode"}" style="overflow-x:auto;padding:12px 6px;">
+                <div style="padding:0 6px 8px;font-size:12px;color:var(--txt-3);display:flex;justify-content:space-between;">
+                  <span>共 ${items.length} 項${manage ? "" : "　·　依分類排序"}</span>
+                </div>
+                ${groupsHtml || `<div style="text-align:center;color:var(--txt-3);padding:24px;">尚無品項，請切到「管理品項」新增。</div>`}
+              </div>
+              <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center;">
+                <button class="sf-btn primary" type="submit">💾 儲存</button>
+                ${row.status === "finalized"
+                    ? `<button class="sf-btn" type="submit" formaction="/admin/quotes/${enc}/status" formnovalidate name="status" value="draft">改回草稿</button>`
+                    : `<button class="sf-btn" type="submit" formaction="/admin/quotes/${enc}/status" formnovalidate name="status" value="finalized">設為完成</button>`}
+                <span style="flex:1;"></span>
+                <button class="sf-btn" type="submit" formaction="/admin/quotes/${enc}/delete" formnovalidate style="color:#b91c1c;" onclick="return confirm('確定刪除整份報價？')">刪除</button>
+              </div>
+            </form>
+
+            ${manage ? `
+            <div class="sf-card" style="padding:16px 18px;">
+              <div style="font-weight:600;margin-bottom:10px;">＋ 新增品項</div>
+              <form method="post" action="/admin/quotes/${enc}/item/add" style="display:grid;grid-template-columns:2fr 1.4fr 1.4fr 1fr auto;gap:8px;align-items:end;">
+                <label style="font-size:12px;color:var(--txt-3);">品名<input name="name" required style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;"></label>
+                <label style="font-size:12px;color:var(--txt-3);">規格<input name="spec" placeholder="KG / 盒…" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;"></label>
+                <label style="font-size:12px;color:var(--txt-3);">分類<select name="category" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;">${catOptions(quote_report_js_1.CATEGORY_ORDER[0])}</select></label>
+                <label style="font-size:12px;color:var(--txt-3);">單價<input name="price" inputmode="decimal" placeholder="留白=不報價" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;text-align:right;"></label>
+                <button class="sf-btn" type="submit">新增</button>
+              </form>
+            </div>` : ""}
+          </div>`;
+    }
+
+    // 列表頁（分頁：月報 / 飯店客戶報價）
     router.get("/quotes", async (req, res) => {
         try {
-            const todayIso = getTaipeiCalendarDateYYYYMMDD();
-            const reports = await quote_report_js_1.listReports(db);
-            const reminder = await quote_report_js_1.monthEndReminder(db, todayIso, 7);
-            const suggestYm = reminder.targetYm || quote_report_js_1.nextYm(todayIso.slice(0, 7));
+            const tab = String(req.query.tab || "") === "hotel" ? "hotel" : "monthly";
             const okMsg = String(req.query.ok || "");
+            let inner = "";
 
-            const createForm = (label) => `
-              <form method="post" action="/admin/quotes/create" class="sf-quote-newform">
-                <label class="sf-quote-newform-ym">月份
-                  <input type="month" name="ym" value="${escapeAttr(suggestYm)}" required>
-                </label>
-                <button class="sf-btn primary" type="submit">${label}</button>
-              </form>`;
-
-            const listCard = reports.length
-                ? `<div class="sf-card sf-quote-list">
-                    <div class="sf-quote-list-head">
-                      <span>月份</span><span>狀態</span><span style="text-align:right;">操作</span>
-                    </div>
-                    ${reports.map((r) => `
-                      <div class="sf-quote-row">
-                        <a class="sf-quote-row-month" href="/admin/quotes/${encodeURIComponent(r.id)}">
-                          <span class="sf-quote-row-roc">${escapeHtml(r.roc_label || r.ym)}</span>
-                          <span class="sf-quote-row-ym">${escapeHtml(r.ym)}</span>
-                        </a>
-                        <div>${r.status === "finalized" ? `<span class="sf-pill ok">已完成</span>` : `<span class="sf-pill warn">草稿</span>`}</div>
-                        <div class="sf-quote-row-actions">
-                          <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}">編輯</a>
-                          <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/sheet" target="_blank">預覽 / PDF</a>
-                          <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/image.jpg" target="_blank">JPG</a>
-                        </div>
-                      </div>`).join("")}
-                  </div>`
-                : `<div class="sf-card sf-quote-empty">
-                    <div class="sf-quote-empty-icon">🧾</div>
-                    <div class="sf-quote-empty-title">尚無月報</div>
-                    <p class="sf-quote-empty-desc">建立第一份月報時，系統會自動帶入完整品項清單當底稿，你只要調整價格即可。之後每個月新增，會自動沿用上一份的品項與價格。</p>
-                    ${createForm("＋ 建立第一份月報")}
-                  </div>`;
-
-            const reminderBanner = reminder.show ? `
-              <div class="sf-card sf-quote-remind">
-                <span class="sf-quote-remind-icon">🗓️</span>
-                <div class="sf-quote-remind-body">
-                  <div class="sf-quote-remind-title">月底提醒：請準備 ${escapeHtml(reminder.rocLabel)} 報價單</div>
-                  <div class="sf-quote-remind-sub">本月僅剩 ${reminder.daysLeft} 天。${reminder.report ? "已建立草稿，請確認價格後設為完成。" : "尚未建立，新增時會自動帶入上月價格當底稿。"}</div>
-                </div>
-                ${reminder.report
-                    ? `<a class="sf-btn primary" href="/admin/quotes/${encodeURIComponent(reminder.report.id)}">前往編輯 →</a>`
-                    : `<form method="post" action="/admin/quotes/create" style="margin:0;"><input type="hidden" name="ym" value="${escapeAttr(reminder.targetYm)}"><button class="sf-btn primary" type="submit">建立 ${escapeHtml(reminder.rocLabel)} →</button></form>`}
-              </div>` : "";
-
-            const style = `<style>
-              .sf-quote-wrap{ padding:24px 32px; max-width:960px; margin:0 auto; display:flex; flex-direction:column; gap:18px; }
-              .sf-quote-header{ display:flex; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; gap:16px; }
-              .sf-quote-header h1{ margin:0; font-size:22px; font-weight:600; }
-              .sf-quote-header p{ margin:6px 0 0; color:var(--txt-3); font-size:13px; line-height:1.6; max-width:560px; }
-              .sf-quote-newform{ margin:0; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; }
-              .sf-quote-newform-ym{ display:flex; flex-direction:column; gap:4px; font-size:11px; color:var(--txt-3); }
-              .sf-quote-newform-ym input{ font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; color:var(--txt-1); }
-              .sf-quote-flash{ border-left:4px solid #16a34a; padding:10px 16px; font-size:13px; }
-              .sf-quote-remind{ display:flex; align-items:center; gap:12px; padding:14px 18px; border-left:4px solid #f59e0b; }
-              .sf-quote-remind-icon{ font-size:22px; }
-              .sf-quote-remind-body{ flex:1; min-width:200px; }
-              .sf-quote-remind-title{ font-weight:600; }
-              .sf-quote-remind-sub{ font-size:12px; color:var(--txt-3); margin-top:2px; }
-              .sf-quote-list{ padding:0; overflow:hidden; }
-              .sf-quote-list-head, .sf-quote-row{ display:grid; grid-template-columns:1fr auto minmax(220px,auto); gap:16px; align-items:center; padding:12px 18px; }
-              .sf-quote-list-head{ font-size:12px; color:var(--txt-3); border-bottom:var(--hairline); }
-              .sf-quote-row{ border-top:var(--hairline); }
-              .sf-quote-row:first-of-type{ border-top:none; }
-              .sf-quote-row:hover{ background:var(--bg-1); }
-              .sf-quote-row-month{ display:flex; flex-direction:column; text-decoration:none; }
-              .sf-quote-row-roc{ font-weight:600; color:var(--txt-1); }
-              .sf-quote-row-ym{ font-size:11px; color:var(--txt-3); font-family:var(--font-mono,monospace); }
-              .sf-quote-row-actions{ display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap; }
-              .sf-quote-empty{ text-align:center; padding:40px 24px; display:flex; flex-direction:column; align-items:center; gap:8px; }
-              .sf-quote-empty-icon{ font-size:40px; }
-              .sf-quote-empty-title{ font-size:16px; font-weight:600; }
-              .sf-quote-empty-desc{ color:var(--txt-3); font-size:13px; line-height:1.7; max-width:460px; margin:0 0 6px; }
-              @media (max-width:640px){
-                .sf-quote-wrap{ padding:16px; }
-                .sf-quote-list-head{ display:none; }
-                .sf-quote-row{ grid-template-columns:1fr auto; row-gap:10px; }
-                .sf-quote-row-actions{ grid-column:1 / -1; justify-content:flex-start; }
-              }
-            </style>`;
-
-            const body = `${style}
-              <div class="sf-quote-wrap">
-                <div class="sf-quote-header">
-                  <div>
-                    <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 客戶報價</div>
-                    <h1>客戶報價（月報）</h1>
-                    <p>每月月底前製作下個月的報價單。新增月報會自動帶入上月的品項與價格當底稿，只需改動有變動的項目；可隨時新增／刪除品項，也可把品項設為「不報價」。報價單一律套用公司網站標誌，輸出可存 PDF 或下載 JPG。</p>
+            if (tab === "hotel") {
+                const hotels = await quote_report_js_1.listHotelQuotes(db);
+                let names = [];
+                try { names = (await db.prepare("SELECT DISTINCT name FROM customers WHERE active = 1 ORDER BY name").all()).map(r => r.name).filter(Boolean); } catch (_) {}
+                const datalist = `<datalist id="qhotelnames">${names.map(n => `<option value="${escapeAttr(n)}"></option>`).join("")}</datalist>`;
+                const newForm = `<form method="post" action="/admin/quotes/hotel/create" class="sf-qnew">
+                    <label>飯店名稱<input name="customer_name" list="qhotelnames" placeholder="輸入或選擇客戶" required autocomplete="off"></label>
+                    <button class="sf-btn primary" type="submit">＋ 新增飯店報價</button>
+                  </form>`;
+                const list = hotels.length
+                    ? `<div class="sf-card sf-qlist">
+                        <div class="sf-qlist-head"><span>飯店客戶</span><span>狀態</span><span style="text-align:right;">操作</span></div>
+                        ${hotels.map(h => `<div class="sf-qrow">
+                          <a class="sf-qrow-name" href="/admin/quotes/${encodeURIComponent(h.id)}"><span class="sf-qrow-t1">${escapeHtml(h.customer_name)}</span><span class="sf-qrow-t2">飯店客戶報價</span></a>
+                          <div>${h.status === "finalized" ? `<span class="sf-pill ok">已完成</span>` : `<span class="sf-pill warn">草稿</span>`}</div>
+                          <div class="sf-qrow-actions">
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(h.id)}">編輯</a>
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(h.id)}/sheet" target="_blank">預覽 / PDF</a>
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(h.id)}/image.jpg" target="_blank">JPG</a>
+                          </div></div>`).join("")}
+                      </div>`
+                    : `<div class="sf-card sf-qempty">
+                        <div class="sf-qempty-icon">🏨</div>
+                        <div class="sf-qempty-title">尚無飯店報價</div>
+                        <p class="sf-qempty-desc">為飯店客戶各建立一份專屬報價單。新增時會以最新月報為底帶入全部品項與價格，你只要調整該飯店的專屬價格即可。</p>
+                        ${newForm}
+                      </div>`;
+                inner = `${datalist}
+                  <div class="sf-qbar">
+                    <p style="margin:0;color:var(--txt-3);font-size:13px;max-width:560px;">每家飯店客戶各一份報價單，以最新月報為底、再調整專屬價格；輸出可存 PDF 或下載 JPG。</p>
+                    ${hotels.length ? newForm : ""}
                   </div>
-                  ${reports.length ? createForm("＋ 新增月報") : ""}
+                  ${okMsg === "hotel-created" ? `<div class="sf-card sf-qflash">✅ 飯店報價已建立，已帶入月報品項，請調整專屬價格。</div>` : ""}
+                  ${list}`;
+            } else {
+                const todayIso = getTaipeiCalendarDateYYYYMMDD();
+                const reports = await quote_report_js_1.listReports(db);
+                const reminder = await quote_report_js_1.monthEndReminder(db, todayIso, 7);
+                const suggestYm = reminder.targetYm || quote_report_js_1.nextYm(todayIso.slice(0, 7));
+                const createForm = (label) => `<form method="post" action="/admin/quotes/create" class="sf-qnew">
+                    <label>月份<input type="month" name="ym" value="${escapeAttr(suggestYm)}" required></label>
+                    <button class="sf-btn primary" type="submit">${label}</button>
+                  </form>`;
+                const list = reports.length
+                    ? `<div class="sf-card sf-qlist">
+                        <div class="sf-qlist-head"><span>月份</span><span>狀態</span><span style="text-align:right;">操作</span></div>
+                        ${reports.map((r) => `<div class="sf-qrow">
+                          <a class="sf-qrow-name" href="/admin/quotes/${encodeURIComponent(r.id)}"><span class="sf-qrow-t1">${escapeHtml(r.roc_label || r.ym)}</span><span class="sf-qrow-t2">${escapeHtml(r.ym)}</span></a>
+                          <div>${r.status === "finalized" ? `<span class="sf-pill ok">已完成</span>` : `<span class="sf-pill warn">草稿</span>`}</div>
+                          <div class="sf-qrow-actions">
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}">編輯</a>
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/sheet" target="_blank">預覽 / PDF</a>
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/image.jpg" target="_blank">JPG</a>
+                          </div></div>`).join("")}
+                      </div>`
+                    : `<div class="sf-card sf-qempty">
+                        <div class="sf-qempty-icon">🧾</div>
+                        <div class="sf-qempty-title">尚無月報</div>
+                        <p class="sf-qempty-desc">建立第一份月報時，系統會自動帶入完整品項清單當底稿，你只要調整價格即可。之後每個月新增，會自動沿用上一份的品項與價格。</p>
+                        ${createForm("＋ 建立第一份月報")}
+                      </div>`;
+                const reminderBanner = reminder.show ? `
+                  <div class="sf-card sf-qremind">
+                    <span style="font-size:22px;">🗓️</span>
+                    <div style="flex:1;min-width:200px;">
+                      <div style="font-weight:600;">月底提醒：請準備 ${escapeHtml(reminder.rocLabel)} 報價單</div>
+                      <div style="font-size:12px;color:var(--txt-3);margin-top:2px;">本月僅剩 ${reminder.daysLeft} 天。${reminder.report ? "已建立草稿，請確認價格後設為完成。" : "尚未建立，新增時會自動帶入上月價格當底稿。"}</div>
+                    </div>
+                    ${reminder.report
+                        ? `<a class="sf-btn primary" href="/admin/quotes/${encodeURIComponent(reminder.report.id)}">前往編輯 →</a>`
+                        : `<form method="post" action="/admin/quotes/create" style="margin:0;"><input type="hidden" name="ym" value="${escapeAttr(reminder.targetYm)}"><button class="sf-btn primary" type="submit">建立 ${escapeHtml(reminder.rocLabel)} →</button></form>`}
+                  </div>` : "";
+                inner = `<div class="sf-qbar">
+                    <p style="margin:0;color:var(--txt-3);font-size:13px;max-width:560px;">每月月底前製作下個月報價單。新增會自動帶入上月價格當底稿，只需改動有變動的項目；輸出可存 PDF 或下載 JPG。</p>
+                    ${reports.length ? createForm("＋ 新增月報") : ""}
+                  </div>
+                  ${okMsg === "created" ? `<div class="sf-card sf-qflash">✅ 月報已建立。</div>` : ""}
+                  ${reminderBanner}
+                  ${list}`;
+            }
+
+            const body = `${QUOTE_STYLE}
+              <div class="sf-qwrap">
+                <div class="sf-qhead">
+                  <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 報價管理</div>
+                  <h1>報價管理</h1>
                 </div>
-                ${okMsg === "created" ? `<div class="sf-card sf-quote-flash">✅ 月報已建立。</div>` : ""}
-                ${reminderBanner}
-                ${listCard}
+                ${renderQuoteTabs(tab)}
+                ${inner}
               </div>`;
-            res.type("text/html").send(notionPage("客戶報價", body, "quotes", res));
+            res.type("text/html").send(notionPage("報價管理", body, "quotes", res));
         } catch (e) {
             console.error("[admin] /quotes failed", e);
-            res.status(500).type("text/html").send(notionPage("客戶報價", `<div style="padding:32px;">讀取失敗：${escapeHtml(String(e && e.message || e))}</div>`, "quotes", res));
+            res.status(500).type("text/html").send(notionPage("報價管理", `<div style="padding:32px;">讀取失敗：${escapeHtml(String(e && e.message || e))}</div>`, "quotes", res));
+        }
+    });
+
+    // 建立飯店報價（以最新月報為底）
+    router.post("/quotes/hotel/create", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const customerName = String(req.body.customer_name || "").trim();
+            const id = await quote_report_js_1.createHotelQuote(db, { customerName });
+            res.redirect(`/admin/quotes/${encodeURIComponent(id)}?ok=created`);
+        } catch (e) {
+            console.error("[admin] /quotes/hotel/create failed", e);
+            res.status(400).type("text/html").send(notionPage("報價管理", `<div style="padding:32px;">建立失敗：${escapeHtml(String(e && e.message || e))}<br><a href="/admin/quotes?tab=hotel">返回</a></div>`, "quotes", res));
         }
     });
 
@@ -18598,135 +18796,60 @@ document.addEventListener('keydown',function(e){
     });
 
 
-    // 編輯頁
+    // 編輯頁（月報與飯店共用；?manage=1 進管理品項模式）
     router.get("/quotes/:id", async (req, res) => {
         try {
-            const report = await quote_report_js_1.getReport(db, req.params.id);
-            if (!report) { res.status(404).type("text/html").send(notionPage("客戶報價", `<div style="padding:32px;">找不到此月報。<a href="/admin/quotes">返回</a></div>`, "quotes", res)); return; }
-            const groups = await quote_report_js_1.getItemsGrouped(db, report.id);
-            const items = groups.flatMap(g => g.items);
-            const allCats = Array.from(new Set([...quote_report_js_1.CATEGORY_ORDER, ...groups.map(g => g.category)]));
-            const catOptions = (sel) => allCats.map(c => `<option value="${escapeAttr(c)}"${c === sel ? " selected" : ""}>${escapeHtml(c)}</option>`).join("");
+            const { kind, row } = await resolveQuoteRow(req.params.id);
+            if (!row) { res.status(404).type("text/html").send(notionPage("報價管理", `<div style="padding:32px;">找不到此報價。<a href="/admin/quotes">返回</a></div>`, "quotes", res)); return; }
+            const groups = await quote_report_js_1.getItemsGrouped(db, row.id);
+            const manage = String(req.query.manage || "") === "1";
             const okMsg = String(req.query.ok || "");
-
-            let groupsHtml = "";
-            let seq = 0;
-            for (const g of groups) {
-                let rows = "";
-                for (const it of g.items) {
-                    seq++;
-                    const quoted = !!it.is_quoted;
-                    rows += `<tr data-id="${escapeAttr(it.id)}">
-                        <td style="text-align:center;color:var(--txt-3);font-size:12px;">${seq}</td>
-                        <td><input name="name__${escapeAttr(it.id)}" value="${escapeAttr(it.name)}" style="width:100%;font:inherit;padding:4px 6px;border:1px solid var(--line);border-radius:4px;"></td>
-                        <td><input name="spec__${escapeAttr(it.id)}" value="${escapeAttr(it.spec || "")}" style="width:100%;font:inherit;padding:4px 6px;border:1px solid var(--line);border-radius:4px;"></td>
-                        <td><select name="cat__${escapeAttr(it.id)}" style="font:inherit;padding:4px 6px;border:1px solid var(--line);border-radius:4px;max-width:130px;">${catOptions(it.category)}</select></td>
-                        <td><input name="price__${escapeAttr(it.id)}" value="${escapeAttr(quoted ? (it.price == null ? "" : it.price) : "")}" inputmode="decimal" placeholder="${quoted ? "價格" : "—"}" style="width:80px;font:inherit;padding:4px 6px;border:1px solid var(--line);border-radius:4px;text-align:right;"></td>
-                        <td style="text-align:center;"><label style="font-size:12px;white-space:nowrap;cursor:pointer;"><input type="checkbox" name="noq__${escapeAttr(it.id)}"${quoted ? "" : " checked"}> 不報價</label></td>
-                        <td style="text-align:center;"><button type="submit" formaction="/admin/quotes/${encodeURIComponent(report.id)}/item/${encodeURIComponent(it.id)}/delete" formnovalidate class="sf-btn sm" style="color:#b91c1c;" onclick="return confirm('刪除此品項？')">刪</button></td>
-                      </tr>`;
-                }
-                groupsHtml += `
-                  <tr class="qcat"><td colspan="7" style="background:#1e7a5e;color:#fff;font-weight:700;padding:6px 10px;letter-spacing:1px;">${escapeHtml(g.category)} <span style="font-weight:400;font-size:12px;color:#cdebd9;">${g.items.length} 項</span></td></tr>
-                  ${rows}`;
-            }
-
-            const body = `
-              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:1080px;margin:0 auto;">
-                <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-                  <div>
-                    <div class="sf-breadcrumb" style="margin-bottom:6px;"><a href="/admin/quotes" style="color:inherit;">客戶報價</a> / ${escapeHtml(report.roc_label || report.ym)}</div>
-                    <h1 style="margin:0;font-size:22px;font-weight:600;">${escapeHtml(report.roc_label || report.ym)} 報價單 ${report.status === "finalized" ? `<span class="sf-pill ok" style="vertical-align:middle;">已完成</span>` : `<span class="sf-pill warn" style="vertical-align:middle;">草稿</span>`}</h1>
-                    <p style="margin:6px 0 0;color:var(--txt-3);font-size:12px;">改好價格後按「儲存全部」。顯示與輸出都會依分類排序（${escapeHtml(quote_report_js_1.CATEGORY_ORDER.join("→"))}）。</p>
-                  </div>
-                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                    <a class="sf-btn" href="/admin/quotes/${encodeURIComponent(report.id)}/sheet" target="_blank">🖨️ 預覽 / PDF</a>
-                    <a class="sf-btn" href="/admin/quotes/${encodeURIComponent(report.id)}/image.jpg" target="_blank">🖼️ 下載 JPG</a>
-                  </div>
-                </div>
-                ${okMsg === "created" ? `<div class="sf-card" style="border-left:4px solid #16a34a;padding:10px 16px;font-size:13px;">✅ 已建立，${items.length ? "已帶入上月品項與價格，請逐項確認。" : "目前尚無品項，請於下方新增。"}</div>` : ""}
-                ${okMsg === "saved" ? `<div class="sf-card" style="border-left:4px solid #16a34a;padding:10px 16px;font-size:13px;">✅ 已儲存。</div>` : ""}
-
-                <details class="sf-card" style="padding:0;">
-                  <summary style="padding:12px 16px;cursor:pointer;font-weight:600;">表頭設定（公司、地址、電話…）</summary>
-                  <form method="post" action="/admin/quotes/${encodeURIComponent(report.id)}/header" style="padding:0 16px 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">
-                    ${[["title","標題",report.title],["subtitle","副標",report.subtitle],["company","公司",report.company],["address","地址",report.address],["tel","電話",report.tel],["fax","傳真",report.fax]].map(([k,label,v])=>`<label style="font-size:12px;color:var(--txt-3);">${label}<input name="${k}" value="${escapeAttr(v||"")}" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;color:var(--txt-1);"></label>`).join("")}
-                    <div style="grid-column:1/-1;"><button class="sf-btn" type="submit">儲存表頭</button></div>
-                  </form>
-                </details>
-
-                <form method="post" action="/admin/quotes/${encodeURIComponent(report.id)}/save" id="itemsForm">
-                  <div class="sf-card" style="overflow-x:auto;">
-                    <div class="sf-card-head"><div class="sf-card-title">品項與單價（共 ${items.length} 項）</div><div class="sf-card-sub">勾選「不報價」則該項單價留白仍列出</div></div>
-                    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:720px;">
-                      <thead><tr style="text-align:left;font-size:12px;color:var(--txt-3);border-bottom:var(--hairline);">
-                        <th style="padding:6px 8px;width:40px;">#</th><th style="padding:6px 8px;">品名</th><th style="padding:6px 8px;">規格</th><th style="padding:6px 8px;">分類</th><th style="padding:6px 8px;">單價</th><th style="padding:6px 8px;">不報價</th><th style="padding:6px 8px;"></th>
-                      </tr></thead>
-                      <tbody>${groupsHtml || `<tr><td colspan="7" style="text-align:center;color:var(--txt-3);padding:20px;">尚無品項，請於下方新增。</td></tr>`}</tbody>
-                    </table>
-                  </div>
-                  <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center;">
-                    <button class="sf-btn primary" type="submit">💾 儲存全部</button>
-                    ${report.status === "finalized"
-                      ? `<button class="sf-btn" type="submit" formaction="/admin/quotes/${encodeURIComponent(report.id)}/status" formnovalidate name="status" value="draft">改回草稿</button>`
-                      : `<button class="sf-btn" type="submit" formaction="/admin/quotes/${encodeURIComponent(report.id)}/status" formnovalidate name="status" value="finalized">設為完成</button>`}
-                    <span style="flex:1;"></span>
-                    <button class="sf-btn" type="submit" formaction="/admin/quotes/${encodeURIComponent(report.id)}/delete" formnovalidate style="color:#b91c1c;" onclick="return confirm('確定刪除整份月報？')">刪除月報</button>
-                  </div>
-                </form>
-
-                <div class="sf-card" style="padding:16px 18px;">
-                  <div style="font-weight:600;margin-bottom:10px;">＋ 新增品項</div>
-                  <form method="post" action="/admin/quotes/${encodeURIComponent(report.id)}/item/add" style="display:grid;grid-template-columns:2fr 1.4fr 1.4fr 1fr auto;gap:8px;align-items:end;">
-                    <label style="font-size:12px;color:var(--txt-3);">品名<input name="name" required style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;"></label>
-                    <label style="font-size:12px;color:var(--txt-3);">規格<input name="spec" placeholder="KG / 盒…" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;"></label>
-                    <label style="font-size:12px;color:var(--txt-3);">分類<select name="category" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;">${catOptions(quote_report_js_1.CATEGORY_ORDER[0])}</select></label>
-                    <label style="font-size:12px;color:var(--txt-3);">單價<input name="price" inputmode="decimal" placeholder="留白=不報價" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;text-align:right;"></label>
-                    <button class="sf-btn" type="submit">新增</button>
-                  </form>
-                </div>
-              </div>`;
+            const body = renderQuoteEditor(row, groups, { kind, manage, okMsg });
             res.type("text/html").send(notionPage("編輯報價單", body, "quotes", res));
         } catch (e) {
             console.error("[admin] /quotes/:id failed", e);
-            res.status(500).type("text/html").send(notionPage("客戶報價", `<div style="padding:32px;">讀取失敗：${escapeHtml(String(e && e.message || e))}<br><a href="/admin/quotes">返回</a></div>`, "quotes", res));
+            res.status(500).type("text/html").send(notionPage("報價管理", `<div style="padding:32px;">讀取失敗：${escapeHtml(String(e && e.message || e))}<br><a href="/admin/quotes">返回</a></div>`, "quotes", res));
         }
     });
 
-    // 儲存全部品項
+    // 儲存品項（月報／飯店共用）。價格模式只送價格；管理模式送品名/規格/分類。
     router.post("/quotes/:id/save", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
-            const report = await quote_report_js_1.getReport(db, req.params.id);
-            if (!report) { res.redirect("/admin/quotes"); return; }
-            const items = await quote_report_js_1.getItems(db, report.id);
+            const { row } = await resolveQuoteRow(req.params.id);
+            if (!row) { res.redirect("/admin/quotes"); return; }
+            const manage = String(req.query.manage || "") === "1";
+            const items = await quote_report_js_1.getItems(db, row.id);
             for (const it of items) {
-                // 只更新「這次表單有送出的列」，避免部分送出時把其他品項單價誤清空。
-                // 每列一定有 name 欄，用它是否存在判斷該列是否在本次提交中。
-                if (!(`name__${it.id}` in req.body)) continue;
-                const noq = req.body[`noq__${it.id}`] != null; // checkbox present = 不報價
-                const patch = {
-                    name: req.body[`name__${it.id}`],
-                    spec: req.body[`spec__${it.id}`],
-                    category: req.body[`cat__${it.id}`],
-                };
-                if (noq) { patch.is_quoted = 0; }
+                // 只更新「這次表單有送出的列」（每列都有 hidden row__id），避免部分送出誤清空其他品項。
+                if (!(`row__${it.id}` in req.body)) continue;
+                const patch = {};
+                if (`name__${it.id}` in req.body) patch.name = req.body[`name__${it.id}`];
+                if (`spec__${it.id}` in req.body) patch.spec = req.body[`spec__${it.id}`];
+                if (`cat__${it.id}` in req.body) patch.category = req.body[`cat__${it.id}`];
+                if (req.body[`noq__${it.id}`] != null) { patch.is_quoted = 0; }
                 else if (`price__${it.id}` in req.body) { patch.price = req.body[`price__${it.id}`]; }
                 await quote_report_js_1.updateItem(db, it.id, patch);
             }
-            res.redirect(`/admin/quotes/${encodeURIComponent(report.id)}?ok=saved`);
+            res.redirect(`/admin/quotes/${encodeURIComponent(row.id)}${manage ? "?manage=1&" : "?"}ok=saved`);
         } catch (e) {
             console.error("[admin] /quotes/:id/save failed", e);
-            res.status(400).type("text/html").send(notionPage("客戶報價", `<div style="padding:32px;">儲存失敗：${escapeHtml(String(e && e.message || e))}<br><a href="/admin/quotes/${encodeURIComponent(req.params.id)}">返回</a></div>`, "quotes", res));
+            res.status(400).type("text/html").send(notionPage("報價管理", `<div style="padding:32px;">儲存失敗：${escapeHtml(String(e && e.message || e))}<br><a href="/admin/quotes/${encodeURIComponent(req.params.id)}">返回</a></div>`, "quotes", res));
         }
     });
 
-    // 表頭儲存
+    // 表頭儲存（月報／飯店分流；飯店多一個飯店名稱欄）
     router.post("/quotes/:id/header", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
-            await quote_report_js_1.updateReportHeader(db, req.params.id, {
+            const header = {
                 title: req.body.title, subtitle: req.body.subtitle, company: req.body.company,
                 address: req.body.address, tel: req.body.tel, fax: req.body.fax,
-            });
+            };
+            if (quoteKindOf(req.params.id) === "hotel") {
+                header.customer_name = req.body.customer_name;
+                await quote_report_js_1.updateHotelHeader(db, req.params.id, header);
+            } else {
+                await quote_report_js_1.updateReportHeader(db, req.params.id, header);
+            }
             res.redirect(`/admin/quotes/${encodeURIComponent(req.params.id)}?ok=saved`);
         } catch (e) {
             console.error("[admin] /quotes/:id/header failed", e);
@@ -18734,48 +18857,61 @@ document.addEventListener('keydown',function(e){
         }
     });
 
-    // 新增品項
+    // 新增品項（回管理模式）
     router.post("/quotes/:id/item/add", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
             await quote_report_js_1.addItem(db, req.params.id, {
                 category: req.body.category, name: req.body.name, spec: req.body.spec, price: req.body.price,
             });
-            res.redirect(`/admin/quotes/${encodeURIComponent(req.params.id)}`);
+            res.redirect(`/admin/quotes/${encodeURIComponent(req.params.id)}?manage=1`);
         } catch (e) {
             console.error("[admin] /quotes/:id/item/add failed", e);
-            res.redirect(`/admin/quotes/${encodeURIComponent(req.params.id)}`);
+            res.redirect(`/admin/quotes/${encodeURIComponent(req.params.id)}?manage=1`);
         }
     });
 
-    // 刪除品項
+    // 刪除品項（回管理模式）
     router.post("/quotes/:id/item/:itemId/delete", async (req, res) => {
         try { await quote_report_js_1.deleteItem(db, req.params.itemId); } catch (e) { console.error("[admin] delete item failed", e); }
-        res.redirect(`/admin/quotes/${encodeURIComponent(req.params.id)}`);
+        res.redirect(`/admin/quotes/${encodeURIComponent(req.params.id)}?manage=1`);
     });
 
     // 設定狀態（完成／草稿）
     router.post("/quotes/:id/status", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
             const status = String(req.body.status || "draft") === "finalized" ? "finalized" : "draft";
-            await quote_report_js_1.setReportStatus(db, req.params.id, status);
+            if (quoteKindOf(req.params.id) === "hotel") await quote_report_js_1.setHotelStatus(db, req.params.id, status);
+            else await quote_report_js_1.setReportStatus(db, req.params.id, status);
         } catch (e) { console.error("[admin] set status failed", e); }
         res.redirect(`/admin/quotes/${encodeURIComponent(req.params.id)}`);
     });
 
-    // 刪除月報
+    // 刪除整份報價
     router.post("/quotes/:id/delete", async (req, res) => {
-        try { await quote_report_js_1.deleteReport(db, req.params.id); } catch (e) { console.error("[admin] delete report failed", e); }
-        res.redirect("/admin/quotes");
+        const isHotel = quoteKindOf(req.params.id) === "hotel";
+        try {
+            if (isHotel) await quote_report_js_1.deleteHotelQuote(db, req.params.id);
+            else await quote_report_js_1.deleteReport(db, req.params.id);
+        } catch (e) { console.error("[admin] delete quote failed", e); }
+        res.redirect(isHotel ? "/admin/quotes?tab=hotel" : "/admin/quotes");
     });
+
+    // 供輸出用：把飯店報價正規化成 render 用的表頭（飯店名稱放 roc_label 位置顯示）
+    async function loadQuoteForRender(id) {
+        const { kind, row } = await resolveQuoteRow(id);
+        if (!row) return null;
+        const groups = await quote_report_js_1.getItemsGrouped(db, id);
+        const report = kind === "hotel" ? { ...row, roc_label: row.customer_name, ym: row.customer_name } : row;
+        return { report, groups, kind };
+    }
 
     // 列印頁（A4 / 存 PDF）
     router.get("/quotes/:id/sheet", async (req, res) => {
         try {
-            const report = await quote_report_js_1.getReport(db, req.params.id);
-            if (!report) { res.status(404).type("text/html").send("找不到此月報"); return; }
-            const groups = await quote_report_js_1.getItemsGrouped(db, report.id);
+            const data = await loadQuoteForRender(req.params.id);
+            if (!data) { res.status(404).type("text/html").send("找不到此報價"); return; }
             const logo = await quote_report_js_1.getDefaultLogoDataUri();
-            res.type("text/html").send(renderQuoteSheetHtml(report, groups, logo));
+            res.type("text/html").send(renderQuoteSheetHtml(data.report, data.groups, logo));
         } catch (e) {
             console.error("[admin] /quotes/:id/sheet failed", e);
             res.status(500).type("text/html").send("產生失敗：" + escapeHtml(String(e && e.message || e)));
@@ -18785,13 +18921,12 @@ document.addEventListener('keydown',function(e){
     // JPG 圖
     router.get("/quotes/:id/image.jpg", async (req, res) => {
         try {
-            const report = await quote_report_js_1.getReport(db, req.params.id);
-            if (!report) { res.status(404).send("找不到此月報"); return; }
-            const groups = await quote_report_js_1.getItemsGrouped(db, report.id);
+            const data = await loadQuoteForRender(req.params.id);
+            if (!data) { res.status(404).send("找不到此報價"); return; }
             const logo = await quote_report_js_1.getDefaultLogoDataUri();
-            const buf = await quote_report_js_1.renderQuoteImage(report, groups, { logoDataUri: logo });
+            const buf = await quote_report_js_1.renderQuoteImage(data.report, data.groups, { logoDataUri: logo });
             res.setHeader("Content-Type", "image/jpeg");
-            res.setHeader("Content-Disposition", `inline; filename="quote-${report.ym}.jpg"`);
+            res.setHeader("Content-Disposition", `inline; filename="quote-${encodeURIComponent(data.report.ym || req.params.id)}.jpg"`);
             res.send(buf);
         } catch (e) {
             console.error("[admin] /quotes/:id/image.jpg failed", e);
