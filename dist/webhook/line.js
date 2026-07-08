@@ -956,10 +956,19 @@ function createLineWebhook() {
                     }
                 }
                 // ── 內部群組（盤點群組白名單）：不辨識訂單、不回「無法收單」；只回應前面已處理的明確指令（#盤點／取得群組ID／員工綁定等）與 LIFF ──
+                // 安全防呆：已綁定客戶的群組永遠仍辨識訂單，避免誤把客戶群設為內部群而中斷收單。
                 if (groupId) {
                     try {
                         const internalGrp = await db.prepare("SELECT group_id FROM stocktake_group WHERE group_id = ?").get(groupId);
-                        if (internalGrp) { console.log("[LINE] 內部群組，略過訂單辨識 group=%s msgType=%s", groupId, msgType); continue; }
+                        if (internalGrp) {
+                            const boundCust = await db.prepare("SELECT id FROM customers WHERE TRIM(COALESCE(line_group_id, '')) = ? AND (active IS NULL OR active = 1) LIMIT 1").get(groupId);
+                            if (boundCust) {
+                                console.log("[LINE] 群組同時綁客戶，仍辨識訂單（忽略內部群設定）group=%s customer=%s", groupId, boundCust.id);
+                            } else {
+                                console.log("[LINE] 內部群組，略過訂單辨識 group=%s msgType=%s", groupId, msgType);
+                                continue;
+                            }
+                        }
                     } catch (e) { console.warn("[LINE] 內部群組判斷失敗:", e?.message || e); }
                 }
                 // ── 員工身份偵測：若 senderUserId 是員工，跳過 AI 解析，只記錄 ──

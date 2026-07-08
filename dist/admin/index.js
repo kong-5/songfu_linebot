@@ -6633,30 +6633,41 @@ function createAdminRouter() {
         try { whitelisted = await db.prepare("SELECT group_id, group_name FROM stocktake_group").all(); } catch (_) { whitelisted = []; }
         for (const w of whitelisted) { put(w.group_id, w.group_name, "已納入"); const c = byId.get(String(w.group_id).trim()); if (c) c.whitelisted = true; }
         try { const pend = await db.prepare("SELECT group_id, group_name FROM pending_line_groups").all(); for (const p of pend) put(p.group_id, p.group_name, "待綁定"); } catch (_) {}
-        try { const cust = await db.prepare("SELECT name, line_group_id FROM customers WHERE line_group_id IS NOT NULL AND line_group_id <> ''").all(); for (const c of cust) put(c.line_group_id, c.name, "客戶群"); } catch (_) {}
-        return Array.from(byId.values()).map((c) => ({ ...c, sources: Array.from(c.sources) }))
-            .sort((a, b) => (Number(b.whitelisted) - Number(a.whitelisted)) || String(a.name || a.group_id).localeCompare(String(b.name || b.group_id)));
+        try {
+            const cust = await db.prepare("SELECT name, line_group_id FROM customers WHERE line_group_id IS NOT NULL AND line_group_id <> ''").all();
+            for (const c of cust) { put(c.line_group_id, c.name, "客戶群"); const it = byId.get(String(c.line_group_id).trim()); if (it) { it.isCustomer = true; it.customerName = String(c.name || ""); } }
+        } catch (_) {}
+        return Array.from(byId.values()).map((c) => ({ ...c, sources: Array.from(c.sources), isCustomer: !!c.isCustomer }))
+            .sort((a, b) => (Number(b.whitelisted) - Number(a.whitelisted)) || (Number(a.isCustomer) - Number(b.isCustomer)) || String(a.name || a.group_id).localeCompare(String(b.name || b.group_id)));
     }
     router.get("/inventory/stocktake-groups", async (req, res) => {
         const list = await loadStocktakeGroupCandidates();
         const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:16px;">已儲存。</div>` : "";
+        const typeTag = (g) => {
+            if (g.isCustomer) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#fdecec;color:#b3261e;">⚠ 已綁客戶${g.customerName ? "：" + escapeHtml(g.customerName) : ""}</span>`;
+            if (g.whitelisted) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#e7f6ee;color:#1f7a46;">內部群</span>`;
+            return `<span style="display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:6px;background:#eef0f3;color:#5b616e;">待綁定</span>`;
+        };
         const rowsHtml = list.map((g) => `
-      <tr>
+      <tr${g.isCustomer ? ' style="background:#fdf3f2;"' : ""}>
         <td style="text-align:center;"><input type="checkbox" name="grp[${escapeAttr(g.group_id)}]" value="1" ${g.whitelisted ? "checked" : ""}></td>
         <td>${escapeHtml(g.name || "（未命名群組）")}</td>
         <td style="font-variant-numeric:tabular-nums;color:var(--notion-text-muted);font-size:12px;word-break:break-all;">${escapeHtml(g.group_id)}</td>
-        <td style="color:var(--notion-text-muted);font-size:12px;">${g.sources.map((s) => escapeHtml(s)).join("、")}</td>
+        <td>${typeTag(g)}</td>
       </tr>`).join("");
+        const custCount = list.filter((g) => g.isCustomer && g.whitelisted).length;
+        const warnBanner = custCount ? `<div style="background:#fdecec;color:#b3261e;padding:11px 14px;border-radius:8px;margin-bottom:16px;font-size:13px;">⚠ 有 <b>${custCount}</b> 個已勾選的群組同時綁定了客戶（見紅底列）。這些群組會<b>持續辨識訂單</b>（收單優先，盤點內部群設定不生效）。若那其實是內部群，請到「客戶管理」把該客戶的「LINE 群組 ID」清空；若那是客戶群，請在下方取消勾選。</div>` : "";
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 盤點群組</div>
       <h1 class="notion-page-title">盤點群組</h1>
-      <p class="notion-hint" style="margin:-2px 0 18px;">列在這裡的 LINE 群組視為「內部群組」：成員打「<b>#盤點</b>」會跳出倉庫盤點按鈕，且機器人<b>不辨識訂單、不回「無法收單」</b>。清單自動收集機器人所在的群組；若內部群沒出現，先在群裡對機器人傳一句話讓它露出，或把群組 ID 貼到下方手動加入。</p>
+      <p class="notion-hint" style="margin:-2px 0 18px;">列在這裡的 LINE 群組視為「內部群組」：成員打「<b>#盤點</b>」會跳出倉庫盤點按鈕，且機器人<b>不辨識訂單、不回「無法收單」</b>。<b>已綁客戶的群組（紅底）為安全起見一律仍辨識訂單</b>，不會被當內部群。清單自動收集機器人所在的群組；若內部群沒出現，先在群裡對機器人傳一句話讓它露出，或把群組 ID 貼到下方手動加入。</p>
+      ${warnBanner}
       ${ok}
       <form method="post" action="/admin/inventory/stocktake-groups">
         <div class="notion-card" style="padding:0;overflow:hidden;">
           <table>
             <thead><tr>
-              <th style="text-align:center;width:72px;">納入盤點</th><th>群組名稱</th><th>群組 ID</th><th>來源</th>
+              <th style="text-align:center;width:72px;">納入盤點</th><th>群組名稱</th><th>群組 ID</th><th style="width:150px;">類型</th>
             </tr></thead>
             <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:var(--notion-text-muted);padding:22px;">還沒有偵測到任何群組。請把機器人加入盤點群組後，於群內傳一句話。</td></tr>'}</tbody>
           </table>
