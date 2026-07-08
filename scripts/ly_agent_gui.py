@@ -30,6 +30,7 @@ import os
 import sys
 import json
 import queue
+import importlib.util
 import threading
 import datetime
 import urllib.request
@@ -56,6 +57,26 @@ if _APP_DIR and _APP_DIR not in sys.path:
 LYSTK_DIR = os.environ.get("LYSTK_DIR", r"D:\Work\lystk_tool")
 if LYSTK_DIR and LYSTK_DIR not in sys.path:
     sys.path.append(LYSTK_DIR)
+
+_LOCAL_MOD_CACHE = {}
+
+
+def local_import(modname: str):
+    """強制載入「與本程式同資料夾」的隨附模組（ly_stock_push / ly_writeback_bridge），
+    用絕對路徑載入，避免被 D:\\Work\\lystk_tool 內的『舊版同名檔』蓋掉。
+    若同資料夾沒有該檔，才退回一般 import（沿用 sys.path）。"""
+    if modname in _LOCAL_MOD_CACHE:
+        return _LOCAL_MOD_CACHE[modname]
+    path = os.path.join(_APP_DIR, modname + ".py")
+    if os.path.exists(path):
+        spec = importlib.util.spec_from_file_location(modname, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[modname] = mod
+        spec.loader.exec_module(mod)
+    else:
+        mod = __import__(modname)
+    _LOCAL_MOD_CACHE[modname] = mod
+    return mod
 
 # 這些子模組會在載入時 import lystk / ly_order；在沒有凌越環境的機器上會失敗，
 # 因此改成「用到時才載入」（lazy import），視窗照樣能開、能改設定。
@@ -289,10 +310,10 @@ class AgentEngine:
             self.log("⚠ 尚未設定網址/金鑰，無法推庫存（請按⚙設定）")
             return
         try:
-            import ly_stock_push  # lazy：需要凌越環境
+            ly_stock_push = local_import("ly_stock_push")  # 強制用隨附版本
         except Exception as e:
             self.state["erp"] = "missing"
-            self.log(f"⚠ 載入凌越庫存模組失敗（此機無凌越環境？）：{e}")
+            self.log(f"⚠ 載入凌越庫存模組失敗（此機無凌越環境？）：{_short(e)}")
             return
         with self.erp_lock:
             tag = f"（{reason}）" if reason else ""
@@ -315,10 +336,10 @@ class AgentEngine:
             self.log("⚠ 尚未設定網址/金鑰，無法回寫（請按⚙設定）")
             return
         try:
-            import ly_writeback_bridge  # lazy：需要凌越環境
+            ly_writeback_bridge = local_import("ly_writeback_bridge")  # 強制用隨附版本
         except Exception as e:
             self.state["erp"] = "missing"
-            self.log(f"⚠ 載入凌越回寫模組失敗（此機無凌越環境？）：{e}")
+            self.log(f"⚠ 載入凌越回寫模組失敗（此機無凌越環境？）：{_short(e)}")
             return
 
         import types
@@ -336,7 +357,7 @@ class AgentEngine:
                     self.state["wb_last"] = now_full()
                     self.state["wb_last_result"] = "完成" if rc == 0 else f"部分失敗(rc={rc})"
             except Exception as e:
-                self.log(f"❌ 回寫失敗：{e}")
+                self.log(f"❌ 回寫失敗：{_short(e)}")
 
     def auto_writeback_tick(self):
         """自動回寫：先看有沒有待回寫的訂單，有才寫（沒有就安靜略過）。"""
@@ -344,10 +365,10 @@ class AgentEngine:
         if not base or not key:
             return
         try:
-            import ly_writeback_bridge
+            ly_writeback_bridge = local_import("ly_writeback_bridge")  # 強制用隨附版本
         except Exception as e:
             self.state["erp"] = "missing"
-            self.log(f"⚠ 載入凌越回寫模組失敗：{e}")
+            self.log(f"⚠ 載入凌越回寫模組失敗：{_short(e)}")
             return
         try:
             orders = ly_writeback_bridge.fetch_pending(base, key, datetime.date.today().strftime("%Y-%m-%d"))
@@ -681,8 +702,8 @@ class App(tk.Tk):
     def _probe_erp(self):
         def worker():
             try:
-                import ly_stock_push  # noqa: F401
-                import ly_writeback_bridge  # noqa: F401
+                local_import("ly_stock_push")
+                local_import("ly_writeback_bridge")
                 self.state_data["erp"] = "ok"
             except Exception:
                 self.state_data["erp"] = "missing"
