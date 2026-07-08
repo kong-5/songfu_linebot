@@ -897,6 +897,64 @@ function createLineWebhook() {
                         continue;
                     }
                 }
+                // ── #盤點 指令：僅限「盤點群組白名單」內的群組 ──
+                if (groupId && msgType === "text" && textEarly && textEarly.replace(/\s/g, "") === "#盤點") {
+                    try {
+                        const wl = await db.prepare("SELECT group_id FROM stocktake_group WHERE group_id = ?").get(groupId);
+                        if (!wl) {
+                            // 非白名單群組：靜默略過（不回覆、不進 AI 解析）
+                            console.log("[LINE] #盤點 於非白名單群組略過 group=%s", groupId);
+                            continue;
+                        }
+                        const stkLiffId = (process.env.LIFF_ID_STOCKTAKE || "2010106501-VocNwkbA").trim();
+                        const whRows = await db.prepare("SELECT code, name, sort_order FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY sort_order, code").all();
+                        if (!whRows || whRows.length === 0) {
+                            if (lineClient && event.replyToken) {
+                                try { await lineClient.replyMessage(event.replyToken, { type: "text", text: "目前沒有納入盤點的倉庫。請先到後台『庫存管理 → 倉庫設定』勾選要盤點的倉庫。" }); } catch (_) {}
+                            }
+                            continue;
+                        }
+                        const nowTwStk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }));
+                        const stkDate = nowTwStk.toISOString().slice(0, 10);
+                        const whLabel = (w) => { const s = String(w.name || w.code || "").trim(); return s.length > 18 ? s.slice(0, 18) : s; };
+                        const shown = whRows.slice(0, 11);
+                        const btns = shown.map((w) => ({
+                            type: "button", style: "secondary", height: "sm", margin: "sm",
+                            action: { type: "uri", label: whLabel(w), uri: `https://liff.line.me/${stkLiffId}?warehouse=${encodeURIComponent(String(w.code))}` },
+                        }));
+                        // 一律附「全部倉庫」按鈕（開啟選單頁），若倉庫數超過顯示上限也可從此進入
+                        btns.push({
+                            type: "button", style: "primary", color: "#1d4ed8", height: "sm", margin: "md",
+                            action: { type: "uri", label: whRows.length > shown.length ? `其他倉庫（共 ${whRows.length}）` : "開啟盤點選單", uri: `https://liff.line.me/${stkLiffId}` },
+                        });
+                        if (lineClient && event.replyToken) {
+                            try {
+                                await lineClient.replyMessage(event.replyToken, {
+                                    type: "flex",
+                                    altText: `松富盤點 ${stkDate}`,
+                                    contents: {
+                                        type: "bubble", size: "kilo",
+                                        body: {
+                                            type: "box", layout: "vertical", spacing: "xs", paddingAll: "14px",
+                                            contents: [
+                                                { type: "text", text: "📋 松富盤點", size: "md", weight: "bold", color: "#1d4ed8" },
+                                                { type: "text", text: `盤點日 ${stkDate} · 選擇倉庫`, size: "xxs", color: "#9b9a97", margin: "xs" },
+                                                { type: "separator", margin: "md" },
+                                                ...btns,
+                                            ],
+                                        },
+                                    },
+                                });
+                            } catch (e) { console.warn("[LINE] #盤點 卡片回覆失敗:", e?.message || e); }
+                        }
+                        console.log("[LINE] #盤點 已回倉庫按鈕 group=%s 倉數=%s", groupId, whRows.length);
+                        continue;
+                    } catch (e) {
+                        console.error("[LINE] #盤點 處理失敗:", e?.message || e);
+                        try { if (lineClient && event.replyToken) await lineClient.replyMessage(event.replyToken, { type: "text", text: "盤點指令處理失敗，請稍後再試。" }); } catch (_) {}
+                        continue;
+                    }
+                }
                 // ── 員工身份偵測：若 senderUserId 是員工，跳過 AI 解析，只記錄 ──
                 if (senderUserId) {
                     try {
