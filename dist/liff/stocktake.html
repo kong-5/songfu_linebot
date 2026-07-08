@@ -123,7 +123,7 @@
       backWh:'‹ 倉庫',done:'已盤',todo:'未盤',searchPh:'搜尋料號 / 品名',fAll:'全部',fTodo:'未盤',fExp:'效期品',hideZero:'隱藏 0',
       sys:'系統',qtyPh:'盤點',match:'相符',expChip:'效期',batchTitle:'各效期數量（呆料／到期警示用）',sum:'合計',
       addBatch:'＋ 新增效期',doneBatch:'完成收起 ▴',noMatch:'沒有符合的品項',submit:'送出盤點',submitting:'送出中…',
-      sent:'盤點已送出',finish:'完成',submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',langBtn:'Tiếng Việt',
+      sent:'盤點已送出',finish:'完成',submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',langBtn:'Tiếng Việt',resumed:'續盤（已帶回今日已盤）',
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
       progN:function(d,a){return '已盤 '+d+'/'+a;},barN:function(d,a){return '已盤 '+d+'/'+a+' · 未盤 '+(a-d);},
       confirm:function(wh,d,a){return '送出盤點？\n\n倉庫：'+wh+'\n已盤 '+d+'/'+a+' 項（未盤的會標「未盤」）';},
@@ -136,7 +136,7 @@
       backWh:'‹ Kho',done:'Đã kiểm',todo:'Chưa',searchPh:'Tìm mã / tên hàng',fAll:'Tất cả',fTodo:'Chưa kiểm',fExp:'Hàng HSD',hideZero:'Ẩn số 0',
       sys:'Hệ thống',qtyPh:'Đếm',match:'Khớp',expChip:'HSD',batchTitle:'Số lượng theo HSD (cảnh báo hết hạn)',sum:'Tổng',
       addBatch:'＋ Thêm HSD',doneBatch:'Xong ▴',noMatch:'Không có sản phẩm phù hợp',submit:'Gửi kiểm kê',submitting:'Đang gửi…',
-      sent:'Đã gửi kiểm kê',finish:'Xong',submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',langBtn:'中文',
+      sent:'Đã gửi kiểm kê',finish:'Xong',submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',langBtn:'中文',resumed:'Tiếp tục (đã tải dữ liệu hôm nay)',
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
       progN:function(d,a){return 'Đã kiểm '+d+'/'+a;},barN:function(d,a){return 'Đã kiểm '+d+'/'+a+' · Chưa '+(a-d);},
       confirm:function(wh,d,a){return 'Gửi kiểm kê?\n\nKho: '+wh+'\nĐã kiểm '+d+'/'+a+' (mục chưa kiểm sẽ được đánh dấu "Chưa")';},
@@ -204,6 +204,14 @@
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
       S.wh=res.warehouse; S.date=res.date; S.items=res.items||[]; S.counts={}; S.batches={}; S.expanded={};
       S.items.forEach(function(it){ if(it.exp) S.batches[it.c]=[]; });
+      // 續盤：帶回今日已存的實盤數與效期批號
+      S.resumed=!!res.resumed;
+      var sv=res.saved||{};
+      S.items.forEach(function(it){
+        var s=sv[it.c]; if(!s) return;
+        if(s.counted!=null) S.counts[it.c]=String(s.counted);
+        if(s.expiry&&s.expiry.length){ S.batches[it.c]=s.expiry.map(function(b){return {date:b.date||'',qty:(b.qty==null?'':String(b.qty))};}); }
+      });
       renderCount();
     }).catch(function(){ showCenter('<div>'+t('loadItemsFail')+'</div>'); });
   }
@@ -250,7 +258,7 @@
     var done=S.items.filter(isCounted).length, all=S.items.length;
     app.innerHTML=''
       +'<header><div class="head-main"><button class="back" id="stBack">'+esc(t('backWh'))+'</button>'
-        +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(t('countDay'))+' '+esc(S.date)+' · '+esc(t('totalN')(all))+'</div></div>'
+        +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(t('countDay'))+' '+esc(S.date)+' · '+esc(t('totalN')(all))+(S.resumed?' · <b style="color:var(--accent)">'+esc(t('resumed'))+'</b>':'')+'</div></div>'
         +'<button class="lang" id="stLang">'+esc(t('langBtn'))+'</button></div>'
         +'<div class="prog"><div class="prog-bar"><div class="prog-fill" id="stFill"></div></div><div class="prog-num"><span id="stProgTxt"></span></div></div>'
         +'<div class="tools"><div class="search"><input id="stQ" placeholder="'+esc(t('searchPh'))+'" autocomplete="off"></div>'

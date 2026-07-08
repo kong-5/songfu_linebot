@@ -129,7 +129,21 @@ function createLiffRouter() {
                 const isExp = Object.prototype.hasOwnProperty.call(exp, c);
                 return { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: Number(r.qty || 0), exp: isExp, eunit: isExp ? (exp[c] || String(r.unit || "")) : "" };
             });
-            res.json({ date: stkTaipeiDate(), warehouse: { code, name: wh ? String(wh.name || "") : "" }, items });
+            // 續盤：同倉同日若已送出過，帶回已存的實盤數與效期，重開可接著盤
+            const date = stkTaipeiDate();
+            const saved = {};
+            let resumed = false;
+            const sess = await db.prepare("SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ?").get(code, date);
+            if (sess) {
+                const cRows = await db.prepare("SELECT erp_code, counted_qty, expiry_json FROM stocktake_count WHERE session_id = ?").all(sess.id);
+                for (const r of cRows || []) {
+                    let expiry = [];
+                    try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
+                    saved[String(r.erp_code || "")] = { counted: (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty), expiry };
+                }
+                resumed = (cRows || []).length > 0;
+            }
+            res.json({ date, warehouse: { code, name: wh ? String(wh.name || "") : "" }, items, saved, resumed });
         } catch (e) { console.error("[liff stocktake items]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
     router.post("/api/stocktake/submit", express_1.json({ limit: "2mb" }), async (req, res) => {

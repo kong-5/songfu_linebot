@@ -5814,7 +5814,169 @@ function createAdminRouter() {
             res.redirect(302, "/admin/rhythm?err=1");
         }
     });
+    // ── 每日盤點（LINE 盤點結果總覽）：當日各倉一次列出＋完成比例＋盤差 ──
+    function stkAdminTaipeiDate() {
+        try { return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date()); }
+        catch (_) { return new Date().toISOString().slice(0, 10); }
+    }
+    function stkAdminTwTime(iso) {
+        if (!iso) return "";
+        try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, hour: "2-digit", minute: "2-digit" }); }
+        catch (_) { return String(iso); }
+    }
+    async function loadStocktakeDay(date) {
+        const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
+        const out = [];
+        for (const s of sessions || []) {
+            const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, expiry_json FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
+            const items = (rows || []).map((r) => {
+                const sys = Number(r.sys_qty || 0);
+                const counted = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty);
+                const diff = counted == null ? null : Math.round((counted - sys) * 100) / 100;
+                let expiry = [];
+                try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
+                return { code: String(r.erp_code || ""), name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, diff, expiry };
+            });
+            const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
+            out.push({ session: s, items, diffCount });
+        }
+        return out;
+    }
     router.get("/inventory", async (req, res) => {
+        const qd = String(req.query.date || "").trim();
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
+        const day = await loadStocktakeDay(date);
+        let includedWh = [];
+        try { includedWh = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY sort_order, code").all()) || []; } catch (_) { includedWh = []; }
+        let recentDates = [];
+        try { recentDates = (await db.prepare("SELECT count_date AS d, COUNT(*) AS n FROM stocktake_session GROUP BY count_date ORDER BY count_date DESC LIMIT 14").all()) || []; } catch (_) { recentDates = []; }
+        const countedWh = new Set(day.map((x) => String(x.session.wh_code)));
+        const pendingWh = includedWh.filter((w) => !countedWh.has(String(w.code)));
+        const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
+        const fmtN = (n) => (n == null ? "—" : String(n));
+        const diffPct = (it) => {
+            if (it.diff == null) return "—";
+            if (it.sys === 0) return it.diff === 0 ? "0%" : "—";
+            return ((it.diff / it.sys) * 100).toFixed(1) + "%";
+        };
+        const diffCls = (it) => (it.diff == null ? "" : it.diff === 0 ? "stk-z" : it.diff > 0 ? "stk-p" : "stk-n");
+        const expiryTxt = (arr) => (arr || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"} × ${b.qty || "?"}`).join("、");
+        const cards = day.map(({ session: s, items, diffCount }) => {
+            const done = Number(s.counted_count || 0), all = Number(s.item_count || 0);
+            const rowsHtml = items.map((it) => `
+              <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}">
+                <td class="stk-code">${escapeHtml(it.code)}</td>
+                <td>${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
+                <td class="stk-num">${fmtN(it.sys)}</td>
+                <td class="stk-num">${fmtN(it.counted)}</td>
+                <td class="stk-num stk-diff">${it.diff == null ? "—" : (it.diff > 0 ? "+" : "") + it.diff}</td>
+                <td class="stk-num">${diffPct(it)}</td>
+                <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
+              </tr>`).join("");
+            return `
+          <div class="stk-card">
+            <div class="stk-card-h">
+              <div class="stk-card-t"><b>${escapeHtml(s.wh_name || s.wh_code)}</b><span class="stk-code2">${escapeHtml(s.wh_code)}</span></div>
+              <div class="stk-card-m">
+                <span>盤點人 ${escapeHtml(s.created_by_name || "—")}</span>
+                <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
+                <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
+                <span class="stk-badge ${diffCount ? "warn" : "ok"}">盤差 ${diffCount} 項</span>
+              </div>
+            </div>
+            <table class="stk-tbl">
+              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統</th><th class="stk-num">實盤</th><th class="stk-num">盤差</th><th class="stk-num">盤差%</th><th>效期</th></tr></thead>
+              <tbody>${rowsHtml || `<tr><td colspan="7" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
+            </table>
+          </div>`;
+        }).join("");
+        const chips = recentDates.map((r) => `<a class="stk-chip ${String(r.d) === date ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(String(r.d))}">${escapeHtml(String(r.d))}<span>${r.n}倉</span></a>`).join("");
+        const totalDiff = day.reduce((s, x) => s + x.diffCount, 0);
+        const body = `
+      <style>
+        .stk-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 12px;}
+        .stk-bar input[type=date]{padding:6px 9px;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;background:var(--notion-card,#fff);color:inherit;}
+        .stk-sum{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;}
+        .stk-pill{font-size:12.5px;padding:5px 11px;border-radius:99px;background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);color:#5b616e;}
+        .stk-pill b{color:inherit;}
+        .stk-pill.warn{background:#fcf3e2;border-color:#e8d5ac;color:#8a5a10;}
+        .stk-pill.ok{background:#e7f6ee;border-color:#bfe5cf;color:#1f7a46;}
+        .stk-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px;}
+        .stk-chip{font-size:12px;padding:4px 10px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);text-decoration:none;color:#5b616e;background:var(--notion-card,#fff);}
+        .stk-chip span{margin-left:5px;color:#9b9a97;}
+        .stk-chip.on{background:#2383e2;color:#fff;border-color:#2383e2;}
+        .stk-chip.on span{color:#d7e9fb;}
+        .stk-card{background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;margin:0 0 14px;overflow:hidden;}
+        .stk-card-h{padding:10px 14px;border-bottom:1px solid var(--notion-border,#e3e2e0);display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;justify-content:space-between;}
+        .stk-card-t b{font-size:15px;}
+        .stk-code2{margin-left:8px;font-size:12px;color:#9b9a97;font-variant-numeric:tabular-nums;}
+        .stk-card-m{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:#787774;align-items:center;}
+        .stk-badge{font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:6px;background:#eef0f3;color:#5b616e;}
+        .stk-badge.ok{background:#e7f6ee;color:#1f7a46;}
+        .stk-badge.warn{background:#fdecec;color:#b3261e;}
+        .stk-tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
+        .stk-tbl th{position:sticky;top:0;text-align:left;padding:5px 10px;background:var(--notion-bg,#f7f6f3);border-bottom:1px solid var(--notion-border,#e3e2e0);font-size:11px;color:#787774;font-weight:600;}
+        .stk-tbl td{padding:4px 10px;border-bottom:1px solid var(--notion-border-soft,#f0efed);vertical-align:top;}
+        .stk-tbl tr:last-child td{border-bottom:0;}
+        .stk-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+        th.stk-num{text-align:right;}
+        .stk-code{font-variant-numeric:tabular-nums;color:#787774;white-space:nowrap;}
+        .stk-spec{margin-left:6px;font-size:11px;color:#9b9a97;}
+        .stk-exp{font-size:11.5px;color:#8a5a10;max-width:220px;}
+        tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}
+        tr.stk-p .stk-diff{color:#1f7a46;font-weight:700;}
+        tr.stk-z .stk-diff{color:#9b9a97;}
+        tr.stk-n{background:#fdf3f2;}
+        .stk-togbtn{font-size:12.5px;padding:6px 12px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;}
+        .stk-togbtn.on{background:#2383e2;border-color:#2383e2;color:#fff;}
+        .stk-empty{background:var(--notion-card,#fff);border:1px dashed var(--notion-border,#e3e2e0);border-radius:12px;padding:34px 16px;text-align:center;color:#787774;}
+      </style>
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 每日盤點</div>
+      <h1 style="font-size:20px;margin:8px 0 10px;">每日盤點</h1>
+      <form method="get" action="/admin/inventory" class="stk-bar">
+        <input type="date" name="date" value="${escapeAttr(date)}" onchange="this.form.submit()">
+        <button type="button" class="stk-togbtn" id="stkOnlyDiff">只看盤差</button>
+        <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
+        <span style="flex:1"></span>
+        <a href="/admin/inventory/legacy" style="font-size:12px;color:#9b9a97;">舊版盤點作業 →</a>
+      </form>
+      <div class="stk-sum">
+        <span class="stk-pill">本日已盤 <b>${day.length}</b> / 納入盤點 <b>${includedWh.length}</b> 倉（${pct(day.length, includedWh.length)}%）</span>
+        <span class="stk-pill ${totalDiff ? "warn" : "ok"}">盤差品項 <b>${totalDiff}</b> 項</span>
+        ${pendingWh.length ? `<span class="stk-pill warn">未盤：${pendingWh.map((w) => escapeHtml(w.name || w.code)).join("、")}</span>` : (includedWh.length ? `<span class="stk-pill ok">全部倉庫已盤 ✓</span>` : "")}
+      </div>
+      ${chips ? `<div class="stk-chips">${chips}</div>` : ""}
+      ${cards || `<div class="stk-empty">此日期沒有盤點紀錄。<br>盤點方式：在白名單群組輸入「#盤點」，點倉庫按鈕進入 LIFF 盤點並送出。</div>`}
+      <script>
+      (function(){
+        var btn=document.getElementById('stkOnlyDiff'); if(!btn) return;
+        var on=false;
+        btn.addEventListener('click',function(){
+          on=!on; btn.classList.toggle('on',on);
+          var rows=document.querySelectorAll('tr[data-diff]');
+          Array.prototype.forEach.call(rows,function(tr){ tr.style.display=(on&&tr.getAttribute('data-diff')==='0')?'none':''; });
+        });
+      })();
+      </script>`;
+        res.type("text/html").send(notionPage("每日盤點", body, "inventory", res));
+    });
+    router.get("/inventory/stocktake.csv", async (req, res) => {
+        const qd = String(req.query.date || "").trim();
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
+        const day = await loadStocktakeDay(date);
+        const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
+        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量,實盤量,盤差,盤差%,效期明細,盤點人,送出時間"];
+        for (const { session: s, items } of day) {
+            for (const it of items) {
+                const dp = it.diff == null ? "" : (it.sys === 0 ? "" : ((it.diff / it.sys) * 100).toFixed(1) + "%");
+                const exp = (it.expiry || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"}x${b.qty || "?"}`).join(" / ");
+                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.diff == null ? "" : it.diff, dp, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
+            }
+        }
+        res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
+        res.type("text/csv").send("﻿" + lines.join("\r\n"));
+    });
+    router.get("/inventory/legacy", async (req, res) => {
         const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
         const managerRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("inventory_manager");
         const managerName = managerRow?.value ?? "";
@@ -5863,7 +6025,7 @@ function createAdminRouter() {
         <h1 class="notion-page-title">盤點作業</h1>
         <div class="notion-card">
           <h2>各品項目前存量與安全庫存</h2>
-          <form method="get" action="/admin/inventory" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+          <form method="get" action="/admin/inventory/legacy" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
             <label>倉庫 <select name="warehouse_id" onchange="this.form.submit()"><option value="">全部</option>${optWh}</select></label>
             <label>搜尋品項 <input type="text" name="q" value="${escapeAttr(req.query.q || "")}" placeholder="品名"></label>
             <button type="submit" class="btn">查詢</button>
@@ -5903,7 +6065,7 @@ function createAdminRouter() {
             })].join("");
         const msg = req.query.ok === "1" ? "<p class=\"notion-msg ok\">已新增庫房。</p>" : req.query.ok === "edit" ? "<p class=\"notion-msg ok\">已儲存。</p>" : req.query.ok === "del" ? "<p class=\"notion-msg ok\">已刪除。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 庫房管理</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory/legacy">盤點作業</a> / 庫房管理</div>
         <h1 class="notion-page-title">庫房管理</h1>
         ${msg}
         <p style="margin-bottom:16px;"><a href="/admin/inventory/warehouses/new" class="btn btn-primary">＋ 新增庫房</a></p>
@@ -5927,7 +6089,7 @@ function createAdminRouter() {
     });
     router.get("/inventory/warehouses/new", async (_req, res) => {
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 新增庫房</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory/legacy">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 新增庫房</div>
         <h1 class="notion-page-title">新增庫房</h1>
         <div class="notion-card">
           <form method="post" action="/admin/inventory/warehouses/new">
@@ -5958,7 +6120,7 @@ function createAdminRouter() {
             return;
         }
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 編輯庫房</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory/legacy">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 編輯庫房</div>
         <h1 class="notion-page-title">編輯庫房</h1>
         <div class="notion-card">
           <form method="post" action="/admin/inventory/warehouses/${encodeURIComponent(row.id)}/edit">
@@ -5993,7 +6155,7 @@ function createAdminRouter() {
             return;
         }
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 確認刪除</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory/legacy">盤點作業</a> / <a href="/admin/inventory/warehouses">庫房管理</a> / 確認刪除</div>
         <h1 class="notion-page-title">確認刪除庫房</h1>
         <div class="notion-card">
           <p>確定要刪除「${escapeHtml(row.name)}」？此庫房內已歸倉的品項與每日盤點紀錄將一併移除關聯。</p>
@@ -6032,7 +6194,7 @@ function createAdminRouter() {
         const availableProducts = whId ? allProducts.filter((p) => !inWarehouse.some((x) => x.product_id === p.id)) : [];
         const whName = whId ? (warehouses.find((w) => w.id === whId)?.name || "") : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 品項歸倉</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory/legacy">盤點作業</a> / 品項歸倉</div>
         <h1 class="notion-page-title">品項歸倉</h1>
         ${req.query.ok === "1" ? "<p class=\"notion-msg ok\">已加入品項。</p>" : req.query.ok === "settings" ? "<p class=\"notion-msg ok\">已儲存排序與安全庫存。</p>" : req.query.ok === "remove" ? "<p class=\"notion-msg ok\">已移出。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : ""}
         <div class="notion-card assign-section">
@@ -6154,7 +6316,7 @@ function createAdminRouter() {
         const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}" ${w.id === whId ? "selected" : ""}>${escapeHtml(w.name)}</option>`).join("");
         const msg = req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存盤點。</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 每日盤點</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory/legacy">盤點作業</a> / 每日盤點</div>
         <h1 class="notion-page-title">每日盤點</h1>
         ${msg}
         <form method="get" action="/admin/inventory/daily" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
@@ -6222,7 +6384,7 @@ function createAdminRouter() {
         const count = req.query.count ? Number(req.query.count) : 0;
         const msg = req.query.ok ? "<p class=\"notion-msg ok\">已匯入 ERP 資料" + (count ? "，共 " + count + " 筆。" : "。") + "</p>" : req.query.err ? "<p class=\"notion-msg err\">" + escapeHtml(String(req.query.err)) + "</p>" : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 匯入 ERP 資料</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory/legacy">盤點作業</a> / 匯入 ERP 資料</div>
         <h1 class="notion-page-title">匯入 ERP 銷貨資料</h1>
         ${msg}
         <p>上傳 CSV 或貼上內容，格式：<strong>日期,品項,銷貨數量,倉庫</strong>。日期為 YYYY-MM-DD；品項為品項 ID 或品名；倉庫為倉庫 ID 或名稱（可省略則需於下方選擇預設倉庫）。</p>
@@ -6583,7 +6745,7 @@ function createAdminRouter() {
         }
         const optWh = warehouses.map((w) => `<option value="${escapeAttr(w.id)}" ${w.id === whId ? "selected" : ""}>${escapeHtml(w.name)}</option>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 盤差報表</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory/legacy">盤點作業</a> / 盤差報表</div>
         <h1 class="notion-page-title">盤差報表</h1>
         <p>依日期區間與倉庫計算盤差（盤點數量 − 帳面數量，帳面 = 前日盤點 − 當日 ERP 銷貨）。可匯出 CSV，並檢視易盤差品項統計。</p>
         <div class="notion-card">
@@ -6612,7 +6774,7 @@ function createAdminRouter() {
             })].join("");
         const msg = req.query.ok === "1" ? "<p class=\"notion-msg ok\">已儲存管理人。</p>" : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點作業</a> / 管理人設定</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory/legacy">盤點作業</a> / 管理人設定</div>
         <h1 class="notion-page-title">盤點作業管理人</h1>
         ${msg}
         <div class="notion-card">
