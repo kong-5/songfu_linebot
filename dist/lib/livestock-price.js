@@ -140,6 +140,43 @@ async function fetchLivestockPrices(dateStr) {
     return { prices, dataDate: dataDate || target, status, errors };
 }
 
+exports.backfillLivestockHistory = backfillLivestockHistory;
+/** 回填近 days 天歷史（農業部 API 本來就回多天），讓折線圖立刻有資料可看。每個日期覆蓋寫入。 */
+async function backfillLivestockHistory(db, days = 30) {
+    const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+    const byDate = new Map();
+    const add = (date, p) => { if (!byDate.has(date)) byDate.set(date, []); byDate.get(date).push(p); };
+    // 家禽（白肉雞/雞蛋）：一天一列寬表
+    const pr = await fetchJson(`${POULTRY_API}?$top=${days + 15}`);
+    if (pr.ok) {
+        for (const row of pr.data) {
+            const iso = poultryDateToIso(row["日期"] ?? row["交易日期"]);
+            if (!iso || iso < cutoff) continue;
+            const put = (cat, label, keys) => {
+                for (const k of keys) { const v = num(row[k]); if (v != null) { add(iso, { recordDate: iso, category: cat, itemLabel: label, price: v, unit: "元/台斤", marketName: "", extraJson: null }); return; } }
+            };
+            put("chicken", "白肉雞(2.0Kg以上)", ["白肉雞(2.0Kg以上)", "白肉雞(2.0kg以上)"]);
+            put("chicken", "白肉雞(1.75-1.95Kg)", ["白肉雞(1.75-1.95Kg)", "白肉雞(1.75-1.95kg)"]);
+            put("chicken", "白肉雞(門市價高屏)", ["白肉雞(門市價高屏)"]);
+            put("egg", "雞蛋(產地價)", ["雞蛋(產地)", "雞蛋(產地價)"]);
+            put("egg", "雞蛋(大運輸價)", ["雞蛋(大運輸價)", "雞蛋(大運輸)"]);
+        }
+    }
+    // 毛豬：各市場各天
+    const gr = await fetchJson(`${PIG_API}?$top=${days * 25}`);
+    if (gr.ok) {
+        for (const row of gr.data) {
+            const iso = pigDateToIso(row["交易日期"]);
+            if (!iso || iso < cutoff) continue;
+            const price = num(row["成交頭數-平均價格"]);
+            if (price == null) continue;
+            add(iso, { recordDate: iso, category: "pig", itemLabel: "毛豬", price, unit: "元/公斤", marketName: (row["市場名稱"] ?? "").toString().trim(), extraJson: JSON.stringify({ 頭數: num(row["成交頭數-總數"]), 資料日: iso }) });
+        }
+    }
+    let dates = 0;
+    for (const [date, prices] of byDate) { await saveLivestockSnapshot(db, date, prices); dates++; }
+    return { dates, days };
+}
 async function saveLivestockSnapshot(db, recordDate, prices) {
     if (!recordDate || !prices || prices.length === 0) return;
     const now = new Date().toISOString();
@@ -164,6 +201,86 @@ async function loadLivestockSnapshot(db, recordDate) {
         unit: r.unit || "", marketName: r.market_name || "", extraJson: r.extra_json || null,
     }));
 }
+
+/** 圖表用的關鍵品項（各類挑一個代表畫折線）。 */
+exports.KEY_ITEMS = [
+    { key: "egg", category: "egg", itemLabel: "雞蛋(產地價)", title: "🥚 雞蛋產地價", unit: "元/台斤" },
+    { key: "chicken", category: "chicken", itemLabel: "白肉雞(2.0Kg以上)", title: "🐓 白肉雞", unit: "元/台斤" },
+    { key: "pig", category: "pig", itemLabel: null, title: "🐖 毛豬全國均價", unit: "元/公斤" }, // 各市場均價
+];
+exports.loadLivestockHistory = loadLivestockHistory;
+/** 近 days 天，每個關鍵品項的 [{d,v}] 時序（毛豬取各市場當日均價）。 */
+async function loadLivestockHistory(db, days = 30) {
+    const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+    const out = {};
+    const egg = await db.prepare("SELECT record_date AS d, price AS v FROM livestock_price_snapshots WHERE category = 'egg' AND item_label = ? AND record_date >= ? ORDER BY record_date").all("雞蛋(產地價)", cutoff);
+    const chk = await db.prepare("SELECT record_date AS d, price AS v FROM livestock_price_snapshots WHERE category = 'chicken' AND item_label = ? AND record_date >= ? ORDER BY record_date").all("白肉雞(2.0Kg以上)", cutoff);
+    const pig = await db.prepare("SELECT record_date AS d, AVG(price) AS v FROM livestock_price_snapshots WHERE category = 'pig' AND record_date >= ? GROUP BY record_date ORDER BY record_date").all(cutoff);
+    const norm = (rows) => (rows || []).map((r) => ({ d: String(r.d), v: r.v != null && Number.isFinite(Number(r.v)) ? Math.round(Number(r.v) * 100) / 100 : null })).filter((p) => p.v != null);
+    out.egg = norm(egg);
+    out.chicken = norm(chk);
+    out.pig = norm(pig);
+    return out;
+}
+/** 從時序算「最新 vs 前一日」變動：{curr, prev, pct, date, prevDate}。 */
+function seriesChange(series) {
+    const clean = (series || []).filter((p) => p.v != null && Number.isFinite(p.v));
+    if (!clean.length) return { curr: null, prev: null, pct: null };
+    const curr = clean[clean.length - 1];
+    if (clean.length < 2) return { curr: curr.v, prev: null, pct: null, date: curr.d };
+    const prev = clean[clean.length - 2];
+    const pct = prev.v ? ((curr.v - prev.v) / prev.v) * 100 : null;
+    return { curr: curr.v, prev: prev.v, pct, date: curr.d, prevDate: prev.d };
+}
+exports.seriesChange = seriesChange;
+/**
+ * 偵測明顯漲跌並（若設 LINE_MARKET_NOTIFY_TO）推播 LINE。每個資料日只通知一次（app_settings 記錄）。
+ * 門檻：預設 5%，可用 LIVESTOCK_MOVE_THRESHOLD_PCT 覆寫。
+ * @returns { moves:[{title,curr,prev,pct}], notified:boolean, dataDate }
+ */
+async function notifyLivestockMovesIfAny(db, opts) {
+    const thr = Math.max(0.5, Number(process.env.LIVESTOCK_MOVE_THRESHOLD_PCT || 5));
+    const hist = await loadLivestockHistory(db, 10);
+    const moves = [];
+    let dataDate = null;
+    for (const it of exports.KEY_ITEMS) {
+        const ch = seriesChange(hist[it.key]);
+        if (ch.date && (!dataDate || ch.date > dataDate)) dataDate = ch.date;
+        if (ch.pct != null && Math.abs(ch.pct) >= thr) {
+            moves.push({ title: it.title, unit: it.unit, curr: ch.curr, prev: ch.prev, pct: ch.pct, date: ch.date });
+        }
+    }
+    if (!moves.length) return { moves: [], notified: false, dataDate };
+    // 每個資料日只通知一次
+    const lastRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("livestock_notify_last_date");
+    if (lastRow && String(lastRow.value) === String(dataDate)) {
+        return { moves, notified: false, dataDate, skipped: "already_notified_today" };
+    }
+    const to = String(process.env.LINE_MARKET_NOTIFY_TO || "").trim();
+    const token = process.env.LINE_CHANNEL_ACCESS_TOKEN?.trim();
+    let notified = false;
+    if (to && token) {
+        const arrow = (p) => (p > 0 ? "🔺漲" : "🔻跌");
+        const lines = moves.map((m) => `${m.title}：${m.prev}→${m.curr} ${m.unit}（${arrow(m.pct)} ${m.pct > 0 ? "+" : ""}${m.pct.toFixed(1)}%）`);
+        const text = `📈 畜產雞蛋行情提醒（${dataDate}）\n有明顯漲跌：\n` + lines.join("\n");
+        try {
+            const resp = await fetch("https://api.line.me/v2/bot/message/push", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ to, messages: [{ type: "text", text }] }),
+            });
+            notified = resp.ok;
+            if (!resp.ok) console.warn("[livestock-notify] LINE push %s", resp.status);
+        }
+        catch (e) { console.warn("[livestock-notify] push 失敗:", e?.message || e); }
+    }
+    // 不論有無設 to，都記錄「已判定過今天」避免重複判斷；但只有真的推播成功才更新 last_date
+    if (notified) {
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("livestock_notify_last_date", String(dataDate));
+    }
+    return { moves, notified, dataDate };
+}
+exports.notifyLivestockMovesIfAny = notifyLivestockMovesIfAny;
 
 /** 優先 API，失敗改讀快照；API 成功則寫快照。回傳 { prices, dataDate, source, status, errors } */
 async function loadOrFetchLivestockPrices(db, dateStr) {

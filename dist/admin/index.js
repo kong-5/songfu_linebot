@@ -7299,47 +7299,114 @@ function createAdminRouter() {
         const byCat = { pig: [], chicken: [], egg: [] };
         for (const p of prices) { if (byCat[p.category]) byCat[p.category].push(p); }
         const fmtP = (v) => (v == null ? "—" : (Math.round(Number(v) * 100) / 100).toString());
+        const hist = await livestock_price_js_1.loadLivestockHistory(db, 30);
+        const thr = Math.max(0.5, Number(process.env.LIVESTOCK_MOVE_THRESHOLD_PCT || 5));
+        // 折線圖（SVG，自繪不靠外部 lib）；標記日變動 >= 門檻的點（漲紅跌綠）
+        const sparkChart = (points) => {
+            const pts = (points || []).filter((p) => p.v != null);
+            if (pts.length < 2)
+                return `<div style="height:78px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:12px;">資料累積中（2 天以上才有折線）</div>`;
+            const W = 320, H = 78, padL = 6, padR = 6, padT = 10, padB = 12;
+            const vals = pts.map((p) => p.v);
+            let mn = Math.min(...vals), mx = Math.max(...vals);
+            if (mn === mx) { mn -= 1; mx += 1; }
+            const X = (i) => padL + (W - padL - padR) * (i / (pts.length - 1));
+            const Y = (v) => padT + (H - padT - padB) * (1 - (v - mn) / (mx - mn));
+            const line = pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(" ");
+            const area = `M${X(0).toFixed(1)},${(H - padB).toFixed(1)} ` + pts.map((p, i) => `L${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(" ") + ` L${X(pts.length - 1).toFixed(1)},${(H - padB).toFixed(1)} Z`;
+            let dots = "";
+            for (let i = 1; i < pts.length; i++) {
+                const prev = pts[i - 1].v, cur = pts[i].v;
+                const pct = prev ? ((cur - prev) / prev) * 100 : 0;
+                if (Math.abs(pct) >= thr) {
+                    const up = pct > 0;
+                    dots += `<circle cx="${X(i).toFixed(1)}" cy="${Y(cur).toFixed(1)}" r="3.2" fill="${up ? "#dc2626" : "#16a34a"}"><title>${pts[i].d} ${up ? "漲" : "跌"} ${pct.toFixed(1)}%</title></circle>`;
+                }
+            }
+            const last = pts[pts.length - 1], first = pts[0];
+            const col = (last.v - first.v) >= 0 ? "#dc2626" : "#16a34a";
+            return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="78" preserveAspectRatio="none" style="display:block;overflow:visible;">
+        <path d="${area}" fill="${col}" opacity="0.06"></path>
+        <path d="${line}" fill="none" stroke="${col}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"></path>
+        ${dots}
+        <circle cx="${X(pts.length - 1).toFixed(1)}" cy="${Y(last.v).toFixed(1)}" r="2.8" fill="${col}"></circle>
+      </svg>`;
+        };
+        const changeBadge = (ch) => {
+            if (ch.pct == null) return `<span style="font-size:12px;color:var(--txt-3);">今日</span>`;
+            const up = ch.pct > 0, big = Math.abs(ch.pct) >= thr;
+            const col = up ? "#dc2626" : (ch.pct < 0 ? "#16a34a" : "#787774");
+            return `<span style="font-size:13px;font-weight:700;color:${col};">${up ? "▲" : (ch.pct < 0 ? "▼" : "●")} ${ch.pct > 0 ? "+" : ""}${ch.pct.toFixed(1)}%</span>${big ? `<span class="sf-pill" style="background:${up ? "#fef2f2" : "#e7f5e9"};color:${col};font-size:10px;margin-left:6px;">明顯${up ? "漲" : "跌"}</span>` : ""}`;
+        };
+        const metricCards = livestock_price_js_1.KEY_ITEMS.map((it) => {
+            const ser = hist[it.key] || [];
+            const ch = livestock_price_js_1.seriesChange(ser);
+            return `<div class="sf-card" style="flex:1;min-width:240px;padding:14px 16px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;">
+          <div style="font-size:14px;font-weight:600;">${it.title}</div>
+          <div style="font-size:11px;color:var(--txt-3);">${it.unit}</div>
+        </div>
+        <div style="display:flex;align-items:baseline;gap:10px;margin:6px 0 1px;">
+          <div style="font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-0.02em;">${fmtP(ch.curr)}</div>
+          <div>${changeBadge(ch)}</div>
+        </div>
+        <div style="font-size:11px;color:var(--txt-3);margin-bottom:6px;">${ch.prev != null ? `前一日 ${fmtP(ch.prev)}` : "尚無前一日"} · 近 30 天</div>
+        ${sparkChart(ser)}
+      </div>`;
+        }).join("");
+        const bigMoves = livestock_price_js_1.KEY_ITEMS
+            .map((it) => ({ it, ch: livestock_price_js_1.seriesChange(hist[it.key] || []) }))
+            .filter((x) => x.ch.pct != null && Math.abs(x.ch.pct) >= thr);
+        const moveBanner = bigMoves.length
+            ? `<div style="background:#fffbe6;border:1px solid #ffe58f;color:#8a6d1a;padding:10px 14px;border-radius:8px;margin:8px 0;font-size:13px;">⚠ 有明顯漲跌（≥${thr}%）：${bigMoves.map((x) => `${x.it.title} ${x.ch.pct > 0 ? "🔺+" : "🔻"}${x.ch.pct.toFixed(1)}%`).join("；")}${process.env.LINE_MARKET_NOTIFY_TO ? "（會自動推播 LINE）" : "（尚未設 LINE 通知對象；設定 LINE_MARKET_NOTIFY_TO 即自動推播）"}</div>`
+            : "";
+        // 明細（統一 sf-card 樣式）
         const pigRows = byCat.pig
             .sort((a, b) => (Number(b.price) || 0) - (Number(a.price) || 0))
             .map((p) => {
             let d = "";
             try { d = p.extraJson ? (JSON.parse(p.extraJson).資料日 || "") : ""; } catch (_) { }
-            return `<tr><td>${escapeHtml(p.marketName || "—")}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtP(p.price)}</td><td style="color:var(--txt-3);font-size:12px;">${escapeHtml(d)}</td></tr>`;
+            return `<tr><td>${escapeHtml(p.marketName || "—")}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtP(p.price)}</td><td style="color:var(--txt-3);font-size:12px;white-space:nowrap;">${escapeHtml(d)}</td></tr>`;
         }).join("");
         const simpleRows = (arr) => arr.map((p) => `<tr><td>${escapeHtml(p.itemLabel)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtP(p.price)}</td></tr>`).join("");
-        const card = (title, headRight, bodyHtml, unit) => `
-      <div class="notion-card" style="flex:1;min-width:260px;">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
-          <h3 style="margin:0;font-size:15px;">${title}</h3><span style="font-size:12px;color:var(--txt-3);">${unit}</span>
-        </div>
-        <table class="notion-table" style="width:100%;border-collapse:collapse;font-size:14px;">
-          <thead><tr><th style="text-align:left;">${headRight}</th><th style="text-align:right;">價格</th>${title.includes("毛豬") ? "<th></th>" : ""}</tr></thead>
-          <tbody>${bodyHtml || `<tr><td colspan="3" style="color:var(--txt-3);padding:12px;text-align:center;">— 無資料 —</td></tr>`}</tbody>
+        const detailCard = (title, headLeft, bodyHtml, span) => `
+      <div class="sf-card" style="flex:1;min-width:260px;padding:0;overflow:hidden;">
+        <div style="padding:11px 14px;border-bottom:var(--hairline);font-size:14px;font-weight:600;">${title}</div>
+        <table class="sf-table" style="width:100%;font-size:14px;">
+          <thead><tr><th style="text-align:left;">${headLeft}</th><th style="text-align:right;">價格</th>${span ? "<th style='text-align:right;'>資料日</th>" : ""}</tr></thead>
+          <tbody>${bodyHtml || `<tr><td colspan="${span ? 3 : 2}" style="color:var(--txt-3);padding:14px;text-align:center;">— 無資料 —</td></tr>`}</tbody>
         </table>
       </div>`;
         const body = `
-      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 畜產雞蛋行情</div>
+      <div class="sf-root" style="padding:20px 28px;display:flex;flex-direction:column;gap:14px;">
+      <div class="sf-breadcrumb">物流工具 / 畜產雞蛋行情</div>
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
-        <h1 style="font-size:20px;margin:6px 0;">畜產雞蛋行情</h1>
+        <h1 style="font-size:22px;font-weight:600;margin:0;">畜產雞蛋行情</h1>
         <div style="display:flex;gap:8px;align-items:center;">
           <span style="font-size:13px;color:var(--txt-3);">資料日：<strong>${escapeHtml(view.dataDate || "—")}</strong>${view.source === "snapshot" ? "（快照）" : ""}</span>
-          <form method="post" action="/admin/logistics/livestock/refresh" style="display:inline;" onsubmit="var b=this.querySelector('button');if(b){b.disabled=true;b.textContent='更新中…';}"><button type="submit" class="btn btn-primary">更新</button></form>
-          ${prices.length ? `<a href="/admin/logistics/livestock/export.csv" class="btn">下載 CSV</a>` : ""}
+          <form method="post" action="/admin/logistics/livestock/refresh" style="display:inline;" onsubmit="var b=this.querySelector('button');if(b){b.disabled=true;b.textContent='更新中…';}"><button type="submit" class="sf-btn primary sm">更新</button></form>
+          ${prices.length ? `<a href="/admin/logistics/livestock/export.csv" class="sf-btn sm">下載 CSV</a>` : ""}
         </div>
       </div>
-      ${okMsg ? `<div style="background:#e7f5e9;color:#2e7d32;padding:8px 12px;border-radius:8px;margin:6px 0;">${escapeHtml(okMsg)}</div>` : ""}
-      ${errMsg ? `<div style="background:#fef2f2;color:#b91c1c;padding:8px 12px;border-radius:8px;margin:6px 0;">${escapeHtml(errMsg)}</div>` : ""}
-      <p class="notion-hint" style="margin:2px 0 12px;">資料來源：<a href="${livestock_price_js_1.SOURCE_URL}" target="_blank" rel="noopener">農業部開放資料</a>（毛豬各肉品市場成交均價、白肉雞與雞蛋產地價）。每日自動更新，也可按「更新」即時抓取。毛豬各市場顯示其最新交易日。</p>
+      ${okMsg ? `<div class="sf-pill ok" style="align-self:flex-start;">${escapeHtml(okMsg)}</div>` : ""}
+      ${errMsg ? `<div class="sf-pill bad" style="align-self:flex-start;">${escapeHtml(errMsg)}</div>` : ""}
+      ${moveBanner}
+      <div style="display:flex;gap:14px;flex-wrap:wrap;">${metricCards}</div>
+      <p class="sf-hint" style="margin:0;color:var(--txt-3);font-size:12px;">折線為近 30 天走勢，紅點＝當日漲 ≥${thr}%、綠點＝跌 ≥${thr}%。資料來源：<a href="${livestock_price_js_1.SOURCE_URL}" target="_blank" rel="noopener">農業部開放資料</a>。每日自動抓存快照可回查；也可按「更新」即時抓。</p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;">
-        ${card(LIVESTOCK_CAT_LABEL.egg, "品項", simpleRows(byCat.egg), "元/台斤")}
-        ${card(LIVESTOCK_CAT_LABEL.chicken, "品項", simpleRows(byCat.chicken), "元/台斤")}
-        ${card(LIVESTOCK_CAT_LABEL.pig + "（各肉品市場）", "市場", pigRows, "元/公斤")}
+        ${detailCard("🥚 雞蛋（元/台斤）", "品項", simpleRows(byCat.egg), false)}
+        ${detailCard("🐓 白肉雞（元/台斤）", "品項", simpleRows(byCat.chicken), false)}
+        ${detailCard("🐖 毛豬 各肉品市場（元/公斤）", "市場", pigRows, true)}
+      </div>
       </div>`;
         res.type("text/html").send(notionPage("畜產雞蛋行情", body, "logistics-livestock", res));
     });
     router.post("/logistics/livestock/refresh", express_1.default.urlencoded({ extended: true }), async (_req, res) => {
         try {
             const r = await (0, livestock_price_js_1.loadOrFetchLivestockPrices)(db, new Date().toISOString().slice(0, 10));
+            // 順便回填近 30 天歷史，讓折線圖立刻有資料（農業部 API 本就回多天）
+            try { await (0, livestock_price_js_1.backfillLivestockHistory)(db, 30); }
+            catch (e) { console.warn("[admin] livestock backfill", e?.message || e); }
             if (!r.prices.length) {
                 const detail = (r.errors && r.errors.length) ? r.errors.join("；") : "農業部 API 目前無資料（可能休市或尚未更新）";
                 res.redirect("/admin/logistics/livestock?err=" + encodeURIComponent("更新失敗：" + detail));

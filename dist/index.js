@@ -219,7 +219,14 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).json({ ok: false, error: "invalid date" }); return; }
             const db = (0, index_js_1.getDb)(dbPath);
             const r = await (0, livestock_price_js_1.loadOrFetchLivestockPrices)(db, dateStr);
-            res.json({ ok: true, date: dateStr, dataDate: r.dataDate, source: r.source, status: r.status, count: (r.prices || []).length, errors: r.errors || [] });
+            // 回填近 30 天歷史（供折線圖回查；農業部 API 本就回多天，冪等覆蓋）
+            try { await (0, livestock_price_js_1.backfillLivestockHistory)(db, 30); }
+            catch (e) { console.warn("[livestock-backfill]", e?.message || e); }
+            // 抓完偵測明顯漲跌，必要時推播（每個資料日只推一次；需設 LINE_MARKET_NOTIFY_TO）
+            let notify = null;
+            try { notify = await (0, livestock_price_js_1.notifyLivestockMovesIfAny)(db); }
+            catch (e) { console.warn("[livestock-notify]", e?.message || e); }
+            res.json({ ok: true, date: dateStr, dataDate: r.dataDate, source: r.source, status: r.status, count: (r.prices || []).length, errors: r.errors || [], moves: notify ? notify.moves.length : 0, notified: notify ? notify.notified : false });
         }
         catch (e) {
             console.error("[livestock-prefetch]", e?.message || e);
