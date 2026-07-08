@@ -83,23 +83,36 @@ async function getLatestWholesaleSnapshotDate(db) {
     return r?.record_date || null;
 }
 /**
- * 回補近 N 天的台北一/二批發行情（一次區間查詢，逐日寫快照，冪等覆蓋）。
- * @returns { days, total, status, errors, startIso, endIso }
+ * 回補近 N 天的台北一/二批發行情。
+ * 注意：農業部 API 的「日期區間」過濾不可靠（大區間回空、小區間只回最後 1~2 天），
+ * 故改「逐日」以單日查詢抓取（單日查詢穩定），冪等覆蓋。已有快照的日子略過（避免重抓）。
+ * @param {number} days   往回幾天
+ * @param {string|null} endIso  結束日（含），預設今天
+ * @param {boolean} skipExisting 已有快照的日子是否略過（預設 true）
+ * @returns { days, total, empties, endIso, startIso }
  */
-async function backfillWholesaleHistory(db, days = 90, endIso = null) {
-    const end = endIso || new Date().toISOString().slice(0, 10);
-    const endD = new Date(end + "T00:00:00Z");
-    const startD = new Date(endD.getTime() - (days - 1) * 86400000);
-    const startIso = startD.toISOString().slice(0, 10);
-    const r = await (0, wholesale_price_js_1.fetchTaipeiWholesaleRange)(startIso, end);
-    let total = 0;
-    for (const [iso, prices] of r.byDate.entries()) {
-        if (prices && prices.length) {
-            await saveWholesaleMarketSnapshot(db, iso, prices);
-            total += prices.length;
+async function backfillWholesaleHistory(db, days = 30, endIso = null, skipExisting = true) {
+    const end = endIso && /^\d{4}-\d{2}-\d{2}$/.test(endIso) ? endIso : new Date().toISOString().slice(0, 10);
+    const endMs = new Date(end + "T00:00:00Z").getTime();
+    const n = Math.max(1, Math.min(days, 400));
+    let total = 0, daysWithData = 0, empties = 0;
+    for (let k = 0; k < n; k++) {
+        const iso = new Date(endMs - k * 86400000).toISOString().slice(0, 10);
+        if (skipExisting) {
+            const has = await db.prepare("SELECT 1 AS x FROM wholesale_market_snapshots WHERE record_date = ? LIMIT 1").get(iso);
+            if (has) { continue; }
+        }
+        const r = await (0, wholesale_price_js_1.fetchTaipeiWholesalePricesDetailed)(iso);
+        if (r.prices && r.prices.length) {
+            await saveWholesaleMarketSnapshot(db, iso, r.prices);
+            total += r.prices.length;
+            daysWithData++;
+        } else {
+            empties++; // 休市／該日無資料
         }
     }
-    return { days: r.byDate.size, total, status: r.status, errors: r.errors || [], startIso, endIso: end };
+    const startIso = new Date(endMs - (n - 1) * 86400000).toISOString().slice(0, 10);
+    return { days: daysWithData, total, empties, startIso, endIso: end };
 }
 /**
  * 查單一作物（依 crop_name 完全比對）每日行情，供歷史報表/折線圖。

@@ -200,8 +200,10 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             const daysRaw = parseInt(String(req.query.days || req.body?.days || "").trim(), 10);
             if (Number.isFinite(daysRaw) && daysRaw > 1) {
                 const days = Math.min(daysRaw, 400);
-                const bf = await (0, wholesale_snapshot_js_1.backfillWholesaleHistory)(db, days);
-                res.json({ ok: true, mode: "backfill", days: bf.days, total: bf.total, status: bf.status, errors: bf.errors });
+                const endWin = String(req.query.end || req.body?.end || "").trim() || null;
+                const skipExisting = String(req.query.force || "") !== "1";
+                const bf = await (0, wholesale_snapshot_js_1.backfillWholesaleHistory)(db, days, endWin, skipExisting);
+                res.json({ ok: true, mode: "backfill", daysWithData: bf.days, total: bf.total, empties: bf.empties, startIso: bf.startIso, endIso: bf.endIso });
                 return;
             }
             const snap = await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr);
