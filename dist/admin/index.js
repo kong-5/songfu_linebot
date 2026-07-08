@@ -417,7 +417,7 @@ const NOTION_STYLE = `
   .notion-sidebar .sidebar-group .sidebar-links { padding: 0 0 6px 0; }
   .notion-sidebar .sidebar-group .sidebar-links a { padding: 5px 12px 5px 16px; margin: 1px 8px; font-size: 14px; }
   .notion-main-wrap { flex: 1; min-width: 0; width: 100%; display: flex; flex-direction: column; max-width: 100%; background: var(--notion-bg); }
-  .notion-main { flex: 1; min-width: 0; width: 100%; max-width: 1100px; margin: 0 auto; padding: 28px 40px 64px; }
+  .notion-main { flex: 1; min-width: 0; width: 100%; max-width: min(100%, 1600px); margin: 0 auto; padding: 28px clamp(24px, 3.5vw, 56px) 64px; }
   .notion-page-title { font-size: 32px; font-weight: 700; letter-spacing: -0.03em; margin: 0 0 4px; color: var(--notion-text); line-height: 1.2; }
   .notion-breadcrumb { font-size: 13px; color: var(--notion-text-muted); margin-bottom: 18px; }
   .notion-breadcrumb a { color: var(--notion-text-muted); text-decoration: none; }
@@ -1155,6 +1155,10 @@ const SF_TOKENS = `
   background: var(--bg-2);
 }
 .sf-card-title { font-size: 13px; font-weight: 600; color: var(--txt-1); display: flex; align-items: center; gap: 8px; }
+.sf-card-title > svg { flex: 0 0 auto; color: var(--txt-3); }
+.sfi { display: inline-flex; align-items: center; vertical-align: -3px; }
+.sf-tab .sfi, .sf-btn .sfi, button .sfi { margin-right: 4px; }
+.sfi > svg { width: 15px; height: 15px; }
 .sf-card-sub { font-size: 11px; color: var(--txt-3); font-family: var(--font-mono); }
 .sf-card-body { padding: 16px; }
 
@@ -1521,7 +1525,32 @@ const SF_ICONS = {
   sun: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M15 8h-2M3 8H1M13 3l-1.5 1.5M4.5 11.5L3 13M13 13l-1.5-1.5M4.5 4.5L3 3"/></svg>',
   moon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 9.5A6 6 0 1 1 6.5 3 5 5 0 0 0 13 9.5z"/></svg>',
   menu: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M2 8h12M2 12h12"/></svg>',
+  megaphone: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.5v3h2l1.5 3.5H8L6.5 9.5 13 12V4L6.5 6.5H3z"/><path d="M13 6.5a2 2 0 0 1 0 3"/></svg>',
+  bolt: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M9 1.5L3.5 9H7l-1 5.5L12.5 7H9l1-5.5z"/></svg>',
+  calendar: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="3.5" width="11" height="10" rx="1"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/></svg>',
+  clipboard: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3.5" y="3" width="9" height="11" rx="1"/><path d="M6 3v-.8a.7.7 0 0 1 .7-.7h2.6a.7.7 0 0 1 .7.7V3zM6 7h4M6 9.5h4"/></svg>',
+  note: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 2.5h7l3 3v8H3z"/><path d="M10 2.5v3h3M5.5 8h5M5.5 10.5h3"/></svg>',
+  chartLine: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13V3M2 13h12M4 10l3-3 2 2 4-4"/></svg>',
+  chartBar: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13V3M2 13h12M5 13V8M8.5 13V5M12 13v-3"/></svg>',
+  image: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="3" width="11" height="10" rx="1"/><circle cx="6" cy="6.5" r="1"/><path d="M3 12l3.5-3.5 2.5 2.5L11 8l2 2"/></svg>',
+  printer: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4.5 6V2.5h7V6M4.5 9.5h7v3.5h-7z"/><path d="M2.5 6h11v5h-2M4.5 11h-2V6"/></svg>',
+  message: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11v7h-7l-3 2.5V3.5z"/><path d="M5 6.5h6M5 8.5h4"/></svg>',
+  mail: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3.5" width="12" height="9" rx="1"/><path d="M2.5 4.5L8 8.5l5.5-4"/></svg>',
+  cart: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 2.5H3l1.2 7h6.6l1.2-5H4"/><circle cx="6" cy="12.5" r="1"/><circle cx="10.5" cy="12.5" r="1"/></svg>',
+  pin: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 14s4.5-4 4.5-7A4.5 4.5 0 0 0 3.5 7c0 3 4.5 7 4.5 7z"/><circle cx="8" cy="7" r="1.6"/></svg>',
+  wand: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2.5 13.5l8-8"/><path d="M10.5 2l.6 1.9L13 4.5l-1.9.6L10.5 7l-.6-1.9L8 4.5l1.9-.6z"/></svg>',
+  money: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="4" width="12" height="8" rx="1"/><circle cx="8" cy="8" r="2"/><path d="M4.5 8h.01M11.5 8h.01"/></svg>',
+  user: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5c0-2.5 2.2-4 5-4s5 1.5 5 4"/></svg>',
+  doc: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2.5h5l3 3v8H4z"/><path d="M9 2.5v3h3M6 8h4M6 10.5h4"/></svg>',
+  scale: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.5v10M4 12.5h8M3 5h10M3 5L1.5 8.5h3zM13 5l-1.5 3.5h3z"/></svg>',
+  stop: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5.5 2.5h5l3 3v5l-3 3h-5l-3-3v-5z"/><path d="M8 5v3.5"/><circle cx="8" cy="11" r=".7" fill="currentColor"/></svg>',
+  tag: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.5" cy="5.5" r="1"/></svg>',
 };
+
+/** 內嵌用行內圖示（非 flex 容器如按鈕、分頁、標籤內用）。回傳 <span class="sfi">SVG</span> */
+function sfInlineIcon(name) {
+  return '<span class="sfi">' + (SF_ICONS[name] || "") + "</span>";
+}
 
 /** SF 側邊欄（新版視覺，URL 沿用既有路由） */
 function sfSidebar(active) {
@@ -1866,17 +1895,34 @@ const STK_STYLE = `
 .stk-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin:6px 0 8px;}
 .stk-toolbar-left,.stk-toolbar-right{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
 .stk-search{min-width:200px;flex:1 1 200px;padding:6px 10px;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;font-size:13px;background:var(--notion-card,#fff);color:inherit;}
-.stk-seg{display:inline-flex;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;overflow:hidden;}
-.stk-seg button{border:0;background:var(--notion-card,#fff);color:inherit;padding:6px 11px;font-size:12.5px;cursor:pointer;}
-.stk-seg button.active{background:#2383e2;color:#fff;font-weight:700;}
-.stk-check{font-size:12.5px;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer;}
+/* 檢視切換：玻璃通透滑桿（列表 / 依倉庫） */
+.stk-seg{position:relative;display:inline-flex;height:32px;align-items:center;background:rgba(35,131,226,.08);border:1px solid rgba(35,131,226,.18);border-radius:999px;padding:3px;}
+.stk-seg-thumb{position:absolute;top:3px;left:3px;height:calc(100% - 6px);width:calc(50% - 3px);background:rgba(255,255,255,.85);border-radius:999px;box-shadow:0 1px 5px rgba(35,131,226,.18);transition:transform .22s cubic-bezier(.4,0,.2,1);pointer-events:none;}
+.stk-seg.grp .stk-seg-thumb{transform:translateX(100%);}
+.stk-seg button{position:relative;z-index:1;border:0;background:transparent;height:100%;padding:0 15px;font-size:12.5px;cursor:pointer;color:#4a6fa5;}
+.stk-seg button.active{color:#2383e2;font-weight:700;}
+/* 隱藏0 / 只看低量：小開關（on/off toggle，建在真 checkbox 上） */
+.stk-sw{display:inline-flex;align-items:center;gap:8px;height:32px;font-size:12.5px;white-space:nowrap;cursor:pointer;user-select:none;}
+.stk-sw input{position:absolute;opacity:0;width:0;height:0;}
+.stk-sw-tr{position:relative;width:36px;height:20px;border-radius:999px;background:rgba(120,119,116,.28);transition:background .18s;flex:0 0 auto;}
+.stk-sw-tr::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .18s;}
+.stk-sw input:checked + .stk-sw-tr{background:rgba(35,131,226,.9);}
+.stk-sw input:checked + .stk-sw-tr::after{transform:translateX(16px);}
+.stk-sw input:focus-visible + .stk-sw-tr{outline:2px solid #2383e2;outline-offset:2px;}
+/* 倉庫左側欄 ＋ 表格 兩欄版面 */
+.stk-main{display:flex;gap:12px;align-items:flex-start;}
+.stk-rail{flex:0 0 212px;display:flex;flex-direction:column;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;overflow:hidden;background:var(--notion-card,#fff);max-height:calc(100vh - 190px);}
+.stk-rail-h{flex:0 0 auto;font-size:11px;font-weight:700;color:var(--notion-text-light,#787774);padding:8px 12px;background:var(--notion-bg,#f7f7f5);border-bottom:1px solid var(--notion-border,#e3e2e0);}
+.stk-rail-body{overflow:auto;}
+.stk-rail-item{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12.5px;cursor:pointer;border-bottom:1px solid var(--notion-border,#f2f1ee);white-space:nowrap;color:inherit;}
+.stk-rail-item:hover{background:rgba(35,131,226,.06);}
+.stk-rail-item.active{background:rgba(35,131,226,.10);color:#2383e2;font-weight:600;box-shadow:inset 3px 0 0 #2383e2;}
+.stk-rail-name{overflow:hidden;text-overflow:ellipsis;}
+.stk-rail-n{margin-left:auto;color:var(--notion-text-light,#787774);font-size:11.5px;font-variant-numeric:tabular-nums;}
+.stk-rail-item.active .stk-rail-n{color:#2383e2;}
+.stk-main .stk-tablewrap{flex:1;min-width:0;}
+@media (max-width:760px){.stk-main{flex-direction:column;}.stk-rail{flex:0 0 auto;width:100%;max-height:210px;}.stk-main .stk-tablewrap{width:100%;}}
 .stk-meta{font-size:12px;color:var(--notion-text-light,#787774);white-space:nowrap;}
-.stk-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;max-height:110px;overflow:auto;}
-.stk-chip{border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:inherit;border-radius:999px;padding:2px 10px;font-size:12px;cursor:pointer;white-space:nowrap;line-height:1.5;}
-.stk-chip:hover{border-color:#2383e2;}
-.stk-chip.active{background:#2383e2;border-color:#2383e2;color:#fff;font-weight:700;}
-.stk-chipn{opacity:.6;font-size:11px;margin-left:2px;}
-.stk-chip.active .stk-chipn{opacity:.85;}
 .stk-status{margin:0 0 8px;padding:8px 12px;border-radius:7px;font-size:13px;}
 .stk-status-wait{background:#eef4ff;color:#1d4ed8;}
 .stk-status-ok{background:#e7f5e9;color:#2e7d32;}
@@ -1917,7 +1963,7 @@ const STK_CLIENT_JS = `
     lowOnly: document.getElementById('stkLowOnly'),
     exportBtn: document.getElementById('stkExport'),
     refresh: document.getElementById('stkRefresh'),
-    chips: document.getElementById('stkChips'),
+    rail: document.getElementById('stkRail'),
     wrap: document.getElementById('stkTableWrap'),
     count: document.getElementById('stkCount'),
     status: document.getElementById('stkStatus')
@@ -1970,19 +2016,19 @@ const STK_CLIENT_JS = `
     out.push('</tbody></table>');
     return out.join('');
   }
-  function renderChips(base){
+  function renderRail(base){
     var counts={}, order=[];
     for(var i=0;i<base.length;i++){ var whs=whsOf(base[i]); for(var j=0;j<whs.length;j++){ var w=whs[j]; if(counts[w]==null){ counts[w]=0; order.push(w); } counts[w]++; } }
     order.sort(function(x,y){ return x<y?-1:(x>y?1:0); });
-    var html='<button class="stk-chip'+(state.wh===''?' active':'')+'" data-w="">全部<span class="stk-chipn">'+base.length+'</span></button>';
-    for(var k=0;k<order.length;k++){ var w=order[k]; html+='<button class="stk-chip'+(state.wh===w?' active':'')+'" data-w="'+esc(w)+'">'+esc(whLabel(w))+'<span class="stk-chipn">'+counts[w]+'</span></button>'; }
-    els.chips.innerHTML=html;
-    Array.prototype.forEach.call(els.chips.querySelectorAll('.stk-chip'),function(c){ c.addEventListener('click',function(){ state.wh=c.getAttribute('data-w'); render(); }); });
+    var html='<div class="stk-rail-item'+(state.wh===''?' active':'')+'" data-w=""><span class="stk-rail-name">全部倉庫</span><span class="stk-rail-n">'+base.length+'</span></div>';
+    for(var k=0;k<order.length;k++){ var w=order[k]; html+='<div class="stk-rail-item'+(state.wh===w?' active':'')+'" data-w="'+esc(w)+'"><span class="stk-rail-name">'+esc(whLabel(w))+'</span><span class="stk-rail-n">'+counts[w]+'</span></div>'; }
+    els.rail.innerHTML=html;
+    Array.prototype.forEach.call(els.rail.querySelectorAll('.stk-rail-item'),function(c){ c.addEventListener('click',function(){ state.wh=c.getAttribute('data-w'); render(); }); });
   }
   var _filtered=[];
   function render(){
     var base=[]; for(var i=0;i<ITEMS.length;i++){ if(baseFilter(ITEMS[i])) base.push(ITEMS[i]); }
-    renderChips(base);
+    renderRail(base);
     var list;
     if(state.wh===''){ list=base; }
     else { list=[]; for(var i2=0;i2<base.length;i2++){ if(whsOf(base[i2]).indexOf(state.wh)>=0) list.push(base[i2]); } }
@@ -1992,10 +2038,12 @@ const STK_CLIENT_JS = `
   }
   var t=null;
   els.search.addEventListener('input',function(){ if(t) clearTimeout(t); t=setTimeout(function(){ state.q=els.search.value.trim().toLowerCase(); render(); },120); });
+  function syncSeg(){ els.view.classList.toggle('grp', state.view==='group'); }
   Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(btn){
-    btn.addEventListener('click',function(){ state.view=btn.getAttribute('data-v'); Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); save(); render(); });
+    btn.addEventListener('click',function(){ state.view=btn.getAttribute('data-v'); Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); syncSeg(); save(); render(); });
     btn.classList.toggle('active', btn.getAttribute('data-v')===state.view);
   });
+  syncSeg();
   els.hideZero.checked=state.hideZero;
   els.hideZero.addEventListener('change',function(){ state.hideZero=els.hideZero.checked; state.wh=''; save(); render(); });
   els.lowOnly.addEventListener('change',function(){ state.low=els.lowOnly.checked; state.wh=''; render(); });
@@ -4018,7 +4066,7 @@ function createAdminRouter() {
           <div class="sf-card" style="border-left:4px solid #f59e0b;">
             <div class="sf-card-head">
               <a href="/admin/reminders" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
-                <div class="sf-card-title">🔔 提醒叫貨 Top ${reminderTop.length}（共 ${reminderTotal} 戶）</div>
+                <div class="sf-card-title">${SF_ICONS.bell}提醒叫貨 Top ${reminderTop.length}（共 ${reminderTotal} 戶）</div>
               </a>
               <a href="/admin/reminders" class="sf-card-sub">完整清單 →</a>
             </div>
@@ -4039,7 +4087,7 @@ function createAdminRouter() {
           <div class="sf-card" style="border-left:4px solid #ef4444;">
             <div class="sf-card-head">
               <a href="/admin/complaints" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
-                <div class="sf-card-title">⚠️ 未解決客訴（${complaintsOpenTotal}）</div>
+                <div class="sf-card-title">${SF_ICONS.warn}未解決客訴（${complaintsOpenTotal}）</div>
               </a>
               <a href="/admin/complaints" class="sf-card-sub">前往處理 →</a>
             </div>
@@ -4506,7 +4554,7 @@ function createAdminRouter() {
                 </div>
 
                 <div class="sf-card">
-                  <div class="sf-card-head"><div class="sf-card-title">📈 每日訂單量趨勢</div></div>
+                  <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.chartLine}每日訂單量趨勢</div></div>
                   <div style="padding:14px 16px;">
                     ${dailyTrend.length ? `<div style="display:flex;align-items:flex-end;gap:2px;height:120px;">${dailyTrend.map(r => {
                       const h = Math.round((Number(r.n) || 0) / maxDaily * 110);
@@ -4517,7 +4565,7 @@ function createAdminRouter() {
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
                   <div class="sf-card">
-                    <div class="sf-card-head"><div class="sf-card-title">👥 客戶排名 Top 20</div></div>
+                    <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.users}客戶排名 Top 20</div></div>
                     <div style="padding:0;">
                       ${topCustomers.length ? topCustomers.map((c, i) => {
                         const pct = Math.round((Number(c.order_count) || 0) * 100 / maxOrderCount);
@@ -4532,7 +4580,7 @@ function createAdminRouter() {
                     </div>
                   </div>
                   <div class="sf-card">
-                    <div class="sf-card-head"><div class="sf-card-title">📦 品項排名 Top 30（依被叫次數）</div></div>
+                    <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.box}品項排名 Top 30（依被叫次數）</div></div>
                     <div style="padding:0;max-height:540px;overflow-y:auto;">
                       ${topProducts.length ? topProducts.map((p, i) => {
                         const pct = Math.round((Number(p.hit_count) || 0) * 100 / maxProductHit);
@@ -4552,7 +4600,7 @@ function createAdminRouter() {
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
                   <div class="sf-card">
-                    <div class="sf-card-head"><div class="sf-card-title">📅 週幾叫貨分布</div></div>
+                    <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.calendar}週幾叫貨分布</div></div>
                     <div style="padding:14px 16px;">
                       <div style="display:flex;align-items:flex-end;gap:8px;height:120px;">
                         ${weekdayCounts.map((n, i) => {
@@ -4567,7 +4615,7 @@ function createAdminRouter() {
                     </div>
                   </div>
                   <div class="sf-card">
-                    <div class="sf-card-head"><div class="sf-card-title">⚠ 客訴客戶排名（期間）</div></div>
+                    <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.warn}客訴客戶排名（期間）</div></div>
                     <div style="padding:0;">
                       ${topComplainCustomers.length ? topComplainCustomers.map((c, i) => `
                         <a href="/admin/customers/${encodeURIComponent(c.id)}/360" style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);text-decoration:none;color:inherit;font-size:13px;">
@@ -4580,7 +4628,7 @@ function createAdminRouter() {
                 </div>
 
                 <div class="sf-card">
-                  <div class="sf-card-head"><div class="sf-card-title">🛑 流失風險客戶（超過 14 天未叫貨）</div><span class="sf-card-sub">依累計訂單數排序，優先關心舊客戶</span></div>
+                  <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.stop}流失風險客戶（超過 14 天未叫貨）</div><span class="sf-card-sub">依累計訂單數排序，優先關心舊客戶</span></div>
                   <div style="padding:0;">
                     ${churnRisk.length ? `<table class="sf-table" style="font-size:13px;"><thead><tr><th>客戶</th><th>最後叫貨</th><th style="text-align:right;">累計訂單</th><th></th></tr></thead><tbody>${churnRisk.map(c => {
                       const last = new Date(String(c.last_date) + "T00:00:00+08:00");
@@ -4663,7 +4711,7 @@ function createAdminRouter() {
                   </div>
                 </div>
                 <div class="sf-card">
-                  <div class="sf-card-head"><div class="sf-card-title">📋 提醒清單（依優先順序）</div><span class="sf-card-sub">點客戶名跳客戶 360；點「複製訊息」可貼到 LINE 給客戶</span></div>
+                  <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.clipboard}提醒清單（依優先順序）</div><span class="sf-card-sub">點客戶名跳客戶 360；點「複製訊息」可貼到 LINE 給客戶</span></div>
                   <div style="padding:0;">
                     ${rows.length ? `<div style="overflow-x:auto;"><table class="sf-table" style="font-size:13px;table-layout:fixed;width:100%;">
                       <colgroup>
@@ -4861,7 +4909,7 @@ function createAdminRouter() {
                 </div>
                 <div class="sf-card">
                   <div class="sf-card-head">
-                    <div class="sf-card-title">📊 各客戶月合計</div>
+                    <div class="sf-card-title">${SF_ICONS.chartBar}各客戶月合計</div>
                     <span class="sf-card-sub">點客戶名看本月明細／可編輯</span>
                   </div>
                   <div style="padding:0;overflow-x:auto;">
@@ -6691,11 +6739,12 @@ function createAdminRouter() {
           <div class="stk-toolbar-left">
             <input type="search" id="stkSearch" class="stk-search" placeholder="搜尋料號 / 品名 / 規格…" autocomplete="off" spellcheck="false">
             <div class="stk-seg" id="stkView">
+              <span class="stk-seg-thumb"></span>
               <button type="button" data-v="list" class="active">列表</button>
               <button type="button" data-v="group">依倉庫</button>
             </div>
-            <label class="stk-check"><input type="checkbox" id="stkHideZero"> 隱藏 0</label>
-            <label class="stk-check"><input type="checkbox" id="stkLowOnly"> 只看低量/負量</label>
+            <label class="stk-sw"><input type="checkbox" id="stkHideZero"><span class="stk-sw-tr"></span>隱藏 0</label>
+            <label class="stk-sw"><input type="checkbox" id="stkLowOnly"><span class="stk-sw-tr"></span>只看低量/負量</label>
           </div>
           <div class="stk-toolbar-right">
             <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項</span>
@@ -6703,9 +6752,11 @@ function createAdminRouter() {
             <button type="button" id="stkRefresh" class="btn btn-primary">庫存更新</button>
           </div>
         </div>
-        <div id="stkChips" class="stk-chips no-print"></div>
         <div id="stkStatus" class="stk-status" style="display:none;"></div>
-        <div id="stkTableWrap" class="stk-tablewrap"></div>
+        <div class="stk-main">
+          <aside class="stk-rail no-print"><div class="stk-rail-h">倉庫</div><div class="stk-rail-body" id="stkRail"></div></aside>
+          <div id="stkTableWrap" class="stk-tablewrap"></div>
+        </div>
       </div>
       <script id="stkData" type="application/json">${dataJson}</script>
       <script>${STK_CLIENT_JS}</script>`;
@@ -9246,7 +9297,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <div id="orderBatchBar" style="display:none;position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:1100;background:var(--bg-1,#fff);border:1px solid var(--notion-border,#e3e2e0);box-shadow:0 8px 28px rgba(15,23,42,.18);border-radius:14px;padding:10px 14px;align-items:center;gap:8px;flex-wrap:wrap;max-width:calc(100vw - 24px);">
               <span style="font-size:13px;color:var(--txt-2);white-space:nowrap;">已選 <strong id="obbCount">0</strong> 筆</span>
               <button type="button" class="sf-btn sm primary" id="btnBatchApprove">${SF_ICONS.check}<span>確認</span></button>
-              <button type="button" class="sf-btn sm" id="btnBatchChangeDate"><span>📅 改出貨日</span></button>
+              <button type="button" class="sf-btn sm" id="btnBatchChangeDate"><span>${sfInlineIcon('calendar')}改出貨日</span></button>
               <button type="button" class="sf-btn sm" id="btnBatchOrderSheet">${SF_ICONS.dl}<span>揀貨單</span></button>
               <button type="button" class="sf-btn sm" id="btnBatchLingyueXlsx">${SF_ICONS.dl}<span>凌越 Excel</span></button>
               <button type="button" class="sf-btn sm danger" id="btnBatchVoid">${SF_ICONS.x}<span>作廢</span></button>
@@ -11547,7 +11598,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <aside class="order-detail-raw-col" aria-label="原始訂單對照" style="flex:0 0 min(320px, 32vw);max-width:360px;">
           <div class="sf-card raw-message-scroll" id="rawOrderBlock" style="position:sticky;top:12px;max-height:calc(100vh - 24px);overflow-y:auto;">
             <div class="sf-card-head">
-              <div class="sf-card-title">📨 原始訂單</div>
+              <div class="sf-card-title">${SF_ICONS.mail}原始訂單</div>
               <button type="button" class="sf-btn sm" id="pasteRawToggleBtn" aria-expanded="false" aria-controls="pasteRaw">補登／修正</button>
             </div>
             <div style="padding:14px;">
@@ -14191,7 +14242,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const rawText = String(order.raw_message || "").replace(/\[圖片\]/g, "").trim();
             const originalCard = `
               <div class="sf-card" style="border-left:4px solid #ef4444;">
-                <div class="sf-card-head"><div class="sf-card-title">📨 客戶原始客訴 · ${escapeHtml(order.order_date)} ${formatTs(order.updated_at)}</div></div>
+                <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.mail}客戶原始客訴 · ${escapeHtml(order.order_date)} ${formatTs(order.updated_at)}</div></div>
                 <div style="padding:14px;">
                   ${rawText ? `<pre style="white-space:pre-wrap;font-family:inherit;font-size:13px;margin:0;background:var(--bg-2);padding:10px;border-radius:6px;">${escapeHtml(rawText)}</pre>` : "<p style='color:var(--txt-3);margin:0;'>無原始文字</p>"}
                   ${attachmentBlock}
@@ -14293,12 +14344,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                   <div style="display:flex;flex-direction:column;gap:14px;">
                     ${originalCard}
                     <div class="sf-card">
-                      <div class="sf-card-head"><div class="sf-card-title">💬 對話時間軸</div></div>
+                      <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.message}對話時間軸</div></div>
                       <div style="padding:14px;">${timelineHtml}</div>
                     </div>
                   </div>
                   <div class="sf-card" style="position:sticky;top:12px;">
-                    <div class="sf-card-head"><div class="sf-card-title">📝 處理紀錄</div></div>
+                    <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.note}處理紀錄</div></div>
                     <form method="post" action="/admin/complaints/${encodeURIComponent(orderId)}/update" style="padding:14px;display:flex;flex-direction:column;gap:12px;">
                       <label style="font-size:13px;color:var(--txt-2);">處理狀態
                         <select name="handle_status" class="sf-input" style="margin-top:4px;">
@@ -14811,7 +14862,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 </div>
 
                 <div class="sf-card" style="border-left:4px solid var(--accent);">
-                  <div class="sf-card-head"><div class="sf-card-title">📝 員工交接備註</div><span class="sf-card-sub">換班接手時的關鍵注意事項</span></div>
+                  <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.note}員工交接備註</div><span class="sf-card-sub">換班接手時的關鍵注意事項</span></div>
                   <form method="post" action="/admin/customers/${encodeURIComponent(cid)}/handover-notes" style="padding:14px;">
                     <textarea name="crm_handover_notes" rows="4" class="sf-input" style="width:100%;font-family:inherit;" placeholder="例：客戶習慣晚上 10 點叫貨；說話比較急但人很好；曾退過一次貨；地址會變請打電話確認；…">${escapeHtml(customer.crm_handover_notes || "")}</textarea>
                     <div style="margin-top:10px;display:flex;justify-content:flex-end;"><button type="submit" class="sf-btn primary sm">儲存</button></div>
@@ -14820,7 +14871,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
                   <div class="sf-card">
-                    <div class="sf-card-head"><div class="sf-card-title">🛒 常買品項 Top ${Math.min(10, (profile?.topItems || []).length)}</div></div>
+                    <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.cart}常買品項 Top ${Math.min(10, (profile?.topItems || []).length)}</div></div>
                     <div style="padding:8px 16px 14px;">
                       ${(profile?.topItems || []).slice(0, 10).map((it, i) => `
                         <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:${i < 9 ? '1px dashed var(--line)' : 'none'};font-size:13px;">
@@ -14830,7 +14881,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     </div>
                   </div>
                   <div class="sf-card">
-                    <div class="sf-card-head"><div class="sf-card-title">📅 叫貨時段／週幾偏好</div></div>
+                    <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.calendar}叫貨時段／週幾偏好</div></div>
                     <div style="padding:12px 16px;">
                       <div style="font-size:12px;color:var(--txt-2);margin-bottom:8px;">常下單週幾</div>
                       <div style="font-size:13px;margin-bottom:14px;">${(profile?.topWeekdays || []).map(([k, v]) => `<span class="sf-pill" style="margin-right:4px;margin-bottom:4px;">${escapeHtml(k)} ${v}</span>`).join("") || "—"}</div>
@@ -14842,7 +14893,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 </div>
 
                 <div class="sf-card">
-                  <div class="sf-card-head"><div class="sf-card-title">📨 客訴歷史 <span class="sf-pill ${openComplaints > 0 ? "bad" : "ok"}" style="margin-left:6px;">${complaints.length} 筆／未解 ${openComplaints}</span></div></div>
+                  <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.mail}客訴歷史 <span class="sf-pill ${openComplaints > 0 ? "bad" : "ok"}" style="margin-left:6px;">${complaints.length} 筆／未解 ${openComplaints}</span></div></div>
                   <div style="padding:0;">
                     ${complaints.length ? complaints.slice(0, 10).map(c => {
                       const stPill = String(c.handle_status||"pending") === "resolved" ? '<span class="sf-pill ok">已解決</span>' : String(c.handle_status||"") === "handling" ? '<span class="sf-pill warn">處理中</span>' : '<span class="sf-pill bad">待處理</span>';
@@ -14858,7 +14909,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 </div>
 
                 <div class="sf-card">
-                  <div class="sf-card-head"><div class="sf-card-title">✍️ 客戶寫法學習</div><span class="sf-card-sub">系統從歷史訂單學到的「客戶寫法 → 標準品項」對應</span></div>
+                  <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.edit}客戶寫法學習</div><span class="sf-card-sub">系統從歷史訂單學到的「客戶寫法 → 標準品項」對應</span></div>
                   <div style="padding:0;">
                     ${hints.length ? `<table class="sf-table" style="font-size:13px;"><thead><tr><th>客戶寫法</th><th>對應品項</th><th style="text-align:right;">命中</th><th style="text-align:right;">糾錯</th><th>最後使用</th></tr></thead><tbody>${hints.map(h => `
                       <tr><td>${escapeHtml(h.raw_name_last || "—")}</td><td>${escapeHtml(h.product_name || "（未對應）")}</td><td style="text-align:right;" class="mono">${h.hit_count || 0}</td><td style="text-align:right;color:${(h.wrong_count||0) > 0 ? 'var(--bad)' : 'var(--txt-3)'};" class="mono">${h.wrong_count || 0}</td><td class="mono" style="font-size:11px;color:var(--txt-3);">${fmtTs(h.last_hit_at)}</td></tr>
@@ -14867,7 +14918,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 </div>
 
                 <div class="sf-card">
-                  <div class="sf-card-head"><div class="sf-card-title">📋 最近 5 張訂單</div><a href="/admin/orders?customer_id=${encodeURIComponent(cid)}" class="sf-card-sub">查看全部 →</a></div>
+                  <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.clipboard}最近 5 張訂單</div><a href="/admin/orders?customer_id=${encodeURIComponent(cid)}" class="sf-card-sub">查看全部 →</a></div>
                   <div style="padding:0;">
                     ${recentOrders.length ? recentOrders.map(o => `
                       <a href="/admin/orders/${encodeURIComponent(o.id)}" style="display:flex;gap:12px;padding:10px 16px;border-bottom:var(--hairline);text-decoration:none;color:inherit;align-items:center;">
@@ -17236,10 +17287,10 @@ YY小吃, C5678...,</pre>
               </div>
               <div style="padding:16px 18px;">
                 <div class="sf-tabs" style="margin-bottom:16px;">
-                  <button type="button" class="sf-tab active" onclick="switchTab('promo',this)">⚡ 限時優惠</button>
-                  <button type="button" class="sf-tab" onclick="switchTab('notice',this)">📢 公告</button>
-                  <button type="button" class="sf-tab" onclick="switchTab('calendar',this)">📅 行事曆公告</button>
-                  <button type="button" class="sf-tab" onclick="switchTab('image',this)">🖼️ 圖片</button>
+                  <button type="button" class="sf-tab active" onclick="switchTab('promo',this)">${sfInlineIcon('bolt')}限時優惠</button>
+                  <button type="button" class="sf-tab" onclick="switchTab('notice',this)">${sfInlineIcon('megaphone')}公告</button>
+                  <button type="button" class="sf-tab" onclick="switchTab('calendar',this)">${sfInlineIcon('calendar')}行事曆公告</button>
+                  <button type="button" class="sf-tab" onclick="switchTab('image',this)">${sfInlineIcon('image')}圖片</button>
                 </div>
                 <input type="hidden" id="tmpl-type" value="promo">
 
@@ -17396,7 +17447,7 @@ YY小吃, C5678...,</pre>
             <!-- Step 1: 選擇對象 -->
             <div id="send-step-1" style="display:flex;flex-direction:column;min-height:0;">
               <div class="sf-card-head">
-                <div class="sf-card-title">📨 選擇傳送對象</div>
+                <div class="sf-card-title">${SF_ICONS.mail}選擇傳送對象</div>
                 <button type="button" class="sf-btn sm ghost" onclick="closeSendModal()">✕</button>
               </div>
               <div style="padding:14px 18px;border-bottom:var(--hairline);display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -17417,7 +17468,7 @@ YY小吃, C5678...,</pre>
             <!-- Step 2: 確認 -->
             <div id="send-step-2" style="display:none;flex-direction:column;">
               <div class="sf-card-head">
-                <div class="sf-card-title">⚠️ 最後確認</div>
+                <div class="sf-card-title">${SF_ICONS.warn}最後確認</div>
                 <button type="button" class="sf-btn sm ghost" onclick="closeSendModal()">✕</button>
               </div>
               <div style="padding:18px 22px;display:flex;flex-direction:column;gap:14px;">

@@ -60,6 +60,12 @@
 ## 後台頁面設計規範
 用既有元件：`notion-page-title`（大標）、`notion-card`（白圓角卡）、預設 `<table>`（自帶樣式）、
 `sf-input`/`sf-textarea`、`.btn-primary`。**不要手刻 inline 表格樣式**。
+- **圖示一律線條（line art）**：用 `SF_ICONS`（16px、1.4 stroke、`currentColor`、無填色）；
+  flex 容器內嵌 `${SF_ICONS.鍵}`、其他用 `${sfInlineIcon('鍵')}`。**禁用彩色 emoji 當 UI 圖示**。
+  例外：LINE Flex 訊息文字、log/toast 狀態符號（▶✅❌⚠…）、品類語意標記（🐖🐓🥚）。
+- **版面吃滿視窗**：`.notion-main` 用 `max-width:min(100%,1600px)`，別卡窄欄；資料密集頁用
+  `.sf-root`/`body.sf-fullwidth` 滿版。只有手機才收窄。
+- 細節與可用圖示鍵清單見 `docs/設計風格指南.md` §3.1（圖示）、§3.2（版面寬度）。
 
 ## 相關文件索引（細節在這裡）
 - `docs/凌越-目前庫存-庫存管理.md`：庫存推送、停用過濾、內網代理。
