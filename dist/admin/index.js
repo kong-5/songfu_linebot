@@ -14534,11 +14534,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           }
           function moveRow(row, toActive){
             var statusCell = row.querySelector(".customer-status-cell");
-            var btn = row.querySelector(".customer-toggle-btn");
+            // [fix 2026-07-08] 原本更新的是不存在的 .customer-toggle-btn（列上只有 .customer-edit-btn），
+            // 導致編輯按鈕的 data-active 沒被更新 → 停用/啟用後重開彈窗仍讀到舊狀態，一按儲存又把舊狀態寫回 DB。
+            // 改為更新 .customer-edit-btn 的 data-active（不動它的圖示內容）。
+            var editBtn = row.querySelector(".customer-edit-btn");
             var dot = row.querySelector(".sf-dot");
             if (statusCell) statusCell.innerHTML = toActive ? '<span class="sf-pill ok">啟用</span>' : '<span class="sf-pill">停用</span>';
             if (dot) dot.className = "sf-dot" + (toActive ? " ok" : "");
-            if (btn){ btn.dataset.active = toActive ? "1" : "0"; btn.textContent = toActive ? "停用" : "啟用"; }
+            if (editBtn){ editBtn.dataset.active = toActive ? "1" : "0"; }
             var fromTbody = row.parentNode;
             // 啟用 → 依綁定狀態進 bound/unbound；停用 → inactive
             var hasGroup = !!row.querySelector(".sf-pill.warn") ? false : true;
@@ -14825,12 +14828,25 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.redirect("/admin/customers?err=" + encodeURIComponent("此客戶已有訂單，無法刪除。請改為停用。"));
                 return;
             }
-            await db.prepare("DELETE FROM customers WHERE id = ?").run(id);
+            // [fix 2026-07-08] 過去只擋訂單，客戶若有別名/筆跡提示/籃子紀錄/Gemini用量/範例圖等會撞 FK。
+            // 交易內先清掉這些「隨客戶消滅」的中繼/衍生資料再刪客戶；basket_logs 的分項/歷史在 PG 為 ON DELETE CASCADE。
+            const doDel = async (h) => {
+                await h.prepare("DELETE FROM customer_product_aliases WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM customer_handwriting_hints WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM customer_order_image_examples WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM gemini_usage_log WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM rhythm_daily_signals WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM basket_logs WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM customers WHERE id = ?").run(id);
+            };
+            if (typeof db.transaction === "function") await db.transaction(doDel);
+            else await doDel(db);
         }
         catch (e) {
             console.error("[admin] 客戶刪除失敗:", e?.message || e);
-            if (wantsJson) { res.status(500).json({ ok: false, error: "刪除失敗：" + (e?.message || String(e)).slice(0, 120) }); return; }
-            res.redirect("/admin/customers?err=" + encodeURIComponent("刪除失敗"));
+            const msg = "此客戶仍被其他資料引用，無法刪除。建議改為停用。";
+            if (wantsJson) { res.status(409).json({ ok: false, error: msg }); return; }
+            res.redirect("/admin/customers?err=" + encodeURIComponent(msg));
             return;
         }
         if (wantsJson) { res.json({ ok: true }); return; }
@@ -15906,8 +15922,26 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.redirect("/admin/products?err=" + encodeURIComponent("此品項已被訂單使用，無法刪除。請改為停用。"));
             return;
         }
-        await db.prepare("DELETE FROM products WHERE id = ?").run(id);
-        res.redirect("/admin/products?ok=del");
+        // [fix 2026-07-08] 過去只擋訂單，品項若有俗名/單位換算/包裝規格/筆跡提示等中繼資料，
+        // DELETE 會撞 FK 錯誤。改為在交易內先清掉這些「沒有此品項就沒意義」的中繼資料再刪品項；
+        // 若仍被其他營運資料（庫存/盤差等）引用而失敗，整批回滾並回友善訊息（不再是原始 PG 錯誤）。
+        try {
+            const doDel = async (h) => {
+                await h.prepare("DELETE FROM product_unit_specs WHERE product_id = ?").run(id);
+                await h.prepare("DELETE FROM product_packaging_ratios WHERE product_id = ?").run(id);
+                await h.prepare("DELETE FROM customer_product_aliases WHERE product_id = ?").run(id);
+                await h.prepare("DELETE FROM customer_handwriting_hints WHERE product_id = ?").run(id);
+                await h.prepare("DELETE FROM rhythm_daily_signals WHERE product_id = ?").run(id);
+                await h.prepare("DELETE FROM products WHERE id = ?").run(id);
+            };
+            if (typeof db.transaction === "function") await db.transaction(doDel);
+            else await doDel(db);
+            res.redirect("/admin/products?ok=del");
+        }
+        catch (e) {
+            console.error("[admin] product delete", e?.message || e);
+            res.redirect("/admin/products?err=" + encodeURIComponent("此品項仍被其他資料引用（如庫存、盤點、物流單），無法刪除。建議改為停用。"));
+        }
     });
     router.get("/import", async (req, res) => {
         const msg = req.query.ok ? `<p style='color:green'>已匯入 ${req.query.ok} 筆品項。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
