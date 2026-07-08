@@ -158,6 +158,7 @@ async function createReport(db, opts) {
         if (prev) sourceId = prev.id;
     }
     if (sourceId) {
+        // 有上一份 → 整份帶入品項與價格當底稿
         const src = await getItems(db, sourceId);
         let i = 0;
         for (const it of src) {
@@ -170,6 +171,12 @@ async function createReport(db, opts) {
                 sort_order: i,
             });
             i++;
+        }
+    } else if (opts.seedWhenEmpty !== false) {
+        // 沒有上一份（第一份月報）→ 帶入標準品項清單當底稿，避免空白難用
+        let i = 0;
+        for (const [name, spec, price, category] of SEED_JULY_ITEMS) {
+            await addItem(db, id, { category, name, spec, price, sort_order: i++ });
         }
     }
     return id;
@@ -268,22 +275,8 @@ async function deleteItem(db, itemId) {
 }
 exports.deleteItem = deleteItem;
 
-/** 供設定 LOGO：存在 app_settings，key = quote_logo_data_uri（data: URI 字串）。 */
-async function getLogoDataUri(db) {
-    try {
-        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("quote_logo_data_uri");
-        return row && row.value ? String(row.value) : "";
-    } catch (_) { return ""; }
-}
-exports.getLogoDataUri = getLogoDataUri;
-
-async function setLogoDataUri(db, dataUri) {
-    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("quote_logo_data_uri", dataUri || "");
-}
-exports.setLogoDataUri = setLogoDataUri;
-
-// 預設 LOGO：讀 dist/admin/assets/logo.svg 光柵化為 PNG data URI（快取）。
-// 用 PNG 而非 SVG，因為 sharp 產報價單 JPG 時以 <image> 內嵌，PNG 相容性最穩。
+// 報價單 LOGO 一律用公司網站標誌（dist/admin/assets/logo.svg），
+// 光柵化為 PNG data URI 快取。用 PNG 而非 SVG，因為 sharp 產 JPG 時以 <image> 內嵌，PNG 相容性最穩。
 let _defaultLogoDataUri = null;
 async function getDefaultLogoDataUri() {
     if (_defaultLogoDataUri !== null) return _defaultLogoDataUri;
@@ -303,14 +296,6 @@ async function getDefaultLogoDataUri() {
     return _defaultLogoDataUri;
 }
 exports.getDefaultLogoDataUri = getDefaultLogoDataUri;
-
-/** 報價單實際使用的 LOGO：有自訂就用自訂，否則用內建公司標誌。 */
-async function resolveLogoDataUri(db) {
-    const custom = await getLogoDataUri(db);
-    if (custom) return custom;
-    return await getDefaultLogoDataUri();
-}
-exports.resolveLogoDataUri = resolveLogoDataUri;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 7 月報價單範本 seed（來自使用者提供的 PDF；價格與規格照抄，空白／X 為不報價）
