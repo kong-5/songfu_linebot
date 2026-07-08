@@ -23,6 +23,8 @@ const order_parsed_heuristics_js_1 = require("../lib/order-parsed-heuristics.js"
 const cloud_tasks_line_js_1 = require("../lib/cloud-tasks-line.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
+const empty_baskets_js_1 = require("../lib/empty-baskets.js");
+const line_conversation_js_1 = require("../lib/line-conversation.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
@@ -31,44 +33,8 @@ const hasLineConfig = Boolean(channelAccessToken && channelSecret);
 const COLLECT_TIMEOUT_MS = (parseInt(process.env.LINE_COLLECT_TIMEOUT_SEC || "30", 10) || 30) * 1000;
 const collectingByGroup = new Map();
 const autoFinalizeTimers = new Map();
-/**
- * 依客戶路線把空籃（號碼籃 + 四角籃）補進指定訂單。
- * 手動收單與 30 秒自動收單都呼叫同一個函式，避免只有一條路徑會補籃。
- * 已存在同 product_id 的品項就跳過，重複結單不會長出重複列。
- * @param {*} db
- * @param {string} customerId
- * @param {string[]} orderIds
- */
-async function insertEmptyBaskets(db, customerId, orderIds) {
-    if (!db || !customerId || !orderIds || !orderIds.length) return;
-    try {
-        const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(customerId);
-        const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
-        // 沒設路線＝自取，不補任何空籃（含固定四角籃 C0100065）
-        if (routeLine == null) return;
-        // 號碼籃料號跳過 4 號（無 4 號籃）：C0100057=1號…C0100059=3號、C0100060=5號…C0100064=9號；
-        // 不可用 56+路線號 連號計算，會從 5 號線起全部對錯、9 號線算到四角籃 C0100065。
-        const EMPTY_BASKET_ERP_BY_ROUTE = { 1: "C0100057", 2: "C0100058", 3: "C0100059", 5: "C0100060", 6: "C0100061", 7: "C0100062", 8: "C0100063", 9: "C0100064" };
-        const emptyBasketErp = EMPTY_BASKET_ERP_BY_ROUTE[routeLine] || null; // 路線 4 無號碼籃，只補四角籃
-        // 要補的空籃料號：路線號碼籃（有設路線才有）＋ 固定四角籃 C0100065。
-        const erps = [];
-        if (emptyBasketErp) erps.push(emptyBasketErp);
-        erps.push("C0100065");
-        for (const erp of erps) {
-            const prod = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(erp);
-            if (!prod) continue;
-            for (const oid of orderIds) {
-                const exists = await db.prepare("SELECT 1 FROM order_items WHERE order_id = ? AND product_id = ? LIMIT 1").get(oid, prod.id);
-                if (exists) continue;
-                const itemId = (0, id_js_1.newId)("item");
-                await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, 0, ?, 0, 1, NULL)").run(itemId, oid, prod.id, prod.name, prod.unit || "個");
-            }
-        }
-    }
-    catch (e) {
-        console.error("[LINE] 補空籃失敗 customerId=%s:", customerId, e?.message || e);
-    }
-}
+// 補空籃邏輯抽到 ../lib/empty-baskets.js（後台拆併單也要用同一份，避免兩處版本漂移）
+const insertEmptyBaskets = empty_baskets_js_1.insertEmptyBaskets;
 // G15：session 持久化 helpers（讓 Cloud Run 重啟後可恢復未結單）
 async function persistCollectSession(db, groupId, session) {
     if (!db || !groupId || !session?.orderId) return;
@@ -973,6 +939,38 @@ function createLineWebhook() {
                                 preview,
                             });
                             console.log("[LINE] 偵測到員工訊息（%s），跳過 AI 解析。msgType=%s", emp.username, msgType);
+                            // 同事回覆寫進對話紀錄（訂單審核頁會以「同事」樣式＋姓名顯示）。
+                            // 掛單順序：收單中 session 的訂單 → 該群綁定客戶今天的訂單 → 群組層級（order_id NULL）。
+                            if (groupId) {
+                                try {
+                                    await (0, line_conversation_js_1.upsertGroupSpeaker)(db, lineClient, groupId, senderUserId, emp.name || emp.username);
+                                    if (msgType === "text" && textRaw.trim()) {
+                                        const convoSession = collectingByGroup.get(groupId);
+                                        let convoOrderIds = (convoSession?.allOrderIds && convoSession.allOrderIds.length) ? [...new Set(convoSession.allOrderIds)] : (convoSession?.orderId ? [convoSession.orderId] : []);
+                                        let convoCustomerId = convoSession?.customerId || null;
+                                        if (!convoOrderIds.length) {
+                                            const custRow = await db.prepare("SELECT id FROM customers WHERE TRIM(COALESCE(line_group_id, '')) = ? AND (active IS NULL OR active = 1)").get(groupId);
+                                            if (custRow) {
+                                                convoCustomerId = custRow.id;
+                                                const todays = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").all(custRow.id, getTaipeiOrderDate());
+                                                convoOrderIds = (todays || []).map((r) => r.id);
+                                            }
+                                        }
+                                        await (0, line_conversation_js_1.logConversation)(db, {
+                                            groupId,
+                                            customerId: convoCustomerId,
+                                            orderIds: convoOrderIds,
+                                            senderKind: "employee",
+                                            senderLineUserId: senderUserId,
+                                            senderName: emp.name || emp.username,
+                                            msgType: "text",
+                                            text: textRaw,
+                                        });
+                                    }
+                                } catch (e) {
+                                    console.warn("[LINE] 同事對話記錄失敗:", e?.message || e);
+                                }
+                            }
                             // 員工關鍵字：選單／功能／menu／liff → 回覆功能選單（reply 免費，不計費）
                             if (msgType === "text" && isEmployeeMenuKeyword(textRaw)) {
                                 try {
@@ -1585,6 +1583,23 @@ function createLineWebhook() {
                                 keywords: [],
                                 rawText: text,
                             }).catch(()=>{});
+                            // 雖不開單，仍寫進對話紀錄（掛到今天既有訂單，讓審核看得到前後文）
+                            try {
+                                const spkName = senderUserId ? await (0, line_conversation_js_1.upsertGroupSpeaker)(db, lineClient, groupId, senderUserId, null) : null;
+                                const todays = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").all(customerId, getTaipeiOrderDate());
+                                await (0, line_conversation_js_1.logConversation)(db, {
+                                    groupId,
+                                    customerId,
+                                    orderIds: (todays || []).map((r) => r.id),
+                                    senderKind: "customer",
+                                    senderLineUserId: senderUserId || null,
+                                    senderName: spkName,
+                                    msgType: "text",
+                                    text,
+                                });
+                            } catch (e) {
+                                console.warn("[LINE] 詢問對話記錄失敗:", e?.message || e);
+                            }
                             continue;
                         }
                     }
@@ -1623,6 +1638,22 @@ function createLineWebhook() {
                 const { orderId, customerId: cid } = session;
                 const idsForRaw = (session.allOrderIds && session.allOrderIds.length) ? [...new Set(session.allOrderIds)] : [orderId];
                 await appendRawLineToOrders(db, idsForRaw, text, nowSql);
+                // 對話紀錄：客戶訊息（含 LINE 顯示名稱，供審核頁顯示發話者）
+                try {
+                    const spkName = senderUserId ? await (0, line_conversation_js_1.upsertGroupSpeaker)(db, lineClient, groupId, senderUserId, null) : null;
+                    await (0, line_conversation_js_1.logConversation)(db, {
+                        groupId,
+                        customerId: cid,
+                        orderIds: idsForRaw,
+                        senderKind: "customer",
+                        senderLineUserId: senderUserId || null,
+                        senderName: spkName,
+                        msgType: "text",
+                        text,
+                    });
+                } catch (e) {
+                    console.warn("[LINE] 客戶對話記錄失敗:", e?.message || e);
+                }
                 const custRow = await db.prepare("SELECT default_unit, known_sub_customers FROM customers WHERE id = ?").get(cid);
                 const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
                 const knownSub2 = custRow?.known_sub_customers != null ? String(custRow.known_sub_customers).trim() : "";

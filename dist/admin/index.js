@@ -68,6 +68,8 @@ const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
 const daily_summary_push_js_1 = require("../lib/daily-summary-push.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
+const empty_baskets_js_1 = require("../lib/empty-baskets.js");
+const line_conversation_js_1 = require("../lib/line-conversation.js");
 const announcement_templates_js_1 = require("../lib/announcement-templates.js");
 const announcement_image_js_1 = require("../lib/announcement-image.js");
 const calendar_holidays_js_1 = require("../lib/calendar-holidays.js");
@@ -113,6 +115,55 @@ async function getNextOrderNoAdmin(db, orderDate) {
     const orderNo = orderDate.replace(/-/g, "") + String(nextSeq).padStart(3, "0");
     await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(nextKey, String(nextSeq + 1));
     return orderNo;
+}
+/**
+ * 拆併單共用：找到（或建立）同客戶＋同出貨日、指定子客戶的目標訂單，回傳 targetOrderId。
+ * targetSubCustomer 空字串 = 主客戶（未分拆）訂單。新建訂單會複製來源訂單的附件參照，
+ * 讓審核子單時也看得到原始訂單照片。
+ * 呼叫端：手動拆併單（move-items）、依子客戶一鍵拆單（split-by-sub-customer）。
+ */
+async function resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer) {
+    const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+    let targetOrderId = null;
+    if (targetSubCustomer === "") {
+        const row = await db.prepare(`
+      SELECT id FROM orders
+      WHERE customer_id = ? AND order_date = ?
+      AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key, '')) = '')
+      AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')
+      ORDER BY id ASC LIMIT 1
+    `).get(sourceOrder.customer_id, sourceOrder.order_date);
+        targetOrderId = row?.id ?? null;
+    }
+    else {
+        const row = await db.prepare(`
+      SELECT id FROM orders
+      WHERE customer_id = ? AND order_date = ?
+      AND TRIM(order_sub_split_key) = ?
+      AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')
+      ORDER BY id ASC LIMIT 1
+    `).get(sourceOrder.customer_id, sourceOrder.order_date, targetSubCustomer);
+        targetOrderId = row?.id ?? null;
+    }
+    if (!targetOrderId) {
+        const newOid = (0, id_js_1.newId)("ord");
+        const orderNo = await getNextOrderNoAdmin(db, sourceOrder.order_date);
+        const remarkNew = targetSubCustomer ? `[子單拆分: ${targetSubCustomer}]` : null;
+        const splitKeyNew = targetSubCustomer ? targetSubCustomer : null;
+        await db.prepare(`
+      INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, line_message_id, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ` + nowSql + `)
+    `).run(newOid, orderNo, sourceOrder.customer_id, sourceOrder.order_date, sourceOrder.line_group_id ?? null, sourceOrder.raw_message ?? "", remarkNew, splitKeyNew);
+        const attRows = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ?").all(sourceOrder.id);
+        for (const ar of attRows) {
+            if (!ar?.line_message_id)
+                continue;
+            const attId = (0, id_js_1.newId)("att");
+            await db.prepare(`INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, ` + nowSql + `)`).run(attId, newOid, ar.line_message_id);
+        }
+        targetOrderId = newOid;
+    }
+    return targetOrderId;
 }
 const NOTION_STYLE = `
   :root {
@@ -531,6 +582,10 @@ const NOTION_STYLE = `
   input.add-item-qty { -moz-appearance: textfield; font-size: 18px; font-weight: 700; text-align: center; }
   table.order-detail-table .order-del-btn-icon { min-width: 1.75rem; padding: 1px 4px; font-size: 17px; font-weight: 700; line-height: 1.1; color: #b71c1c; border-color: rgba(183, 28, 28, 0.35); }
   table.order-detail-table .order-del-btn-icon:hover { background: rgba(183, 28, 28, 0.07); }
+  /* 每列操作鈕（＋插入 / ⊘作廢）：桌面直向堆疊，手機（760px 以下）改橫排 */
+  table.order-detail-table .row-act-stack { display: inline-flex; flex-direction: column; gap: 3px; align-items: center; }
+  table.order-detail-table .item-insert-btn { min-width: 1.75rem; padding: 1px 4px; font-size: 15px; font-weight: 700; line-height: 1.1; color: #047857; border-color: rgba(4, 120, 87, 0.35); }
+  table.order-detail-table .item-insert-btn:hover { background: rgba(4, 120, 87, 0.07); }
   table.order-detail-table tbody td { padding-top: 5px; padding-bottom: 5px; }
   table.order-detail-table thead th { padding: 6px 8px; font-size: 12px; }
   .order-legend { font-size: 12px; color: var(--notion-text-muted); margin: 0 0 10px; line-height: 1.5; }
@@ -719,17 +774,33 @@ const NOTION_STYLE = `
       color: var(--notion-text);
       align-self: center;
       min-width: 0;
-      gap: 8px;
+      gap: 4px 8px;
+      flex-wrap: wrap; /* 品名 + 信心分數 + 改品項鈕擠不下時折行，避免品名被壓成一字一行 */
       word-break: keep-all;
       overflow-wrap: anywhere;
       line-height: 1.2;
     }
+    /* 品名保底寬度：不夠寬時讓「改品項」折行，而不是把品名壓成一字一行 */
+    table.order-detail-table tbody tr td:nth-child(5) .order-final-product { flex: 1 1 auto; min-width: 5.5em; }
     table.order-detail-table tbody tr td:nth-child(5) .order-final-product,
     table.order-detail-table tbody tr td:nth-child(5) .order-final-product a,
     table.order-detail-table tbody tr td:nth-child(5) .product-pick { font-size: 18px; font-weight: 600; word-break: keep-all; }
     table.order-detail-table tbody tr td:nth-child(5) .conf-pill { font-size: 11px; font-weight: 600; flex: 0 0 auto; }
-    /* 改品項連結手機版隱藏（直接點品名即可編輯） */
-    table.order-detail-table tbody tr td:nth-child(5) .product-change { display: none; }
+    /* 改品項：手機顯示為小圓角鈕（點品名開的是「品項主檔編輯」，換對應要靠這顆，不能藏） */
+    table.order-detail-table tbody tr td:nth-child(5) .product-change {
+      display: inline-block;
+      margin-left: auto;
+      flex: 0 0 auto;
+      font-size: 12px;
+      padding: 3px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--accent);
+      background: var(--bg-1);
+      text-decoration: none;
+      white-space: nowrap;
+      line-height: 1.5;
+    }
     table.order-detail-table tbody tr td:nth-child(10) {
       grid-area: del;
       padding: 6px 10px 6px 0;
@@ -847,6 +918,34 @@ const NOTION_STYLE = `
     }
     .sf-table tbody tr.order-row > td.order-mobile-only::before { display: none !important; content: none !important; }
     .sf-table tbody tr.order-row { padding: 0 !important; }
+    /* 新增品項列（.add-item-row）：不能套上面的品項卡 grid 版型——
+       它只有一個 colspan td（nth-child(1) 會被隱藏），整列在手機上會消失、無法新增品項。
+       改為整塊直排卡片顯示。 */
+    table.order-detail-table tr.add-item-row {
+      display: block;
+      border: 1.5px dashed var(--notion-border);
+      border-radius: 12px;
+      margin-bottom: 12px;
+      background: var(--notion-bg);
+      overflow: visible;
+    }
+    table.order-detail-table tr.add-item-row::before { content: none; display: none; }
+    table.order-detail-table tr.add-item-row > td {
+      display: block !important;
+      border: none;
+      padding: 10px 12px !important;
+      background: transparent !important;
+    }
+    #inlineAddItem .review-product-picker { flex: 1 1 100%; min-width: 0; }
+    #inlineAddItem .add-item-qty { width: 6rem !important; font-size: 20px; }
+    #inlineAddItem .add-item-unit { min-width: 5.5rem; font-size: 16px; }
+    #inlineAddItem #inlineAddBtn { flex: 1 0 auto; height: 38px; font-size: 14px; }
+    /* 每列的「＋插入」與「⊘作廢」在手機卡片右上角並排 */
+    table.order-detail-table tbody tr td:nth-child(10) .row-act-stack { flex-direction: row; gap: 10px; }
+    table.order-detail-table tbody tr td:nth-child(10) .item-insert-btn { min-width: 1.85rem; font-size: 16px; padding: 2px 6px; }
+    /* 品項卡左右滑手勢已暫停用（使用回饋卡手）；重啟手勢時要一併恢復這條，
+       否則橫向 pointermove 會被瀏覽器攔走：
+       table.order-detail-table tbody tr[data-item-id] { touch-action: pan-y; } */
   }
   /* 訂單列表 mobile 卡片：桌面隱藏 */
   .order-mobile-only { display: none; }
@@ -1267,8 +1366,10 @@ details.sf-nav-group > summary:hover > .sf-nav-group-title { background: var(--b
   }
   /* 內部 padding 縮一點 */
   .order-detail-raw-col .sf-card[id="rawOrderBlock"] > div[style*="padding:14px"] { padding: 10px 12px !important; }
-  /* 照片附件縮小 */
-  .order-detail-raw-col .sf-card[id="rawOrderBlock"] img { max-height: 180px !important; }
+  /* 照片附件縮小——只在「未放大」(data-scale=1) 時鎖高度；
+     放大時要解除，否則 !important 蓋過 JS 的 max-height:none，按＋只會變寬不會變大 */
+  .order-detail-raw-col .sf-card[id="rawOrderBlock"] img:not(.order-attach-img) { max-height: 180px !important; }
+  .order-detail-raw-col .sf-card[id="rawOrderBlock"] img.order-attach-img[data-scale="1"] { max-height: 180px !important; }
   /* 客戶打字內容 pre 字級壓小一點 */
   .order-detail-raw-col .sf-card[id="rawOrderBlock"] pre { font-size: 12px !important; line-height: 1.5 !important; padding: 8px 10px !important; }
   .order-detail-layout { flex-direction: column !important; }
@@ -1416,8 +1517,10 @@ function sfSidebar(active) {
         ${item("/admin/reminders", "reminders", "bell", "忘記叫貨提醒")}
         ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
       </details>
-      <details class="sf-nav-group" ${["env","inventory","logistics-procurement"].includes(active) ? "open" : ""}>
-        <summary><div class="sf-nav-group-title">庫存與物流</div></summary>
+      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","logistics-procurement"].includes(active) ? "open" : ""}>
+        <summary><div class="sf-nav-group-title">庫存管理</div></summary>
+        ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
+        ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "box", "倉庫設定")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
@@ -1714,6 +1817,167 @@ function fmtTaipeiYMDHM(v, fallback = "—") {
     const p = fmtTaipeiParts(v);
     return p ? `${p.y}-${p.mo}-${p.d} ${p.h}:${p.mi}` : fallback;
 }
+// ── 目前庫存頁：緊湊表樣式（品項多，行高壓到最小、表頭吸頂）─────────────
+const STK_STYLE = `
+.stk-wrap{max-width:100%;}
+.stk-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin:6px 0 8px;}
+.stk-toolbar-left,.stk-toolbar-right{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.stk-search{min-width:200px;flex:1 1 200px;padding:6px 10px;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;font-size:13px;background:var(--notion-card,#fff);color:inherit;}
+.stk-seg{display:inline-flex;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;overflow:hidden;}
+.stk-seg button{border:0;background:var(--notion-card,#fff);color:inherit;padding:6px 11px;font-size:12.5px;cursor:pointer;}
+.stk-seg button.active{background:#2383e2;color:#fff;font-weight:700;}
+.stk-check{font-size:12.5px;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer;}
+.stk-meta{font-size:12px;color:var(--notion-text-light,#787774);white-space:nowrap;}
+.stk-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;max-height:110px;overflow:auto;}
+.stk-chip{border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:inherit;border-radius:999px;padding:2px 10px;font-size:12px;cursor:pointer;white-space:nowrap;line-height:1.5;}
+.stk-chip:hover{border-color:#2383e2;}
+.stk-chip.active{background:#2383e2;border-color:#2383e2;color:#fff;font-weight:700;}
+.stk-chipn{opacity:.6;font-size:11px;margin-left:2px;}
+.stk-chip.active .stk-chipn{opacity:.85;}
+.stk-status{margin:0 0 8px;padding:8px 12px;border-radius:7px;font-size:13px;}
+.stk-status-wait{background:#eef4ff;color:#1d4ed8;}
+.stk-status-ok{background:#e7f5e9;color:#2e7d32;}
+.stk-status-warn{background:#fff8e1;color:#8a6d1b;}
+.stk-tablewrap{max-height:calc(100vh - 190px);overflow:auto;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;}
+.stk-table{border-collapse:separate;border-spacing:0;width:100%;font-size:12px;line-height:1.1;}
+.stk-table th,.stk-table td{padding:2px 8px;border-bottom:1px solid var(--notion-border,#efefee);white-space:nowrap;}
+.stk-table thead th{position:sticky;top:0;z-index:2;background:var(--notion-card,#f7f7f5);text-align:left;font-weight:700;color:var(--notion-text-light,#555);border-bottom:1px solid var(--notion-border,#e3e2e0);}
+.stk-table td.stk-qty,.stk-table th.stk-qty{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;}
+.stk-name{max-width:300px;overflow:hidden;text-overflow:ellipsis;}
+.stk-spec{max-width:170px;overflow:hidden;text-overflow:ellipsis;color:var(--notion-text-light,#787774);}
+.stk-code{color:var(--notion-text-light,#787774);font-variant-numeric:tabular-nums;}
+.stk-wh{color:var(--notion-text-light,#787774);}
+.stk-table tbody tr:hover{background:rgba(35,131,226,.06);}
+.stk-neg td.stk-qty{color:#c62828;}
+.stk-low{background:rgba(255,193,7,.12);}
+.stk-neg{background:rgba(198,40,40,.08);}
+.stk-grouphead td{position:sticky;top:20px;background:var(--notion-bg,#f1f1ef);font-weight:700;z-index:1;border-top:1px solid var(--notion-border,#e3e2e0);cursor:default;}
+.stk-gcount{font-weight:500;font-size:11px;color:var(--notion-text-light,#787774);margin-left:8px;}
+.stk-empty{text-align:center;color:var(--notion-text-light,#787774);padding:24px;}
+@media (max-width:640px){.stk-spec{display:none;}.stk-tablewrap{max-height:calc(100vh - 240px);}}
+`;
+// 目前庫存頁前端腳本（無 backtick、無 ${} 以免與外層樣板字面衝突）
+const STK_CLIENT_JS = `
+(function(){
+  var raw = document.getElementById('stkData');
+  var DATA = {items:[],assign:{}};
+  try { DATA = JSON.parse(raw.textContent || '{}'); } catch(e){ DATA = {items:[],assign:{}}; }
+  var ITEMS = DATA.items || [];
+  var ASSIGN = DATA.assign || {};
+  var WHNAME = DATA.whname || {};
+  var els = {
+    search: document.getElementById('stkSearch'),
+    view: document.getElementById('stkView'),
+    hideZero: document.getElementById('stkHideZero'),
+    lowOnly: document.getElementById('stkLowOnly'),
+    exportBtn: document.getElementById('stkExport'),
+    refresh: document.getElementById('stkRefresh'),
+    chips: document.getElementById('stkChips'),
+    wrap: document.getElementById('stkTableWrap'),
+    count: document.getElementById('stkCount'),
+    status: document.getElementById('stkStatus')
+  };
+  var UNSET_LY='（未設倉別）';
+  var state = { view:'list', q:'', hideZero:false, low:false, wh:'' };
+  try { var saved = JSON.parse(localStorage.getItem('stk.state')||'{}'); if(saved.view) state.view=saved.view; if(saved.hideZero) state.hideZero=!!saved.hideZero; } catch(_){}
+  function save(){ try { localStorage.setItem('stk.state', JSON.stringify({view:state.view,hideZero:state.hideZero})); } catch(_){} }
+  function esc(s){ s=(s==null?'':String(s)); return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function safetyOf(code){ var a=ASSIGN[code]; if(!a||!a.length) return 0; var m=0; for(var i=0;i<a.length;i++){ if(a[i].safety>m) m=a[i].safety; } return m; }
+  function fmtQty(q){ if(q===0) return '0'; return String(q); }
+  // 一個品項屬於哪些倉（依來源）：自訂庫房可能多個；沒名字就用代號
+  // 依凌越倉庫號碼（貨品主檔 SK_RKWHNO）分組；沒設倉別的歸「（未設倉別）」
+  function whsOf(it){ return [it.w||UNSET_LY]; }
+  function whSort(it){ return it.w?0:1e9; }
+  // 顯示標籤：有中文名就顯示「代號 中文名」，否則只顯示代號
+  function whLabel(code){ if(code===UNSET_LY) return code; var nm=WHNAME[code]; return nm?(code+' '+nm):code; }
+  // 搜尋 + 隱藏0 + 只看低量（不含倉別選取）
+  function baseFilter(it){
+    if(state.hideZero && it.q===0) return false;
+    if(state.low){ var s=safetyOf(it.c); var low=it.q<=0||(s>0&&it.q<s); if(!low) return false; }
+    if(state.q){ var q=state.q; if(!((it.c.toLowerCase().indexOf(q)>=0)||(it.n.toLowerCase().indexOf(q)>=0)||(it.s.toLowerCase().indexOf(q)>=0))) return false; }
+    return true;
+  }
+  function rowHtml(it){
+    var s=safetyOf(it.c); var neg=it.q<0; var low=(it.q>0&&s>0&&it.q<s);
+    var cls=neg?'stk-neg':(low?'stk-low':'');
+    return '<tr class="'+cls+'"><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td></tr>';
+  }
+  function theadHtml(){ return '<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>凌越倉別</th></tr></thead>'; }
+  function renderList(list){
+    var b=[]; for(var i=0;i<list.length;i++) b.push(rowHtml(list[i]));
+    return '<table class="stk-table">'+theadHtml()+'<tbody>'+(b.join('')||'<tr><td colspan="6" class="stk-empty">— 無符合條件的品項 —</td></tr>')+'</tbody></table>';
+  }
+  function renderGroup(list){
+    var groups={}; var order=[];
+    function ensure(key,sort){ if(!groups[key]){ groups[key]={rows:[],sum:0,sort:sort}; order.push(key); } return groups[key]; }
+    for(var i=0;i<list.length;i++){
+      var it=list[i]; var whs=whsOf(it); var st=whSort(it);
+      for(var j=0;j<whs.length;j++){ var g=ensure(whs[j],st); g.rows.push(it); g.sum+=it.q; }
+    }
+    order.sort(function(x,y){ var gx=groups[x],gy=groups[y]; if(gx.sort!==gy.sort) return gx.sort-gy.sort; return x<y?-1:(x>y?1:0); });
+    var out=['<table class="stk-table">'+theadHtml()+'<tbody>'];
+    if(!order.length) out.push('<tr><td colspan="6" class="stk-empty">— 無符合條件的品項 —</td></tr>');
+    for(var k=0;k<order.length;k++){
+      var key2=order[k]; var g4=groups[key2];
+      out.push('<tr class="stk-grouphead"><td colspan="6">'+esc(whLabel(key2))+'<span class="stk-gcount">'+g4.rows.length+' 項 · Σ '+fmtQty(Math.round(g4.sum*100)/100)+'</span></td></tr>');
+      for(var r=0;r<g4.rows.length;r++) out.push(rowHtml(g4.rows[r]));
+    }
+    out.push('</tbody></table>');
+    return out.join('');
+  }
+  function renderChips(base){
+    var counts={}, order=[];
+    for(var i=0;i<base.length;i++){ var whs=whsOf(base[i]); for(var j=0;j<whs.length;j++){ var w=whs[j]; if(counts[w]==null){ counts[w]=0; order.push(w); } counts[w]++; } }
+    order.sort(function(x,y){ return x<y?-1:(x>y?1:0); });
+    var html='<button class="stk-chip'+(state.wh===''?' active':'')+'" data-w="">全部<span class="stk-chipn">'+base.length+'</span></button>';
+    for(var k=0;k<order.length;k++){ var w=order[k]; html+='<button class="stk-chip'+(state.wh===w?' active':'')+'" data-w="'+esc(w)+'">'+esc(whLabel(w))+'<span class="stk-chipn">'+counts[w]+'</span></button>'; }
+    els.chips.innerHTML=html;
+    Array.prototype.forEach.call(els.chips.querySelectorAll('.stk-chip'),function(c){ c.addEventListener('click',function(){ state.wh=c.getAttribute('data-w'); render(); }); });
+  }
+  var _filtered=[];
+  function render(){
+    var base=[]; for(var i=0;i<ITEMS.length;i++){ if(baseFilter(ITEMS[i])) base.push(ITEMS[i]); }
+    renderChips(base);
+    var list;
+    if(state.wh===''){ list=base; }
+    else { list=[]; for(var i2=0;i2<base.length;i2++){ if(whsOf(base[i2]).indexOf(state.wh)>=0) list.push(base[i2]); } }
+    _filtered=list;
+    els.count.textContent=list.length+(list.length!==ITEMS.length?(' / '+ITEMS.length):'');
+    els.wrap.innerHTML=(state.view==='group')?renderGroup(list):renderList(list);
+  }
+  var t=null;
+  els.search.addEventListener('input',function(){ if(t) clearTimeout(t); t=setTimeout(function(){ state.q=els.search.value.trim().toLowerCase(); render(); },120); });
+  Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(btn){
+    btn.addEventListener('click',function(){ state.view=btn.getAttribute('data-v'); Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); save(); render(); });
+    btn.classList.toggle('active', btn.getAttribute('data-v')===state.view);
+  });
+  els.hideZero.checked=state.hideZero;
+  els.hideZero.addEventListener('change',function(){ state.hideZero=els.hideZero.checked; state.wh=''; save(); render(); });
+  els.lowOnly.addEventListener('change',function(){ state.low=els.lowOnly.checked; state.wh=''; render(); });
+  els.exportBtn.addEventListener('click',function(){
+    var lines=['料號,品名,規格,單位,目前庫存,凌越倉別'];
+    function q(x){ x=(x==null?'':String(x)); return '"'+x.replace(/"/g,'""')+'"'; }
+    for(var i=0;i<_filtered.length;i++){ var it=_filtered[i]; lines.push([q(it.c),q(it.n),q(it.s),q(it.u),it.q,q(whsOf(it).join(' '))].join(',')); }
+    var blob=new Blob(['\\ufeff'+lines.join('\\r\\n')],{type:'text/csv;charset=utf-8;'});
+    var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='stock.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  });
+  els.refresh.addEventListener('click',function(){
+    els.refresh.disabled=true;
+    els.status.style.display=''; els.status.className='stk-status stk-status-wait'; els.status.textContent='已送出更新請求，等待內網代理刷新…';
+    var baseline='';
+    fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){ baseline=m.snapshot_at||''; return fetch('/admin/inventory/stock/refresh',{method:'POST'}); }).then(function(r){return r.json();}).then(function(){
+      var tries=0; var iv=setInterval(function(){
+        tries++;
+        fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){
+          if(m.snapshot_at&&m.snapshot_at!==baseline){ clearInterval(iv); els.status.className='stk-status stk-status-ok'; els.status.textContent='已更新，重新載入…'; setTimeout(function(){ location.reload(); },600); return; }
+          if(tries>=24){ clearInterval(iv); els.refresh.disabled=false; els.status.className='stk-status stk-status-warn'; els.status.textContent='等待逾時：內網代理（ly_stock_agent）可能未執行。請求已記錄，代理下次上線會補刷新。'; }
+        }).catch(function(){});
+      },3000);
+    }).catch(function(){ els.refresh.disabled=false; els.status.className='stk-status stk-status-warn'; els.status.textContent='送出失敗，請稍後再試。'; });
+  });
+  render();
+})();
+`;
 async function getWorkingDate(database) {
     const row = await database.prepare("SELECT value FROM app_settings WHERE key = ?").get("working_date");
     if (row && row.value)
@@ -2333,6 +2597,7 @@ function createAdminRouter() {
         { title: "LINE 機器人", href: "/admin/line-bot", keywords: ["line", "bot", "排程"] },
         { title: "人員管理", href: "/admin/users", keywords: ["users", "帳號", "員工"] },
         { title: "冷凍／冷藏庫", href: "/admin/freezer-fridge", keywords: ["freezer", "fridge", "冰箱"] },
+        { title: "目前庫存", href: "/admin/inventory/stock", keywords: ["stock", "庫存", "凌越", "現有量", "nowqty"] },
         { title: "每日盤點", href: "/admin/inventory", keywords: ["inventory", "盤點"] },
         { title: "物流叫貨", href: "/admin/logistics/procurement", keywords: ["procurement", "採購"] },
         { title: "北農行情", href: "/admin/logistics/market", keywords: ["market", "北農", "價格"] },
@@ -2500,6 +2765,52 @@ function createAdminRouter() {
               <td>${btn}</td>
             </tr>`;
         }).join("");
+        // 群組發言成員（自動偵測）：曾在客戶群發言的 LINE 帳號。
+        // 主名單只留「未判定」的人；標成同事或按「非公司人員」排除後移到收合的「已處理」區，名單不會被客戶塞滿。
+        const speakers = await line_conversation_js_1.listGroupSpeakers(db, 200);
+        const boundByLineUserId = new Map();
+        for (const u of activeList) {
+            if (u.lineUserId) boundByLineUserId.set(String(u.lineUserId).trim(), u);
+        }
+        const speakerUserOpts = activeList.map(u => `<option value="${escapeAttr(u.username)}">${escapeHtml(u.name || u.username)}${u.title ? `（${escapeHtml(u.title)}）` : ""}</option>`).join("");
+        const renderSpeakerRow = (s) => {
+            const lu = String(s.line_user_id || "");
+            const bound = boundByLineUserId.get(lu);
+            const nameCell = s.display_name ? `<strong>${escapeHtml(s.display_name)}</strong>` : `<span style="color:var(--txt-3);">（取不到名稱）</span>`;
+            const luShort = `<code class="mono" style="font-size:11px;color:var(--txt-3);" title="${escapeAttr(lu)}">${escapeHtml(lu.slice(0, 6))}…${escapeHtml(lu.slice(-4))}</code>`;
+            const grp = s.customer_name ? escapeHtml(s.customer_name) : `<code class="mono" style="font-size:11px;color:var(--txt-3);" title="${escapeAttr(String(s.group_id || ""))}">${escapeHtml(String(s.group_id || "").slice(0, 8))}…</code>`;
+            const last = s.last_spoke_at ? escapeHtml(fmtTaipeiYMDHM(s.last_spoke_at)) : "—";
+            let statusCell, actionCell;
+            if (bound) {
+                statusCell = `<span class="sf-pill ok">同事：${escapeHtml(bound.name || bound.username)}</span>`;
+                actionCell = `<form method="post" action="/admin/users/line-unbind" style="display:inline;margin:0;" onsubmit="return confirm('解除 ${escapeAttr(bound.username)} 的 LINE 綁定？其訊息將回到一般客戶訊息處理。');"><input type="hidden" name="username" value="${escapeAttr(bound.username)}"><button type="submit" class="sf-btn sm">解除標記</button></form>`;
+            }
+            else if (s.dismissed_at) {
+                statusCell = `<span class="sf-pill">非公司人員</span>`;
+                actionCell = `<form method="post" action="/admin/users/speaker-visibility" style="display:inline;margin:0;"><input type="hidden" name="line_user_id" value="${escapeAttr(lu)}"><input type="hidden" name="visibility" value="restore"><button type="submit" class="sf-btn sm">恢復到名單</button></form>`;
+            }
+            else {
+                statusCell = `<span class="sf-pill warn">未判定</span>`;
+                actionCell = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                    <form method="post" action="/admin/users/bind-line-from-speaker" style="display:flex;gap:6px;align-items:center;margin:0;" onsubmit="return confirm('確定將此發言者標記為所選同事？\\n之後其在客戶群的訊息不做 AI 解析，並在訂單對話以「同事」樣式顯示。');">
+                      <input type="hidden" name="line_user_id" value="${escapeAttr(lu)}">
+                      <input type="hidden" name="display_name" value="${escapeAttr(s.display_name || "")}">
+                      <select name="username" class="sf-select" style="min-width:9rem;font-size:12px;height:30px;padding:2px 6px;">${speakerUserOpts}</select>
+                      <button type="submit" class="sf-btn sm primary">標記為同事</button>
+                    </form>
+                    <form method="post" action="/admin/users/speaker-visibility" style="display:inline;margin:0;">
+                      <input type="hidden" name="line_user_id" value="${escapeAttr(lu)}">
+                      <input type="hidden" name="visibility" value="dismiss">
+                      <button type="submit" class="sf-btn sm" title="標記為客戶／非公司人員，移到下方「已處理」收合區（可隨時恢復）">非公司人員</button>
+                    </form>
+                  </div>`;
+            }
+            return `<tr><td>${nameCell}<div>${luShort}</div></td><td>${grp}</td><td style="text-align:right;">${s.message_count ?? 0}</td><td style="white-space:nowrap;">${last}</td><td>${statusCell}</td><td>${actionCell}</td></tr>`;
+        };
+        const pendingSpeakers = (speakers || []).filter(s => !boundByLineUserId.get(String(s.line_user_id || "")) && !s.dismissed_at);
+        const handledSpeakers = (speakers || []).filter(s => boundByLineUserId.get(String(s.line_user_id || "")) || s.dismissed_at);
+        const pendingSpeakerRows = pendingSpeakers.map(renderSpeakerRow).join("");
+        const handledSpeakerRows = handledSpeakers.map(renderSpeakerRow).join("");
         const body = `
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
@@ -2550,6 +2861,33 @@ function createAdminRouter() {
               </table>
             </div>
           </details>` : ""}
+
+          <div class="sf-card">
+            <div class="sf-card-head">
+              <div class="sf-card-title">${SF_ICONS.users} 群組發言成員（自動偵測・待判定 ${pendingSpeakers.length}）</div>
+              <span class="sf-card-sub">曾在客戶群發言的 LINE 帳號——是同事就標記、不是就按「非公司人員」移出名單</span>
+            </div>
+            <div class="sf-table-wrap" style="border:0;border-radius:0;">
+              <table class="sf-table">
+                <thead><tr><th>LINE 名稱</th><th>群組（客戶）</th><th style="width:70px;">訊息數</th><th style="width:150px;">最後發言</th><th style="width:120px;">身份</th><th style="width:340px;">操作</th></tr></thead>
+                <tbody>${pendingSpeakerRows || `<tr><td colspan='6' style='padding:24px;text-align:center;color:var(--txt-3);'>沒有待判定的發言者${handledSpeakers.length ? "（已處理的收在下方）" : "——客戶群內有人發言就會自動出現在這裡"}</td></tr>`}</tbody>
+              </table>
+            </div>
+            ${handledSpeakers.length ? `
+            <details style="border-top:var(--hairline);">
+              <summary style="padding:10px 16px;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;">
+                <span style="font-size:11px;color:var(--txt-3);">▸</span>
+                <span style="font-size:13px;font-weight:600;color:var(--txt-2);">已處理（${handledSpeakers.length}）</span>
+                <span style="font-size:11px;color:var(--txt-3);">同事與已排除的非公司人員收在這裡，可解除或恢復</span>
+              </summary>
+              <div class="sf-table-wrap" style="border:0;border-radius:0;border-top:var(--hairline);">
+                <table class="sf-table">
+                  <thead><tr><th>LINE 名稱</th><th>群組（客戶）</th><th style="width:70px;">訊息數</th><th style="width:150px;">最後發言</th><th style="width:120px;">身份</th><th style="width:340px;">操作</th></tr></thead>
+                  <tbody>${handledSpeakerRows}</tbody>
+                </table>
+              </div>
+            </details>` : ""}
+          </div>
 
           <div class="sf-card">
             <div class="sf-card-head">
@@ -2858,6 +3196,54 @@ function createAdminRouter() {
             res.redirect("/admin/users?ok=status");
         } catch (e) {
             res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "解綁失敗"));
+        }
+    });
+    // 從「群組發言成員」名單直接把某 LINE 發言者標記為同事（免綁定碼／LIFF，沿用同一套綁定儲存）
+    router.post("/users/bind-line-from-speaker", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
+        const username = String(req.body?.username || "").trim();
+        const lineUserId = String(req.body?.line_user_id || "").trim();
+        const displayName = String(req.body?.display_name || "").trim() || null;
+        if (!username || !lineUserId) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        const users = await loadAdminUsers();
+        if (!users.find(u => u.username === username)) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        try {
+            await (0, employee_line_binding_js_1.bindLineUserIdToEmployee)(db, username, lineUserId, displayName);
+            await logDataChange(req, {
+                entityType: "employee_line_binding",
+                entityId: username,
+                action: "bind_from_speaker",
+                summary: `從群組發言名單將 ${displayName || lineUserId.slice(0, 8) + "…"} 標記為同事（帳號 ${username}）`,
+            });
+            res.redirect("/admin/users?ok=status");
+        } catch (e) {
+            res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "標記失敗"));
+        }
+    });
+    // 發言者「非公司人員」排除／恢復：判定過的人移出主名單，避免名單被客戶塞滿
+    router.post("/users/speaker-visibility", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
+        const lineUserId = String(req.body?.line_user_id || "").trim();
+        const visibility = String(req.body?.visibility || "").trim();
+        if (!lineUserId || !["dismiss", "restore"].includes(visibility)) {
+            res.redirect("/admin/users?err=forbidden");
+            return;
+        }
+        try {
+            await line_conversation_js_1.setSpeakerDismissed(db, lineUserId, visibility === "dismiss");
+            await logDataChange(req, {
+                entityType: "line_group_speaker",
+                entityId: lineUserId.slice(0, 12),
+                action: visibility === "dismiss" ? "speaker_dismiss" : "speaker_restore",
+                summary: visibility === "dismiss" ? "發言者標記為非公司人員（移出名單）" : "發言者恢復到待判定名單",
+            });
+            res.redirect("/admin/users?ok=status");
+        } catch (e) {
+            res.redirect("/admin/users?err=" + encodeURIComponent(e?.message || "操作失敗"));
         }
     });
     router.post("/api/working-date", express_1.default.urlencoded({ extended: true }), async (req, res) => {
@@ -5955,6 +6341,177 @@ function createAdminRouter() {
         }
         res.redirect("/admin/inventory/import-erp?ok=1&count=" + imported);
     });
+    // ── 目前庫存（凌越 SK_NOWQTY 快照）─────────────────────────────────
+    async function readStockMeta() {
+        const get = async (k) => {
+            const r = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(k);
+            return r && r.value != null ? String(r.value) : "";
+        };
+        return {
+            snapshot_at: await get("erp_stock_snapshot_at"),
+            item_count: await get("erp_stock_item_count"),
+            refresh_status: await get("erp_stock_refresh_status"),
+            refresh_requested_at: await get("erp_stock_refresh_requested_at"),
+        };
+    }
+    router.get("/inventory/stock", async (req, res) => {
+        const stockRows = await db.prepare("SELECT erp_code, name, spec, unit, qty, wh_code FROM erp_stock_items ORDER BY erp_code").all();
+        const assignRows = await db.prepare(`
+      SELECT p.erp_code AS code, w.name AS wh_name, w.sort_order AS wh_sort, COALESCE(iwp.safety_stock, 0) AS safety
+      FROM inventory_warehouse_products iwp
+      JOIN products p ON p.id = iwp.product_id
+      JOIN inventory_warehouses w ON w.id = iwp.warehouse_id
+      WHERE p.erp_code IS NOT NULL AND TRIM(p.erp_code) <> ''
+    `).all();
+        const assign = {};
+        for (const a of assignRows || []) {
+            const code = String(a.code || "").trim();
+            if (!code)
+                continue;
+            (assign[code] = assign[code] || []).push({ wh: String(a.wh_name || ""), sort: Number(a.wh_sort || 0), safety: Number(a.safety || 0) });
+        }
+        const items = (stockRows || []).map((r) => ({
+            c: String(r.erp_code || ""),
+            n: String(r.name || ""),
+            s: String(r.spec || ""),
+            u: String(r.unit || ""),
+            q: Number(r.qty || 0),
+            w: String(r.wh_code || ""),
+        }));
+        // 倉別代號→中文名（倉庫設定頁維護），給前端把標籤/欄位顯示成「代號 中文名」
+        const whRows = await db.prepare("SELECT code, name FROM erp_warehouse").all();
+        const whname = {};
+        for (const w of whRows || []) {
+            const nm = String(w.name || "").trim();
+            if (nm)
+                whname[String(w.code)] = nm;
+        }
+        const dataJson = JSON.stringify({ items, assign, whname }).replace(/</g, "\\u003c");
+        const meta = await readStockMeta();
+        const snapLabel = meta.snapshot_at ? fmtTaipeiYMDHM(meta.snapshot_at, "尚無資料") : "尚無資料";
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 目前庫存</div>
+      <style>${STK_STYLE}</style>
+      <div class="stk-wrap">
+        <div class="stk-toolbar no-print">
+          <div class="stk-toolbar-left">
+            <input type="search" id="stkSearch" class="stk-search" placeholder="搜尋料號 / 品名 / 規格…" autocomplete="off" spellcheck="false">
+            <div class="stk-seg" id="stkView">
+              <button type="button" data-v="list" class="active">列表</button>
+              <button type="button" data-v="group">依倉庫</button>
+            </div>
+            <label class="stk-check"><input type="checkbox" id="stkHideZero"> 隱藏 0</label>
+            <label class="stk-check"><input type="checkbox" id="stkLowOnly"> 只看低量/負量</label>
+          </div>
+          <div class="stk-toolbar-right">
+            <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項</span>
+            <button type="button" id="stkExport" class="btn">匯出</button>
+            <button type="button" id="stkRefresh" class="btn btn-primary">庫存更新</button>
+          </div>
+        </div>
+        <div id="stkChips" class="stk-chips no-print"></div>
+        <div id="stkStatus" class="stk-status" style="display:none;"></div>
+        <div id="stkTableWrap" class="stk-tablewrap"></div>
+      </div>
+      <script id="stkData" type="application/json">${dataJson}</script>
+      <script>${STK_CLIENT_JS}</script>`;
+        res.type("text/html").send(notionPage("目前庫存", body, "inv-stock", res));
+    });
+    // 使用者點「庫存更新」→ 設定待處理旗標（內網 agent long-poll 撿走）
+    router.post("/inventory/stock/refresh", async (req, res) => {
+        try {
+            const now = new Date().toISOString();
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", now);
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "requested");
+            res.json({ ok: true, requested_at: now });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
+    // 前端輪詢：查最新快照時間 / 刷新狀態
+    router.get("/inventory/stock/status", async (_req, res) => {
+        try {
+            res.json(await readStockMeta());
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
+    // ── 倉庫設定：凌越倉別代號 → 中文名、是否納入盤點 ─────────────────────
+    async function loadWarehouseRows() {
+        const snap = await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' GROUP BY wh_code").all();
+        const saved = await db.prepare("SELECT code, name, include_stocktake, sort_order FROM erp_warehouse").all();
+        const savedMap = {}, cntMap = {}, codes = {};
+        for (const s of saved || []) { savedMap[String(s.code)] = s; codes[String(s.code)] = true; }
+        for (const r of snap || []) { cntMap[String(r.code)] = Number(r.cnt || 0); codes[String(r.code)] = true; }
+        const list = Object.keys(codes).map((code) => {
+            const s = savedMap[code] || {};
+            return {
+                code,
+                name: s.name != null ? String(s.name) : "",
+                include: s.include_stocktake == null ? 1 : Number(s.include_stocktake),
+                sort: s.sort_order != null ? Number(s.sort_order) : 0,
+                cnt: cntMap[code] || 0,
+            };
+        });
+        list.sort((a, b) => (a.sort - b.sort) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+        return list;
+    }
+    router.get("/inventory/warehouse-settings", async (req, res) => {
+        const list = await loadWarehouseRows();
+        const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存。</div>` : "";
+        const rowsHtml = list.map((w) => `
+      <tr>
+        <td style="font-variant-numeric:tabular-nums;font-weight:600;">${escapeHtml(w.code)}</td>
+        <td><input type="text" name="name[${escapeAttr(w.code)}]" value="${escapeAttr(w.name)}" placeholder="輸入中文名，如 松富冷藏備貨庫" style="width:100%;max-width:260px;padding:6px 8px;border:1px solid var(--notion-border,#e3e2e0);border-radius:6px;background:var(--notion-card,#fff);color:inherit;"></td>
+        <td style="text-align:right;color:#787774;">${w.cnt}</td>
+        <td style="text-align:center;"><input type="checkbox" name="inc[${escapeAttr(w.code)}]" value="1" ${w.include ? "checked" : ""}></td>
+      </tr>`).join("");
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 倉庫設定</div>
+      <h1 style="font-size:20px;margin:8px 0 4px;">倉庫設定</h1>
+      <p class="notion-hint" style="margin:0 0 14px;">倉別代號自動來自凌越（貨品主檔的入庫倉別）。填中文名、勾選要「納入盤點」的倉即可；換倉、新增倉都會自動出現，不用手動維護。</p>
+      ${ok}
+      <form method="post" action="/admin/inventory/warehouse-settings">
+        <table class="notion-table" style="width:100%;max-width:720px;border-collapse:collapse;">
+          <thead><tr>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">凌越倉別</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">中文名稱</th>
+            <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">品項數</th>
+            <th style="text-align:center;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">納入盤點</th>
+          </tr></thead>
+          <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:#787774;padding:20px;">目前庫存快照還沒有資料，請先讓內網代理推一次庫存。</td></tr>'}</tbody>
+        </table>
+        <p style="margin-top:14px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+      </form>`;
+        res.type("text/html").send(notionPage("倉庫設定", body, "inv-wh-settings", res));
+    });
+    router.post("/inventory/warehouse-settings", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const nameMap = (req.body && typeof req.body.name === "object" && req.body.name) ? req.body.name : {};
+            const incMap = (req.body && typeof req.body.inc === "object" && req.body.inc) ? req.body.inc : {};
+            const codes = {};
+            for (const k of Object.keys(nameMap)) codes[k] = true;
+            for (const k of Object.keys(incMap)) codes[k] = true;
+            const now = new Date().toISOString();
+            await db.prepare("DELETE FROM erp_warehouse").run();
+            let sort = 0;
+            for (const code of Object.keys(codes)) {
+                const c = String(code).trim();
+                if (!c)
+                    continue;
+                const name = String(nameMap[code] != null ? nameMap[code] : "").trim();
+                const include = incMap[code] ? 1 : 0;
+                await db.prepare("INSERT INTO erp_warehouse (code, name, include_stocktake, sort_order, updated_at) VALUES (?, ?, ?, ?, ?)").run(c, name, include, sort++, now);
+            }
+            res.redirect("/admin/inventory/warehouse-settings?ok=1");
+        }
+        catch (e) {
+            console.error("[admin] warehouse-settings save", e?.message || e);
+            res.status(500).send("儲存失敗：" + String(e?.message || e));
+        }
+    });
     router.get("/inventory/variance-report", async (req, res) => {
         const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
         const dateFrom = (req.query.date_from || "").trim();
@@ -6593,14 +7150,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
             // 沒設路線＝自取，不補任何空籃（含固定四角籃 C0100065）
             if (routeLine == null) return;
-            // 號碼籃料號跳過 4 號（無 4 號籃）：C0100057=1號…C0100059=3號、C0100060=5號…C0100064=9號；
-            // 不可用 56+路線號 連號計算，會從 5 號線起全部對錯、9 號線算到四角籃 C0100065。
-            const EMPTY_BASKET_ERP_BY_ROUTE = { 1: "C0100057", 2: "C0100058", 3: "C0100059", 5: "C0100060", 6: "C0100061", 7: "C0100062", 8: "C0100063", 9: "C0100064" };
-            const emptyBasketErp = EMPTY_BASKET_ERP_BY_ROUTE[routeLine] || null; // 路線 4 無號碼籃，只補四角籃
+            const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
             const erps = [];
             if (emptyBasketErp)
                 erps.push(emptyBasketErp);
-            erps.push("C0100065");
+            if (!erps.includes("C0100065"))
+                erps.push("C0100065");
             for (const erp of erps) {
                 const prod = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(erp);
                 if (!prod)
@@ -7622,7 +8177,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     || (o.customer_id ? `客戶 ${String(o.customer_id).slice(0, 6)}` : "未選客戶");
                 const custFallback = !rawCustName;
                 const custLink = o.customer_id
-                    ? `<a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders" class="cust-pop-link" data-cid="${escapeAttr(o.customer_id)}" title="查看客戶提醒卡" style="color:var(--txt-1);font-weight:500;border-bottom:1px dashed var(--txt-3);${custFallback ? "font-style:italic;color:var(--txt-3);" : ""}">${escapeHtml(custDisp)}</a>${custFallback ? ' <span class="sf-pill bad" style="font-size:10px;padding:0 6px;">缺名</span>' : ""}`
+                    ? `<a href="/admin/customers/${encodeURIComponent(o.customer_id)}/quick-view?from=orders" style="color:var(--txt-1);font-weight:500;${custFallback ? "font-style:italic;color:var(--txt-3);" : ""}">${escapeHtml(custDisp)}</a>${custFallback ? ' <span class="sf-pill bad" style="font-size:10px;padding:0 6px;">缺名</span>' : ""}`
                     : `<span style="color:var(--txt-3);">${escapeHtml(custDisp)}</span>`;
                 const backBase = `/admin/orders?date_from=${encodeURIComponent(filterDateFrom)}&date_to=${encodeURIComponent(filterDateTo)}${onlyNeedReview ? "&need_review=1" : ""}`;
                 const detailUrl = o.is_logistics
@@ -8207,109 +8762,6 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           confirmBtn.addEventListener("click", function(){ if (!curId) return; lySubmit(false); });
           document.getElementById("lyTransferClose").addEventListener("click", closeModal);
           document.getElementById("lyTransferCancel").addEventListener("click", closeModal);
-          modal.addEventListener("click", function(e){ if (e.target===modal) closeModal(); });
-          document.addEventListener("keydown", function(e){ if (e.key==="Escape" && modal.style.display==="flex") closeModal(); });
-        })();
-        </script>
-        <div id="custPopModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:flex-start;justify-content:center;padding:32px 16px;overflow:auto;">
-          <div class="sf-card" style="max-width:560px;width:100%;margin:auto;" onclick="event.stopPropagation();">
-            <div class="sf-card-head">
-              <div class="sf-card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">👤 <span id="custPopName">客戶</span><span id="custPopPills"></span></div>
-              <button type="button" class="sf-btn sm ghost" id="custPopClose" title="關閉">✕</button>
-            </div>
-            <div style="padding:14px 16px;">
-              <div id="custPopLoading" style="color:var(--txt-3);font-size:13px;">讀取中…</div>
-              <div id="custPopContent" style="display:none;"></div>
-            </div>
-            <div style="padding:12px 16px;border-top:var(--hairline);display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;">
-              <a id="custPopEditLink" class="sf-btn sm" href="#">✏️ 編輯客戶</a>
-              <a id="custPop360Link" class="sf-btn sm" href="#">📊 360 完整檔案</a>
-              <button type="button" class="sf-btn sm ghost" id="custPopCancel">關閉</button>
-            </div>
-          </div>
-        </div>
-        <script>
-        (function(){
-          var modal = document.getElementById("custPopModal");
-          if (!modal) return;
-          var nameEl = document.getElementById("custPopName");
-          var pillsEl = document.getElementById("custPopPills");
-          var loading = document.getElementById("custPopLoading");
-          var content = document.getElementById("custPopContent");
-          var editLink = document.getElementById("custPopEditLink");
-          var link360 = document.getElementById("custPop360Link");
-          var cache = {};
-          function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-          function openModal(){ modal.style.display="flex"; document.body.style.overflow="hidden"; }
-          function closeModal(){ modal.style.display="none"; document.body.style.overflow=""; }
-          function statusPill(s){
-            var lc = String(s||"").toLowerCase();
-            if (lc === "approved") return '<span class="sf-pill ok">已確認</span>';
-            if (lc === "complaint") return '<span class="sf-pill bad">客訴</span>';
-            return '<span class="sf-pill warn">待確認</span>';
-          }
-          function render(d){
-            var c = d.customer || {};
-            nameEl.textContent = c.name || "客戶";
-            var pills = [];
-            if (c.route_line != null && c.route_line !== "") pills.push('<span class="sf-pill" style="background:#eef2ff;color:#3730a3;font-weight:600;">' + esc(c.route_line) + ' 號線</span>');
-            else pills.push('<span class="sf-pill" title="未設定路線＝自取，訂單不補空籃">自取／未設路線</span>');
-            if (!c.line_bound) pills.push('<span class="sf-pill warn">LINE 未綁定</span>');
-            if (c.active === 0 || c.active === false) pills.push('<span class="sf-pill bad">已停用</span>');
-            if (d.open_complaints > 0) pills.push('<span class="sf-pill bad">' + d.open_complaints + ' 件客訴未結</span>');
-            pillsEl.innerHTML = pills.join(" ");
-            var html = "";
-            if (c.order_notes) {
-              html += '<div style="margin-bottom:12px;padding:10px 12px;background:#fffbeb;border:1px solid #f59e0b;border-radius:6px;font-size:13px;color:#92400e;white-space:pre-wrap;"><strong>📌 叫貨備註</strong><br>' + esc(c.order_notes) + '</div>';
-            }
-            html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 16px;font-size:13px;margin-bottom:12px;">'
-              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">聯絡</span>' + esc(c.contact || "—") + '</div>'
-              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">預設單位（未填時）</span>' + esc(c.default_unit || "公斤") + '</div>'
-              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">寺岡／凌越編號</span><span class="mono">' + esc(c.teraoka_code || "—") + '／' + esc(c.hq_cust_code || "—") + '</span></div>'
-              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">LINE 群組</span>' + esc(c.line_group_name || "—") + (c.line_bound ? '（已綁定）' : '（未綁定）') + '</div>'
-              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">近 90 天叫貨</span>' + (d.orders90 || 0) + ' 張</div>'
-              + '<div><span style="color:var(--txt-3);font-size:11px;display:block;">距上次叫貨</span>' + (d.days_since_last_order == null ? "—" : d.days_since_last_order + " 天") + '</div>'
-              + '</div>';
-            var rows = (d.recent_orders || []).map(function(o){
-              return '<tr style="cursor:pointer;" onclick="location.href=\\'/admin/orders/' + encodeURIComponent(o.id) + '\\'">'
-                + '<td class="mono" style="font-size:12px;">' + esc(o.order_date) + '</td>'
-                + '<td class="mono" style="font-size:12px;">' + esc(o.order_no || "—") + '</td>'
-                + '<td style="text-align:right;">' + o.item_count + ' 項</td>'
-                + '<td>' + statusPill(o.status) + '</td></tr>';
-            }).join("");
-            html += '<div style="font-size:12px;color:var(--txt-2);font-weight:600;margin-bottom:4px;">最近叫貨</div>'
-              + '<div style="overflow-x:auto;"><table class="sf-table" style="font-size:12px;"><thead><tr><th>出貨日</th><th>單號</th><th style="text-align:right;">品項</th><th>狀態</th></tr></thead><tbody>'
-              + (rows || '<tr><td colspan="4" style="text-align:center;color:var(--txt-3);padding:12px;">尚無訂單</td></tr>')
-              + '</tbody></table></div>';
-            content.innerHTML = html;
-            content.style.display = "block"; loading.style.display = "none";
-          }
-          function show(cid){
-            editLink.href = "/admin/customers/" + encodeURIComponent(cid) + "/edit?from=orders";
-            link360.href = "/admin/customers/" + encodeURIComponent(cid) + "/360";
-            loading.style.display = "block"; loading.textContent = "讀取中…";
-            content.style.display = "none"; content.innerHTML = "";
-            nameEl.textContent = "客戶"; pillsEl.innerHTML = "";
-            openModal();
-            if (cache[cid]) { render(cache[cid]); return; }
-            fetch("/admin/api/customers/" + encodeURIComponent(cid) + "/summary", { credentials: "same-origin" })
-              .then(function(r){ return r.json(); })
-              .then(function(d){
-                if (!d || d.ok === false) { loading.textContent = "讀取失敗：" + ((d && d.error) || ""); return; }
-                cache[cid] = d; render(d);
-              })
-              .catch(function(){ loading.textContent = "讀取失敗，請重試。"; });
-          }
-          document.addEventListener("click", function(e){
-            var a = e.target.closest ? e.target.closest(".cust-pop-link") : null;
-            if (!a) return;
-            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; // 新分頁等原生行為照舊
-            e.preventDefault(); e.stopPropagation();
-            var cid = a.dataset.cid;
-            if (cid) show(cid);
-          }, true);
-          document.getElementById("custPopClose").addEventListener("click", closeModal);
-          document.getElementById("custPopCancel").addEventListener("click", closeModal);
           modal.addEventListener("click", function(e){ if (e.target===modal) closeModal(); });
           document.addEventListener("keydown", function(e){ if (e.key==="Escape" && modal.style.display==="flex") closeModal(); });
         })();
@@ -9315,6 +9767,97 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     /**
+     * 目前庫存快照 — 機器對機器端點（內網 agent 用，X-Writeback-Key 認證）。
+     *
+     * POST /admin/lingyue-writeback/inventory-push
+     *   body: { icpno, snapshot_at, items: [{ code, name, spec, unit, qty, wh_code }, ...] }
+     *   內網 agent 用 ly_query_stock.py --all 撈整張貨品主檔的 SK_NOWQTY，整批推上來 → 全表覆蓋。
+     */
+    router.post("/lingyue-writeback/inventory-push", express_1.default.json({ limit: "16mb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const items = Array.isArray(body.items) ? body.items : null;
+            if (!items) {
+                res.status(400).json({ error: "缺少 items 陣列" });
+                return;
+            }
+            const icpno = String(body.icpno || "00").trim() || "00";
+            const snapshotAt = (typeof body.snapshot_at === "string" && body.snapshot_at.trim())
+                ? body.snapshot_at.trim() : new Date().toISOString();
+            const rows = [];
+            for (const it of items) {
+                const code = String(it?.code ?? it?.erp_code ?? "").trim();
+                if (!code)
+                    continue;
+                const qtyNum = Number(it?.qty);
+                rows.push([
+                    code,
+                    String(it?.name ?? "").trim(),
+                    String(it?.spec ?? "").trim(),
+                    String(it?.unit ?? "").trim(),
+                    Number.isFinite(qtyNum) ? qtyNum : 0,
+                    String(it?.wh_code ?? "").trim(),
+                    icpno,
+                    snapshotAt,
+                ]);
+            }
+            // 全表覆蓋（DELETE + 分批 INSERT），跨 SQLite/PG 皆可
+            await db.prepare("DELETE FROM erp_stock_items").run();
+            const CHUNK = 100;
+            for (let i = 0; i < rows.length; i += CHUNK) {
+                const chunk = rows.slice(i, i + CHUNK);
+                const ph = chunk.map(() => "(?,?,?,?,?,?,?,?)").join(",");
+                const flat = [];
+                for (const r of chunk)
+                    flat.push(...r);
+                await db.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
+            }
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "done");
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", "");
+            res.json({ ok: true, count: rows.length, snapshot_at: snapshotAt });
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/inventory-push", e?.message || e);
+            res.status(500).json({ error: "inventory-push 失敗", detail: String(e?.message || e) });
+        }
+    });
+    /**
+     * GET /admin/lingyue-writeback/inventory-wait?timeout=25
+     *   長連線等待（long-poll）：內網 agent 掛一條線等「使用者在網站點了『庫存更新』」。
+     *   有待處理請求（app_settings.erp_stock_refresh_requested_at 非空）立刻回 {refresh:true}，
+     *   否則 hold 到 timeout 秒（預設 25、上限 50）回 {refresh:false}。agent 收到後撈凌越並 inventory-push。
+     */
+    router.get("/lingyue-writeback/inventory-wait", async (req, res) => {
+        let timeoutSec = parseInt(String(req.query.timeout || "25"), 10);
+        if (!Number.isFinite(timeoutSec) || timeoutSec <= 0)
+            timeoutSec = 25;
+        if (timeoutSec > 50)
+            timeoutSec = 50;
+        const deadline = Date.now() + timeoutSec * 1000;
+        try {
+            while (true) {
+                const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_stock_refresh_requested_at");
+                const reqAt = row && row.value ? String(row.value).trim() : "";
+                if (reqAt) {
+                    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "running");
+                    res.json({ refresh: true, requested_at: reqAt });
+                    return;
+                }
+                if (Date.now() >= deadline) {
+                    res.json({ refresh: false });
+                    return;
+                }
+                await new Promise((r) => setTimeout(r, 1500));
+            }
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/inventory-wait", e?.message || e);
+            res.status(500).json({ error: "inventory-wait 失敗", detail: String(e?.message || e) });
+        }
+    });
+    /**
      * 轉入凌越 — 單張。組出凌越料號對映（沿用 /pending 的欄位邏輯），供列表「轉入凌越」按鈕用。
      * @param {*} order  已含 hq_cust_code / teraoka_code / customer_name / order_date / remark 的訂單列
      */
@@ -9521,7 +10064,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         // 連線對照：把每個品項的 raw_name 在原始文字中的實際位置框出來（<mark>），
         // 連線只連到「那個詞」而非整句/整行；沒對應到的品項就不畫線。長名先配對避免被短名吃掉。
         const rawTextForMatch = (order.raw_message || "").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && l !== "[圖片]").join("\n");
-        const buildRawMatchHtml = (rawText, itemList) => {
+        const buildRawMatchHtml = (rawText, itemList, alreadyMatched) => {
+            // alreadyMatched（可選 Set）：逐則訊息渲染對話時共用，讓每個品項只在第一次出現的訊息上錨點，
+            // 避免同一 item_id 產生重複 DOM id 造成連線對照錯亂。
+            const matchedSet = alreadyMatched || new Set();
             if (!rawText) return "";
             const normChar = (ch) => (/[\s,，、。.·:：*xX╳＊()（）]/.test(ch) ? "" : ch.toLowerCase());
             const normArr = [];
@@ -9535,7 +10081,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const ranges = [];
             const order2 = itemList
                 .map((it, i) => ({ it, i, n: String(it.raw_name || "").split("").map(normChar).join("") }))
-                .filter((x) => x.n.length >= 1)
+                .filter((x) => x.n.length >= 1 && !matchedSet.has(x.it.item_id))
                 .sort((a, b) => (b.n.length - a.n.length) || (a.i - b.i));
             const unmatched = [];
             // 第一輪：精確子字串（原文完整含品項名）
@@ -9552,6 +10098,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 if (pos < 0) { unmatched.push({ it, n }); continue; }
                 for (let k = pos; k < pos + n.length; k++) used[k] = true;
                 ranges.push({ start: idxMap[pos], end: idxMap[pos + n.length - 1] + 1, itemId: it.item_id });
+                matchedSet.add(it.item_id);
             }
             // 第二輪：最長連續共同子字串退路（品項名有夾字/括號描述時，仍連到重疊的那段）。
             // 門檻：重疊長度 ≥ max(2, 品項名一半) 才連，避免亂連。
@@ -9580,6 +10127,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 if (m.len < Math.max(2, Math.ceil(n.length * 0.5))) continue;
                 for (let k = m.start; k < m.end; k++) used[k] = true;
                 ranges.push({ start: idxMap[m.start], end: idxMap[m.end - 1] + 1, itemId: it.item_id });
+                matchedSet.add(it.item_id);
             }
             ranges.sort((a, b) => a.start - b.start);
             let html = "", cur = 0;
@@ -9593,6 +10141,28 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             return html;
         };
         const rawMatchHtml = buildRawMatchHtml(rawTextForMatch, items);
+        // 群組對話（含同事回覆）：有紀錄就以聊天式視圖取代純文字，客戶訊息逐則做品項藍底對應，
+        // 同事訊息用琥珀色卡標「姓名（同事）」。舊訂單沒有紀錄則維持原本的 pre 顯示。
+        const convoRows = await line_conversation_js_1.getConversationForOrder(db, orderId);
+        let convoHtml = "";
+        if (convoRows && convoRows.length) {
+            const convoMatched = new Set();
+            convoHtml = convoRows.map((m) => {
+                const full = fmtTaipeiYMDHM(m.created_at) || "";
+                const timeShort = full.length >= 16 ? full.slice(11, 16) : full;
+                if (String(m.sender_kind) === "employee") {
+                    return `<div style="background:#fffbeb;border:1px solid #fde68a;border-left:3px solid #d97706;border-radius:8px;padding:7px 10px;">
+                      <div style="font-size:11px;color:#92400e;font-weight:700;margin-bottom:2px;">🧑‍💼 ${escapeHtml(m.sender_name || "同事")}<span style="font-weight:600;">（同事）</span><span style="font-weight:400;color:#b45309;margin-left:6px;" title="${escapeAttr(full)}">${escapeHtml(timeShort)}</span></div>
+                      <div style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:#78350f;">${escapeHtml(m.text || "")}</div>
+                    </div>`;
+                }
+                const matchedBody = buildRawMatchHtml(String(m.text || ""), items, convoMatched);
+                return `<div style="background:var(--bg-2);border:var(--hairline);border-radius:8px;padding:7px 10px;">
+                  <div style="font-size:11px;color:var(--txt-3);margin-bottom:2px;">${escapeHtml(m.sender_name || "客戶")}<span style="margin-left:6px;" title="${escapeAttr(full)}">${escapeHtml(timeShort)}</span></div>
+                  <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:var(--txt-1);">${matchedBody}</div>
+                </div>`;
+            }).join("");
+        }
         // 供照片辨識框比對：本單所有品項的原始名稱（用來把 Vision 偵測到的詞上綠框）
         const ocrItemNamesJson = JSON.stringify(items.map((i) => String(i.raw_name || "")).filter(Boolean)).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
         const needReviewCount = items.filter((i) => i.need_review === 1).length;
@@ -9718,7 +10288,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <td>${unitSelectWithVal}</td>
             <td><input type="text" name="sub_customer_${i.item_id}" form="itemsForm" value="${subCustomerVal}" placeholder="子客戶" style="width:100%;max-width:7rem;"></td>
             <td><input type="text" name="remark_${i.item_id}" form="itemsForm" value="${remarkVal}" placeholder="備註" style="width:100%;max-width:100px;"></td>
-            <td><button type="button" class="btn btn-delete-item order-del-btn order-del-btn-icon" data-item-id="${escapeAttr(i.item_id)}" data-order-id="${escapeAttr(orderId)}" data-raw-name="${escapeAttr(i.raw_name || "")}" title="作廢此列（保留稽核紀錄、可納入 AI 學習）" aria-label="作廢此列">⊘</button></td>
+            <td><span class="row-act-stack"><button type="button" class="btn item-insert-btn" data-item-id="${escapeAttr(i.item_id)}" data-item-idx="${idx + 1}" title="在第 ${idx + 1} 項下方插入品項（補漏辨識）" aria-label="在此項下方插入品項">＋</button><button type="button" class="btn btn-delete-item order-del-btn order-del-btn-icon" data-item-id="${escapeAttr(i.item_id)}" data-order-id="${escapeAttr(orderId)}" data-raw-name="${escapeAttr(i.raw_name || "")}" title="作廢此列（保留稽核紀錄、可納入 AI 學習）" aria-label="作廢此列">⊘</button></span></td>
           </tr>`;
         })
             .join("");
@@ -9737,6 +10307,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               </label>
               <input type="text" id="target_sub_customer_custom" placeholder="選「自訂」或額外輸入正式名稱" style="min-width:12rem;max-width:20rem;padding:4px 8px;" />
               <button type="button" id="btn_move_items" class="btn btn-primary">轉移選取品項</button>
+              <button type="button" id="btn_split_by_subcust" class="btn" title="把有填「子客戶」的品項各自拆成獨立訂單（每個子客戶一筆），並自動補該路線空籃；審核時就是分開的兩筆單">依子客戶拆單</button>
               <span id="move_items_status" style="font-size:12px;color:var(--notion-text-secondary);"></span>
             </div>`;
         const orderStatusLc = String(order.status || "").toLowerCase();
@@ -10061,6 +10632,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         <button type="button" class="sf-btn sm zoom-in" title="放大">＋</button>
                         <span class="zoom-label" style="font-size:11px;color:var(--txt-3);font-family:var(--font-mono);min-width:40px;text-align:center;">100%</span>
                         <button type="button" class="sf-btn sm zoom-reset" title="重設大小">重設</button>
+                        <button type="button" class="sf-btn sm zoom-full" title="全螢幕檢視（手機可雙指縮放、拖曳、雙擊放大）">全螢幕</button>
                         <button type="button" class="sf-btn sm ocr-box-btn" title="用 Google Vision 框出圖片上偵測到的文字（會呼叫一次 API；綠框=有對應到明細品項，灰框=偵測到但未對應）">辨識框</button>
                         <span class="ocr-box-status" style="font-size:11px;color:var(--txt-3);"></span>
                         <a href="/admin/orders/${encodeURIComponent(orderId)}/attachment/${encodeURIComponent(a.line_message_id)}" target="_blank" rel="noopener" title="另開新分頁看原圖" style="margin-left:auto;font-size:11px;color:var(--txt-3);text-decoration:none;">圖 ${idx + 1} · 新分頁↗</a>
@@ -10079,6 +10651,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 </div>
               ` : ""}
               ${(() => {
+                if (convoHtml) {
+                  return `
+                    <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">群組對話<span style="text-transform:none;letter-spacing:0;margin-left:6px;color:var(--txt-3);">（<span style="background:rgba(35,131,226,0.14);border-radius:3px;padding:0 3px;">藍底</span> = 已對應到明細・<span style="background:#fffbeb;border:1px solid #fde68a;border-radius:3px;padding:0 3px;color:#92400e;">琥珀色</span> = 同事回覆）</span></div>
+                    <div id="rawLinesPre" style="display:flex;flex-direction:column;gap:6px;font-family:var(--font-ui);">${convoHtml}</div>
+                  `;
+                }
                 if (rawMatchHtml) {
                   return `
                     <div style="font-size:11px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">客戶打字內容<span style="text-transform:none;letter-spacing:0;margin-left:6px;color:var(--txt-3);">（<span style="background:rgba(35,131,226,0.14);border-radius:3px;padding:0 3px;">藍底</span> = 已對應到明細）</span></div>
@@ -10107,6 +10685,92 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         (function(){
           var MIN = 1, MAX = 5, STEP = 0.5;
           function fmt(s){ return Math.round(s*100) + "%"; }
+          /* 全螢幕照片檢視：手機雙指縮放／單指拖曳／雙擊放大；
+             行內檢視器在手機的 sticky 小框裡放大很難用，全螢幕才看得清手寫字 */
+          var fsOverlay = null;
+          function closeFullscreen(){
+            if (!fsOverlay) return;
+            fsOverlay.remove(); fsOverlay = null;
+            document.body.style.overflow = "";
+          }
+          function openFullscreen(src){
+            closeFullscreen();
+            var ov = document.createElement("div");
+            ov.style.cssText = "position:fixed;inset:0;z-index:10000;background:#141414;display:flex;flex-direction:column;";
+            ov.innerHTML = '<div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(0,0,0,.88);color:#fff;">'
+              + '<button type="button" data-fs="out" style="min-width:44px;height:38px;font-size:20px;font-weight:700;border:1px solid #555;background:#232323;color:#fff;border-radius:8px;">－</button>'
+              + '<button type="button" data-fs="in" style="min-width:44px;height:38px;font-size:20px;font-weight:700;border:1px solid #555;background:#232323;color:#fff;border-radius:8px;">＋</button>'
+              + '<span data-fs="label" style="font-size:13px;min-width:46px;text-align:center;font-variant-numeric:tabular-nums;">100%</span>'
+              + '<button type="button" data-fs="reset" style="height:38px;padding:0 12px;font-size:14px;border:1px solid #555;background:#232323;color:#fff;border-radius:8px;">重設</button>'
+              + '<button type="button" data-fs="close" style="margin-left:auto;height:38px;padding:0 14px;font-size:14px;font-weight:700;border:1px solid #666;background:#333;color:#fff;border-radius:8px;">✕ 關閉</button>'
+              + '</div>'
+              + '<div data-fs="vp" style="flex:1;overflow:auto;-webkit-overflow-scrolling:touch;touch-action:none;overscroll-behavior:contain;">'
+              + '<img data-fs="img" alt="訂單照片" draggable="false" style="display:block;width:100%;height:auto;user-select:none;-webkit-user-drag:none;">'
+              + '</div>';
+            document.body.appendChild(ov);
+            document.body.style.overflow = "hidden";
+            fsOverlay = ov;
+            var vp2 = ov.querySelector('[data-fs="vp"]');
+            var im2 = ov.querySelector('[data-fs="img"]');
+            var lb2 = ov.querySelector('[data-fs="label"]');
+            im2.src = src;
+            var scale = 1, MINF = 1, MAXF = 6;
+            function setScale(s, cx, cy){
+              s = Math.max(MINF, Math.min(MAXF, s));
+              var rect = vp2.getBoundingClientRect();
+              var ax = (cx == null ? rect.width/2 : cx - rect.left);
+              var ay = (cy == null ? rect.height/2 : cy - rect.top);
+              var px = ax + vp2.scrollLeft, py = ay + vp2.scrollTop;
+              var ratio = s / scale;
+              scale = s;
+              im2.style.width = Math.round(vp2.clientWidth * scale) + "px";
+              lb2.textContent = Math.round(scale*100) + "%";
+              vp2.scrollLeft = px*ratio - ax;
+              vp2.scrollTop = py*ratio - ay;
+            }
+            ov.querySelector('[data-fs="close"]').addEventListener("click", closeFullscreen);
+            ov.querySelector('[data-fs="in"]').addEventListener("click", function(){ setScale(scale + 0.5); });
+            ov.querySelector('[data-fs="out"]').addEventListener("click", function(){ setScale(scale - 0.5); });
+            ov.querySelector('[data-fs="reset"]').addEventListener("click", function(){ setScale(1); vp2.scrollLeft = 0; vp2.scrollTop = 0; });
+            document.addEventListener("keydown", function esc(e){ if (e.key === "Escape") { closeFullscreen(); document.removeEventListener("keydown", esc); } });
+            /* 手勢：pointer 事件自己接手（touch-action:none）——單指平移、雙指捏合、雙擊縮放 */
+            var pts = new Map(), startDist = 0, startScale = 1, panX = 0, panY = 0, panSL = 0, panST = 0, lastTap = 0;
+            vp2.addEventListener("pointerdown", function(e){
+              try { vp2.setPointerCapture(e.pointerId); } catch(_){}
+              pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+              if (pts.size === 1) {
+                panX = e.clientX; panY = e.clientY; panSL = vp2.scrollLeft; panST = vp2.scrollTop;
+                var now = Date.now();
+                if (now - lastTap < 320) { setScale(scale > 1.2 ? 1 : 2.5, e.clientX, e.clientY); lastTap = 0; }
+                else { lastTap = now; }
+              } else if (pts.size === 2) {
+                var arr = Array.from(pts.values());
+                startDist = Math.hypot(arr[0].x - arr[1].x, arr[0].y - arr[1].y) || 1;
+                startScale = scale;
+              }
+            });
+            vp2.addEventListener("pointermove", function(e){
+              if (!pts.has(e.pointerId)) return;
+              pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+              if (pts.size === 2) {
+                var arr = Array.from(pts.values());
+                var d = Math.hypot(arr[0].x - arr[1].x, arr[0].y - arr[1].y) || 1;
+                setScale(startScale * d / startDist, (arr[0].x + arr[1].x)/2, (arr[0].y + arr[1].y)/2);
+              } else if (pts.size === 1) {
+                vp2.scrollLeft = panSL - (e.clientX - panX);
+                vp2.scrollTop = panST - (e.clientY - panY);
+              }
+            });
+            function lift(e){
+              pts.delete(e.pointerId);
+              if (pts.size === 1) {
+                var p = Array.from(pts.values())[0];
+                panX = p.x; panY = p.y; panSL = vp2.scrollLeft; panST = vp2.scrollTop;
+              }
+            }
+            vp2.addEventListener("pointerup", lift);
+            vp2.addEventListener("pointercancel", lift);
+          }
           document.querySelectorAll(".order-attach-card").forEach(function(card){
             var img = card.querySelector(".order-attach-img");
             var vp = card.querySelector(".order-attach-viewport");
@@ -10128,14 +10792,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               vp.scrollLeft = px*ratio - (cx == null ? rect.width/2 : cx - rect.left);
               vp.scrollTop = py*ratio - (cy == null ? rect.height/2 : cy - rect.top);
             }
-            var bo = card.querySelector(".zoom-out"), bi = card.querySelector(".zoom-in"), br = card.querySelector(".zoom-reset");
+            var bo = card.querySelector(".zoom-out"), bi = card.querySelector(".zoom-in"), br = card.querySelector(".zoom-reset"), bf = card.querySelector(".zoom-full");
             if (bo) bo.addEventListener("click", function(){ apply((parseFloat(img.dataset.scale)||1) - STEP); });
             if (bi) bi.addEventListener("click", function(){ apply((parseFloat(img.dataset.scale)||1) + STEP); });
             if (br) br.addEventListener("click", function(){ apply(1); vp.scrollLeft = 0; vp.scrollTop = 0; });
-            // 點圖放大一級；放大後可拖曳平移
+            if (bf) bf.addEventListener("click", function(){ openFullscreen(img.currentSrc || img.src); });
+            // 點圖：手機/平板直接開全螢幕（行內小框放大很難用）；桌面維持放大一級＋拖曳平移
             var dragging = false, moved = false, sx = 0, sy = 0, sl = 0, st = 0;
             img.addEventListener("click", function(e){
               if (moved) { moved = false; return; }
+              if (window.matchMedia && window.matchMedia("(max-width: 1024px)").matches) { openFullscreen(img.currentSrc || img.src); return; }
               if ((parseFloat(img.dataset.scale)||1) < MAX) apply((parseFloat(img.dataset.scale)||1) + STEP, e.clientX, e.clientY);
             });
             img.addEventListener("pointerdown", function(e){
@@ -10239,6 +10905,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 <tbody>${itemsRows}</tbody>
                 <tr class="add-item-row"><td colspan="10" style="background:var(--bg-2);padding:8px 12px;">
                   <div id="inlineAddItem" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <input type="hidden" id="addAfterItemId" value="">
+                    <div id="insertPosBar" style="display:none;width:100%;font-size:12px;color:#047857;align-items:center;gap:8px;flex-wrap:wrap;">
+                      <span id="insertPosText" style="font-weight:700;"></span>
+                      <button type="button" id="insertPosCancel" class="sf-btn sm" style="flex:0 0 auto;">取消插入（改加到最後）</button>
+                    </div>
                     ${frequentProducts.length ? `<style>
                       .freq-prod-chip { font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); background:var(--bg-1); color:var(--txt-1); cursor:pointer; font-family:inherit; max-width:12rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.4; }
                       .freq-prod-chip:hover { border-color:var(--accent); color:var(--accent); }
@@ -10335,6 +11006,33 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 if (opt && opt.dataset.id) selectProduct(opt.dataset.id, opt.dataset.name);
               });
               document.addEventListener("click", function(e){ if (wrap && !wrap.contains(e.target)) hide(); });
+              /* 插入品項：點某列的「＋」，把新增列搬到該列下方，新增後就落在該位置（補漏辨識） */
+              var addRow = document.querySelector("tr.add-item-row");
+              var addRowHome = addRow ? addRow.parentNode : null;
+              var afterInput = document.getElementById("addAfterItemId");
+              var posBar = document.getElementById("insertPosBar");
+              var posText = document.getElementById("insertPosText");
+              var posCancel = document.getElementById("insertPosCancel");
+              function resetInsertPos(){
+                if (afterInput) afterInput.value = "";
+                if (posBar) posBar.style.display = "none";
+                if (addRow && addRowHome && addRow.parentNode !== addRowHome) addRowHome.appendChild(addRow);
+              }
+              if (posCancel) posCancel.addEventListener("click", resetInsertPos);
+              document.addEventListener("click", function(e){
+                var ib = e.target.closest(".item-insert-btn");
+                if (!ib || !addRow) return;
+                var tr = ib.closest("tr");
+                if (!tr) return;
+                tr.after(addRow);
+                if (afterInput) afterInput.value = ib.getAttribute("data-item-id") || "";
+                if (posBar && posText) {
+                  posText.textContent = "插入位置：第 " + (ib.getAttribute("data-item-idx") || "?") + " 項之後";
+                  posBar.style.display = "flex";
+                }
+                try { addRow.scrollIntoView({ behavior: "smooth", block: "center" }); } catch(_){}
+                setTimeout(function(){ try { inp.focus(); } catch(_){} }, 250);
+              });
               addBtn.addEventListener("click", function(){
                 var pid = String(hidden.value || "").trim();
                 if (!pid) { alert("請先輸入關鍵字並從下拉選擇品項。"); inp.focus(); return; }
@@ -10342,10 +11040,101 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 if (!isFinite(qty) || qty < 0) { alert("數量請填 0 或正數。"); qtyEl.focus(); return; }
                 addBtn.disabled = true;
                 var body = "product_id=" + encodeURIComponent(pid) + "&quantity=" + encodeURIComponent(qty) + "&unit=" + encodeURIComponent(unitEl.value || "公斤");
-                fetch(orderBase + "/items/add", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body, credentials: "same-origin" })
-                  .then(function(){ window.location.href = orderBase + "?ok=add_item#items"; })
-                  .catch(function(){ addBtn.disabled = false; alert("新增失敗，請重試。"); });
+                var afterId = afterInput ? String(afterInput.value || "").trim() : "";
+                if (afterId) body += "&after_item_id=" + encodeURIComponent(afterId);
+                // 先自動儲存目前明細（數量/單位/排序等），避免新增後頁面重載把未存的修改洗掉
+                var pre = (typeof window.doSaveItems === "function") ? window.doSaveItems() : Promise.resolve(true);
+                pre.then(function(saved){
+                  if (saved === false) { addBtn.disabled = false; return; }
+                  fetch(orderBase + "/items/add", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body, credentials: "same-origin" })
+                    .then(function(){ window.location.replace(orderBase + "?ok=add_item&t=" + new Date().getTime() + "#items"); })
+                    .catch(function(){ addBtn.disabled = false; alert("新增失敗，請重試。"); });
+                });
               });
+            })();
+            </script>
+            <script>
+            /* 手機左右滑手勢（iOS 風格）：品項卡「左滑＝作廢」「右滑＝在此列下方插入品項」。
+               放開前會顯示紅/綠提示膠囊，超過門檻才觸發；動作直接代理既有按鈕——
+               作廢會先跳原因確認視窗（可取消），插入是把新增表單移到該列下方（按「新增」才成立），
+               所以不會有誤滑就直接改資料的問題。未過門檻放開會彈回。 */
+            (function(){
+              var SWIPE_ENABLED = false; // 2026-07：使用回饋「有點卡手」→ 先停用；要重開改 true 即可
+              if (!SWIPE_ENABLED) return;
+              if (!(window.matchMedia && window.matchMedia("(max-width: 760px)").matches)) return;
+              var tbody = document.querySelector("table.order-detail-table tbody");
+              if (!tbody) return;
+              var THRESH = 96, CLAMP = 140;
+              var hint = document.createElement("div");
+              hint.style.cssText = "position:fixed;z-index:9998;display:none;padding:8px 14px;border-radius:999px;font-size:14px;font-weight:700;color:#fff;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.18);transition:background .1s;";
+              document.body.appendChild(hint);
+              var tr = null, startX = 0, startY = 0, dx = 0, active = false, horiz = false, pid = null;
+              function isInteractive(el){ return !!(el && el.closest && el.closest("input, select, textarea, button, a, label")); }
+              function setHint(){
+                if (!tr) return;
+                var r = tr.getBoundingClientRect();
+                var over = Math.abs(dx) >= THRESH;
+                if (dx < 0) {
+                  hint.textContent = over ? "放開作廢 ⊘" : "← 滑到底作廢";
+                  hint.style.background = over ? "#b91c1c" : "rgba(185,28,28,.55)";
+                  hint.style.left = "auto"; hint.style.right = "12px";
+                } else {
+                  hint.textContent = over ? "放開插入 ＋" : "滑到底插入 →";
+                  hint.style.background = over ? "#047857" : "rgba(4,120,87,.55)";
+                  hint.style.right = "auto"; hint.style.left = "12px";
+                }
+                hint.style.top = (r.top + r.height/2 - 18) + "px";
+                hint.style.display = "block";
+                hint.style.opacity = String(Math.min(1, Math.abs(dx) / THRESH));
+              }
+              function reset(snap){
+                if (tr) {
+                  if (snap && tr.style.transform) {
+                    tr.style.transition = "transform .18s ease";
+                    tr.style.transform = "";
+                    (function(t){ setTimeout(function(){ t.style.transition = ""; }, 220); })(tr);
+                  } else {
+                    tr.style.transform = ""; tr.style.transition = "";
+                  }
+                }
+                hint.style.display = "none";
+                tr = null; active = false; horiz = false; dx = 0; pid = null;
+              }
+              tbody.addEventListener("pointerdown", function(e){
+                if (e.pointerType === "mouse") return;
+                if (isInteractive(e.target)) return;
+                var row = e.target.closest ? e.target.closest("tr[data-item-id]") : null;
+                if (!row) return;
+                tr = row; startX = e.clientX; startY = e.clientY; dx = 0; active = true; horiz = false; pid = e.pointerId;
+              });
+              tbody.addEventListener("pointermove", function(e){
+                if (!active || e.pointerId !== pid || !tr) return;
+                var mx = e.clientX - startX, my = e.clientY - startY;
+                if (!horiz) {
+                  if (Math.abs(mx) > 14 && Math.abs(mx) > Math.abs(my) * 1.3) horiz = true;
+                  else if (Math.abs(my) > 14) { reset(false); return; } /* 直向 → 交回頁面捲動 */
+                }
+                if (!horiz) return;
+                dx = Math.max(-CLAMP, Math.min(CLAMP, mx));
+                tr.style.transform = "translateX(" + dx + "px)";
+                setHint();
+              });
+              function finish(e){
+                if (!active || (pid != null && e.pointerId !== pid)) return;
+                var row = tr, d = dx, fired = horiz && Math.abs(d) >= THRESH;
+                reset(true);
+                if (row && fired) {
+                  if (d < 0) {
+                    var del = row.querySelector(".btn-delete-item");
+                    if (del) del.click(); /* 沿用作廢原因確認視窗，可取消 */
+                  } else {
+                    var ins = row.querySelector(".item-insert-btn");
+                    if (ins) ins.click(); /* 新增表單移到此列下方，按「新增」才真的加入 */
+                  }
+                }
+              }
+              tbody.addEventListener("pointerup", finish);
+              tbody.addEventListener("pointercancel", function(){ reset(true); });
             })();
             </script>
             <div style="padding:12px 14px;border-top:var(--hairline);display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
@@ -10828,6 +11617,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 });
             });
           }
+          // 供「新增/插入品項」流程先自動存明細用（該段 script 在前面、不同 IIFE 作用域）
+          window.doSaveItems = doSaveItems;
           if (itemsForm) {
             itemsForm.addEventListener('change', function(){ formDirty = true; });
             itemsForm.addEventListener('input', function(){ formDirty = true; });
@@ -10932,6 +11723,42 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                   if (st) st.textContent = '';
                   alert('請求失敗');
                 });
+            });
+          }
+          // 依子客戶一鍵拆單：先自動存明細（把剛填的「子客戶」存進資料庫），再呼叫拆單
+          var btnSplitSub = document.getElementById('btn_split_by_subcust');
+          if (btnSplitSub) {
+            btnSplitSub.addEventListener('click', function(){
+              if (!confirm('將把有填「子客戶」的品項各自拆成獨立訂單（每個子客戶一筆），並自動補該路線空籃。\\n拆出去的訂單會出現在待確認清單，附有同一張原始訂單照片。\\n\\n確定拆單？')) return;
+              var st = document.getElementById('move_items_status');
+              btnSplitSub.disabled = true;
+              if (st) st.textContent = '拆單中…';
+              var pre = (typeof window.doSaveItems === 'function') ? window.doSaveItems() : Promise.resolve(true);
+              pre.then(function(saved){
+                if (saved === false) { btnSplitSub.disabled = false; if (st) st.textContent = ''; return; }
+                fetch('/admin/api/orders/' + encodeURIComponent(orderId) + '/split-by-sub-customer', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                  credentials: 'same-origin'
+                })
+                  .then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); })
+                  .then(function(x){
+                    btnSplitSub.disabled = false;
+                    if (st) st.textContent = '';
+                    if (x.ok && x.j && x.j.ok) {
+                      var n = (x.j.moved || []).length;
+                      sfToast('✓ 已拆出 ' + n + ' 筆子客戶訂單（空籃已補），即將重新整理…');
+                      setTimeout(function(){ window.location.reload(); }, 900);
+                      return;
+                    }
+                    alert(x.j && x.j.error ? x.j.error : '拆單失敗');
+                  })
+                  .catch(function(){
+                    btnSplitSub.disabled = false;
+                    if (st) st.textContent = '';
+                    alert('拆單請求失敗');
+                  });
+              });
             });
           }
         })();
@@ -11280,74 +12107,69 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.status(400).json({ ok: false, error: "部分品項不存在或不屬於此訂單" });
                 return;
             }
-            const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
             const subVal = targetSubCustomer === "" ? null : targetSubCustomer;
-            let targetOrderId = null;
-            if (targetSubCustomer === "") {
-                const row = await db.prepare(`
-          SELECT id FROM orders
-          WHERE customer_id = ? AND order_date = ?
-          AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key, '')) = '')
-          AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')
-          ORDER BY id ASC LIMIT 1
-        `).get(sourceOrder.customer_id, sourceOrder.order_date);
-                targetOrderId = row?.id ?? null;
-            }
-            else {
-                const row = await db.prepare(`
-          SELECT id FROM orders
-          WHERE customer_id = ? AND order_date = ?
-          AND TRIM(order_sub_split_key) = ?
-          AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')
-          ORDER BY id ASC LIMIT 1
-        `).get(sourceOrder.customer_id, sourceOrder.order_date, targetSubCustomer);
-                targetOrderId = row?.id ?? null;
-            }
-            // [fix 2026-07-08] 建新單＋複製附件＋搬移品項包進單一交易，中途失敗整批回滾，
-            // 不會留下「空殼新訂單」或「附件複製了但品項沒搬過去」的半套狀態。
+            const targetOrderId = await resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer);
             const phUp = itemIds.map(() => "?").join(",");
-            const needNewOrder = !targetOrderId;
-            let orderNo = null;
-            if (needNewOrder) {
-                orderNo = await getNextOrderNoAdmin(db, sourceOrder.order_date);
-            }
-            const attRows = needNewOrder
-                ? await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ?").all(orderId)
-                : [];
-            const doMove = async (h) => {
-                if (needNewOrder) {
-                    const newOid = (0, id_js_1.newId)("ord");
-                    const remarkNew = targetSubCustomer ? `[子單拆分: ${targetSubCustomer}]` : null;
-                    const splitKeyNew = targetSubCustomer ? targetSubCustomer : null;
-                    await h.prepare(`
-          INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, line_message_id, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ` + nowSql + `)
-        `).run(newOid, orderNo, sourceOrder.customer_id, sourceOrder.order_date, sourceOrder.line_group_id ?? null, sourceOrder.raw_message ?? "", remarkNew, splitKeyNew);
-                    for (const ar of attRows) {
-                        if (!ar?.line_message_id)
-                            continue;
-                        const attId = (0, id_js_1.newId)("att");
-                        await h.prepare(`INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, ` + nowSql + `)`).run(attId, newOid, ar.line_message_id);
-                    }
-                    targetOrderId = newOid;
-                }
-                if (targetOrderId === orderId) {
-                    await h.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
-                }
-                else {
-                    await h.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(targetOrderId, subVal, orderId, ...itemIds);
-                }
-            };
-            if (typeof db.transaction === "function") {
-                await db.transaction(doMove);
+            if (targetOrderId === orderId) {
+                await db.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
             }
             else {
-                await doMove(db);
+                await db.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(targetOrderId, subVal, orderId, ...itemIds);
+                // 拆出去的子單是獨立一趟配送 → 空籃各自重新記錄（冪等：已有就不重複補）
+                await empty_baskets_js_1.insertEmptyBaskets(db, sourceOrder.customer_id, [targetOrderId]);
             }
             res.json({ ok: true, targetOrderId });
         }
         catch (e) {
             console.error("[admin] move-items", e?.message || e, e?.stack);
+            res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 400) });
+        }
+    });
+    // 依子客戶一鍵拆單：把本單內有填「子客戶」的品項，依子客戶各自拆成獨立訂單
+    // （找同客戶＋同出貨日既有的 split 單就併入，否則新建；複製附件、補該路線空籃）。
+    // 拆完審核清單就會看到每個子客戶各一筆訂單，空籃也各自記錄。
+    router.post("/api/orders/:orderId/split-by-sub-customer", express_1.default.json(), async (req, res) => {
+        try {
+            const { orderId } = req.params;
+            const sourceOrder = await db.prepare(`
+        SELECT o.id, o.customer_id, o.order_date, o.raw_message, o.line_group_id, o.remark, o.order_sub_split_key
+        FROM orders o WHERE o.id = ?
+      `).get(orderId);
+            if (!sourceOrder) {
+                res.status(404).json({ ok: false, error: "訂單不存在" });
+                return;
+            }
+            const rows = await db.prepare(`
+        SELECT id, sub_customer FROM order_items
+        WHERE order_id = ? AND voided_at IS NULL AND TRIM(COALESCE(sub_customer, '')) <> ''
+      `).all(orderId);
+            const groups = new Map();
+            for (const r of rows) {
+                const key = String(r.sub_customer).trim();
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(r.id);
+            }
+            // 本單自己的 split key（若本單就是某子客戶的單）不用再拆
+            const ownKey = String(sourceOrder.order_sub_split_key || "").trim();
+            if (ownKey) groups.delete(ownKey);
+            if (!groups.size) {
+                res.status(400).json({ ok: false, error: "沒有需要拆分的品項：請先在品項的「子客戶」欄填上分店/子客戶名稱。" });
+                return;
+            }
+            const moved = [];
+            for (const [subName, ids] of groups) {
+                const targetOrderId = await resolveSplitTargetOrder(db, sourceOrder, subName);
+                if (targetOrderId === orderId) continue;
+                const ph = ids.map(() => "?").join(",");
+                await db.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${ph})`).run(targetOrderId, subName, orderId, ...ids);
+                // 子單是獨立一趟配送 → 空籃各自重新記錄（冪等）
+                await empty_baskets_js_1.insertEmptyBaskets(db, sourceOrder.customer_id, [targetOrderId]);
+                moved.push({ subCustomer: subName, orderId: targetOrderId, count: ids.length });
+            }
+            res.json({ ok: true, moved });
+        }
+        catch (e) {
+            console.error("[admin] split-by-sub-customer", e?.message || e, e?.stack);
             res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 400) });
         }
     });
@@ -12654,6 +13476,25 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
         const itemId = (0, id_js_1.newId)("item");
         await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer, confidence_score) VALUES (?, ?, ?, ?, ?, ?, 0, 1, NULL, 100)").run(itemId, orderId, productId, product.name, qty, unit);
+        // 插入位置：after_item_id = 要插在哪一項之後（沒帶或找不到 → 排最後）。
+        // 全部重編 display_order（既有品項可能從未存過排序、display_order 皆為 NULL）。
+        try {
+            const afterItemId = String(req.body.after_item_id || "").trim();
+            const ordered = await db.prepare("SELECT id FROM order_items WHERE order_id = ? AND voided_at IS NULL ORDER BY COALESCE(display_order, 999999), id").all(orderId);
+            const ids = ordered.map((r) => r.id).filter((x) => x !== itemId);
+            let insertAt = ids.length;
+            if (afterItemId) {
+                const pos = ids.indexOf(afterItemId);
+                if (pos >= 0) insertAt = pos + 1;
+            }
+            ids.splice(insertAt, 0, itemId);
+            for (let i = 0; i < ids.length; i++) {
+                await db.prepare("UPDATE order_items SET display_order = ? WHERE id = ? AND order_id = ?").run(i + 1, ids[i], orderId);
+            }
+        }
+        catch (e) {
+            console.error("[admin] items/add 排序重編失敗（品項已新增，僅落在最後）:", e?.message || e);
+        }
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=add_item#items");
     });
     router.get("/barcode", async (req, res) => {
@@ -12828,55 +13669,6 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             catch (_) { /* 表可能尚未建立 */ }
         }
         res.redirect("/admin/customers?ok=1");
-    });
-    /** 訂單審核頁「客戶提醒卡」彈窗用：回傳客戶摘要 JSON，免跳頁。 */
-    router.get("/api/customers/:id/summary", async (req, res) => {
-        try {
-            const c = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active, route_line FROM customers WHERE id = ?").get(req.params.id);
-            if (!c) { res.status(404).json({ ok: false, error: "客戶不存在" }); return; }
-            const isPg = Boolean(process.env.DATABASE_URL);
-            const p90 = isPg
-                ? "AND o.order_date >= to_char((CURRENT_DATE - INTERVAL '90 day'), 'YYYY-MM-DD')"
-                : "AND o.order_date >= date('now', '-90 day')";
-            const cntRow = await db.prepare("SELECT COUNT(*) AS n FROM orders o WHERE o.customer_id = ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted','complaint') " + p90).get(c.id);
-            const recentOrders = await db.prepare(
-                "SELECT o.id, o.order_no, o.order_date, o.status, " +
-                "(SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.voided_at IS NULL) AS item_count " +
-                "FROM orders o WHERE o.customer_id = ? AND COALESCE(LOWER(TRIM(o.status)),'') NOT IN ('deleted') ORDER BY o.order_date DESC, o.id DESC LIMIT 5"
-            ).all(c.id);
-            const lastRow = await db.prepare("SELECT order_date FROM orders WHERE customer_id = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_date DESC LIMIT 1").get(c.id);
-            let daysSinceLastOrder = null;
-            if (lastRow?.order_date) {
-                const todayIso = getTaipeiCalendarDateYYYYMMDD();
-                daysSinceLastOrder = Math.round((new Date(todayIso + "T00:00:00+08:00") - new Date(String(lastRow.order_date) + "T00:00:00+08:00")) / 86400000);
-            }
-            let openComplaints = 0;
-            try {
-                const r = await db.prepare(
-                    "SELECT COUNT(*) AS n FROM orders o LEFT JOIN complaint_handling ch ON ch.order_id = o.id " +
-                    "WHERE o.customer_id = ? AND LOWER(TRIM(COALESCE(o.status,''))) = 'complaint' AND COALESCE(ch.handle_status,'pending') != 'resolved'"
-                ).get(c.id);
-                openComplaints = Number(r?.n) || 0;
-            } catch (_) { /* complaint_handling 表不存在時忽略 */ }
-            res.json({
-                ok: true,
-                customer: {
-                    id: c.id, name: c.name, route_line: c.route_line ?? null,
-                    contact: c.contact || "", default_unit: c.default_unit || "公斤",
-                    teraoka_code: c.teraoka_code || "", hq_cust_code: c.hq_cust_code || "",
-                    line_bound: Boolean(c.line_group_id), line_group_name: c.line_group_name || "",
-                    order_notes: c.order_notes || "", active: c.active,
-                },
-                orders90: Number(cntRow?.n) || 0,
-                days_since_last_order: daysSinceLastOrder,
-                open_complaints: openComplaints,
-                recent_orders: recentOrders.map(o => ({ id: o.id, order_no: o.order_no || "", order_date: o.order_date, status: o.status || "", item_count: Number(o.item_count) || 0 })),
-            });
-        }
-        catch (e) {
-            console.error("[admin] GET /api/customers/:id/summary:", e?.message || e);
-            res.status(500).json({ ok: false, error: "讀取失敗" });
-        }
     });
     router.get("/customers/:id/quick-view", async (req, res) => {
         const customer = await db.prepare("SELECT id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, order_notes, default_unit, active FROM customers WHERE id = ?").get(req.params.id);

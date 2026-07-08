@@ -424,3 +424,30 @@ CREATE TABLE IF NOT EXISTS basket_log_lines (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_basket_log_lines_uniq ON basket_log_lines(basket_log_id, basket_kind, basket_no);
 CREATE INDEX IF NOT EXISTS idx_basket_log_lines_log ON basket_log_lines(basket_log_id);
+
+CREATE TABLE IF NOT EXISTS line_conversation_log (
+  id TEXT PRIMARY KEY,
+  group_id TEXT,
+  customer_id TEXT,
+  order_id TEXT,
+  sender_kind TEXT NOT NULL,
+  sender_line_user_id TEXT,
+  sender_name TEXT,
+  msg_type TEXT,
+  text TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_line_convo_order ON line_conversation_log(order_id);
+CREATE INDEX IF NOT EXISTS idx_line_convo_group ON line_conversation_log(group_id, created_at);
+
+CREATE TABLE IF NOT EXISTS line_group_speakers (
+  group_id TEXT NOT NULL,
+  line_user_id TEXT NOT NULL,
+  display_name TEXT,
+  message_count INTEGER NOT NULL DEFAULT 0,
+  first_spoke_at TEXT,
+  last_spoke_at TEXT,
+  dismissed_at TEXT,
+  PRIMARY KEY (group_id, line_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_line_speakers_last ON line_group_speakers(last_spoke_at);

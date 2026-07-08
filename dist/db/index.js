@@ -126,6 +126,7 @@ function initSqlite(dbPath) {
     const schema = (0, fs_1.readFileSync)(schemaPath, "utf-8");
     sqlite.exec(schema);
     const alters = [
+        "ALTER TABLE line_group_speakers ADD COLUMN dismissed_at TEXT",
         "ALTER TABLE customers ADD COLUMN teraoka_code TEXT",
         "ALTER TABLE customers ADD COLUMN hq_cust_code TEXT",
         "ALTER TABLE customers ADD COLUMN line_group_name TEXT",
@@ -218,6 +219,17 @@ function initSqlite(dbPath) {
     catch (_) { /* column may already exist */ }
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_sales (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, warehouse_id TEXT NOT NULL, product_id TEXT NOT NULL, qty_sold REAL NOT NULL DEFAULT 0, imported_at TEXT)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        // 凌越貨品主檔目前庫存（SK_NOWQTY）快照。內網 agent 每次推送整批 → 全表覆蓋（DELETE+INSERT）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_items (erp_code TEXT PRIMARY KEY, name TEXT, spec TEXT, unit TEXT, qty REAL NOT NULL DEFAULT 0, wh_code TEXT, icpno TEXT, updated_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh ON erp_stock_items(wh_code)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        // 凌越倉別設定：代號→中文名、是否納入盤點。代號來源＝erp_stock_items.wh_code。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_warehouse (code TEXT PRIMARY KEY, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -608,6 +620,8 @@ async function initPg() {
                 }
                 catch (_e) { /* column may exist */ }
             }
+            // 群組發言者「非公司人員」排除旗標
+            try { await client.query("ALTER TABLE line_group_speakers ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ"); } catch (_) {}
             // 作廢機制欄位（品項）
             try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ"); } catch (_) {}
             try { await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_by TEXT"); } catch (_) {}
@@ -715,6 +729,17 @@ async function initPg() {
             catch (_) { /* column may already exist */ }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS erp_sales (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, warehouse_id TEXT NOT NULL REFERENCES inventory_warehouses(id), product_id TEXT NOT NULL REFERENCES products(id), qty_sold DOUBLE PRECISION NOT NULL DEFAULT 0, imported_at TIMESTAMPTZ)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                // 凌越貨品主檔目前庫存（SK_NOWQTY）快照。內網 agent 每次推送整批 → 全表覆蓋（DELETE+INSERT）。
+                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_items (erp_code TEXT PRIMARY KEY, name TEXT, spec TEXT, unit TEXT, qty DOUBLE PRECISION NOT NULL DEFAULT 0, wh_code TEXT, icpno TEXT, updated_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh ON erp_stock_items(wh_code)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                // 凌越倉別設定：代號→中文名、是否納入盤點。
+                await client.query("CREATE TABLE IF NOT EXISTS erp_warehouse (code TEXT PRIMARY KEY, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
             }
             catch (_) { /* table may already exist */ }
             try {
