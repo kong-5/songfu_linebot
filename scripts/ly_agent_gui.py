@@ -100,7 +100,7 @@ DEFAULT_CONFIG = {
     "wb_mark_checked": True,      # 寫入即標「已審核」OR_CHECK=1（拋轉需要；關閉=未審核）
     "wb_create_name": os.environ.get("LY_CREATE_NAME", "052"),  # 建立人/製單人操作員代碼
     "wb_maker": os.environ.get("LY_MAKER", ""),                 # 覆寫製單人（通常留空）
-    "purchase_idakd": os.environ.get("LY_PURCHASE_IDAKD", ""),  # 進貨單種類（給進銷紀錄查進貨；空=只查銷貨）
+    "purchase_idakd": os.environ.get("LY_PURCHASE_IDAKD", ""),  # 進銷交易永遠查銷貨(A1出)+銷退(A2入)；此為日後拿到進貨單代碼才填（空=不查進貨）
     "wb_default_whno": os.environ.get("LY_DEFAULT_WHNO", ""),
     "wb_default_price": os.environ.get("LY_DEFAULT_PRICE", ""),
     "autostart": True,          # 開啟程式就自動啟動代理

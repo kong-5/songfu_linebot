@@ -2033,27 +2033,45 @@ const STK_CLIENT_JS = `
   _back.addEventListener('click',dwClose);
   var _pt=null;
   function fmtN(v){ if(v==null||v==='') return ''; return String(v); }
+  function rnd(v){ var n=Number(v); if(!isFinite(n)) return 0; return Math.round(n*10000)/10000; }
+  // 入庫(+)/出庫(-) 判斷：優先用 dir；舊資料沒有 dir 時用類型推（退/進/入=入庫）
+  function dirOf(r){ if(r.dir==='in'||r.dir==='out') return r.dir; var k=String(r.kind||''); return (k.indexOf('退')>=0||k.indexOf('進')>=0||k.indexOf('入')>=0)?'in':'out'; }
+  var C_IN='#2e7d32', C_OUT='#c0392b';
+  function signQty(r){ var q=Number(r.qty); if(!isFinite(q)) return fmtN(r.qty); var s=rnd(dirOf(r)==='in'?q:-q); return (s>0?'+':'')+s; }
   function dwRender(body,m){
     var d=m.data||{}; var recs=d.records||[]; var h='';
     if(m.fetched_at){ h+='<div style="color:var(--notion-text-light,#999);font-size:11px;margin-bottom:8px;">資料時間 '+esc(String(m.fetched_at).replace('T',' ').slice(0,19))+(m.cached?'（快取）':'')+'　共 '+recs.length+' 筆</div>'; }
+    // 進/出彙總（優先用後端算好的；沒有就前端自算）
+    var sin=(typeof d.sum_in==='number')?d.sum_in:null, sout=(typeof d.sum_out==='number')?d.sum_out:null, net=(typeof d.net==='number')?d.net:null;
+    if(sin===null||sout===null){ sin=0; sout=0; for(var a=0;a<recs.length;a++){ var qq=Number(recs[a].qty); if(isFinite(qq)){ if(dirOf(recs[a])==='in') sin+=qq; else sout+=qq; } } net=sin-sout; }
+    if(net===null) net=sin-sout;
+    if(recs.length){
+      var nc=(net>=0)?C_IN:C_OUT;
+      h+='<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">'
+        +'<div style="flex:1;min-width:78px;background:var(--notion-bg,#f6f8f6);border-radius:8px;padding:7px 9px;text-align:center;"><div style="font-size:10px;color:var(--notion-text-light,#888);">Σ 入庫</div><div style="font-size:15px;font-weight:700;color:'+C_IN+';font-variant-numeric:tabular-nums;">+'+rnd(sin)+'</div></div>'
+        +'<div style="flex:1;min-width:78px;background:var(--notion-bg,#f8f6f6);border-radius:8px;padding:7px 9px;text-align:center;"><div style="font-size:10px;color:var(--notion-text-light,#888);">Σ 出庫</div><div style="font-size:15px;font-weight:700;color:'+C_OUT+';font-variant-numeric:tabular-nums;">-'+rnd(sout)+'</div></div>'
+        +'<div style="flex:1;min-width:78px;background:var(--notion-bg,#f2f2f0);border-radius:8px;padding:7px 9px;text-align:center;"><div style="font-size:10px;color:var(--notion-text-light,#888);">淨變動</div><div style="font-size:15px;font-weight:700;color:'+nc+';font-variant-numeric:tabular-nums;">'+(rnd(net)>=0?'+':'')+rnd(net)+'</div></div>'
+        +'</div>';
+    }
     if(d.note){ h+='<div style="color:#b7791f;font-size:12px;margin-bottom:8px;">'+esc(d.note)+'</div>'; }
-    if(!recs.length){ h+='<div style="color:var(--notion-text-light,#888);">近期查無進銷紀錄。</div>'; body.innerHTML=h; return; }
+    if(!recs.length){ h+='<div style="color:var(--notion-text-light,#888);">近期查無進銷交易紀錄。</div>'; body.innerHTML=h; return; }
     h+='<table style="width:100%;border-collapse:collapse;font-size:12px;">';
     h+='<thead><tr>'
       +'<th style="text-align:left;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">日期</th>'
       +'<th style="text-align:left;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">類型</th>'
       +'<th style="text-align:left;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">客戶</th>'
-      +'<th style="text-align:right;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">數量</th>'
+      +'<th style="text-align:right;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">進/出數量</th>'
       +'<th style="text-align:right;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">單價</th>'
       +'<th style="text-align:right;padding:4px 6px;border-bottom:1px solid var(--notion-border,#eee);color:var(--notion-text-light,#888);">金額</th>'
       +'</tr></thead><tbody>';
     for(var i=0;i<recs.length;i++){ var r=recs[i];
-      var kc=(r.kind==='進貨')?'#2e7d32':'#1d4ed8';
+      var isIn=(dirOf(r)==='in'); var kc=isIn?C_IN:C_OUT;
+      var badge=isIn?'入':'出';
       h+='<tr>'
         +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);white-space:nowrap;font-variant-numeric:tabular-nums;">'+esc(r.date||'')+'</td>'
-        +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);color:'+kc+';font-weight:600;white-space:nowrap;">'+esc(r.kind||'')+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);white-space:nowrap;"><span style="display:inline-block;min-width:14px;text-align:center;border-radius:4px;color:#fff;background:'+kc+';font-size:10px;font-weight:700;padding:0 3px;margin-right:4px;">'+badge+'</span><span style="color:'+kc+';font-weight:600;">'+esc(r.kind||'')+'</span></td>'
         +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);max-width:150px;overflow:hidden;text-overflow:ellipsis;" title="'+esc(r.customer||'')+'">'+esc(r.customer||'')+'</td>'
-        +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);text-align:right;font-variant-numeric:tabular-nums;">'+esc(fmtN(r.qty))+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);text-align:right;font-variant-numeric:tabular-nums;color:'+kc+';font-weight:600;">'+esc(signQty(r))+'</td>'
         +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);text-align:right;font-variant-numeric:tabular-nums;color:var(--notion-text-light,#888);">'+esc(fmtN(r.price))+'</td>'
         +'<td style="padding:3px 6px;border-bottom:1px solid var(--notion-border,#f2f2f0);text-align:right;font-variant-numeric:tabular-nums;">'+esc(fmtN(r.amount))+'</td>'
         +'</tr>';
@@ -2066,7 +2084,7 @@ const STK_CLIENT_JS = `
     _drawer.style.transform='translateX(0)'; _back.style.opacity='1'; _back.style.pointerEvents='auto';
     document.getElementById('stkDwTitle').textContent=(code||'')+'　'+(name||'');
     var body=document.getElementById('stkDwBody');
-    body.innerHTML='<div style="color:var(--notion-text-light,#888);">查詢近期進銷紀錄中…（經內網小幫手，約數秒）</div>';
+    body.innerHTML='<div style="color:var(--notion-text-light,#888);">查詢近期進銷交易中…（經內網小幫手，約數秒）</div>';
     fetch('/admin/inventory/stock/txn-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})}).catch(function(){});
     var tries=0;
     function tick(){
