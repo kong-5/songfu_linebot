@@ -3818,7 +3818,7 @@ function createAdminRouter() {
                 <div class="sf-card" style="border-left:4px solid #f59e0b;">
                   <div class="sf-card-head">
                     <a href="/admin/quotes" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
-                      <div class="sf-card-title">🗓️ 月底提醒：製作 ${escapeHtml(qr.rocLabel)} 月報報價</div>
+                      <div class="sf-card-title" style="display:flex;align-items:center;gap:6px;"><span style="display:inline-flex;color:#f59e0b;">${QI.calendar}</span>月底提醒：製作 ${escapeHtml(qr.rocLabel)} 月報報價</div>
                     </a>
                     <a href="/admin/quotes" class="sf-card-sub">前往製作 →</a>
                   </div>
@@ -18682,6 +18682,22 @@ document.addEventListener('keydown',function(e){
     // ===================================================================
     const QUOTE_STATUS_LABEL = { draft: "草稿", finalized: "已完成" };
 
+    // 報價頁 icon：採 Feather Icons（線條/outline 風格；MIT）內嵌 SVG，
+    // 統一 viewBox 0 0 24 24、stroke-width 2、圓角端點，與線條感一致（不拉外部 CDN）。
+    const _fi = (paths) => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+    const QI = {
+        price: _fi('<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
+        manage: _fi('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>'),
+        print: _fi('<polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>'),
+        image: _fi('<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>'),
+        doc: _fi('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>'),
+        users: _fi('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'),
+        calendar: _fi('<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+        save: _fi('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>'),
+        checkc: _fi('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'),
+        back: _fi('<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>'),
+    };
+
     /**
      * 報價單列印頁（獨立 HTML，A4 兩欄，供瀏覽器「儲存成 PDF」）。
      * 字級放大方便年長客戶閱讀；品項多時自動分成多頁（每頁重印表頭與頁次）。
@@ -18741,7 +18757,8 @@ document.addEventListener('keydown',function(e){
   *{ box-sizing:border-box; }
   body{ font-family:"Noto Sans TC","Microsoft JhengHei","PingFang TC",sans-serif; margin:0; color:#1c1c1c; background:#f3f4f6; }
   .toolbar{ position:sticky; top:0; background:#fff; border-bottom:1px solid var(--line); padding:10px 16px; display:flex; gap:8px; align-items:center; z-index:5; }
-  .toolbar a,.toolbar button{ font:inherit; font-size:13px; padding:7px 14px; border:1px solid var(--line); border-radius:6px; background:#fff; color:#333; text-decoration:none; cursor:pointer; }
+  .toolbar a,.toolbar button{ font:inherit; font-size:13px; padding:7px 14px; border:1px solid var(--line); border-radius:6px; background:#fff; color:#333; text-decoration:none; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+  .toolbar svg{ width:15px; height:15px; }
   .toolbar .primary{ background:var(--green); color:#fff; border-color:var(--green); }
   .toolbar .sp{ flex:1; }
   .sheet{ width:210mm; min-height:297mm; margin:16px auto; background:#fff; padding:12mm 10mm; box-shadow:0 1px 6px rgba(0,0,0,.12); }
@@ -18771,9 +18788,9 @@ document.addEventListener('keydown',function(e){
   @media print{ body{ background:#fff; } .toolbar{ display:none; } .sheet{ box-shadow:none; margin:0; width:auto; min-height:auto; padding:4mm; page-break-after:always; } .sheet:last-child{ page-break-after:auto; } @page{ size:A4; margin:8mm; } }
 </style></head><body>
 <div class="toolbar">
-  <button class="primary" onclick="window.print()">🖨️ 列印 / 存成 PDF</button>
-  <a href="/admin/quotes/${escapeAttr(report.id)}/image.jpg" download>⬇️ 下載 JPG 圖</a>
-  <a href="/admin/quotes/${escapeAttr(report.id)}">← 回編輯</a>
+  <button class="primary" onclick="window.print()">${QI.print}<span>列印 / 存成 PDF</span></button>
+  <a href="/admin/quotes/${escapeAttr(report.id)}/image.jpg" download>${QI.image}<span>下載 JPG 圖</span></a>
+  <a href="/admin/quotes/${escapeAttr(report.id)}">${QI.back}<span>回編輯</span></a>
   <span class="sp"></span>
   <span style="font-size:12px;color:#889;">共 ${itemCount} 項 · ${totalPages} 頁 · ${escapeHtml(QUOTE_STATUS_LABEL[report.status] || report.status)}</span>
 </div>
@@ -18811,7 +18828,10 @@ ${pagesHtml}
       .sf-qnew{ margin:0; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; }
       .sf-qnew label{ display:flex; flex-direction:column; gap:4px; font-size:11px; color:var(--txt-3); }
       .sf-qnew input, .sf-qnew select{ font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; color:var(--txt-1); }
-      .sf-qflash{ border-left:4px solid #16a34a; padding:10px 16px; font-size:13px; }
+      .sf-qflash{ border-left:4px solid #16a34a; padding:10px 16px; font-size:13px; display:flex; align-items:center; gap:8px; }
+      .sf-qflash svg{ width:17px; height:17px; color:#16a34a; flex:none; }
+      .sf-qbar .sf-btn svg, .sf-qrow-actions .sf-btn svg, .sf-modebar svg{ width:15px; height:15px; }
+      .sf-btn{ display:inline-flex; align-items:center; gap:6px; }
       .sf-qlist{ padding:0; overflow:hidden; }
       .sf-qlist-head, .sf-qrow{ display:grid; grid-template-columns:1fr auto minmax(220px,auto); gap:16px; align-items:center; padding:12px 18px; }
       .sf-qlist-head{ font-size:12px; color:var(--txt-3); border-bottom:var(--hairline); }
@@ -18823,14 +18843,18 @@ ${pagesHtml}
       .sf-qrow-t2{ font-size:11px; color:var(--txt-3); }
       .sf-qrow-actions{ display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap; }
       .sf-qempty{ text-align:center; padding:40px 24px; display:flex; flex-direction:column; align-items:center; gap:8px; }
-      .sf-qempty-icon{ font-size:40px; }
+      .sf-qempty-icon{ color:var(--txt-3); line-height:0; }
+      .sf-qempty-icon svg{ width:44px; height:44px; stroke-width:1.6; }
       .sf-qempty-title{ font-size:16px; font-weight:600; }
       .sf-qempty-desc{ color:var(--txt-3); font-size:13px; line-height:1.7; max-width:460px; margin:0 0 6px; }
       .sf-qremind{ display:flex; align-items:center; gap:12px; padding:14px 18px; border-left:4px solid #f59e0b; }
+      .sf-qremind-ico{ display:inline-flex; color:#f59e0b; }
+      .sf-qremind-ico svg{ width:22px; height:22px; }
       /* 編輯頁 */
       .qe-modebar{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
       .qe-seg{ display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
-      .qe-seg a{ padding:7px 14px; font-size:13px; text-decoration:none; color:var(--txt-2); background:var(--bg-0); }
+      .qe-seg a{ padding:7px 14px; font-size:13px; text-decoration:none; color:var(--txt-2); background:var(--bg-0); display:inline-flex; align-items:center; gap:6px; }
+      .qe-seg svg{ width:15px; height:15px; }
       .qe-seg a.on{ background:var(--notion-accent,#1a6fb5); color:#fff; }
       .qe-cat{ display:flex; align-items:center; gap:8px; padding:4px 10px; margin-top:8px; background:var(--bg-1); border-radius:6px; font-weight:600; font-size:12px; color:#1a6fb5; }
       .qe-cat .n{ color:var(--txt-3); font-weight:400; font-size:11px; }
@@ -18923,17 +18947,17 @@ ${pagesHtml}
                 <h1>${titleMain} 報價單 ${statusPill}</h1>
               </div>
               <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <a class="sf-btn" href="/admin/quotes/${enc}/sheet" target="_blank">🖨️ 預覽 / PDF</a>
-                <a class="sf-btn" href="/admin/quotes/${enc}/image.jpg" target="_blank">🖼️ 下載 JPG</a>
+                <a class="sf-btn" href="/admin/quotes/${enc}/sheet" target="_blank">${QI.print}<span>預覽 / PDF</span></a>
+                <a class="sf-btn" href="/admin/quotes/${enc}/image.jpg" target="_blank">${QI.image}<span>下載 JPG</span></a>
               </div>
             </div>
-            ${okMsg === "created" ? `<div class="sf-card sf-qflash">✅ 已建立，${items.length ? "已帶入品項與價格，請逐項確認單價。" : "目前尚無品項，請切到「管理品項」新增。"}</div>` : ""}
-            ${okMsg === "saved" ? `<div class="sf-card sf-qflash">✅ 已儲存。</div>` : ""}
+            ${okMsg === "created" ? `<div class="sf-card sf-qflash">${QI.checkc}<span>已建立，${items.length ? "已帶入品項與價格，請逐項確認單價。" : "目前尚無品項，請切到「管理品項」新增。"}</span></div>` : ""}
+            ${okMsg === "saved" ? `<div class="sf-card sf-qflash">${QI.checkc}<span>已儲存。</span></div>` : ""}
 
             <div class="qe-modebar">
               <div class="qe-seg">
-                <a href="/admin/quotes/${enc}" class="${manage ? "" : "on"}">💰 價格</a>
-                <a href="/admin/quotes/${enc}?manage=1" class="${manage ? "on" : ""}">🧷 管理品項</a>
+                <a href="/admin/quotes/${enc}" class="${manage ? "" : "on"}">${QI.price}<span>價格</span></a>
+                <a href="/admin/quotes/${enc}?manage=1" class="${manage ? "on" : ""}">${QI.manage}<span>管理品項</span></a>
               </div>
               <span style="font-size:12px;color:var(--txt-3);">${manage ? "可改品名／規格／分類、刪除或新增品項。" : "只編輯單價；勾「不報價」則留白仍列出。要改品名或增減品項請切到「管理品項」。"}</span>
             </div>
@@ -18954,7 +18978,7 @@ ${pagesHtml}
                 ${groupsHtml || `<div style="text-align:center;color:var(--txt-3);padding:24px;">尚無品項，請切到「管理品項」新增。</div>`}
               </div>
               <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center;">
-                <button class="sf-btn primary" type="submit">💾 儲存</button>
+                <button class="sf-btn primary" type="submit">${QI.save}<span>儲存</span></button>
                 ${row.status === "finalized"
                     ? `<button class="sf-btn" type="submit" formaction="/admin/quotes/${enc}/status" formnovalidate name="status" value="draft">改回草稿</button>`
                     : `<button class="sf-btn" type="submit" formaction="/admin/quotes/${enc}/status" formnovalidate name="status" value="finalized">設為完成</button>`}
@@ -19006,7 +19030,7 @@ ${pagesHtml}
                           </div></div>`).join("")}
                       </div>`
                     : `<div class="sf-card sf-qempty">
-                        <div class="sf-qempty-icon">🏨</div>
+                        <div class="sf-qempty-icon">${QI.users}</div>
                         <div class="sf-qempty-title">尚無飯店報價</div>
                         <p class="sf-qempty-desc">為飯店客戶各建立一份專屬報價單。新增時會以最新月報為底帶入全部品項與價格，你只要調整該飯店的專屬價格即可。</p>
                         ${newForm}
@@ -19016,7 +19040,7 @@ ${pagesHtml}
                     <p style="margin:0;color:var(--txt-3);font-size:13px;max-width:560px;">每家飯店客戶各一份報價單，以最新月報為底、再調整專屬價格；輸出可存 PDF 或下載 JPG。</p>
                     ${hotels.length ? newForm : ""}
                   </div>
-                  ${okMsg === "hotel-created" ? `<div class="sf-card sf-qflash">✅ 飯店報價已建立，已帶入月報品項，請調整專屬價格。</div>` : ""}
+                  ${okMsg === "hotel-created" ? `<div class="sf-card sf-qflash">${QI.checkc}<span>飯店報價已建立，已帶入月報品項，請調整專屬價格。</span></div>` : ""}
                   ${list}`;
             } else {
                 const todayIso = getTaipeiCalendarDateYYYYMMDD();
@@ -19040,14 +19064,14 @@ ${pagesHtml}
                           </div></div>`).join("")}
                       </div>`
                     : `<div class="sf-card sf-qempty">
-                        <div class="sf-qempty-icon">🧾</div>
+                        <div class="sf-qempty-icon">${QI.doc}</div>
                         <div class="sf-qempty-title">尚無月報</div>
                         <p class="sf-qempty-desc">建立第一份月報時，系統會自動帶入完整品項清單當底稿，你只要調整價格即可。之後每個月新增，會自動沿用上一份的品項與價格。</p>
                         ${createForm("＋ 建立第一份月報")}
                       </div>`;
                 const reminderBanner = reminder.show ? `
                   <div class="sf-card sf-qremind">
-                    <span style="font-size:22px;">🗓️</span>
+                    <span class="sf-qremind-ico">${QI.calendar}</span>
                     <div style="flex:1;min-width:200px;">
                       <div style="font-weight:600;">月底提醒：請準備 ${escapeHtml(reminder.rocLabel)} 報價單</div>
                       <div style="font-size:12px;color:var(--txt-3);margin-top:2px;">本月僅剩 ${reminder.daysLeft} 天。${reminder.report ? "已建立草稿，請確認價格後設為完成。" : "尚未建立，新增時會自動帶入上月價格當底稿。"}</div>
@@ -19060,7 +19084,7 @@ ${pagesHtml}
                     <p style="margin:0;color:var(--txt-3);font-size:13px;max-width:560px;">每月月底前製作下個月報價單。新增會自動帶入上月價格當底稿，只需改動有變動的項目；輸出可存 PDF 或下載 JPG。</p>
                     ${reports.length ? createForm("＋ 新增月報") : ""}
                   </div>
-                  ${okMsg === "created" ? `<div class="sf-card sf-qflash">✅ 月報已建立。</div>` : ""}
+                  ${okMsg === "created" ? `<div class="sf-card sf-qflash">${QI.checkc}<span>月報已建立。</span></div>` : ""}
                   ${reminderBanner}
                   ${list}`;
             }
