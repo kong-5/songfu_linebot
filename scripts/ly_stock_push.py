@@ -46,6 +46,7 @@ SPEC_FIELD = "SK_SPEC"
 UNIT_FIELD = "SK_UNIT"
 STOCK_FIELD = "SK_NOWQTY"   # 目前庫存（現有量）
 WH_FIELD = "SK_RKWHNO"      # 預設入庫倉別（如 FN001/FN002/FN013）
+STOP_FIELD = "SK_STOP"      # 停用碼：1=停用、0=正常。停用品不推上雲端。
 
 
 def ensure_timeout_client(timeout: int):
@@ -72,14 +73,24 @@ def _num(v):
         return 0
 
 
+def _is_stopped(r) -> bool:
+    """SK_STOP=1（或 Y）視為停用。"""
+    v = str(r.get(STOP_FIELD, "")).strip().upper()
+    return v in ("1", "Y", "YES", "TRUE")
+
+
 def fetch_stock_items(icpno: str, timeout: int) -> list:
-    """撈整張貨品主檔，回傳 [{code,name,spec,unit,qty,wh_code}, ...]。"""
+    """撈整張貨品主檔，回傳 [{code,name,spec,unit,qty,wh_code}, ...]。停用品（SK_STOP=1）跳過。"""
     ensure_timeout_client(timeout)
     rows = lystk.query(icpno=icpno, idakd=KIND_GOODS)
     items = []
+    skipped_stop = 0
     for r in rows or []:
         code = str(r.get(CODE_FIELD, "")).strip()
         if not code:
+            continue
+        if _is_stopped(r):   # 停用品不推上雲端；每次刷新依凌越最新狀態自動排除
+            skipped_stop += 1
             continue
         items.append({
             "code": code,
@@ -89,6 +100,8 @@ def fetch_stock_items(icpno: str, timeout: int) -> list:
             "qty": _num(r.get(STOCK_FIELD, 0)),
             "wh_code": str(r.get(WH_FIELD, "")).strip(),
         })
+    if skipped_stop:
+        print(f"  （已跳過停用品 {skipped_stop} 項 SK_STOP=1）", flush=True)
     return items
 
 

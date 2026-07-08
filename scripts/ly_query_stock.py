@@ -249,7 +249,15 @@ def run(args) -> int:
         if args.all:
             print(f"▶ 撈整張貨品主檔  ICPNO={icpno}  料號={code_field} 品名={name_field} 庫存={stock_field} …",
                   flush=True)
-            raw = lystk.query(icpno=icpno, idakd=KIND_GOODS)
+            raw_all = lystk.query(icpno=icpno, idakd=KIND_GOODS)
+            # 停用品（SK_STOP=1）排除，與雲端推送一致；--keep-stop 可保留
+            if getattr(args, "keep_stop", False):
+                raw = list(raw_all)
+            else:
+                raw = [r for r in raw_all if str(r.get("SK_STOP", "")).strip().upper() not in ("1", "Y", "YES", "TRUE")]
+                dropped = len(raw_all) - len(raw)
+                if dropped:
+                    print(f"  （已排除停用品 {dropped} 項 SK_STOP=1）", flush=True)
             print(f"  貨品主檔共 {len(raw)} 筆", flush=True)
         else:
             codes = read_codes(args)
@@ -294,7 +302,8 @@ def build_parser():
     p.add_argument("--item", help="查單一品項（料號），印全欄位＋候選欄")
     p.add_argument("--items", help="批次查：逗號/空白分隔的料號清單")
     p.add_argument("--items-file", dest="items_file", help="批次查：檔案，每行一個料號（# 開頭略過）")
-    p.add_argument("--all", action="store_true", help="全品項：撈整張貨品主檔的 料號/品名/目前庫存")
+    p.add_argument("--all", action="store_true", help="全品項：撈整張貨品主檔的 料號/品名/目前庫存（預設排除停用品 SK_STOP=1）")
+    p.add_argument("--keep-stop", dest="keep_stop", action="store_true", help="搭配 --all：保留停用品（預設排除）")
     p.add_argument("--dump-kind", dest="dump_kind", help="撈任意資料種類前 N 筆全欄位（如 000004 倉庫主檔、000009 庫存）")
     p.add_argument("--code-field", dest="code_field", help=f"料號欄名（預設 {DEFAULT_CODE_FIELD}，用 --dump 確認後改）")
     p.add_argument("--name-field", dest="name_field", help=f"品名欄名（預設 {DEFAULT_NAME_FIELD}）")
