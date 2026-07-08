@@ -657,11 +657,11 @@ function renderQuoteSvg(report, groups, opts) {
     const rows = buildDisplayRows(groups);
     const [colL, colR] = splitTwoColumns(rows);
 
-    const W = 1240;
-    const MARGIN = 40;
-    const headerH = 190;
-    const rowH = 30;
-    const colGap = 24;
+    const W = 1400;
+    const MARGIN = 44;
+    const headerH = 200;
+    const rowH = 44; // 放大字級、方便年長客戶閱讀
+    const colGap = 28;
     const colW = (W - MARGIN * 2 - colGap) / 2; // 每欄寬
     const maxRows = Math.max(colL.length, colR.length);
     const bodyTop = headerH + 44; // 表頭下方 + 欄位標題列
@@ -671,43 +671,43 @@ function renderQuoteSvg(report, groups, opts) {
     const FONT = "'Noto Sans CJK TC','Noto Sans TC','Microsoft JhengHei','PingFang TC',sans-serif";
 
     // 欄位寬度（欄內）：序號 / 品名 / 規格 / 單價
-    const cSeq = 40, cName = colW * 0.44, cSpec = colW * 0.34, cPrice = colW - cSeq - (colW * 0.44) - (colW * 0.34);
+    const cSeq = 46, cName = colW * 0.46, cSpec = colW * 0.30, cPrice = colW - cSeq - (colW * 0.46) - (colW * 0.30);
 
     function renderColumn(colRows, x0) {
         let out = "";
         // 欄位標題列
-        const hy = bodyTop - 8;
+        const hy = bodyTop - 12;
         out += `<rect x="${x0}" y="${bodyTop - rowH}" width="${colW}" height="${rowH}" fill="#eef2f7" stroke="#c8d0da"/>`;
-        let cx = x0;
         const heads = [["序號", cSeq, "middle"], ["品　名", cName, "start"], ["規　格", cSpec, "start"], ["單　價", cPrice, "end"]];
         let hx = x0;
         for (const [label, w, anchor] of heads) {
-            const tx = anchor === "middle" ? hx + w / 2 : anchor === "end" ? hx + w - 8 : hx + 8;
-            out += `<text x="${tx}" y="${hy}" font-size="15" font-weight="700" fill="#334" text-anchor="${anchor}" font-family="${FONT}">${escapeXml(label)}</text>`;
+            const tx = anchor === "middle" ? hx + w / 2 : anchor === "end" ? hx + w - 10 : hx + 10;
+            out += `<text x="${tx}" y="${hy}" font-size="18" font-weight="700" fill="#334" text-anchor="${anchor}" font-family="${FONT}">${escapeXml(label)}</text>`;
             hx += w;
         }
         let y = bodyTop;
+        const baseY = rowH - 14; // 文字基線位置
         for (const r of colRows) {
             if (r.type === "cat") {
                 out += `<rect x="${x0}" y="${y}" width="${colW}" height="${rowH}" fill="#1e7a5e"/>`;
-                out += `<text x="${x0 + 10}" y="${y + rowH - 9}" font-size="15" font-weight="700" fill="#ffffff" font-family="${FONT}">${escapeXml(r.category)}</text>`;
-                out += `<text x="${x0 + colW - 8}" y="${y + rowH - 9}" font-size="12" fill="#cdebd9" text-anchor="end" font-family="${FONT}">${r.count} 項</text>`;
+                out += `<text x="${x0 + 12}" y="${y + baseY}" font-size="20" font-weight="700" fill="#ffffff" font-family="${FONT}">${escapeXml(r.category)}</text>`;
+                out += `<text x="${x0 + colW - 10}" y="${y + baseY}" font-size="15" fill="#cdebd9" text-anchor="end" font-family="${FONT}">${r.count} 項</text>`;
             } else {
                 out += `<rect x="${x0}" y="${y}" width="${colW}" height="${rowH}" fill="${r.seq % 2 ? "#ffffff" : "#f7f9fb"}" stroke="#e3e8ee"/>`;
                 let ix = x0;
                 // 序號
-                out += `<text x="${ix + cSeq / 2}" y="${y + rowH - 9}" font-size="13" fill="#556" text-anchor="middle" font-family="${FONT}">${r.seq}</text>`;
+                out += `<text x="${ix + cSeq / 2}" y="${y + baseY}" font-size="16" fill="#556" text-anchor="middle" font-family="${FONT}">${r.seq}</text>`;
                 ix += cSeq;
                 // 品名
-                out += `<text x="${ix + 8}" y="${y + rowH - 9}" font-size="14" fill="#222" font-family="${FONT}">${escapeXml(clip(r.name, 12))}</text>`;
+                out += `<text x="${ix + 10}" y="${y + baseY}" font-size="22" font-weight="500" fill="#1c1c1c" font-family="${FONT}">${escapeXml(clip(r.name, 13))}</text>`;
                 ix += cName;
                 // 規格
-                out += `<text x="${ix + 8}" y="${y + rowH - 9}" font-size="12" fill="#667" font-family="${FONT}">${escapeXml(clip(r.spec, 12))}</text>`;
+                out += `<text x="${ix + 10}" y="${y + baseY}" font-size="16" fill="#667" font-family="${FONT}">${escapeXml(clip(r.spec, 13))}</text>`;
                 ix += cSpec;
                 // 單價
                 const priceDisplay = r.quoted ? r.priceText : "—";
                 const priceColor = r.quoted ? "#111" : "#b0b6bf";
-                out += `<text x="${ix + cPrice - 8}" y="${y + rowH - 9}" font-size="14" font-weight="${r.quoted ? 700 : 400}" fill="${priceColor}" text-anchor="end" font-family="${FONT}">${escapeXml(priceDisplay)}</text>`;
+                out += `<text x="${ix + cPrice - 10}" y="${y + baseY}" font-size="23" font-weight="${r.quoted ? 700 : 400}" fill="${priceColor}" text-anchor="end" font-family="${FONT}">${escapeXml(priceDisplay)}</text>`;
             }
             y += rowH;
         }
@@ -722,16 +722,16 @@ function renderQuoteSvg(report, groups, opts) {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <rect width="${W}" height="${H}" fill="#ffffff"/>
 ${logoBox}
-<text x="${centerX}" y="70" text-anchor="middle" font-size="38" font-weight="800" fill="#1e7a5e" font-family="${FONT}" letter-spacing="6">${escapeXml(report.title || DEFAULT_HEADER.title)}</text>
-<text x="${centerX}" y="112" text-anchor="middle" font-size="22" font-weight="600" fill="#334" font-family="${FONT}" letter-spacing="8">${escapeXml(report.subtitle || DEFAULT_HEADER.subtitle)}</text>
-<text x="${centerX}" y="146" text-anchor="middle" font-size="18" fill="#333" font-family="${FONT}">${escapeXml((report.company || "") + "　" + (report.roc_label || ""))}</text>
-<text x="${W - MARGIN}" y="70" text-anchor="end" font-size="12" fill="#667" font-family="${FONT}">${escapeXml(report.address || "")}</text>
-<text x="${W - MARGIN}" y="90" text-anchor="end" font-size="12" fill="#667" font-family="${FONT}">Tel：${escapeXml(report.tel || "")}</text>
-<text x="${W - MARGIN}" y="110" text-anchor="end" font-size="12" fill="#667" font-family="${FONT}">Fax：${escapeXml(report.fax || "")}</text>
-<line x1="${MARGIN}" y1="${headerH - 8}" x2="${W - MARGIN}" y2="${headerH - 8}" stroke="#1e7a5e" stroke-width="2"/>
+<text x="${centerX}" y="76" text-anchor="middle" font-size="46" font-weight="800" fill="#1e7a5e" font-family="${FONT}" letter-spacing="8">${escapeXml(report.title || DEFAULT_HEADER.title)}</text>
+<text x="${centerX}" y="122" text-anchor="middle" font-size="27" font-weight="600" fill="#334" font-family="${FONT}" letter-spacing="10">${escapeXml(report.subtitle || DEFAULT_HEADER.subtitle)}</text>
+<text x="${centerX}" y="160" text-anchor="middle" font-size="23" font-weight="600" fill="#333" font-family="${FONT}">${escapeXml((report.company || "") + "　" + (report.roc_label || ""))}</text>
+<text x="${W - MARGIN}" y="74" text-anchor="end" font-size="15" fill="#667" font-family="${FONT}">${escapeXml(report.address || "")}</text>
+<text x="${W - MARGIN}" y="98" text-anchor="end" font-size="15" fill="#667" font-family="${FONT}">Tel：${escapeXml(report.tel || "")}</text>
+<text x="${W - MARGIN}" y="122" text-anchor="end" font-size="15" fill="#667" font-family="${FONT}">Fax：${escapeXml(report.fax || "")}</text>
+<line x1="${MARGIN}" y1="${headerH - 8}" x2="${W - MARGIN}" y2="${headerH - 8}" stroke="#1e7a5e" stroke-width="3"/>
 ${renderColumn(colL, MARGIN)}
 ${renderColumn(colR, MARGIN + colW + colGap)}
-<text x="${centerX}" y="${H - 24}" text-anchor="middle" font-size="12" fill="#99a" font-family="${FONT}">松富物流 · 本報價單為 ${escapeXml(report.roc_label || report.ym || "")}　單位：新台幣元　「—」表該項本月不報價</text>
+<text x="${centerX}" y="${H - 26}" text-anchor="middle" font-size="15" fill="#99a" font-family="${FONT}">松富物流 · 本報價單為 ${escapeXml(report.roc_label || report.ym || "")}　單位：新台幣元　「—」表該項本月不報價</text>
 </svg>`;
     return svg;
 }

@@ -18563,10 +18563,20 @@ document.addEventListener('keydown',function(e){
     // ===================================================================
     const QUOTE_STATUS_LABEL = { draft: "草稿", finalized: "已完成" };
 
-    /** 報價單列印頁（獨立 HTML，A4 兩欄，供瀏覽器「儲存成 PDF」）。 */
+    /**
+     * 報價單列印頁（獨立 HTML，A4 兩欄，供瀏覽器「儲存成 PDF」）。
+     * 字級放大方便年長客戶閱讀；品項多時自動分成多頁（每頁重印表頭與頁次）。
+     */
     function renderQuoteSheetHtml(report, groups, logo) {
         const rows = quote_report_js_1.buildDisplayRows(groups);
-        const [colL, colR] = quote_report_js_1.splitTwoColumns(rows);
+        const itemCount = rows.filter(r => r.type === "item").length;
+        // 每頁列數：兩欄合計；抓約可容納一整頁 A4 的量（保留邊界避免溢出到下一頁），讓內容自動分頁。
+        const PAGE_ROWS = 50;
+        const pages = [];
+        for (let i = 0; i < rows.length; i += PAGE_ROWS) pages.push(rows.slice(i, i + PAGE_ROWS));
+        if (pages.length === 0) pages.push([]);
+        const totalPages = pages.length;
+
         const colHtml = (colRows) => {
             let out = "";
             for (const r of colRows) {
@@ -18582,50 +18592,11 @@ document.addEventListener('keydown',function(e){
         const logoHtml = logo
             ? `<img class="logo" src="${escapeAttr(logo)}" alt="LOGO">`
             : `<div class="logo-ph">LOGO</div>`;
-        return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(report.company || "報價單")} ${escapeHtml(report.roc_label || report.ym || "")}</title>
-<style>
-  :root{ --green:#1e7a5e; --line:#c8d0da; }
-  *{ box-sizing:border-box; }
-  body{ font-family:"Noto Sans TC","Microsoft JhengHei","PingFang TC",sans-serif; margin:0; color:#222; background:#f3f4f6; }
-  .toolbar{ position:sticky; top:0; background:#fff; border-bottom:1px solid var(--line); padding:10px 16px; display:flex; gap:8px; align-items:center; }
-  .toolbar a,.toolbar button{ font:inherit; font-size:13px; padding:7px 14px; border:1px solid var(--line); border-radius:6px; background:#fff; color:#333; text-decoration:none; cursor:pointer; }
-  .toolbar .primary{ background:var(--green); color:#fff; border-color:var(--green); }
-  .toolbar .sp{ flex:1; }
-  .sheet{ width:210mm; min-height:297mm; margin:16px auto; background:#fff; padding:12mm 10mm; box-shadow:0 1px 6px rgba(0,0,0,.12); }
-  .head{ display:flex; align-items:flex-start; gap:12px; border-bottom:2px solid var(--green); padding-bottom:8px; }
-  .logo,.logo-ph{ width:88px; height:88px; object-fit:contain; }
-  .logo-ph{ border:1px dashed var(--line); display:flex; align-items:center; justify-content:center; color:#aab; font-size:12px; }
-  .head-mid{ flex:1; text-align:center; }
-  .head-mid h1{ margin:0; font-size:30px; letter-spacing:8px; color:var(--green); }
-  .head-mid h2{ margin:2px 0 4px; font-size:17px; letter-spacing:8px; color:#334; }
-  .head-mid .co{ font-size:15px; }
-  .head-info{ font-size:11px; color:#556; text-align:right; white-space:nowrap; }
-  .cols{ display:flex; gap:10mm; margin-top:8px; }
-  .cols table{ flex:1; width:50%; border-collapse:collapse; font-size:12px; }
-  th,td{ border:1px solid #e3e8ee; padding:3px 6px; }
-  thead th{ background:#eef2f7; color:#334; font-size:12px; }
-  td.seq{ width:34px; text-align:center; color:#667; }
-  td.nm{ }
-  td.sp{ color:#667; font-size:11px; }
-  td.pr{ text-align:right; width:56px; font-weight:600; }
-  .noq{ color:#b0b6bf; font-weight:400; }
-  tr.catrow td{ background:var(--green); color:#fff; font-weight:700; letter-spacing:1px; }
-  tr.catrow .catn{ float:right; font-weight:400; font-size:11px; color:#cdebd9; }
-  tr:nth-child(even) td{ background:#f9fafb; }
-  tr.catrow:nth-child(even) td{ background:var(--green); }
-  .foot{ margin-top:10px; text-align:center; font-size:11px; color:#99a; }
-  @media print{ body{ background:#fff; } .toolbar{ display:none; } .sheet{ box-shadow:none; margin:0; width:auto; min-height:auto; padding:6mm 4mm; } @page{ size:A4; margin:8mm; } }
-</style></head><body>
-<div class="toolbar">
-  <button class="primary" onclick="window.print()">🖨️ 列印 / 存成 PDF</button>
-  <a href="/admin/quotes/${escapeAttr(report.id)}/image.jpg" download>⬇️ 下載 JPG 圖</a>
-  <a href="/admin/quotes/${escapeAttr(report.id)}">← 回編輯</a>
-  <span class="sp"></span>
-  <span style="font-size:12px;color:#889;">共 ${rows.filter(r=>r.type==="item").length} 項 · ${escapeHtml(QUOTE_STATUS_LABEL[report.status] || report.status)}</span>
-</div>
-<div class="sheet">
+        const colgroup = `<colgroup><col style="width:11%"><col style="width:45%"><col style="width:30%"><col style="width:14%"></colgroup>`;
+        const thead = `${colgroup}<thead><tr><th>序號</th><th>品　名</th><th>規　格</th><th>單價</th></tr></thead>`;
+        const pagesHtml = pages.map((pg, idx) => {
+            const [colL, colR] = quote_report_js_1.splitTwoColumns(pg);
+            return `<div class="sheet">
   <div class="head">
     ${logoHtml}
     <div class="head-mid">
@@ -18633,14 +18604,61 @@ document.addEventListener('keydown',function(e){
       <h2>${escapeHtml(report.subtitle || "產 品 表")}</h2>
       <div class="co">${escapeHtml(report.company || "")}　${escapeHtml(report.roc_label || "")}</div>
     </div>
-    <div class="head-info">${escapeHtml(report.address || "")}<br>Tel：${escapeHtml(report.tel || "")}<br>Fax：${escapeHtml(report.fax || "")}</div>
+    <div class="head-info">${escapeHtml(report.address || "")}<br>Tel：${escapeHtml(report.tel || "")}<br>Fax：${escapeHtml(report.fax || "")}<br><span class="pageno">第 ${idx + 1} 頁，共 ${totalPages} 頁</span></div>
   </div>
   <div class="cols">
-    <table><thead><tr><th>序號</th><th>品　名</th><th>規　格</th><th>單價</th></tr></thead><tbody>${colHtml(colL)}</tbody></table>
-    <table><thead><tr><th>序號</th><th>品　名</th><th>規　格</th><th>單價</th></tr></thead><tbody>${colHtml(colR)}</tbody></table>
+    <table>${thead}<tbody>${colHtml(colL)}</tbody></table>
+    <table>${thead}<tbody>${colHtml(colR)}</tbody></table>
   </div>
   <div class="foot">松富物流 · 本報價單為 ${escapeHtml(report.roc_label || report.ym || "")}　單位：新台幣元　「—」表該項本月不報價</div>
+</div>`;
+        }).join("");
+
+        return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(report.company || "報價單")} ${escapeHtml(report.roc_label || report.ym || "")}</title>
+<style>
+  :root{ --green:#1e7a5e; --line:#c8d0da; }
+  *{ box-sizing:border-box; }
+  body{ font-family:"Noto Sans TC","Microsoft JhengHei","PingFang TC",sans-serif; margin:0; color:#1c1c1c; background:#f3f4f6; }
+  .toolbar{ position:sticky; top:0; background:#fff; border-bottom:1px solid var(--line); padding:10px 16px; display:flex; gap:8px; align-items:center; z-index:5; }
+  .toolbar a,.toolbar button{ font:inherit; font-size:13px; padding:7px 14px; border:1px solid var(--line); border-radius:6px; background:#fff; color:#333; text-decoration:none; cursor:pointer; }
+  .toolbar .primary{ background:var(--green); color:#fff; border-color:var(--green); }
+  .toolbar .sp{ flex:1; }
+  .sheet{ width:210mm; min-height:297mm; margin:16px auto; background:#fff; padding:12mm 10mm; box-shadow:0 1px 6px rgba(0,0,0,.12); }
+  .head{ display:flex; align-items:flex-start; gap:14px; border-bottom:3px solid var(--green); padding-bottom:8px; }
+  .logo,.logo-ph{ width:82px; height:82px; object-fit:contain; }
+  .logo-ph{ border:1px dashed var(--line); display:flex; align-items:center; justify-content:center; color:#aab; font-size:12px; }
+  .head-mid{ flex:1; text-align:center; }
+  .head-mid h1{ margin:0; font-size:34px; letter-spacing:9px; color:var(--green); }
+  .head-mid h2{ margin:2px 0 4px; font-size:19px; letter-spacing:9px; color:#334; }
+  .head-mid .co{ font-size:18px; font-weight:600; }
+  .head-info{ font-size:12px; color:#556; text-align:right; white-space:nowrap; line-height:1.6; }
+  .head-info .pageno{ color:#889; }
+  .cols{ display:flex; gap:7mm; margin-top:8px; }
+  .cols table{ flex:1; width:50%; border-collapse:collapse; font-size:16px; table-layout:fixed; }
+  th,td{ border:1px solid #d7dee6; padding:3px 7px; overflow:hidden; vertical-align:middle; }
+  thead th{ background:#eef2f7; color:#223; font-size:14px; white-space:nowrap; }
+  td.seq{ text-align:center; color:#667; font-size:13px; white-space:nowrap; }
+  td.nm{ font-size:16px; font-weight:500; white-space:normal; word-break:break-word; line-height:1.25; }
+  td.sp{ color:#556; font-size:13px; white-space:nowrap; text-overflow:ellipsis; }
+  td.pr{ text-align:right; font-weight:700; font-size:17px; white-space:nowrap; }
+  .noq{ color:#b0b6bf; font-weight:400; }
+  tr.catrow td{ background:var(--green); color:#fff; font-weight:700; letter-spacing:2px; font-size:16px; padding:4px 10px; }
+  tr.catrow .catn{ float:right; font-weight:400; font-size:12px; color:#cdebd9; }
+  tr:nth-child(even) td{ background:#f7f9fb; }
+  tr.catrow:nth-child(even) td{ background:var(--green); }
+  .foot{ margin-top:12px; text-align:center; font-size:13px; color:#99a; }
+  @media print{ body{ background:#fff; } .toolbar{ display:none; } .sheet{ box-shadow:none; margin:0; width:auto; min-height:auto; padding:4mm; page-break-after:always; } .sheet:last-child{ page-break-after:auto; } @page{ size:A4; margin:8mm; } }
+</style></head><body>
+<div class="toolbar">
+  <button class="primary" onclick="window.print()">🖨️ 列印 / 存成 PDF</button>
+  <a href="/admin/quotes/${escapeAttr(report.id)}/image.jpg" download>⬇️ 下載 JPG 圖</a>
+  <a href="/admin/quotes/${escapeAttr(report.id)}">← 回編輯</a>
+  <span class="sp"></span>
+  <span style="font-size:12px;color:#889;">共 ${itemCount} 項 · ${totalPages} 頁 · ${escapeHtml(QUOTE_STATUS_LABEL[report.status] || report.status)}</span>
 </div>
+${pagesHtml}
 </body></html>`;
     }
 
@@ -18695,17 +18713,19 @@ document.addEventListener('keydown',function(e){
       .qe-seg{ display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
       .qe-seg a{ padding:7px 14px; font-size:13px; text-decoration:none; color:var(--txt-2); background:var(--bg-0); }
       .qe-seg a.on{ background:var(--notion-accent,#1a6fb5); color:#fff; }
-      .qe-cat{ display:flex; align-items:center; gap:8px; padding:9px 12px; margin-top:10px; background:var(--bg-1); border-radius:8px; font-weight:600; font-size:13px; color:#1a6fb5; }
-      .qe-cat .n{ color:var(--txt-3); font-weight:400; font-size:12px; }
-      .qe-row{ display:grid; align-items:center; gap:10px; padding:7px 12px; border-bottom:var(--hairline); }
+      .qe-cat{ display:flex; align-items:center; gap:8px; padding:4px 10px; margin-top:8px; background:var(--bg-1); border-radius:6px; font-weight:600; font-size:12px; color:#1a6fb5; }
+      .qe-cat .n{ color:var(--txt-3); font-weight:400; font-size:11px; }
+      .qe-row{ display:grid; align-items:center; gap:8px; padding:2px 10px; border-bottom:var(--hairline); }
       .qe-row:hover{ background:var(--bg-1); }
-      .qe-price-mode .qe-row{ grid-template-columns:34px 1fr 96px 82px; }
+      .qe-price-mode .qe-row{ grid-template-columns:30px 1fr 92px 76px; padding:1px 10px; }
+      .qe-price-mode .qe-name{ flex-direction:row; align-items:baseline; gap:8px; }
+      .qe-price-mode .qe-in{ padding:3px 8px; }
       .qe-manage-mode .qe-row{ grid-template-columns:34px 1.5fr 1.2fr 1fr 88px 76px 40px; }
       .qe-seq{ color:var(--txt-3); font-size:12px; text-align:center; }
       .qe-name{ display:flex; flex-direction:column; min-width:0; }
-      .qe-nm{ font-size:14px; overflow:hidden; text-overflow:ellipsis; }
-      .qe-spec{ font-size:11px; color:var(--txt-3); }
-      .qe-in{ width:100%; font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; box-sizing:border-box; }
+      .qe-nm{ font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .qe-spec{ font-size:12px; color:var(--txt-3); white-space:nowrap; }
+      .qe-in{ width:100%; font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; box-sizing:border-box; }
       .qe-price{ text-align:right; }
       .qe-noq{ font-size:12px; color:var(--txt-3); display:flex; align-items:center; gap:4px; white-space:nowrap; justify-content:center; }
       .qe-del{ color:#b91c1c; }
