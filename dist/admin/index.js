@@ -12126,16 +12126,22 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const subVal = targetSubCustomer === "" ? null : targetSubCustomer;
-            const targetOrderId = await resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer);
             const phUp = itemIds.map(() => "?").join(",");
-            if (targetOrderId === orderId) {
-                await db.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
-            }
-            else {
-                await db.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(targetOrderId, subVal, orderId, ...itemIds);
-                // 拆出去的子單是獨立一趟配送 → 空籃各自重新記錄（冪等：已有就不重複補）
-                await empty_baskets_js_1.insertEmptyBaskets(db, sourceOrder.customer_id, [targetOrderId]);
-            }
+            // [fix 2026-07-08] 建新單(resolveSplitTargetOrder 內)＋搬品項＋補空籃包進單一交易，
+            // 中途失敗整批回滾，不留「建了空殼新單卻沒搬到品項」的半套狀態。傳 tx handle 給共用函式。
+            const doMove = async (h) => {
+                const targetOrderId = await resolveSplitTargetOrder(h, sourceOrder, targetSubCustomer);
+                if (targetOrderId === orderId) {
+                    await h.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
+                }
+                else {
+                    await h.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(targetOrderId, subVal, orderId, ...itemIds);
+                    // 拆出去的子單是獨立一趟配送 → 空籃各自重新記錄（冪等：已有就不重複補）
+                    await empty_baskets_js_1.insertEmptyBaskets(h, sourceOrder.customer_id, [targetOrderId]);
+                }
+                return targetOrderId;
+            };
+            const targetOrderId = (typeof db.transaction === "function") ? await db.transaction(doMove) : await doMove(db);
             res.json({ ok: true, targetOrderId });
         }
         catch (e) {
@@ -12175,15 +12181,21 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const moved = [];
-            for (const [subName, ids] of groups) {
-                const targetOrderId = await resolveSplitTargetOrder(db, sourceOrder, subName);
-                if (targetOrderId === orderId) continue;
-                const ph = ids.map(() => "?").join(",");
-                await db.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${ph})`).run(targetOrderId, subName, orderId, ...ids);
-                // 子單是獨立一趟配送 → 空籃各自重新記錄（冪等）
-                await empty_baskets_js_1.insertEmptyBaskets(db, sourceOrder.customer_id, [targetOrderId]);
-                moved.push({ subCustomer: subName, orderId: targetOrderId, count: ids.length });
-            }
+            // [fix 2026-07-08] 整批拆單包進單一交易：中途某子客戶失敗則整批回滾，不留半套拆單。
+            // moved 只在交易成功回傳後才送出（失敗會被外層 catch 接住回 500，不會誤報）。
+            const doSplit = async (h) => {
+                for (const [subName, ids] of groups) {
+                    const targetOrderId = await resolveSplitTargetOrder(h, sourceOrder, subName);
+                    if (targetOrderId === orderId) continue;
+                    const ph = ids.map(() => "?").join(",");
+                    await h.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${ph})`).run(targetOrderId, subName, orderId, ...ids);
+                    // 子單是獨立一趟配送 → 空籃各自重新記錄（冪等）
+                    await empty_baskets_js_1.insertEmptyBaskets(h, sourceOrder.customer_id, [targetOrderId]);
+                    moved.push({ subCustomer: subName, orderId: targetOrderId, count: ids.length });
+                }
+            };
+            if (typeof db.transaction === "function") await db.transaction(doSplit);
+            else await doSplit(db);
             res.json({ ok: true, moved });
         }
         catch (e) {
