@@ -1895,17 +1895,34 @@ const STK_STYLE = `
 .stk-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin:6px 0 8px;}
 .stk-toolbar-left,.stk-toolbar-right{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
 .stk-search{min-width:200px;flex:1 1 200px;padding:6px 10px;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;font-size:13px;background:var(--notion-card,#fff);color:inherit;}
-.stk-seg{display:inline-flex;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;overflow:hidden;}
-.stk-seg button{border:0;background:var(--notion-card,#fff);color:inherit;padding:6px 11px;font-size:12.5px;cursor:pointer;}
-.stk-seg button.active{background:#2383e2;color:#fff;font-weight:700;}
-.stk-check{font-size:12.5px;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer;}
+/* 檢視切換：玻璃通透滑桿（列表 / 依倉庫） */
+.stk-seg{position:relative;display:inline-flex;height:32px;align-items:center;background:rgba(35,131,226,.08);border:1px solid rgba(35,131,226,.18);border-radius:999px;padding:3px;}
+.stk-seg-thumb{position:absolute;top:3px;left:3px;height:calc(100% - 6px);width:calc(50% - 3px);background:rgba(255,255,255,.85);border-radius:999px;box-shadow:0 1px 5px rgba(35,131,226,.18);transition:transform .22s cubic-bezier(.4,0,.2,1);pointer-events:none;}
+.stk-seg.grp .stk-seg-thumb{transform:translateX(100%);}
+.stk-seg button{position:relative;z-index:1;border:0;background:transparent;height:100%;padding:0 15px;font-size:12.5px;cursor:pointer;color:#4a6fa5;}
+.stk-seg button.active{color:#2383e2;font-weight:700;}
+/* 隱藏0 / 只看低量：小開關（on/off toggle，建在真 checkbox 上） */
+.stk-sw{display:inline-flex;align-items:center;gap:8px;height:32px;font-size:12.5px;white-space:nowrap;cursor:pointer;user-select:none;}
+.stk-sw input{position:absolute;opacity:0;width:0;height:0;}
+.stk-sw-tr{position:relative;width:36px;height:20px;border-radius:999px;background:rgba(120,119,116,.28);transition:background .18s;flex:0 0 auto;}
+.stk-sw-tr::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .18s;}
+.stk-sw input:checked + .stk-sw-tr{background:rgba(35,131,226,.9);}
+.stk-sw input:checked + .stk-sw-tr::after{transform:translateX(16px);}
+.stk-sw input:focus-visible + .stk-sw-tr{outline:2px solid #2383e2;outline-offset:2px;}
+/* 倉庫左側欄 ＋ 表格 兩欄版面 */
+.stk-main{display:flex;gap:12px;align-items:flex-start;}
+.stk-rail{flex:0 0 212px;display:flex;flex-direction:column;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;overflow:hidden;background:var(--notion-card,#fff);max-height:calc(100vh - 190px);}
+.stk-rail-h{flex:0 0 auto;font-size:11px;font-weight:700;color:var(--notion-text-light,#787774);padding:8px 12px;background:var(--notion-bg,#f7f7f5);border-bottom:1px solid var(--notion-border,#e3e2e0);}
+.stk-rail-body{overflow:auto;}
+.stk-rail-item{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12.5px;cursor:pointer;border-bottom:1px solid var(--notion-border,#f2f1ee);white-space:nowrap;color:inherit;}
+.stk-rail-item:hover{background:rgba(35,131,226,.06);}
+.stk-rail-item.active{background:rgba(35,131,226,.10);color:#2383e2;font-weight:600;box-shadow:inset 3px 0 0 #2383e2;}
+.stk-rail-name{overflow:hidden;text-overflow:ellipsis;}
+.stk-rail-n{margin-left:auto;color:var(--notion-text-light,#787774);font-size:11.5px;font-variant-numeric:tabular-nums;}
+.stk-rail-item.active .stk-rail-n{color:#2383e2;}
+.stk-main .stk-tablewrap{flex:1;min-width:0;}
+@media (max-width:760px){.stk-main{flex-direction:column;}.stk-rail{flex:0 0 auto;width:100%;max-height:210px;}.stk-main .stk-tablewrap{width:100%;}}
 .stk-meta{font-size:12px;color:var(--notion-text-light,#787774);white-space:nowrap;}
-.stk-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;max-height:110px;overflow:auto;}
-.stk-chip{border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:inherit;border-radius:999px;padding:2px 10px;font-size:12px;cursor:pointer;white-space:nowrap;line-height:1.5;}
-.stk-chip:hover{border-color:#2383e2;}
-.stk-chip.active{background:#2383e2;border-color:#2383e2;color:#fff;font-weight:700;}
-.stk-chipn{opacity:.6;font-size:11px;margin-left:2px;}
-.stk-chip.active .stk-chipn{opacity:.85;}
 .stk-status{margin:0 0 8px;padding:8px 12px;border-radius:7px;font-size:13px;}
 .stk-status-wait{background:#eef4ff;color:#1d4ed8;}
 .stk-status-ok{background:#e7f5e9;color:#2e7d32;}
@@ -1946,7 +1963,7 @@ const STK_CLIENT_JS = `
     lowOnly: document.getElementById('stkLowOnly'),
     exportBtn: document.getElementById('stkExport'),
     refresh: document.getElementById('stkRefresh'),
-    chips: document.getElementById('stkChips'),
+    rail: document.getElementById('stkRail'),
     wrap: document.getElementById('stkTableWrap'),
     count: document.getElementById('stkCount'),
     status: document.getElementById('stkStatus')
@@ -1999,19 +2016,19 @@ const STK_CLIENT_JS = `
     out.push('</tbody></table>');
     return out.join('');
   }
-  function renderChips(base){
+  function renderRail(base){
     var counts={}, order=[];
     for(var i=0;i<base.length;i++){ var whs=whsOf(base[i]); for(var j=0;j<whs.length;j++){ var w=whs[j]; if(counts[w]==null){ counts[w]=0; order.push(w); } counts[w]++; } }
     order.sort(function(x,y){ return x<y?-1:(x>y?1:0); });
-    var html='<button class="stk-chip'+(state.wh===''?' active':'')+'" data-w="">全部<span class="stk-chipn">'+base.length+'</span></button>';
-    for(var k=0;k<order.length;k++){ var w=order[k]; html+='<button class="stk-chip'+(state.wh===w?' active':'')+'" data-w="'+esc(w)+'">'+esc(whLabel(w))+'<span class="stk-chipn">'+counts[w]+'</span></button>'; }
-    els.chips.innerHTML=html;
-    Array.prototype.forEach.call(els.chips.querySelectorAll('.stk-chip'),function(c){ c.addEventListener('click',function(){ state.wh=c.getAttribute('data-w'); render(); }); });
+    var html='<div class="stk-rail-item'+(state.wh===''?' active':'')+'" data-w=""><span class="stk-rail-name">全部倉庫</span><span class="stk-rail-n">'+base.length+'</span></div>';
+    for(var k=0;k<order.length;k++){ var w=order[k]; html+='<div class="stk-rail-item'+(state.wh===w?' active':'')+'" data-w="'+esc(w)+'"><span class="stk-rail-name">'+esc(whLabel(w))+'</span><span class="stk-rail-n">'+counts[w]+'</span></div>'; }
+    els.rail.innerHTML=html;
+    Array.prototype.forEach.call(els.rail.querySelectorAll('.stk-rail-item'),function(c){ c.addEventListener('click',function(){ state.wh=c.getAttribute('data-w'); render(); }); });
   }
   var _filtered=[];
   function render(){
     var base=[]; for(var i=0;i<ITEMS.length;i++){ if(baseFilter(ITEMS[i])) base.push(ITEMS[i]); }
-    renderChips(base);
+    renderRail(base);
     var list;
     if(state.wh===''){ list=base; }
     else { list=[]; for(var i2=0;i2<base.length;i2++){ if(whsOf(base[i2]).indexOf(state.wh)>=0) list.push(base[i2]); } }
@@ -2021,10 +2038,12 @@ const STK_CLIENT_JS = `
   }
   var t=null;
   els.search.addEventListener('input',function(){ if(t) clearTimeout(t); t=setTimeout(function(){ state.q=els.search.value.trim().toLowerCase(); render(); },120); });
+  function syncSeg(){ els.view.classList.toggle('grp', state.view==='group'); }
   Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(btn){
-    btn.addEventListener('click',function(){ state.view=btn.getAttribute('data-v'); Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); save(); render(); });
+    btn.addEventListener('click',function(){ state.view=btn.getAttribute('data-v'); Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); syncSeg(); save(); render(); });
     btn.classList.toggle('active', btn.getAttribute('data-v')===state.view);
   });
+  syncSeg();
   els.hideZero.checked=state.hideZero;
   els.hideZero.addEventListener('change',function(){ state.hideZero=els.hideZero.checked; state.wh=''; save(); render(); });
   els.lowOnly.addEventListener('change',function(){ state.low=els.lowOnly.checked; state.wh=''; render(); });
@@ -6720,11 +6739,12 @@ function createAdminRouter() {
           <div class="stk-toolbar-left">
             <input type="search" id="stkSearch" class="stk-search" placeholder="搜尋料號 / 品名 / 規格…" autocomplete="off" spellcheck="false">
             <div class="stk-seg" id="stkView">
+              <span class="stk-seg-thumb"></span>
               <button type="button" data-v="list" class="active">列表</button>
               <button type="button" data-v="group">依倉庫</button>
             </div>
-            <label class="stk-check"><input type="checkbox" id="stkHideZero"> 隱藏 0</label>
-            <label class="stk-check"><input type="checkbox" id="stkLowOnly"> 只看低量/負量</label>
+            <label class="stk-sw"><input type="checkbox" id="stkHideZero"><span class="stk-sw-tr"></span>隱藏 0</label>
+            <label class="stk-sw"><input type="checkbox" id="stkLowOnly"><span class="stk-sw-tr"></span>只看低量/負量</label>
           </div>
           <div class="stk-toolbar-right">
             <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項</span>
@@ -6732,9 +6752,11 @@ function createAdminRouter() {
             <button type="button" id="stkRefresh" class="btn btn-primary">庫存更新</button>
           </div>
         </div>
-        <div id="stkChips" class="stk-chips no-print"></div>
         <div id="stkStatus" class="stk-status" style="display:none;"></div>
-        <div id="stkTableWrap" class="stk-tablewrap"></div>
+        <div class="stk-main">
+          <aside class="stk-rail no-print"><div class="stk-rail-h">倉庫</div><div class="stk-rail-body" id="stkRail"></div></aside>
+          <div id="stkTableWrap" class="stk-tablewrap"></div>
+        </div>
       </div>
       <script id="stkData" type="application/json">${dataJson}</script>
       <script>${STK_CLIENT_JS}</script>`;
