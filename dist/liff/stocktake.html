@@ -73,7 +73,9 @@
   .sys{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
   .sys .lab{font-size:9px;color:var(--txt-3);}
   .sys .v{font-size:13.5px;font-weight:700;line-height:1.1;}
+  .sys .su{font-size:10px;font-weight:600;color:var(--txt-3);}
   .qtybox{display:flex;align-items:center;gap:6px;}
+  .qu{font-size:11px;font-weight:600;color:var(--txt-3);min-width:20px;}
   .qty{width:66px;text-align:right;font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;border:1.5px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--field);color:var(--txt);outline:none;}
   .qty:focus{border-color:var(--accent);background:var(--card);}
   .qty::placeholder{color:var(--txt-3);font-weight:500;font-size:12px;}
@@ -259,14 +261,14 @@
   }
   function rowHtml(it){
     var cnt=isCounted(it)?' counted':''; var open=S.expanded[it.c]?' exp-open':''; var mopen=S.midOpen[it.c]?' mid-show':'';
-    var right='<div class="qtybox">'+diffPill(it)+'<input class="qty" inputmode="decimal" placeholder="'+esc(t('qtyPh'))+'" value="'+esc(S.counts[it.c]!=null?S.counts[it.c]:'')+'" data-c="'+esc(it.c)+'"></div>';
+    var right='<div class="qtybox">'+diffPill(it)+'<input class="qty" inputmode="decimal" placeholder="'+esc(t('qtyPh'))+'" value="'+esc(S.counts[it.c]!=null?S.counts[it.c]:'')+'" data-c="'+esc(it.c)+'">'+(it.u?'<span class="qu">'+esc(it.u)+'</span>':'')+'</div>';
     var nb=(S.batches[it.c]||[]).length;
     var chip=it.exp?'<button class="exp-chip'+(nb?' filled':'')+'" data-toggle>'+esc(t('expChip'))+(nb?' '+esc(t('batchN')(nb)):'')+(S.expanded[it.c]?' ▴':' ▾')+'</button>':'';
     var mv=midVal(it);
     var midchip='<button class="mid-chip'+(mv!=null?' filled':'')+'" data-midtoggle>'+esc(t('midChip'))+(mv!=null?' '+fmt(mv):'')+(S.midOpen[it.c]?' ▴':' ＋')+'</button>';
     return '<div class="item'+cnt+open+mopen+'" data-c="'+esc(it.c)+'"><div class="row"><div class="info"><div class="nm">'+esc(it.n)+chip+midchip+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div></div>'
-      +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(it.sys)+'</div></div>'+right+'</div>'+midPanel(it)+(it.exp?batchRows(it):'')+'</div>';
+      +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(it.sys)+(it.u?' <span class="su">'+esc(it.u)+'</span>':'')+'</div></div>'+right+'</div>'+midPanel(it)+(it.exp?batchRows(it):'')+'</div>';
   }
   function listHtml(){
     var q=S.q.toLowerCase();
