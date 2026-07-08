@@ -213,6 +213,25 @@ function initSqlite(dbPath) {
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS processed_line_messages (message_id TEXT PRIMARY KEY, processed_at TEXT NOT NULL)");
     } catch (e) { console.warn("[migration] processed_line_messages(SQLite) 建立失敗:", e?.message || e); }
+    // [fix 2026-07-08] G16: 單位規格/客戶別名 去重＋唯一索引。
+    // 過去兩表皆無唯一鍵，同(品項,單位)重複規格使換算取值不定、同(客戶,別名)重複使解析不定。
+    // 去重保留每組最小 id（與讀取端 ORDER BY id LIMIT 1 一致＝行為不變），再建唯一索引杜絕新重複。
+    try {
+        const d1 = sqlite.prepare("SELECT COUNT(*) AS n FROM product_unit_specs WHERE id NOT IN (SELECT MIN(id) FROM product_unit_specs GROUP BY product_id, unit)").get();
+        if (d1 && d1.n > 0) {
+            sqlite.exec("DELETE FROM product_unit_specs WHERE id NOT IN (SELECT MIN(id) FROM product_unit_specs GROUP BY product_id, unit)");
+            console.warn("[migration] product_unit_specs 移除 %d 筆重複(保留最早)", d1.n);
+        }
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_unit_specs_prod_unit ON product_unit_specs(product_id, unit)");
+    } catch (e) { console.warn("[migration] product_unit_specs 去重/唯一索引失敗:", e?.message || e); }
+    try {
+        const d2 = sqlite.prepare("SELECT COUNT(*) AS n FROM customer_product_aliases WHERE id NOT IN (SELECT MIN(id) FROM customer_product_aliases GROUP BY customer_id, alias)").get();
+        if (d2 && d2.n > 0) {
+            sqlite.exec("DELETE FROM customer_product_aliases WHERE id NOT IN (SELECT MIN(id) FROM customer_product_aliases GROUP BY customer_id, alias)");
+            console.warn("[migration] customer_product_aliases 移除 %d 筆重複(保留最早)", d2.n);
+        }
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_cust_prod_alias_cust_alias ON customer_product_aliases(customer_id, alias)");
+    } catch (e) { console.warn("[migration] customer_product_aliases 去重/唯一索引失敗:", e?.message || e); }
     try {
         sqlite.exec("ALTER TABLE inventory_warehouse_products ADD COLUMN safety_stock REAL NOT NULL DEFAULT 0");
     }
@@ -719,6 +738,25 @@ async function initPg() {
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS processed_line_messages (message_id TEXT PRIMARY KEY, processed_at TIMESTAMPTZ NOT NULL)");
             } catch (e) { console.warn("[migration] processed_line_messages(PG) 建立失敗:", e?.message || e); }
+            // [fix 2026-07-08] G16: 單位規格/客戶別名 去重＋唯一索引（PG 版，同 SQLite；保留每組最小 id＝與讀取端 ORDER BY id 一致）
+            try {
+                const d1 = await client.query("SELECT COUNT(*) AS n FROM product_unit_specs WHERE id NOT IN (SELECT MIN(id) FROM product_unit_specs GROUP BY product_id, unit)");
+                const n1 = Number(d1.rows?.[0]?.n || 0);
+                if (n1 > 0) {
+                    await client.query("DELETE FROM product_unit_specs WHERE id NOT IN (SELECT MIN(id) FROM product_unit_specs GROUP BY product_id, unit)");
+                    console.warn("[migration] product_unit_specs 移除 %d 筆重複(保留最早)", n1);
+                }
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_unit_specs_prod_unit ON product_unit_specs(product_id, unit)");
+            } catch (e) { console.warn("[migration] product_unit_specs 去重/唯一索引失敗:", e?.message || e); }
+            try {
+                const d2 = await client.query("SELECT COUNT(*) AS n FROM customer_product_aliases WHERE id NOT IN (SELECT MIN(id) FROM customer_product_aliases GROUP BY customer_id, alias)");
+                const n2 = Number(d2.rows?.[0]?.n || 0);
+                if (n2 > 0) {
+                    await client.query("DELETE FROM customer_product_aliases WHERE id NOT IN (SELECT MIN(id) FROM customer_product_aliases GROUP BY customer_id, alias)");
+                    console.warn("[migration] customer_product_aliases 移除 %d 筆重複(保留最早)", n2);
+                }
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_cust_prod_alias_cust_alias ON customer_product_aliases(customer_id, alias)");
+            } catch (e) { console.warn("[migration] customer_product_aliases 去重/唯一索引失敗:", e?.message || e); }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), line_message_id TEXT NOT NULL, created_at TIMESTAMPTZ)");
             }

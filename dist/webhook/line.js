@@ -508,6 +508,26 @@ async function getNextOrderNo(db, orderDate) {
     try {
         const nextKey = "order_seq_next_" + orderDate;
         const startKey = "order_seq_start_" + orderDate;
+        // [fix 2026-07-08] 原子取號（同 admin getNextOrderNoAdmin）：行程內鎖鏈只擋得住單一實例，
+        // 多實例 Cloud Run／與後台同時建單仍會先讀後寫撞號。改用 upsert + RETURNING 讓 DB 端序列化；
+        // 失敗（value 非數字等）退回舊邏輯。
+        try {
+            const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
+            const startSeq0 = startRow && startRow.value ? parseInt(startRow.value, 10) : 1;
+            const startSeq = Number.isNaN(startSeq0) ? 1 : Math.max(1, startSeq0);
+            const ret = await db.prepare(
+                "INSERT INTO app_settings (key, value) VALUES (?, ?) " +
+                "ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(app_settings.value AS INTEGER) + 1 AS TEXT) " +
+                "RETURNING value"
+            ).get(nextKey, String(startSeq + 1));
+            const newVal = ret && ret.value != null ? parseInt(String(ret.value), 10) : NaN;
+            if (Number.isFinite(newVal) && newVal >= 2) {
+                return orderDate.replace(/-/g, "") + String(newVal - 1).padStart(3, "0");
+            }
+        }
+        catch (e) {
+            console.warn("[LINE] 原子取號失敗，退回舊邏輯:", e?.message || e);
+        }
         let row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(nextKey);
         if (!row || !row.value) {
             row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);

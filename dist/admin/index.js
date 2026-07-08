@@ -106,6 +106,29 @@ function parseKnownSubCustomerLabelsForSelect(raw) {
 async function getNextOrderNoAdmin(db, orderDate) {
     const nextKey = "order_seq_next_" + orderDate;
     const startKey = "order_seq_start_" + orderDate;
+    // [fix 2026-07-08] 原子取號：過去「先讀後寫」兩個並發請求會拿到同一個 order_no
+    // （靠 ux_orders_order_no 唯一索引擋成 500）。改用單一 upsert + RETURNING：
+    // 沒有列＝插入 start+1 並回傳、已有列＝原地 +1 並回傳，兩個並發在 pg/sqlite 都會序列化，
+    // 各自拿到不同回傳值；本次序號＝回傳值-1。pg 與 SQLite(3.35+，本專案 3.49) 皆支援 RETURNING。
+    try {
+        const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
+        const startSeq0 = startRow && startRow.value ? parseInt(startRow.value, 10) : 1;
+        const startSeq = Number.isNaN(startSeq0) ? 1 : Math.max(1, startSeq0);
+        const ret = await db.prepare(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) " +
+            "ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(app_settings.value AS INTEGER) + 1 AS TEXT) " +
+            "RETURNING value"
+        ).get(nextKey, String(startSeq + 1));
+        const newVal = ret && ret.value != null ? parseInt(String(ret.value), 10) : NaN;
+        if (Number.isFinite(newVal) && newVal >= 2) {
+            const mySeq = newVal - 1;
+            return orderDate.replace(/-/g, "") + String(mySeq).padStart(3, "0");
+        }
+        // 回傳值異常（value 被改成非數字等）→ 走舊邏輯
+    }
+    catch (e) {
+        console.warn("[admin] 原子取號失敗，退回舊邏輯:", e?.message || e);
+    }
     let row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(nextKey);
     if (!row || !row.value) {
         row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
