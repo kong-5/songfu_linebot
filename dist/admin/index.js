@@ -48,6 +48,7 @@ const resolve_product_js_1 = require("../lib/resolve-product.js");
 const vision_ocr_js_1 = require("../lib/vision-ocr.js");
 const wholesale_price_js_1 = require("../lib/wholesale-price.js");
 const wholesale_snapshot_js_1 = require("../lib/wholesale-snapshot.js");
+const livestock_price_js_1 = require("../lib/livestock-price.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
 const unit_conversion_js_1 = require("../lib/unit-conversion.js");
 const gemini_order_helpers_js_1 = require("../lib/gemini-order-helpers.js");
@@ -106,6 +107,29 @@ function parseKnownSubCustomerLabelsForSelect(raw) {
 async function getNextOrderNoAdmin(db, orderDate) {
     const nextKey = "order_seq_next_" + orderDate;
     const startKey = "order_seq_start_" + orderDate;
+    // [fix 2026-07-08] 原子取號：過去「先讀後寫」兩個並發請求會拿到同一個 order_no
+    // （靠 ux_orders_order_no 唯一索引擋成 500）。改用單一 upsert + RETURNING：
+    // 沒有列＝插入 start+1 並回傳、已有列＝原地 +1 並回傳，兩個並發在 pg/sqlite 都會序列化，
+    // 各自拿到不同回傳值；本次序號＝回傳值-1。pg 與 SQLite(3.35+，本專案 3.49) 皆支援 RETURNING。
+    try {
+        const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
+        const startSeq0 = startRow && startRow.value ? parseInt(startRow.value, 10) : 1;
+        const startSeq = Number.isNaN(startSeq0) ? 1 : Math.max(1, startSeq0);
+        const ret = await db.prepare(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) " +
+            "ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(app_settings.value AS INTEGER) + 1 AS TEXT) " +
+            "RETURNING value"
+        ).get(nextKey, String(startSeq + 1));
+        const newVal = ret && ret.value != null ? parseInt(String(ret.value), 10) : NaN;
+        if (Number.isFinite(newVal) && newVal >= 2) {
+            const mySeq = newVal - 1;
+            return orderDate.replace(/-/g, "") + String(mySeq).padStart(3, "0");
+        }
+        // 回傳值異常（value 被改成非數字等）→ 走舊邏輯
+    }
+    catch (e) {
+        console.warn("[admin] 原子取號失敗，退回舊邏輯:", e?.message || e);
+    }
     let row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(nextKey);
     if (!row || !row.value) {
         row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
@@ -130,6 +154,7 @@ async function resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer) {
       SELECT id FROM orders
       WHERE customer_id = ? AND order_date = ?
       AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key, '')) = '')
+      AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')
       ORDER BY id ASC LIMIT 1
     `).get(sourceOrder.customer_id, sourceOrder.order_date);
         targetOrderId = row?.id ?? null;
@@ -139,6 +164,7 @@ async function resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer) {
       SELECT id FROM orders
       WHERE customer_id = ? AND order_date = ?
       AND TRIM(order_sub_split_key) = ?
+      AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')
       ORDER BY id ASC LIMIT 1
     `).get(sourceOrder.customer_id, sourceOrder.order_date, targetSubCustomer);
         targetOrderId = row?.id ?? null;
@@ -1605,6 +1631,7 @@ const NOTION_SIDEBAR = (active) => `
       <div class="sidebar-links">
         <a href="/admin/logistics/procurement" class="${active === "logistics-procurement" ? "active" : ""}">採購分析</a>
         <a href="/admin/logistics/market" class="${active === "logistics-market" ? "active" : ""}">北農行情</a>
+        <a href="/admin/logistics/livestock" class="${active === "logistics-livestock" ? "active" : ""}">畜產雞蛋行情</a>
         <a href="/admin/logistics/commodities" class="${active === "logistics-commodities" ? "active" : ""}">原物料行情</a>
       </div>
     </details>
@@ -1638,8 +1665,20 @@ function parseAdminCookies(header) {
     }
     return out;
 }
+let _sessionSecretCache = null;
 function getAdminSessionSecret() {
-    return process.env.ADMIN_SESSION_SECRET || "songfu-admin-dev-secret-change-in-production";
+    const env = (process.env.ADMIN_SESSION_SECRET || "").trim();
+    if (env)
+        return env;
+    // [fix 2026-07-08 資安] 未設定時「絕不」回傳寫死在原始碼的預設值——該值公開在 git，
+    // 任何看得到程式碼的人都能用它偽造管理員 session cookie 直接登入（含負責人帳號）。
+    // 改為 fail-closed：用「本次啟動隨機」祕密（安全，但重啟會使所有 session 失效需重新登入）。
+    // 正式環境務必在 Cloud Run 設定固定的 ADMIN_SESSION_SECRET，讓登入跨重啟穩定。
+    if (!_sessionSecretCache) {
+        _sessionSecretCache = crypto_1.randomBytes(48).toString("hex");
+        console.error("[SECURITY] 未設定 ADMIN_SESSION_SECRET！已改用本次啟動隨機祕密（每次重啟會登出所有人）。請盡快在 Cloud Run 設定固定值。");
+    }
+    return _sessionSecretCache;
 }
 function hashAdminPassword(password) {
     const salt = crypto_1.randomBytes(16).toString("hex");
@@ -1996,7 +2035,7 @@ function renderTopBar(workingDate, canUndo) {
         </form>
       </div>
       <div>
-        ${canUndo ? `<form method="post" action="/admin/api/rollover-undo" style="display:inline;"><button type="submit" class="btn">反悔結轉</button></form> ` : ""}
+        ${canUndo ? `<form method="post" action="/admin/api/rollover-undo" style="display:inline;" onsubmit="return confirm('確定要反悔上一次結轉？工作日期會退回前一日。');"><button type="submit" class="btn">反悔結轉</button></form> ` : ""}
         <button type="button" class="notion-rollover-btn" onclick="if(confirm('確定要結轉？結轉後工作日期將改為下一日。')) document.getElementById('rolloverForm').submit();">結轉</button>
         <form id="rolloverForm" method="post" action="/admin/api/rollover" style="display:none;"></form>
       </div>
@@ -2311,6 +2350,30 @@ function fuzzyProductScore(p, qNorm) {
 }
 function createAdminRouter() {
     const router = express_1.default.Router();
+    // [fix 2026-07-08] 全域包裹 async handler：Express 4 不會自動接住 async handler / async 中介層
+    // 丟出的 rejection，未兜底時 Node 20 預設會直接終止整個程序（Cloud Run 重啟、所有進行中請求一起死），
+    // 或請求永遠 hang。這裡攔截 router 的動詞方法與 use，把每個 handler 用 Promise.resolve().catch(next) 包起來，
+    // 讓錯誤轉交 dist/index.js:225 的全域錯誤中介層（回 500 頁）而不是 crash / hang。
+    // length >= 4 的錯誤中介層 (err,req,res,next) 不包；同步 middleware 不回傳 promise，包了也透明無副作用。
+    for (const _m of ["get", "post", "put", "delete", "patch", "all", "use"]) {
+        const _orig = router[_m].bind(router);
+        router[_m] = function (...args) {
+            const wrapped = args.map((h) => (typeof h === "function" && h.length < 4)
+                ? function (req, res, next) {
+                    try {
+                        const r = h(req, res, next);
+                        if (r && typeof r.then === "function")
+                            r.catch(next);
+                        return r;
+                    }
+                    catch (e) {
+                        next(e);
+                    }
+                }
+                : h);
+            return _orig(...wrapped);
+        };
+    }
     const db = (0, index_js_1.getDb)(dbPath);
     async function logDataChange(req, opts) {
         const logId = (0, id_js_1.newId)("dcl");
@@ -2576,6 +2639,7 @@ function createAdminRouter() {
         { title: "每日盤點", href: "/admin/inventory", keywords: ["inventory", "盤點"] },
         { title: "物流叫貨", href: "/admin/logistics/procurement", keywords: ["procurement", "採購"] },
         { title: "北農行情", href: "/admin/logistics/market", keywords: ["market", "北農", "價格"] },
+        { title: "畜產雞蛋行情", href: "/admin/logistics/livestock", keywords: ["livestock", "毛豬", "豬價", "雞", "白肉雞", "雞蛋", "蛋價", "畜產", "行情", "價格"] },
         { title: "資料匯出", href: "/admin/export", keywords: ["export", "csv", "匯出"] },
         { title: "LINE 綁定檢查", href: "/admin/line-binding", keywords: ["binding", "綁定"] },
         { title: "Gemini Prompt", href: "/admin/gemini-prompts", keywords: ["prompt", "gemini", "ab"] },
@@ -3053,6 +3117,11 @@ function createAdminRouter() {
         const newPwd = String(req.body.new_password || "");
         if (!target || newPwd.length < 4) {
             res.redirect("/admin/users?err=weak");
+            return;
+        }
+        // [fix 2026-07-08] 只有負責人本人能重設負責人密碼，否則任一經理可重設負責人密碼奪權
+        if (isAdminOwnerUsername(target) && !isAdminOwnerUsername(req.adminUsername)) {
+            res.redirect("/admin/users?err=" + encodeURIComponent("僅負責人本人可重設負責人密碼"));
             return;
         }
         const users = await loadAdminUsers();
@@ -6171,9 +6240,18 @@ function createAdminRouter() {
     });
     router.post("/inventory/warehouses/:id/delete", async (req, res) => {
         const id = req.params.id;
-        await db.prepare("DELETE FROM inventory_warehouse_products WHERE warehouse_id = ?").run(id);
-        await db.prepare("DELETE FROM daily_inventory WHERE warehouse_id = ?").run(id);
-        await db.prepare("DELETE FROM inventory_warehouses WHERE id = ?").run(id);
+        // [fix 2026-07-08] 三段 DELETE 包進單一交易，中途失敗整批回滾，不留下「歸倉/盤點刪了但庫房還在」的半刪狀態。
+        const doDelete = async (h) => {
+            await h.prepare("DELETE FROM inventory_warehouse_products WHERE warehouse_id = ?").run(id);
+            await h.prepare("DELETE FROM daily_inventory WHERE warehouse_id = ?").run(id);
+            await h.prepare("DELETE FROM inventory_warehouses WHERE id = ?").run(id);
+        };
+        if (typeof db.transaction === "function") {
+            await db.transaction(doDelete);
+        }
+        else {
+            await doDelete(db);
+        }
         res.redirect("/admin/inventory/warehouses?ok=del");
     });
     router.get("/inventory/assign", async (req, res) => {
@@ -6424,7 +6502,10 @@ function createAdminRouter() {
         const productByName = Object.fromEntries(products.map((p) => [p.name, p]));
         const now = process.env.DATABASE_URL ? new Date().toISOString() : new Date().toISOString();
         const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-        let imported = 0;
+        // [fix 2026-07-08] 先解析成待寫入列，再「先刪同(日期,倉別)範圍舊資料、後插入」包進交易＝可重複匯入(冪等)。
+        // 過去每列都 INSERT 新 id，重匯同一份 CSV 會把銷貨量加倍、盤差報表全錯。
+        const parsedRows = [];
+        const scopeKeys = new Set();
         for (let i = 0; i < lines.length; i++) {
             const cells = lines[i].split(",").map((c) => c.trim());
             if (cells.length < 3)
@@ -6439,14 +6520,27 @@ function createAdminRouter() {
             const wh = (whKey && (whById[whKey] || whByName[whKey])) || (defaultWhId && whById[defaultWhId]);
             if (!product || !wh)
                 continue;
-            const wid = wh.id;
-            const pid = product.id;
-            const id = (0, id_js_1.newId)("erp");
-            try {
-                await db.prepare("INSERT INTO erp_sales (id, record_date, warehouse_id, product_id, qty_sold, imported_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, dateStr, wid, pid, qty, now);
+            parsedRows.push({ dateStr, wid: wh.id, pid: product.id, qty });
+            scopeKeys.add(wh.id + " " + dateStr);
+        }
+        let imported = 0;
+        const doImport = async (h) => {
+            // 先清掉本次匯入涵蓋的每個(倉別,日期)既有資料，再插入 → 重匯是「取代」而非「累加」
+            for (const key of scopeKeys) {
+                const [wid, dateStr] = key.split(" ");
+                await h.prepare("DELETE FROM erp_sales WHERE warehouse_id = ? AND record_date = ?").run(wid, dateStr);
+            }
+            for (const r of parsedRows) {
+                const id = (0, id_js_1.newId)("erp");
+                await h.prepare("INSERT INTO erp_sales (id, record_date, warehouse_id, product_id, qty_sold, imported_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, r.dateStr, r.wid, r.pid, r.qty, now);
                 imported++;
             }
-            catch (_) { /* duplicate or constraint */ }
+        };
+        if (typeof db.transaction === "function") {
+            await db.transaction(doImport);
+        }
+        else {
+            await doImport(db);
         }
         res.redirect("/admin/inventory/import-erp?ok=1&count=" + imported);
     });
@@ -6603,16 +6697,24 @@ function createAdminRouter() {
             for (const k of Object.keys(nameMap)) codes[k] = true;
             for (const k of Object.keys(incMap)) codes[k] = true;
             const now = new Date().toISOString();
-            await db.prepare("DELETE FROM erp_warehouse").run();
-            let sort = 0;
-            for (const code of Object.keys(codes)) {
-                const c = String(code).trim();
-                if (!c)
-                    continue;
-                const name = String(nameMap[code] != null ? nameMap[code] : "").trim();
-                const include = incMap[code] ? 1 : 0;
-                await db.prepare("INSERT INTO erp_warehouse (code, name, include_stocktake, sort_order, updated_at) VALUES (?, ?, ?, ?, ?)").run(c, name, include, sort++, now);
-            }
+            // [fix 2026-07-08] DELETE 全表＋迴圈 INSERT 包進交易：中途失敗整批回滾，
+            // 不再把整張倉別中文名/納入盤點設定清空只留半套。
+            const doSave = async (h) => {
+                await h.prepare("DELETE FROM erp_warehouse").run();
+                let sort = 0;
+                for (const code of Object.keys(codes)) {
+                    const c = String(code).trim();
+                    if (!c)
+                        continue;
+                    const name = String(nameMap[code] != null ? nameMap[code] : "").trim();
+                    const include = incMap[code] ? 1 : 0;
+                    await h.prepare("INSERT INTO erp_warehouse (code, name, include_stocktake, sort_order, updated_at) VALUES (?, ?, ?, ?, ?)").run(c, name, include, sort++, now);
+                }
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doSave);
+            else
+                await doSave(db);
             res.redirect("/admin/inventory/warehouse-settings?ok=1");
         }
         catch (e) {
@@ -6985,6 +7087,10 @@ function createAdminRouter() {
               .catch(function(){ recognizeBtn.disabled = false; recognizeBtn.textContent = '解析並預覽品項'; showErr('請求失敗（請檢查網路或稍後再試）'); });
           });
           saveOrderBtn.addEventListener('click', function(){
+            // [fix 2026-07-08] 防連點重複送出：按下即 disable，避免建立兩筆重複紙本訂單
+            if (saveOrderBtn.dataset.submitting) return;
+            saveOrderBtn.dataset.submitting = '1';
+            saveOrderBtn.disabled = true;
             itemsJson.value = JSON.stringify(currentItems);
             form.submit();
           });
@@ -7139,6 +7245,100 @@ function createAdminRouter() {
         res.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         res.set("Content-Disposition", `attachment; filename="wholesale_${dateStr}.xlsx"`);
         res.send(buf);
+    });
+
+    // ============================================================
+    // 畜產／家禽行情（毛豬、白肉雞、雞蛋）— 農業部開放資料，自動抓＋每日快照
+    // ============================================================
+    const LIVESTOCK_CAT_LABEL = { pig: "🐖 毛豬", chicken: "🐓 白肉雞", egg: "🥚 雞蛋" };
+    /** 取要顯示的資料：優先今日快照；沒有就即時抓一次（並寫快照）。 */
+    async function getLivestockForDisplay(dateStr) {
+        const today = dateStr || new Date().toISOString().slice(0, 10);
+        const snap = await (0, livestock_price_js_1.loadLivestockSnapshot)(db, today);
+        if (snap.length) return { prices: snap, dataDate: today, source: "snapshot" };
+        // 今日還沒有快照 → 找最近一天快照
+        const latest = await db.prepare("SELECT record_date FROM livestock_price_snapshots ORDER BY record_date DESC LIMIT 1").get();
+        if (latest?.record_date) {
+            const s2 = await (0, livestock_price_js_1.loadLivestockSnapshot)(db, latest.record_date);
+            if (s2.length) return { prices: s2, dataDate: latest.record_date, source: "snapshot" };
+        }
+        // 完全沒快照 → 即時抓一次
+        const r = await (0, livestock_price_js_1.loadOrFetchLivestockPrices)(db, today);
+        return { prices: r.prices, dataDate: r.dataDate, source: r.source, errors: r.errors };
+    }
+    router.get("/logistics/livestock", async (req, res) => {
+        const okMsg = req.query.ok === "updated" ? "已更新為最新行情。" : "";
+        const errMsg = req.query.err ? String(req.query.err) : "";
+        const view = await getLivestockForDisplay();
+        const prices = view.prices || [];
+        const byCat = { pig: [], chicken: [], egg: [] };
+        for (const p of prices) { if (byCat[p.category]) byCat[p.category].push(p); }
+        const fmtP = (v) => (v == null ? "—" : (Math.round(Number(v) * 100) / 100).toString());
+        const pigRows = byCat.pig
+            .sort((a, b) => (Number(b.price) || 0) - (Number(a.price) || 0))
+            .map((p) => {
+            let d = "";
+            try { d = p.extraJson ? (JSON.parse(p.extraJson).資料日 || "") : ""; } catch (_) { }
+            return `<tr><td>${escapeHtml(p.marketName || "—")}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtP(p.price)}</td><td style="color:var(--txt-3);font-size:12px;">${escapeHtml(d)}</td></tr>`;
+        }).join("");
+        const simpleRows = (arr) => arr.map((p) => `<tr><td>${escapeHtml(p.itemLabel)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtP(p.price)}</td></tr>`).join("");
+        const card = (title, headRight, bodyHtml, unit) => `
+      <div class="notion-card" style="flex:1;min-width:260px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+          <h3 style="margin:0;font-size:15px;">${title}</h3><span style="font-size:12px;color:var(--txt-3);">${unit}</span>
+        </div>
+        <table class="notion-table" style="width:100%;border-collapse:collapse;font-size:14px;">
+          <thead><tr><th style="text-align:left;">${headRight}</th><th style="text-align:right;">價格</th>${title.includes("毛豬") ? "<th></th>" : ""}</tr></thead>
+          <tbody>${bodyHtml || `<tr><td colspan="3" style="color:var(--txt-3);padding:12px;text-align:center;">— 無資料 —</td></tr>`}</tbody>
+        </table>
+      </div>`;
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 畜產雞蛋行情</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <h1 style="font-size:20px;margin:6px 0;">畜產雞蛋行情</h1>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span style="font-size:13px;color:var(--txt-3);">資料日：<strong>${escapeHtml(view.dataDate || "—")}</strong>${view.source === "snapshot" ? "（快照）" : ""}</span>
+          <form method="post" action="/admin/logistics/livestock/refresh" style="display:inline;" onsubmit="var b=this.querySelector('button');if(b){b.disabled=true;b.textContent='更新中…';}"><button type="submit" class="btn btn-primary">更新</button></form>
+          ${prices.length ? `<a href="/admin/logistics/livestock/export.csv" class="btn">下載 CSV</a>` : ""}
+        </div>
+      </div>
+      ${okMsg ? `<div style="background:#e7f5e9;color:#2e7d32;padding:8px 12px;border-radius:8px;margin:6px 0;">${escapeHtml(okMsg)}</div>` : ""}
+      ${errMsg ? `<div style="background:#fef2f2;color:#b91c1c;padding:8px 12px;border-radius:8px;margin:6px 0;">${escapeHtml(errMsg)}</div>` : ""}
+      <p class="notion-hint" style="margin:2px 0 12px;">資料來源：<a href="${livestock_price_js_1.SOURCE_URL}" target="_blank" rel="noopener">農業部開放資料</a>（毛豬各肉品市場成交均價、白肉雞與雞蛋產地價）。每日自動更新，也可按「更新」即時抓取。毛豬各市場顯示其最新交易日。</p>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;">
+        ${card(LIVESTOCK_CAT_LABEL.egg, "品項", simpleRows(byCat.egg), "元/台斤")}
+        ${card(LIVESTOCK_CAT_LABEL.chicken, "品項", simpleRows(byCat.chicken), "元/台斤")}
+        ${card(LIVESTOCK_CAT_LABEL.pig + "（各肉品市場）", "市場", pigRows, "元/公斤")}
+      </div>`;
+        res.type("text/html").send(notionPage("畜產雞蛋行情", body, "logistics-livestock", res));
+    });
+    router.post("/logistics/livestock/refresh", express_1.default.urlencoded({ extended: true }), async (_req, res) => {
+        try {
+            const r = await (0, livestock_price_js_1.loadOrFetchLivestockPrices)(db, new Date().toISOString().slice(0, 10));
+            if (!r.prices.length) {
+                const detail = (r.errors && r.errors.length) ? r.errors.join("；") : "農業部 API 目前無資料（可能休市或尚未更新）";
+                res.redirect("/admin/logistics/livestock?err=" + encodeURIComponent("更新失敗：" + detail));
+                return;
+            }
+            res.redirect("/admin/logistics/livestock?ok=updated");
+        }
+        catch (e) {
+            console.error("[admin] livestock refresh", e?.message || e);
+            res.redirect("/admin/logistics/livestock?err=" + encodeURIComponent("更新失敗：" + String(e?.message || e).slice(0, 200)));
+        }
+    });
+    router.get("/logistics/livestock/export.csv", async (_req, res) => {
+        const view = await getLivestockForDisplay();
+        const lines = ["類別,品項/市場,價格,單位,資料日"];
+        const q = (x) => '"' + String(x == null ? "" : x).replace(/"/g, '""') + '"';
+        for (const p of (view.prices || [])) {
+            let d = view.dataDate;
+            try { if (p.extraJson) d = JSON.parse(p.extraJson).資料日 || view.dataDate; } catch (_) { }
+            lines.push([q(LIVESTOCK_CAT_LABEL[p.category] || p.category), q(p.marketName || p.itemLabel), q(p.price), q(p.unit), q(d)].join(","));
+        }
+        res.set("Content-Type", "text/csv; charset=utf-8");
+        res.set("Content-Disposition", `attachment; filename="livestock_${view.dataDate || "prices"}.csv"`);
+        res.send("﻿" + lines.join("\r\n"));
     });
 
     // ============================================================
@@ -7333,31 +7533,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
     async function insertRouteEmptyBaskets(orderId, customerId) {
         if (!orderId || !customerId)
             return;
-        try {
-            const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(customerId);
-            const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
-            // 沒設路線＝自取，不補任何空籃（含固定四角籃 C0100065）
-            if (routeLine == null) return;
-            const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
-            const erps = [];
-            if (emptyBasketErp)
-                erps.push(emptyBasketErp);
-            if (!erps.includes("C0100065"))
-                erps.push("C0100065");
-            for (const erp of erps) {
-                const prod = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(erp);
-                if (!prod)
-                    continue;
-                const exists = await db.prepare("SELECT 1 FROM order_items WHERE order_id = ? AND product_id = ? LIMIT 1").get(orderId, prod.id);
-                if (exists)
-                    continue;
-                const itemId = (0, id_js_1.newId)("item");
-                await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, 0, ?, 0, 1, NULL)").run(itemId, orderId, prod.id, prod.name, prod.unit || "個");
-            }
-        }
-        catch (e) {
-            console.error("[admin] 重新辨識補空籃失敗 order=%s:", orderId, e?.message || e);
-        }
+        // [fix 2026-07-08] 改為委派給 lib/empty-baskets.js（webhook 收單也用同一支），
+        // 空籃料號對映（查表，跳過4號籃）只維護一處，不再有多份複本可各自壞掉。
+        // 過去這裡是一份獨立複本，且在未提交工作合併時被蓋回舊的 56+路線 連號公式（5-9號線對錯籃）。
+        await empty_baskets_js_1.insertEmptyBaskets(db, customerId, [orderId]);
     }
     async function rebuildOrderItemsFromRawText(orderId, customerId, rawText) {
         const rawTrim = String(rawText || "").trim();
@@ -7596,14 +7775,24 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
         const orderId = (0, id_js_1.newId)("log");
         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-        await db.prepare("INSERT INTO logistics_orders (id, order_date, customer_id, raw_message, created_at) VALUES (?, ?, ?, ?, " + nowSql + ")").run(orderId, orderDate, customerIdPost, rawMessage);
-        for (const it of items) {
-            const itemId = (0, id_js_1.newId)("logitem");
-            const qty = parseFloat(it.quantity);
-            const needReview = it.needReview === 1 || it.needReview === true ? 1 : 0;
-            const amountVal = it.amount != null && String(it.amount).trim() !== "" ? String(it.amount).trim() : null;
-            const remarkVal = it.remark != null && String(it.remark).trim() !== "" ? String(it.remark).trim() : null;
-            await db.prepare("INSERT INTO logistics_order_items (id, order_id, product_id, raw_name, quantity, unit, remark, amount, need_review) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(itemId, orderId, it.productId || null, it.rawName || "", Number.isFinite(qty) ? qty : 0, it.unit || null, remarkVal, amountVal, needReview);
+        // [fix 2026-07-08] 物流訂單主檔＋明細多筆 INSERT 包進單一交易，中途失敗整批回滾，
+        // 不留下「有主檔沒明細」的殘缺物流單。
+        const doSave = async (h) => {
+            await h.prepare("INSERT INTO logistics_orders (id, order_date, customer_id, raw_message, created_at) VALUES (?, ?, ?, ?, " + nowSql + ")").run(orderId, orderDate, customerIdPost, rawMessage);
+            for (const it of items) {
+                const itemId = (0, id_js_1.newId)("logitem");
+                const qty = parseFloat(it.quantity);
+                const needReview = it.needReview === 1 || it.needReview === true ? 1 : 0;
+                const amountVal = it.amount != null && String(it.amount).trim() !== "" ? String(it.amount).trim() : null;
+                const remarkVal = it.remark != null && String(it.remark).trim() !== "" ? String(it.remark).trim() : null;
+                await h.prepare("INSERT INTO logistics_order_items (id, order_id, product_id, raw_name, quantity, unit, remark, amount, need_review) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(itemId, orderId, it.productId || null, it.rawName || "", Number.isFinite(qty) ? qty : 0, it.unit || null, remarkVal, amountVal, needReview);
+            }
+        };
+        if (typeof db.transaction === "function") {
+            await db.transaction(doSave);
+        }
+        else {
+            await doSave(db);
         }
         res.redirect("/admin/orders?date_from=" + encodeURIComponent(orderDate) + "&date_to=" + encodeURIComponent(orderDate) + "&ok=log_saved");
     });
@@ -8173,6 +8362,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND (oi.include_export IS NULL OR oi.include_export = 1) AND oi.voided_at IS NULL) AS export_item_count,
         (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.voided_at IS NULL) AS total_item_count,
         o.sheet_exported_at, o.lingyue_exported_at, o.lingyue_doc_no, o.lingyue_written_at, o.lingyue_queued_by,
+        o.lingyue_queued_at, o.lingyue_last_error,
         o.raw_message AS source_raw_message,
         o.approved_by, o.approved_at,
         (SELECT COUNT(*) FROM order_attachments oa WHERE oa.order_id = o.id) AS source_attachment_count
@@ -8395,8 +8585,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const dateShortForCard = (() => {
                     const m = String(o.order_date || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
                     if (!m) return o.order_date || "—";
-                    const dt = new Date(o.order_date + "T00:00:00+08:00");
-                    const wd = "日一二三四五六"[dt.getDay()] || "";
+                    // [fix 2026-07-08] 用 Date.UTC + getUTCDay 從日期本身算星期，
+                    // 過去用 new Date("...+08:00").getDay() 在 UTC 伺服器上會差一天。
+                    const dt = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+                    const wd = "日一二三四五六"[dt.getUTCDay()] || "";
                     return `${Number(m[2])}/${Number(m[3])}` + (wd ? `（${wd}）` : "");
                 })();
                 const mobileSrcText = o.is_logistics ? "紙本" : (hasText && hasImg ? "字+圖" : (hasText ? "字" : (hasImg ? "圖" : "")));
@@ -8442,7 +8634,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <td style="white-space:nowrap;" data-label="狀態">${statusPill}${expIcons ? " " + expIcons : ""}</td>
             <td style="text-align:right;white-space:nowrap;" data-label="">${o.lingyue_doc_no
                 ? `<span class="sf-pill" style="background:#e0f2f1;color:#00695c;font-weight:700;" title="已轉入凌越，單據號 ${escapeAttr(String(o.lingyue_doc_no))}${o.lingyue_queued_by ? "，由 " + escapeAttr(nameOf(o.lingyue_queued_by)) + " 轉入" : ""}（如需重轉請進明細）">✓已轉入 ↩${escapeHtml(String(o.lingyue_doc_no))}${o.lingyue_queued_by ? " ·" + escapeHtml(nameOf(o.lingyue_queued_by)) : ""}</span>`
-                : `<button type="button" class="sf-btn sm lingyue-transfer-btn" data-id="${escapeAttr(o.id)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no || ""))}" title="轉入凌越（顯示凌越料號並轉入）">轉入凌越</button>`} <a class="sf-btn sm" href="${detailUrl}">明細</a></td>
+                : `${(o.lingyue_last_error && !o.lingyue_queued_at) ? `<span class="sf-pill" style="background:#fef2f2;color:#b91c1c;font-weight:700;" title="轉入失敗：${escapeAttr(String(o.lingyue_last_error))}">⚠ 轉入失敗</span> ` : ""}<button type="button" class="sf-btn sm lingyue-transfer-btn" data-id="${escapeAttr(o.id)}" data-orderno="${escapeAttr(o.is_logistics ? "紙本" : (o.order_no || ""))}" title="${o.lingyue_last_error ? escapeAttr("上次失敗：" + String(o.lingyue_last_error) + "。修正後可再轉入") : "轉入凌越（顯示凌越料號並轉入）"}">轉入凌越</button>`} <a class="sf-btn sm" href="${detailUrl}">明細</a></td>
             <td class="order-mobile-only">${mobileCardHtml}</td>
           </tr>`;
             })
@@ -8676,15 +8868,19 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           })();
           (function(){
             function allCbs(){ return document.querySelectorAll(".order-batch-cb"); }
+            // [fix 2026-07-08] 只作用在「目前可見」的列（被篩選隱藏的列 offsetParent 為 null），
+            // 全選不再勾到看不見的訂單。
+            function cbVisible(c){ var tr = c.closest("tr"); return !!(tr && tr.offsetParent !== null); }
+            function visibleCbs(){ return Array.prototype.filter.call(allCbs(), cbVisible); }
             var allEl = document.getElementById("orderSelectAllCb");
-            if (allEl) allEl.addEventListener("change", function(){ allCbs().forEach(function(c){ c.checked = allEl.checked; }); updateBar(); });
+            if (allEl) allEl.addEventListener("change", function(){ visibleCbs().forEach(function(c){ c.checked = allEl.checked; }); updateBar(); });
             var b1 = document.getElementById("orderSelectAll");
             var b2 = document.getElementById("orderSelectNone");
             var b2b = document.getElementById("orderSelectNone2");
             var batchBar = document.getElementById("orderBatchBar");
             var obbCount = document.getElementById("obbCount");
             var selHint = document.getElementById("batchSelectedHint");
-            function countChecked(){ var n = 0; allCbs().forEach(function(c){ if (c.checked) n++; }); return n; }
+            function countChecked(){ var n = 0; allCbs().forEach(function(c){ if (c.checked && cbVisible(c)) n++; }); return n; }
             function updateBar(){
               var n = countChecked();
               if (obbCount) obbCount.textContent = n;
@@ -8692,14 +8888,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               if (batchBar) batchBar.style.display = n ? "flex" : "none";
             }
             function clearSel(){ allCbs().forEach(function(c){ c.checked = false; }); if (allEl) allEl.checked = false; updateBar(); }
-            if (b1) b1.onclick = function(){ allCbs().forEach(function(c){ c.checked = true; }); if (allEl) allEl.checked = true; updateBar(); };
+            if (b1) b1.onclick = function(){ visibleCbs().forEach(function(c){ c.checked = true; }); if (allEl) allEl.checked = true; updateBar(); };
             if (b2) b2.onclick = clearSel;
             if (b2b) b2b.onclick = clearSel;
             document.addEventListener("change", function(e){ if (e.target && e.target.classList && e.target.classList.contains("order-batch-cb")) updateBar(); });
             updateBar();
             function selectedIds(){
               var a = [];
-              allCbs().forEach(function(c){ if (c.checked) a.push(c.value); });
+              allCbs().forEach(function(c){ if (c.checked && cbVisible(c)) a.push(c.value); });
               return a;
             }
             function openBatch(kind){
@@ -8832,7 +9028,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 var okNo = !qNo || no.indexOf(qNo) >= 0;
                 var okCust = !qCust || cust.indexOf(qCust) >= 0;
                 var okRoute = !qRoute || (qRoute === "__none__" ? route === "" : route === qRoute);
-                tr.style.display = okNo && okCust && okRoute ? "" : "none";
+                var show = okNo && okCust && okRoute;
+                tr.style.display = show ? "" : "none";
+                // [fix 2026-07-08] 被篩選隱藏的列一律取消勾選，避免批次作廢/確認/改期
+                // 波及使用者看不到的訂單。dispatch change 讓批次列與計數同步更新。
+                if (!show) {
+                  var _cb = tr.querySelector("input.order-batch-cb");
+                  if (_cb && _cb.checked) { _cb.checked = false; _cb.dispatchEvent(new Event("change", { bubbles: true })); }
+                }
               });
             }
             var fo = document.getElementById("orderFilterOrderNo");
@@ -9431,15 +9634,19 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
 .order-sheet-print .order-sheet-inner { width: 100%; max-width: 190mm; margin: 0 auto; padding: 4mm 6mm; }
 </style>`;
         const parts = [];
+        const renderedIds = []; // [fix 2026-07-08] 只對「真的印出來」的訂單蓋已匯出章
         let firstOrderMeta = null;
         for (let i = 0; i < ids.length; i++) {
             const orderId = ids[i];
+            // [fix 2026-07-08] 改 LEFT JOIN：沒選客戶的訂單也要印出來（原 INNER JOIN 會整筆略過），
+            // 否則該筆不出現在揀貨稿卻照樣被蓋「已匯出」章 → 倉庫以為處理過 → 這批貨永遠沒被揀。
             const order = await db.prepare(`
       SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, c.name AS customer_name, c.teraoka_code AS customer_teraoka_code
-      FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
+      FROM orders o LEFT JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
     `).get(orderId);
             if (!order)
                 continue;
+            renderedIds.push(orderId);
             if (!firstOrderMeta) {
                 firstOrderMeta = { date: order.order_date || new Date().toISOString().slice(0, 10), customer: order.customer_name || "客戶", orderNo: order.order_no || order.id };
             }
@@ -9471,7 +9678,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div class="order-sheet-head">
           <div class="order-sheet-head-L">
             <h1>訂貨單</h1>
-            <p class="os-meta">訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name)}</p>
+            <p class="os-meta">訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name || "（未選客戶）")}</p>
           </div>
           ${orderBcImg}
         </div>
@@ -9489,7 +9696,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             return;
         }
         const tsSheet = new Date().toISOString();
-        for (const oid of ids) {
+        for (const oid of renderedIds) {
             try {
                 await db.prepare("UPDATE orders SET sheet_exported_at = ? WHERE id = ?").run(tsSheet, oid);
             }
@@ -9762,6 +9969,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         SELECT oi.quantity, oi.unit, oi.remark, oi.raw_name, p.erp_code, p.name AS product_name
         FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
         WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1)
+          AND oi.voided_at IS NULL
         ORDER BY COALESCE(oi.display_order, 999999), oi.id
       `).all(order.id);
                 const items = (itemRows || []).map((it) => {
@@ -9807,24 +10015,42 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         if (timeoutSec > 50)
             timeoutSec = 50;
         const deadline = Date.now() + timeoutSec * 1000;
+        // [fix 2026-07-08] 認領租約：過去 /wait 對「已排隊未回寫」的單無條件回傳，
+        // 多個 agent 或 agent 重啟同時 /wait 會拿到同一批單 → 各自寫入凌越 → 重複開單。
+        // 改成每張單先用條件式 UPDATE 蓋 claimed_at 認領；只有 changes=1（本次真的搶到）才回傳。
+        // 租約 90 秒內其他 /wait 不會再撿到同一張；agent 若掛掉沒回填，租約到期後自動重新可撿（自帶重試）。
+        const LEASE_MS = 90000;
         try {
             while (true) {
+                const claimBefore = new Date(Date.now() - LEASE_MS).toISOString();
                 const rows = await db.prepare(`
           SELECT o.id, o.order_no, o.order_date, o.remark, o.lingyue_queued_at, c.name AS customer_name, c.hq_cust_code, c.teraoka_code
           FROM orders o JOIN customers c ON c.id = o.customer_id
           WHERE o.lingyue_queued_at IS NOT NULL
             AND o.lingyue_written_at IS NULL
             AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
+            AND (o.lingyue_claimed_at IS NULL OR o.lingyue_claimed_at < ?)
           ORDER BY o.lingyue_queued_at ASC, o.id ASC
           LIMIT 20
-        `).all();
+        `).all(claimBefore);
                 if (rows && rows.length) {
                     const orders = [];
                     for (const order of rows) {
+                        // 條件式認領：單一 UPDATE 語句在 pg/sqlite 皆為原子，兩個並發只會有一個 changes=1。
+                        const nowIso = new Date().toISOString();
+                        const claim = await db.prepare(
+                            "UPDATE orders SET lingyue_claimed_at = ? WHERE id = ? AND lingyue_written_at IS NULL AND (lingyue_claimed_at IS NULL OR lingyue_claimed_at < ?)"
+                        ).run(nowIso, order.id, claimBefore);
+                        if (!claim || Number(claim.changes || 0) !== 1)
+                            continue; // 已被別的 agent 認領
                         const preview = await buildLingyuePreview(order);
                         if (preview.items.length) {
                             preview.queued_at = order.lingyue_queued_at ? String(order.lingyue_queued_at) : "";
                             orders.push(preview);
+                        }
+                        else {
+                            // 無可轉品項（全作廢等）：釋放認領，避免佔住租約
+                            await db.prepare("UPDATE orders SET lingyue_claimed_at = NULL WHERE id = ?").run(order.id);
                         }
                     }
                     if (orders.length) {
@@ -9869,11 +10095,27 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     continue;
                 }
                 if (!ok || !docNo) {
-                    failed.push({ order_id: orderId, reason: r?.error ? String(r.error) : "寫入未成功或缺少 doc_no" });
+                    // [fix 2026-07-08] 失敗出口：記錄錯誤。permanent（如缺料號）或累計 >=3 次即移出佇列（清 queued/claimed），
+                    // 否則保留佇列讓租約到期後自動重試（不清 claimed_at＝維持 90 秒節流，不狂重試）。
+                    const errMsg = (r?.error ? String(r.error) : "寫入未成功或缺少 doc_no").slice(0, 500);
+                    const permanent = r?.permanent === true;
+                    try {
+                        const cur = await db.prepare("SELECT COALESCE(lingyue_write_attempts, 0) AS n FROM orders WHERE id = ?").get(orderId);
+                        const n = (cur?.n || 0) + 1;
+                        if (permanent || n >= 3) {
+                            await db.prepare("UPDATE orders SET lingyue_write_attempts = ?, lingyue_last_error = ?, lingyue_queued_at = NULL, lingyue_claimed_at = NULL WHERE id = ?").run(n, errMsg, orderId);
+                        }
+                        else {
+                            await db.prepare("UPDATE orders SET lingyue_write_attempts = ?, lingyue_last_error = ? WHERE id = ?").run(n, errMsg, orderId);
+                        }
+                    }
+                    catch (_) { /* 記錄失敗不影響其他項回填 */ }
+                    failed.push({ order_id: orderId, reason: errMsg, permanent, exited_queue: permanent });
                     continue;
                 }
                 try {
-                    const ret = await db.prepare("UPDATE orders SET lingyue_doc_no = ?, lingyue_written_at = ? WHERE id = ?").run(docNo, now, orderId);
+                    // 成功：回填單號＋時間，並清掉失敗計數/錯誤與認領。
+                    const ret = await db.prepare("UPDATE orders SET lingyue_doc_no = ?, lingyue_written_at = ?, lingyue_last_error = NULL, lingyue_write_attempts = 0, lingyue_claimed_at = NULL WHERE id = ?").run(docNo, now, orderId);
                     if (ret && (ret.changes === 0)) {
                         failed.push({ order_id: orderId, reason: "查無此訂單" });
                         continue;
@@ -9926,21 +10168,29 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     snapshotAt,
                 ]);
             }
-            // 全表覆蓋（DELETE + 分批 INSERT），跨 SQLite/PG 皆可
-            await db.prepare("DELETE FROM erp_stock_items").run();
-            const CHUNK = 100;
-            for (let i = 0; i < rows.length; i += CHUNK) {
-                const chunk = rows.slice(i, i + CHUNK);
-                const ph = chunk.map(() => "(?,?,?,?,?,?,?,?)").join(",");
-                const flat = [];
-                for (const r of chunk)
-                    flat.push(...r);
-                await db.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
-            }
-            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
-            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
-            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "done");
-            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", "");
+            // [fix 2026-07-08] 全表覆蓋（DELETE + 分批 INSERT + meta 更新）包進單一交易：
+            // 過去無交易，推送中途失敗（網路斷、pool 瞬斷）會留下「半空的庫存表」且快照時間未更新，
+            // 使用者看到的是殘缺庫存卻無從察覺；交易失敗整批回滾＝保留上一份完整快照。
+            const doReplace = async (h) => {
+                await h.prepare("DELETE FROM erp_stock_items").run();
+                const CHUNK = 100;
+                for (let i = 0; i < rows.length; i += CHUNK) {
+                    const chunk = rows.slice(i, i + CHUNK);
+                    const ph = chunk.map(() => "(?,?,?,?,?,?,?,?)").join(",");
+                    const flat = [];
+                    for (const r of chunk)
+                        flat.push(...r);
+                    await h.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
+                }
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "done");
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", "");
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doReplace);
+            else
+                await doReplace(db);
             res.json({ ok: true, count: rows.length, snapshot_at: snapshotAt });
         }
         catch (e) {
@@ -9993,6 +10243,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         SELECT oi.quantity, oi.unit, oi.remark, oi.raw_name, p.erp_code, p.name AS product_name
         FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
         WHERE oi.order_id = ? AND (oi.include_export IS NULL OR oi.include_export = 1)
+          AND oi.voided_at IS NULL
         ORDER BY COALESCE(oi.display_order, 999999), oi.id
       `).all(order.id);
         let missing_count = 0;
@@ -10096,12 +10347,22 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.json({ ok: false, error: "此訂單無可轉入品項" });
                 return;
             }
+            // [fix 2026-07-08] 缺料號整單拒寫（老闆決策）：任一品項無凌越料號就不排隊/不寫入，
+            // 直接回報請先補料號。放在轉入入口＝單一把關點，直寫與佇列兩條路徑都涵蓋，也避免被拒單在佇列無限重試。
+            if (preview.missing_count > 0) {
+                const missNames = preview.items.filter((i) => !i.product_code).map((i) => i.product_name).filter(Boolean);
+                res.json({
+                    ok: false,
+                    error: `有 ${preview.missing_count} 項無凌越料號，請先到品項主檔補上料號再轉入：${missNames.slice(0, 5).join("、")}${missNames.length > 5 ? " 等" : ""}`,
+                });
+                return;
+            }
             const writeCmd = (process.env.LINGYUE_WRITE_CMD || "").trim();
             if (!writeCmd) {
                 // 這台沒接凌越橋接（雲端 Cloud Run 打不進內網）→ 標記排隊，由內網 agent 長連線等待後寫入。
                 // 清掉舊單號／回寫時間（重轉時），讓 /wait 重新撿到；記錄是誰轉的。
                 const now = new Date().toISOString();
-                await db.prepare("UPDATE orders SET lingyue_queued_at = ?, lingyue_queued_by = ?, lingyue_doc_no = NULL, lingyue_written_at = NULL WHERE id = ?").run(now, actor, order.id);
+                await db.prepare("UPDATE orders SET lingyue_queued_at = ?, lingyue_queued_by = ?, lingyue_doc_no = NULL, lingyue_written_at = NULL, lingyue_claimed_at = NULL, lingyue_write_attempts = 0, lingyue_last_error = NULL WHERE id = ?").run(now, actor, order.id);
                 res.json({ ok: true, queued: true, message: "已排入凌越匯入佇列，內網小幫手會在數秒內寫入並回填單號。", ...preview });
                 return;
             }
@@ -10447,8 +10708,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const orderDateShort = (() => {
             const mm = String(order.order_date || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
             if (!mm) return order.order_date || "—";
-            const dt = new Date(order.order_date + "T00:00:00+08:00");
-            const wd = "日一二三四五六"[dt.getDay()] || "";
+            // [fix 2026-07-08] Date.UTC + getUTCDay，避免 UTC 伺服器上星期差一天
+            const dt = new Date(Date.UTC(Number(mm[1]), Number(mm[2]) - 1, Number(mm[3])));
+            const wd = "日一二三四五六"[dt.getUTCDay()] || "";
             return `${Number(mm[2])}/${Number(mm[3])}` + (wd ? `（${wd}）` : "");
         })();
         // 客戶名 fallback
@@ -12221,16 +12483,22 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const subVal = targetSubCustomer === "" ? null : targetSubCustomer;
-            const targetOrderId = await resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer);
             const phUp = itemIds.map(() => "?").join(",");
-            if (targetOrderId === orderId) {
-                await db.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
-            }
-            else {
-                await db.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(targetOrderId, subVal, orderId, ...itemIds);
-                // 拆出去的子單是獨立一趟配送 → 空籃各自重新記錄（冪等：已有就不重複補）
-                await empty_baskets_js_1.insertEmptyBaskets(db, sourceOrder.customer_id, [targetOrderId]);
-            }
+            // [fix 2026-07-08] 建新單(resolveSplitTargetOrder 內)＋搬品項＋補空籃包進單一交易，
+            // 中途失敗整批回滾，不留「建了空殼新單卻沒搬到品項」的半套狀態。傳 tx handle 給共用函式。
+            const doMove = async (h) => {
+                const targetOrderId = await resolveSplitTargetOrder(h, sourceOrder, targetSubCustomer);
+                if (targetOrderId === orderId) {
+                    await h.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
+                }
+                else {
+                    await h.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(targetOrderId, subVal, orderId, ...itemIds);
+                    // 拆出去的子單是獨立一趟配送 → 空籃各自重新記錄（冪等：已有就不重複補）
+                    await empty_baskets_js_1.insertEmptyBaskets(h, sourceOrder.customer_id, [targetOrderId]);
+                }
+                return targetOrderId;
+            };
+            const targetOrderId = (typeof db.transaction === "function") ? await db.transaction(doMove) : await doMove(db);
             res.json({ ok: true, targetOrderId });
         }
         catch (e) {
@@ -12270,15 +12538,21 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const moved = [];
-            for (const [subName, ids] of groups) {
-                const targetOrderId = await resolveSplitTargetOrder(db, sourceOrder, subName);
-                if (targetOrderId === orderId) continue;
-                const ph = ids.map(() => "?").join(",");
-                await db.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${ph})`).run(targetOrderId, subName, orderId, ...ids);
-                // 子單是獨立一趟配送 → 空籃各自重新記錄（冪等）
-                await empty_baskets_js_1.insertEmptyBaskets(db, sourceOrder.customer_id, [targetOrderId]);
-                moved.push({ subCustomer: subName, orderId: targetOrderId, count: ids.length });
-            }
+            // [fix 2026-07-08] 整批拆單包進單一交易：中途某子客戶失敗則整批回滾，不留半套拆單。
+            // moved 只在交易成功回傳後才送出（失敗會被外層 catch 接住回 500，不會誤報）。
+            const doSplit = async (h) => {
+                for (const [subName, ids] of groups) {
+                    const targetOrderId = await resolveSplitTargetOrder(h, sourceOrder, subName);
+                    if (targetOrderId === orderId) continue;
+                    const ph = ids.map(() => "?").join(",");
+                    await h.prepare(`UPDATE order_items SET order_id = ?, sub_customer = ? WHERE order_id = ? AND id IN (${ph})`).run(targetOrderId, subName, orderId, ...ids);
+                    // 子單是獨立一趟配送 → 空籃各自重新記錄（冪等）
+                    await empty_baskets_js_1.insertEmptyBaskets(h, sourceOrder.customer_id, [targetOrderId]);
+                    moved.push({ subCustomer: subName, orderId: targetOrderId, count: ids.length });
+                }
+            };
+            if (typeof db.transaction === "function") await db.transaction(doSplit);
+            else await doSplit(db);
             res.json({ ok: true, moved });
         }
         catch (e) {
@@ -12635,12 +12909,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const merge = String(req.body?.merge_mode || "replace").trim() === "append";
             const prev = String(order.raw_message || "").trim();
             const finalRaw = merge && prev ? `${prev}\n${pasted}` : pasted;
-            await db.prepare("UPDATE orders SET raw_message = ? WHERE id = ?").run(finalRaw, orderId);
+            // [fix 2026-07-08] 先用傳入的 finalRaw 解析重建明細，成功才覆寫 raw_message。
+            // 過去先覆寫 raw 再解析，解析失敗時原始訊息已被蓋掉、永久遺失且與明細不一致。
             const result = await rebuildOrderItemsFromRawText(orderId, order.customer_id, finalRaw);
             if (!result.ok) {
                 res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=apply_raw_parse&back=" + encodeURIComponent(backTo) + "#pasteRaw");
                 return;
             }
+            await db.prepare("UPDATE orders SET raw_message = ? WHERE id = ?").run(finalRaw, orderId);
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=raw_applied&back=" + encodeURIComponent(backTo) + "#items");
         }
         catch (e) {
@@ -12671,17 +12947,37 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             };
             for (const row of existingItems) {
                 const itemId = row.id;
+                // [fix 2026-07-08] 只更新「表單有送出欄位」的品項。作廢品項在明細頁不會渲染
+                // qty/unit/remark/sub_customer 輸入框，若照樣進迴圈會把它的單位重設成公斤、
+                // 備註與子客戶清空。沒有任何對應欄位就跳過該列。
+                if (!(("qty_" + itemId) in body) && !(("unit_" + itemId) in body) &&
+                    !(("remark_" + itemId) in body) && !(("sub_customer_" + itemId) in body) &&
+                    !(("ord_" + itemId) in body)) {
+                    continue;
+                }
                 const qtyRaw = body["qty_" + itemId];
                 const qtyParsed = parseFloat(qtyRaw);
                 const nextQty = Number.isFinite(qtyParsed) && qtyParsed >= 0 ? qtyParsed : (Number.isFinite(Number(row.quantity)) ? Number(row.quantity) : 0);
                 const unitRaw = (body["unit_" + itemId] ?? "").trim();
-                const nextUnit = unitRaw || "公斤";
+                const inputUnit = unitRaw || "公斤";
                 const remarkInput = (body["remark_" + itemId] ?? "").trim();
                 const subCustomerInput = (body["sub_customer_" + itemId] ?? "").trim();
                 const prevUnit = String(row.unit || "").trim();
                 const prevRemark = String(row.remark || "").trim();
+                // [fix 2026-07-08] 手動輸入質量單位（斤/台斤/克/兩）比照 LINE 進單一律換成公斤，
+                // 避免「3斤」被原樣存成 3斤、下游當成 3公斤計（斤仍被當公斤的殘留路徑）。
+                // resolved 傳 null → applyOrderUnitConversion 只套內建物理換算，不動品項規則，行為可預期。
+                const enteredQty = nextQty;
+                const massConv = await (0, unit_conversion_js_1.applyOrderUnitConversion)(db, { rules: [] }, null, enteredQty, inputUnit);
+                nextQty = Number.isFinite(Number(massConv.quantity)) ? Number(massConv.quantity) : enteredQty;
+                const nextUnit = (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(massConv.unit || inputUnit, "公斤");
                 let nextRemark = remarkInput;
-                const convertedToKg = prevUnit && prevUnit !== "公斤" && nextUnit === "公斤";
+                // 因質量換算而變成公斤：備註補記原始「Ｎ<單位>」（如 3斤）
+                if (nextUnit === "公斤" && (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(inputUnit, "公斤") !== "公斤") {
+                    nextRemark = (0, unit_conversion_js_1.withOriginCallRemark)(nextRemark || null, enteredQty, inputUnit, nextUnit);
+                }
+                // 使用者手動把單位改成公斤（本身非質量換算單位，如把→公斤）時，沿用舊行為補原始單位標記
+                const convertedToKg = prevUnit && prevUnit !== "公斤" && nextUnit === "公斤" && (0, unit_conversion_js_1.normalizeOrderUnitForStorage)(inputUnit, "公斤") === "公斤";
                 if (convertedToKg && !nextRemark) {
                     const originTag = fmtQty(row.quantity) + prevUnit;
                     nextRemark = prevRemark
@@ -12780,6 +13076,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.status(404).send("訂單不存在");
             return;
         }
+        // [fix 2026-07-08] 狀態機前置守衛：作廢單／客訴單不可被「確認」直接復活成 approved。
+        // 過去無檢查，一鍵確認會把 deleted/complaint 單改成 approved，留下矛盾狀態並讓作廢單重新出貨。
+        const curStatus = String(order.status || "").toLowerCase().trim();
+        if (curStatus === "deleted" || curStatus === "complaint") {
+            const msg = curStatus === "deleted" ? "此訂單已作廢，請先『取消作廢』再確認" : "此訂單為客訴狀態，請先由客訴頁還原為訂單再確認";
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent(msg) + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+            return;
+        }
         const actor = req.adminUsername || "system";
         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
         await db.prepare("UPDATE orders SET status = ?, approved_by = ?, approved_at = " + nowSql + " WHERE id = ?").run("approved", actor, orderId);
@@ -12876,6 +13180,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const order = await db.prepare("SELECT id, order_no, status FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
+            return;
+        }
+        // [fix 2026-07-08] 作廢單不可直接轉客訴（會把 deleted 單復活進客訴佇列）。
+        if (String(order.status || "").toLowerCase().trim() === "deleted") {
+            const wantsJson0 = (req.get("x-requested-with") === "XMLHttpRequest") || String(req.get("accept") || "").indexOf("application/json") >= 0;
+            if (wantsJson0) { res.status(400).json({ ok: false, error: "此訂單已作廢，請先取消作廢再轉客訴" }); return; }
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent("此訂單已作廢，請先取消作廢再轉客訴"));
             return;
         }
         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
@@ -13470,7 +13781,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/orders">訂單審核</a> / <a href="/admin/orders/${encodeURIComponent(orderId)}">訂單明細</a> / 增加品項</div>
         <h1 class="notion-page-title">增加品項</h1>
         <div class="notion-card">
-          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add" id="addItemForm">
+          <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add" id="addItemForm" onsubmit="if(this.dataset.submitting)return false;this.dataset.submitting='1';return true;">
             <div class="review-product-picker" style="position:relative;max-width:520px;margin-bottom:14px;">
               <label style="display:block;margin-bottom:6px;font-weight:500;">品項（打字搜尋，支援模糊比對）</label>
               <input type="text" class="review-product-search" autocomplete="off" placeholder="輸入品名、料號或條碼…" style="width:100%;box-sizing:border-box;padding:8px 12px;" />
@@ -13670,7 +13981,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div class="order-sheet-head">
           <div class="order-sheet-head-L">
             <h1>訂貨單</h1>
-            <p class="os-meta">訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name)}</p>
+            <p class="os-meta">訂單編號：${escapeHtml(order.order_no ?? "—")}　日期：${escapeHtml(order.order_date)}　客戶：${escapeHtml(order.customer_name || "（未選客戶）")}</p>
           </div>
           ${orderBcHeader}
         </div>
@@ -13727,6 +14038,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         if (!name) {
             res.redirect("/admin/customers/new?err=name");
             return;
+        }
+        // [fix 2026-07-08] 同一 LINE 群組不可綁到兩個客戶（會造成叫貨歸屬錯亂）。
+        if (lineGroupId) {
+            const clash = await db.prepare("SELECT id, name FROM customers WHERE line_group_id = ? LIMIT 1").get(lineGroupId);
+            if (clash) {
+                res.redirect("/admin/customers/new?err=" + encodeURIComponent(`此 LINE 群組已綁定客戶「${clash.name || clash.id}」，不能重複綁定`));
+                return;
+            }
         }
         const id = (0, id_js_1.newId)("cust");
         await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, known_sub_customers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, knownSubCustomers);
@@ -14158,6 +14477,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             if (wantsJson) { res.status(400).json({ ok: false, error: "請填客戶名稱" }); return; }
             res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=name");
             return;
+        }
+        // [fix 2026-07-08] 同一 LINE 群組不可綁到兩個客戶，否則該群組叫貨歸屬會錯亂。
+        if (lineGroupId) {
+            const clash = await db.prepare("SELECT id, name FROM customers WHERE line_group_id = ? AND id != ? LIMIT 1").get(lineGroupId, id);
+            if (clash) {
+                const msg = `此 LINE 群組已綁定客戶「${clash.name || clash.id}」，不能重複綁定（會造成叫貨歸屬錯亂）。請先解除該客戶的群組綁定。`;
+                if (wantsJson) { res.status(409).json({ ok: false, error: msg }); return; }
+                res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=" + encodeURIComponent(msg));
+                return;
+            }
         }
         try {
             const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
@@ -14592,11 +14921,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           }
           function moveRow(row, toActive){
             var statusCell = row.querySelector(".customer-status-cell");
-            var btn = row.querySelector(".customer-toggle-btn");
+            // [fix 2026-07-08] 原本更新的是不存在的 .customer-toggle-btn（列上只有 .customer-edit-btn），
+            // 導致編輯按鈕的 data-active 沒被更新 → 停用/啟用後重開彈窗仍讀到舊狀態，一按儲存又把舊狀態寫回 DB。
+            // 改為更新 .customer-edit-btn 的 data-active（不動它的圖示內容）。
+            var editBtn = row.querySelector(".customer-edit-btn");
             var dot = row.querySelector(".sf-dot");
             if (statusCell) statusCell.innerHTML = toActive ? '<span class="sf-pill ok">啟用</span>' : '<span class="sf-pill">停用</span>';
             if (dot) dot.className = "sf-dot" + (toActive ? " ok" : "");
-            if (btn){ btn.dataset.active = toActive ? "1" : "0"; btn.textContent = toActive ? "停用" : "啟用"; }
+            if (editBtn){ editBtn.dataset.active = toActive ? "1" : "0"; }
             var fromTbody = row.parentNode;
             // 啟用 → 依綁定狀態進 bound/unbound；停用 → inactive
             var hasGroup = !!row.querySelector(".sf-pill.warn") ? false : true;
@@ -14763,9 +15095,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     res.redirect("/admin/customers?err=" + encodeURIComponent("請選擇要綁定的客戶"));
                     return;
                 }
-                const target = await db.prepare("SELECT id, line_group_name, name FROM customers WHERE id = ?").get(customerId);
+                const target = await db.prepare("SELECT id, line_group_name, line_group_id, name FROM customers WHERE id = ?").get(customerId);
                 if (!target) {
                     res.redirect("/admin/customers?err=" + encodeURIComponent("客戶不存在"));
+                    return;
+                }
+                // [fix 2026-07-08] 該客戶若已綁「別的」群組，直接覆寫會讓舊群組叫貨失效。先擋下請人工確認。
+                if (target.line_group_id && String(target.line_group_id).trim() && String(target.line_group_id).trim() !== groupId) {
+                    res.redirect("/admin/customers?err=" + encodeURIComponent(`客戶「${target.name}」已綁定另一個 LINE 群組，若確定要改綁請先到該客戶編輯頁清除舊群組再操作`));
                     return;
                 }
                 const keepName = target.line_group_name && String(target.line_group_name).trim() !== "" ? target.line_group_name : groupName;
@@ -14878,12 +15215,25 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.redirect("/admin/customers?err=" + encodeURIComponent("此客戶已有訂單，無法刪除。請改為停用。"));
                 return;
             }
-            await db.prepare("DELETE FROM customers WHERE id = ?").run(id);
+            // [fix 2026-07-08] 過去只擋訂單，客戶若有別名/筆跡提示/籃子紀錄/Gemini用量/範例圖等會撞 FK。
+            // 交易內先清掉這些「隨客戶消滅」的中繼/衍生資料再刪客戶；basket_logs 的分項/歷史在 PG 為 ON DELETE CASCADE。
+            const doDel = async (h) => {
+                await h.prepare("DELETE FROM customer_product_aliases WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM customer_handwriting_hints WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM customer_order_image_examples WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM gemini_usage_log WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM rhythm_daily_signals WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM basket_logs WHERE customer_id = ?").run(id);
+                await h.prepare("DELETE FROM customers WHERE id = ?").run(id);
+            };
+            if (typeof db.transaction === "function") await db.transaction(doDel);
+            else await doDel(db);
         }
         catch (e) {
             console.error("[admin] 客戶刪除失敗:", e?.message || e);
-            if (wantsJson) { res.status(500).json({ ok: false, error: "刪除失敗：" + (e?.message || String(e)).slice(0, 120) }); return; }
-            res.redirect("/admin/customers?err=" + encodeURIComponent("刪除失敗"));
+            const msg = "此客戶仍被其他資料引用，無法刪除。建議改為停用。";
+            if (wantsJson) { res.status(409).json({ ok: false, error: msg }); return; }
+            res.redirect("/admin/customers?err=" + encodeURIComponent(msg));
             return;
         }
         if (wantsJson) { res.json({ ok: true }); return; }
@@ -15250,9 +15600,19 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const noteLabel = (req.body?.note_label ?? "").trim() || null;
         const conversionKg = req.body?.conversion_kg !== undefined && req.body.conversion_kg !== "" ? parseFloat(req.body.conversion_kg) : null;
         const syncLine = conversionKg != null && Number.isFinite(conversionKg) && conversionKg > 0;
-        const specId = (0, id_js_1.newId)("pus");
+        let specId = (0, id_js_1.newId)("pus");
         try {
-            await db.prepare("INSERT INTO product_unit_specs (id, product_id, unit, note_label, conversion_kg) VALUES (?, ?, ?, ?, ?)").run(specId, productId, unit, noteLabel, conversionKg);
+            // [fix 2026-07-08] 同品項同單位已存在就改成更新，不再新增重複列。
+            // 過去無查重也無唯一鍵，重複列會讓換算取值不定。
+            const existingSpec = await db.prepare("SELECT id FROM product_unit_specs WHERE product_id = ? AND unit = ? ORDER BY id LIMIT 1").get(productId, unit);
+            if (existingSpec?.id) {
+                specId = existingSpec.id;
+                const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+                await db.prepare("UPDATE product_unit_specs SET note_label = ?, conversion_kg = ?, updated_at = " + nowSql + " WHERE id = ?").run(noteLabel, conversionKg, specId);
+            }
+            else {
+                await db.prepare("INSERT INTO product_unit_specs (id, product_id, unit, note_label, conversion_kg) VALUES (?, ?, ?, ?, ?)").run(specId, productId, unit, noteLabel, conversionKg);
+            }
         }
         catch (e) {
             if (redirectToEdit) {
@@ -15949,8 +16309,26 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.redirect("/admin/products?err=" + encodeURIComponent("此品項已被訂單使用，無法刪除。請改為停用。"));
             return;
         }
-        await db.prepare("DELETE FROM products WHERE id = ?").run(id);
-        res.redirect("/admin/products?ok=del");
+        // [fix 2026-07-08] 過去只擋訂單，品項若有俗名/單位換算/包裝規格/筆跡提示等中繼資料，
+        // DELETE 會撞 FK 錯誤。改為在交易內先清掉這些「沒有此品項就沒意義」的中繼資料再刪品項；
+        // 若仍被其他營運資料（庫存/盤差等）引用而失敗，整批回滾並回友善訊息（不再是原始 PG 錯誤）。
+        try {
+            const doDel = async (h) => {
+                await h.prepare("DELETE FROM product_unit_specs WHERE product_id = ?").run(id);
+                await h.prepare("DELETE FROM product_packaging_ratios WHERE product_id = ?").run(id);
+                await h.prepare("DELETE FROM customer_product_aliases WHERE product_id = ?").run(id);
+                await h.prepare("DELETE FROM customer_handwriting_hints WHERE product_id = ?").run(id);
+                await h.prepare("DELETE FROM rhythm_daily_signals WHERE product_id = ?").run(id);
+                await h.prepare("DELETE FROM products WHERE id = ?").run(id);
+            };
+            if (typeof db.transaction === "function") await db.transaction(doDel);
+            else await doDel(db);
+            res.redirect("/admin/products?ok=del");
+        }
+        catch (e) {
+            console.error("[admin] product delete", e?.message || e);
+            res.redirect("/admin/products?err=" + encodeURIComponent("此品項仍被其他資料引用（如庫存、盤點、物流單），無法刪除。建議改為停用。"));
+        }
     });
     router.get("/import", async (req, res) => {
         const msg = req.query.ok ? `<p style='color:green'>已匯入 ${req.query.ok} 筆品項。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
@@ -16899,10 +17277,15 @@ YY小吃, C5678...,</pre>
           const data = collectFormData(recipientIds);
           const btn = document.getElementById('send-confirm-btn');
           btn.disabled = true; btn.textContent = '傳送中…';
-          const r = await fetch('/admin/broadcast/send', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
-          const j = await r.json();
-          if (j.ok) { location.href = '/admin/broadcast?sent=' + (j.sent||0); }
-          else { btn.disabled = false; btn.textContent = '確定送出'; alert('傳送失敗：' + (j.error || '')); }
+          // [fix 2026-07-08] fetch/json 網路錯誤過去沒接住 → 按鈕永遠卡在「傳送中…」。
+          try {
+            const r = await fetch('/admin/broadcast/send', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
+            const j = await r.json();
+            if (j.ok) { location.href = '/admin/broadcast?sent=' + (j.sent||0); return; }
+            btn.disabled = false; btn.textContent = '確定送出'; alert('傳送失敗：' + (j.error || ''));
+          } catch(e){
+            btn.disabled = false; btn.textContent = '確定送出'; alert('傳送失敗：網路異常，請重試（' + (e && e.message || e) + '）');
+          }
         }
         renderColorSwatches();
         updatePreview();
@@ -17349,7 +17732,7 @@ YY小吃, C5678...,</pre>
         res.type("text/html").send(notionPage("公告管理", body, "announcements", res));
     });
 
-    router.get("/announcements/new", async (req, res) => {
+    router.get("/announcements/new", requireManager, async (req, res) => {
         const templateId = String(req.query.template || "").trim();
         if (!templateId) {
             const cards = announcement_templates_js_1.listTemplates().map((t) =>
@@ -17458,7 +17841,7 @@ function annAddItemRow(id){
         res.type("text/html").send(notionPage("新增公告", body, "announcements", res));
     });
 
-    router.post("/announcements", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+    router.post("/announcements", requireManager, express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const templateId = String(req.body.template_id || "").trim();
         const tpl = announcement_templates_js_1.getTemplate(templateId);
         if (!tpl) { res.status(400).send("未知的模板"); return; }
@@ -17512,7 +17895,7 @@ ${sentInfo}
 
 <div class="notion-card" style="margin-top:24px;padding:20px;max-width:760px;">
   <h3 style="margin:0 0 12px;font-size:15px;">傳送至 LINE 群組</h3>
-  <form method="post" action="/admin/announcements/${encodeURIComponent(id)}/send" onsubmit="return confirm('確定傳送至選定的 LINE 群組？');">
+  <form method="post" action="/admin/announcements/${encodeURIComponent(id)}/send" onsubmit="if(this.dataset.submitting)return false;if(!confirm('確定傳送至選定的 LINE 群組？'))return false;this.dataset.submitting='1';return true;">
     <div class="field" style="margin-bottom:14px;">
       <label class="fl">傳送對象</label>
       <select name="recipients" style="width:100%;max-width:340px;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:6px;background:#fafafa;">
@@ -17527,7 +17910,7 @@ ${sentInfo}
         res.type("text/html").send(notionPage(row.title, body, "announcements", res));
     });
 
-    router.post("/announcements/:id/delete", async (req, res) => {
+    router.post("/announcements/:id/delete", requireManager, async (req, res) => {
         await db.prepare("DELETE FROM announcements WHERE id = ?").run(req.params.id);
         res.redirect("/admin/announcements");
     });
@@ -17548,7 +17931,7 @@ ${sentInfo}
         }
     });
 
-    router.post("/announcements/:id/send", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+    router.post("/announcements/:id/send", requireManager, express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const id = req.params.id;
         const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
         const row = await db.prepare("SELECT template_id, title, payload_json FROM announcements WHERE id = ?").get(id);

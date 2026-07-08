@@ -102,21 +102,30 @@ async function upsertBasketLogLines(db, args) {
     const now = nowSqlExpr();
     const { id: logId } = await getOrCreateBasketLog(db, { customerId, logDate, lineGroupId, reporterUserId, reporterDisplayName });
     const prevLines = await getBasketLinesForLog(db, logId);
-    // 刪舊插新
-    await db.prepare("DELETE FROM basket_log_lines WHERE basket_log_id = ?").run(logId);
-    for (const l of cleanLines) {
-        const lid = (0, id_js_1.newId)("bskl");
-        await db.prepare(
-            "INSERT INTO basket_log_lines (id, basket_log_id, basket_kind, basket_no, taken_to, picked_up, updated_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, " + now + ")"
-        ).run(lid, logId, l.kind, l.no, l.takenTo, l.pickedUp);
-    }
     // 同步更新 basket_logs.taken_to/picked_up 為三規格總計（向後相容舊欄位）
     let sumTo = 0, sumPick = 0;
     for (const l of cleanLines) { sumTo += l.takenTo; sumPick += l.pickedUp; }
-    await db.prepare(
-        "UPDATE basket_logs SET taken_to = ?, picked_up = ?, raw_message = ?, updated_at = " + now + " WHERE id = ?"
-    ).run(sumTo, sumPick, rawMessage ?? null, logId);
+    // [fix 2026-07-08] 刪舊分項＋插新分項＋回寫總計包進單一交易；過去無交易，
+    // 中途失敗（或並發）會留下「分項與 basket_logs 總計不一致」或撞唯一索引丟半套資料。
+    const doWrite = async (h) => {
+        await h.prepare("DELETE FROM basket_log_lines WHERE basket_log_id = ?").run(logId);
+        for (const l of cleanLines) {
+            const lid = (0, id_js_1.newId)("bskl");
+            await h.prepare(
+                "INSERT INTO basket_log_lines (id, basket_log_id, basket_kind, basket_no, taken_to, picked_up, updated_at) " +
+                "VALUES (?, ?, ?, ?, ?, ?, " + now + ")"
+            ).run(lid, logId, l.kind, l.no, l.takenTo, l.pickedUp);
+        }
+        await h.prepare(
+            "UPDATE basket_logs SET taken_to = ?, picked_up = ?, raw_message = ?, updated_at = " + now + " WHERE id = ?"
+        ).run(sumTo, sumPick, rawMessage ?? null, logId);
+    };
+    if (typeof db.transaction === "function") {
+        await db.transaction(doWrite);
+    }
+    else {
+        await doWrite(db);
+    }
     // history 快照
     try {
         const hid = (0, id_js_1.newId)("bskh");

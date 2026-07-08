@@ -306,16 +306,7 @@ function detectCustomerIntent(text) {
             ],
         },
     ];
-    /** 從訊息中抽取籃數（簡單啟發式） */
-    function extractBasketCount(text) {
-        if (!text) return null;
-        const numMatch = String(text).match(/(\d+).{0,3}(個|顆)?籃/);
-        if (numMatch) return parseInt(numMatch[1], 10);
-        const cnMap = { "一":1,"二":2,"兩":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,"十":10 };
-        const cnMatch = String(text).match(/([一二兩三四五六七八九十]).{0,3}(個|顆)?籃/);
-        if (cnMatch) return cnMap[cnMatch[1]] ?? null;
-        return null;
-    }
+    // [fix 2026-07-08] extractBasketCount 已搬至模組頂層（外層 basket_return 標註處也要用），此處不再定義。
     const matched = [];
     let primaryIntent = null;
     for (const { key, patterns } of intents) {
@@ -333,6 +324,20 @@ function detectCustomerIntent(text) {
         keywords: matched.map(x => x.keyword),
         allMatches: matched,
     };
+}
+/** 從訊息中抽取籃數（簡單啟發式）
+ * [fix 2026-07-08] 原本定義在 detectCustomerIntent 內部（區域函式），但約 L1614 的外層 basket_return
+ * 意圖標註處也呼叫它 → 拋 ReferenceError 被 try/catch 靜默吞掉，籃數 remark/稽核永遠寫不進去。
+ * 搬到模組頂層，內外兩處共用同一實作。
+ */
+function extractBasketCount(text) {
+    if (!text) return null;
+    const numMatch = String(text).match(/(\d+).{0,3}(個|顆)?籃/);
+    if (numMatch) return parseInt(numMatch[1], 10);
+    const cnMap = { "一":1,"二":2,"兩":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,"十":10 };
+    const cnMatch = String(text).match(/([一二兩三四五六七八九十]).{0,3}(個|顆)?籃/);
+    if (cnMatch) return cnMap[cnMatch[1]] ?? null;
+    return null;
 }
 /** 向後相容：原本只有「客訴」用途的舊函式名 */
 function detectComplaintKeywords(text) {
@@ -503,6 +508,26 @@ async function getNextOrderNo(db, orderDate) {
     try {
         const nextKey = "order_seq_next_" + orderDate;
         const startKey = "order_seq_start_" + orderDate;
+        // [fix 2026-07-08] 原子取號（同 admin getNextOrderNoAdmin）：行程內鎖鏈只擋得住單一實例，
+        // 多實例 Cloud Run／與後台同時建單仍會先讀後寫撞號。改用 upsert + RETURNING 讓 DB 端序列化；
+        // 失敗（value 非數字等）退回舊邏輯。
+        try {
+            const startRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
+            const startSeq0 = startRow && startRow.value ? parseInt(startRow.value, 10) : 1;
+            const startSeq = Number.isNaN(startSeq0) ? 1 : Math.max(1, startSeq0);
+            const ret = await db.prepare(
+                "INSERT INTO app_settings (key, value) VALUES (?, ?) " +
+                "ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(app_settings.value AS INTEGER) + 1 AS TEXT) " +
+                "RETURNING value"
+            ).get(nextKey, String(startSeq + 1));
+            const newVal = ret && ret.value != null ? parseInt(String(ret.value), 10) : NaN;
+            if (Number.isFinite(newVal) && newVal >= 2) {
+                return orderDate.replace(/-/g, "") + String(newVal - 1).padStart(3, "0");
+            }
+        }
+        catch (e) {
+            console.warn("[LINE] 原子取號失敗，退回舊邏輯:", e?.message || e);
+        }
         let row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(nextKey);
         if (!row || !row.value) {
             row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(startKey);
@@ -776,6 +801,28 @@ function createLineWebhook() {
                 if (!consumeLineWebhookMessageOnce(event.message?.id)) {
                     console.log("[LINE] 略過重複訊息（同 message.id），避免重複建品項");
                     continue;
+                }
+                // [fix 2026-07-08] 訊息層級持久化去重：line_message_id 只在「新建訂單」時落地，
+                // 累加品項的訊息僅靠上面的記憶體 Set 去重，跨實例／重啟／Cloud Tasks at-least-once 重投遞時
+                // 記憶體 Set 遺失且 L809 的 dupByOrder 查不到 → 同訊息品項重複寫入。
+                // 這裡在訊息入口先 INSERT 一筆到 processed_line_messages（message_id 為主鍵），
+                // 衝突（DO NOTHING → changes=0）代表已處理過，直接略過，達成跨程序冪等。
+                // 放在「訊息層級」最前面（非訂單層級），故不影響拆單時多筆訂單共用同一 message_id 的既有行為。
+                if (curLineMessageId) {
+                    try {
+                        // nowSql 尚未在此定義（在 accepting 檢查後才有），此處自算時間 SQL。
+                        const nowSqlDedup = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+                        const insDedup = await db.prepare(
+                            "INSERT INTO processed_line_messages (message_id, processed_at) VALUES (?, " + nowSqlDedup + ") ON CONFLICT (message_id) DO NOTHING"
+                        ).run(curLineMessageId);
+                        if (insDedup && Number(insDedup.changes || 0) === 0) {
+                            console.log("[LINE] 持久化去重命中（processed_line_messages），略過重複訊息 messageId=%s", curLineMessageId);
+                            continue;
+                        }
+                    } catch (e) {
+                        // 去重表寫入失敗不可阻斷正常收單（放行；仍有記憶體 Set + dupByOrder 兩層防護）
+                        console.warn("[LINE] 持久化去重寫入失敗（放行）messageId=%s: %s", curLineMessageId, e?.message || e);
+                    }
                 }
                 const msgType = event.message.type;
                 if (event.source)
@@ -1082,7 +1129,7 @@ function createLineWebhook() {
                         await reply(lineClient, event.replyToken, "請在已綁定客戶的群組內叫貨。", db);
                         continue;
                     }
-                    const inCollecting = groupId ? collectingByGroup.has(groupId) : false;
+                    // [fix 2026-07-08] 原本在此算 inCollecting 布林，但長 await 後 session 可能已被結單，改在解析後重新取 session（見下方 liveSession），此處不再預判。
                     const messageId = event.message.id;
                     let imageBuf = null;
                     if (channelAccessToken) {
@@ -1093,6 +1140,10 @@ function createLineWebhook() {
                             if (imgResp.ok) {
                                 const rawBuf = Buffer.from(await imgResp.arrayBuffer());
                                 imageBuf = await (0, line_image_compress_js_1.compressLineImageBuffer)(rawBuf);
+                            }
+                            else {
+                                // [fix 2026-07-08] 原本非 2xx 完全靜默，圖片下載 404/410/5xx 無跡可查；補 log 方便追。
+                                console.warn("[LINE] 圖片下載非 2xx status=%s messageId=%s（imageBuf 為空，將僅存附件/繼續）", imgResp.status, messageId);
                             }
                         }
                         catch (e) {
@@ -1114,8 +1165,16 @@ function createLineWebhook() {
                         customerId: customer.id,
                     };
                     const { parsed: parsedFromImg, ocrText } = await (0, parse_order_from_image_js_1.parseOrderItemsFromImageBuffer)(imageBuf, fallbackUnitImg, imgParseOpts);
-                    if (inCollecting) {
-                        const session = collectingByGroup.get(groupId);
+                    // [fix 2026-07-08] OCR+Gemini 解析可能耗時 10-40 秒，期間 30 秒自動結單可能已把本群組 session 刪掉。
+                    // 不能再用解析前算的 inCollecting 布林 + 直接讀 session.orderId（session 可能已是 undefined → TypeError，整張照片全遺失，且 message.id 已被 consume 導致 LINE 重送也略過）。
+                    // 改為解析後「重新」取 session；仍在則走收單累加分支，並更新 lastActivity + 重排 finalize 計時器避免解析中被結單；不在則往下走「未收單新建」分支。
+                    const liveSession = groupId ? collectingByGroup.get(groupId) : null;
+                    if (liveSession) {
+                        const session = liveSession;
+                        session.lastActivity = Date.now();
+                        persistCollectSession(db, groupId, session).catch(()=>{});
+                        scheduleAutoFinalize(groupId, session);
+                        scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         const ocrLine = ocrText || "[圖片]";
                         const orderDateVal = (await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId))?.order_date || getTaipeiOrderDate();
                         const baseRawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
@@ -1136,7 +1195,10 @@ function createLineWebhook() {
                                     lineMessageId: curLineMessageId,
                                 });
                                 newOrderIds.push(oid);
-                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, oid);
+                                // [fix 2026-07-08] 收單中圖片拆單的新訂單 raw_message 只放本次 OCR，
+                                // 不繼承 session 主訂單的既有 raw（newRawAppend），否則結單 rebuild 時
+                                // 主訂單既有品項會落入拆單主客戶桶造成跨單重複（同未收單拆單修法）。
+                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(ocrLine, oid);
                                 await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
                                 await insertParsedItemsForOrder(db, oid, session.customerId, items, fallbackUnitImg);
                             }
@@ -1159,7 +1221,8 @@ function createLineWebhook() {
                     }
                     else {
                         const orderDate = getTaipeiOrderDate();
-                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customer.id, orderDate);
+                        // [fix 2026-07-08] 累加品項的同日訂單查詢須排除作廢(deleted)/客訴(complaint)軟刪除單，否則員工作廢後客戶再叫貨會附加進作廢單→漏出貨；並加 ORDER BY order_no 讓拆單後多張同日單附加到穩定的第一張。
+                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customer.id, orderDate);
                         const ocrLine = ocrText || "[圖片]";
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
@@ -1177,7 +1240,9 @@ function createLineWebhook() {
                                     lineMessageId: curLineMessageId,
                                 });
                                 newOrderIds.push(oid);
-                                const rawFull = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + ocrLine;
+                                // [fix 2026-07-08] 拆單的新訂單 raw_message 只放本次 OCR 內容，不要繼承既有同日訂單的 raw。
+                                // 原本併入 orderRow.raw_message → 結單 rebuild 時舊訂單品項（subCustomer 空）會落入新拆單的主客戶桶，造成跨單重複出貨。
+                                const rawFull = ocrLine;
                                 await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(rawFull, oid);
                                 await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
                                 await insertParsedItemsForOrder(db, oid, customer.id, items, fallbackUnitImg);
@@ -1260,7 +1325,8 @@ function createLineWebhook() {
                         console.log("[LINE] 進入收單流程 customerId=%s orderDate=%s rest=%s", customerId, orderDate, rest.slice(0, 50));
                     const lineForRaw = String(text || "").trim();
                     if (!rest) {
-                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
+                        // [fix 2026-07-08] 排除作廢/客訴軟刪除單並加 ORDER BY，避免累加進作廢單、附加到不穩定的任意單。
+                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
                         let orderId;
                         if (orderRow) {
                             orderId = orderRow.id;
@@ -1279,6 +1345,7 @@ function createLineWebhook() {
                         if (groupId) {
                             const session = { orderId, allOrderIds: [orderId], customerId, lastActivity: Date.now() };
                             collectingByGroup.set(groupId, session);
+                            persistCollectSession(db, groupId, session).catch(()=>{}); // [fix 2026-07-08] 補持久化，Cloud Run 重啟後可恢復 session
                             scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         }
@@ -1319,6 +1386,7 @@ function createLineWebhook() {
                         if (groupId) {
                             const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId, lastActivity: Date.now() };
                             collectingByGroup.set(groupId, session);
+                            persistCollectSession(db, groupId, session).catch(()=>{}); // [fix 2026-07-08] 補持久化，Cloud Run 重啟後可恢復 session
                             scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         }
@@ -1327,7 +1395,8 @@ function createLineWebhook() {
                         }
                         continue;
                     }
-                    let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
+                    // [fix 2026-07-08] 排除作廢/客訴軟刪除單並加 ORDER BY，避免累加進作廢單、附加到不穩定的任意單。
+                    let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
                     let orderId;
                     if (orderRow) {
                         orderId = orderRow.id;
@@ -1346,6 +1415,7 @@ function createLineWebhook() {
                     if (groupId) {
                         const session = { orderId, allOrderIds: [orderId], customerId, lastActivity: Date.now() };
                         collectingByGroup.set(groupId, session);
+                        persistCollectSession(db, groupId, session).catch(()=>{}); // [fix 2026-07-08] 補持久化，Cloud Run 重啟後可恢復 session
                         scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                     }
@@ -1358,7 +1428,8 @@ function createLineWebhook() {
                     continue;
                 }
                 if (text === "今天叫了什麼" || text === "今日訂單" || text === "今日叫貨") {
-                    const orderRow = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
+                    // [fix 2026-07-08] 查詢供顯示的今日訂單須排除作廢/客訴軟刪除單，並加 ORDER BY 取穩定的第一張。
+                    const orderRow = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
                     if (!orderRow) {
                         await reply(lineClient, event.replyToken, "今日尚無訂單。", db);
                         continue;
@@ -1375,7 +1446,8 @@ function createLineWebhook() {
                     continue;
                 }
                 const normLineText = text.replace(/[\uFF10-\uFF19]/g, (ch) => String(ch.charCodeAt(0) - 0xff10));
-                const orderRowForEdit = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, orderDate);
+                // [fix 2026-07-08] 線上改單目標訂單須排除作廢/客訴軟刪除單（不該讓客戶改到已作廢的單），並加 ORDER BY 取穩定的第一張。
+                const orderRowForEdit = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
                 if (orderRowForEdit) {
                     const custRowEdit = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
                     const fallbackUnitEdit = custRowEdit?.default_unit?.trim() || "公斤";
@@ -1520,11 +1592,14 @@ function createLineWebhook() {
                     if (earlyIntent.intent === "complaint" || earlyIntent.intent === "return_request") {
                         try {
                             const todayDate = getTaipeiOrderDate();
-                            let target = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, todayDate);
+                            // [fix 2026-07-08] 語義不同於「累加品項」：此處要找「有效訂單」來標記客訴，
+                            // 故只排除 'deleted'（不可對作廢單標客訴），但**不排除** 'complaint'——
+                            // 否則同一客戶第二則客訴訊息會找不到已標客訴的單而誤跑 fallback。
+                            let target = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' ORDER BY order_no").get(customerId, todayDate);
                             if (!target) {
-                                // 沒今天訂單就找該客戶最後一張訂單作為投訴對象（不限日期，避免方言差異）
+                                // 沒今天訂單就找該客戶最後一張訂單作為投訴對象（不限日期，避免方言差異）；同樣只排除作廢單。
                                 target = await db.prepare(
-                                    "SELECT id FROM orders WHERE customer_id = ? ORDER BY order_date DESC, updated_at DESC LIMIT 1"
+                                    "SELECT id FROM orders WHERE customer_id = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' ORDER BY order_date DESC, updated_at DESC LIMIT 1"
                                 ).get(customerId);
                             }
                             const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -1626,7 +1701,8 @@ function createLineWebhook() {
                 // 不再要求先輸入「收單」；若尚未有 session，收到文字即自動開單
                 if (groupId && !collectingByGroup.has(groupId)) {
                     const autoOrderDate = getTaipeiOrderDate();
-                    let autoOrder = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ?").get(customerId, autoOrderDate);
+                    // [fix 2026-07-08] 自動開單累加的同日訂單查詢須排除作廢/客訴軟刪除單，否則作廢後客戶再叫貨會附加進作廢單→漏出貨；並加 ORDER BY 取穩定的第一張。
+                    let autoOrder = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, autoOrderDate);
                     let autoOrderId;
                     if (autoOrder) {
                         autoOrderId = autoOrder.id;
@@ -1752,6 +1828,14 @@ function createLineWebhook() {
                 }
                 const parsed = await (0, parse_order_message_js_1.parseOrderMessage)(text, fallbackUnit, parseOpts2);
                 console.log("[LINE] 解析結果 筆數:", parsed.length, parsed.length ? "品項:" + parsed.map((p) => p.rawName + " " + p.quantity).join(", ") : "");
+                // [fix 2026-07-08] parseOrderMessage 可能 >30 秒，期間 30 秒自動結單可能已 finalize 本 session（並跑過整單 rebuild）。
+                // 若 session 已不在（或已換成別張），這批品項的 raw 已在 appendRawLineToOrders 寫入，rebuild 已涵蓋；
+                // 此處再 insert 會與 rebuild 競態導致同批品項寫兩次。故偵測到已被結單就略過 insert。
+                const stillActive = groupId ? collectingByGroup.get(groupId) : null;
+                if (!stillActive || stillActive.orderId !== session.orderId) {
+                    console.log("[LINE] 解析完成時 session 已結單（rebuild 已涵蓋此批），略過重複 insert orderId=%s", orderId);
+                    continue;
+                }
                 const rawSnap = (await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId))?.raw_message ?? "";
                 if (parsed.length > 0 && mustSplitOrdersBySubCustomer(parsed)) {
                     const map = groupParsedItemsBySubCustomer(parsed);
@@ -1824,15 +1908,23 @@ function createLineWebhook() {
             // 先回 200 給 LINE，避免 LINE 逾時後重送並觸發更多重複處理
             res.status(200).send("OK");
             (async () => {
-                try {
-                    for (const ev of events) {
+                // [fix 2026-07-08] 原本任一 event enqueue 失敗就 fallback 重跑「全部」events，
+                // 已成功入列的會被 Cloud Tasks 執行一次 + fallback 再處理一次 → 重複處理。
+                // 改為逐則捕捉，只把「入列失敗」的 events 收集起來 fallback 直接處理；
+                // 加上新的持久化去重（processed_line_messages）作為最後一道保險，即使仍有重疊也不會重複寫入品項。
+                const failedEvents = [];
+                for (const ev of events) {
+                    try {
                         await (0, cloud_tasks_line_js_1.enqueueLineEventTask)(ev);
                     }
+                    catch (e) {
+                        console.error("[LINE] Cloud Tasks enqueue 單則失敗，改 fallback 直接處理該則:", e?.message || e);
+                        failedEvents.push(ev);
+                    }
                 }
-                catch (e) {
-                    console.error("[LINE] Cloud Tasks enqueue 失敗，改直接處理（fallback）:", e?.message || e);
-                    // 回退直接處理：dedup 機制（記憶體 Set + DB line_message_id）防止重複下單
-                    processLineWebhookEvents(events).catch((e2) => console.error("[LINE] Cloud Tasks fallback 直接處理失敗:", e2?.message || e2));
+                if (failedEvents.length) {
+                    // 回退直接處理：dedup 三層（記憶體 Set + DB line_message_id + processed_line_messages）防止重複下單
+                    processLineWebhookEvents(failedEvents).catch((e2) => console.error("[LINE] Cloud Tasks fallback 直接處理失敗:", e2?.message || e2));
                 }
             })();
             return;

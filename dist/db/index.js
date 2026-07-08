@@ -38,6 +38,72 @@ function createPgWrapper(pool) {
                 },
             };
         },
+        // [fix 2026-07-08] 交易：從 pool 取單一 client 跑 BEGIN/COMMIT，中途丟錯自動 ROLLBACK。
+        // fn 收到與 db 相同的 prepare 介面（get/all/run），所有語句共用同一連線＝原子性。
+        // 只放「純寫入」進來（先在外面把解析/讀取算完），交易越短越好，避免長時間佔住連線。
+        async transaction(fn) {
+            const client = await pool.connect();
+            try {
+                await client.query("BEGIN");
+                const tx = {
+                    prepare(sql) {
+                        return {
+                            get: (...params) => client.query(sqlForPg(sql), params).then((r) => r.rows[0] ?? null),
+                            all: (...params) => client.query(sqlForPg(sql), params).then((r) => r.rows),
+                            run: (...params) => client.query(sqlForPg(sql), params).then((r) => ({ changes: r.rowCount ?? 0 })),
+                        };
+                    },
+                };
+                const result = await fn(tx);
+                await client.query("COMMIT");
+                return result;
+            }
+            catch (e) {
+                try { await client.query("ROLLBACK"); } catch (_) { /* 連線已壞，rollback 也會失敗，忽略 */ }
+                throw e;
+            }
+            finally {
+                client.release();
+            }
+        },
+    };
+}
+/** 建立 SQLite 版 db 介面（含交易）；兩處建立點共用，避免重複。 */
+function makeSqliteWrapper(sqlite) {
+    return {
+        prepare(sql) {
+            const stmt = sqlite.prepare(sql);
+            return {
+                get(...params) { return Promise.resolve(stmt.get(...params)); },
+                all(...params) { return Promise.resolve(stmt.all(...params)); },
+                run(...params) { return Promise.resolve(stmt.run(...params)); },
+            };
+        },
+        // [fix 2026-07-08] SQLite 交易：better-sqlite3 為同步單連線，BEGIN/COMMIT 包住寫入即可；
+        // 失敗 ROLLBACK。僅用於本機開發，正式為 PostgreSQL。
+        async transaction(fn) {
+            sqlite.exec("BEGIN");
+            try {
+                const tx = {
+                    prepare(sql) {
+                        const stmt = sqlite.prepare(sql);
+                        return {
+                            get: (...params) => Promise.resolve(stmt.get(...params)),
+                            all: (...params) => Promise.resolve(stmt.all(...params)),
+                            run: (...params) => Promise.resolve(stmt.run(...params)),
+                        };
+                    },
+                };
+                const result = await fn(tx);
+                sqlite.exec("COMMIT");
+                return result;
+            }
+            catch (e) {
+                try { sqlite.exec("ROLLBACK"); } catch (_) { /* ignore */ }
+                throw e;
+            }
+        },
+        close() { sqlite.close(); },
     };
 }
 function getDb(dbPath) {
@@ -50,17 +116,7 @@ function getDb(dbPath) {
     if (!db) {
         const sqlite = new better_sqlite3_1.default(dbPath);
         sqlite.pragma("journal_mode = WAL");
-        db = {
-            prepare(sql) {
-                const stmt = sqlite.prepare(sql);
-                return {
-                    get(...params) { return Promise.resolve(stmt.get(...params)); },
-                    all(...params) { return Promise.resolve(stmt.all(...params)); },
-                    run(...params) { return Promise.resolve(stmt.run(...params)); },
-                };
-            },
-            close() { sqlite.close(); },
-        };
+        db = makeSqliteWrapper(sqlite);
     }
     return db;
 }
@@ -115,6 +171,11 @@ function initSqlite(dbPath) {
         "ALTER TABLE orders ADD COLUMN lingyue_queued_by TEXT",
         // 盤點：中價貨（品質較差）數量，與上貨合計為 counted_qty；mid_qty 單獨保留供品質標注
         "ALTER TABLE stocktake_count ADD COLUMN mid_qty REAL",
+        // [fix 2026-07-08] 凌越 /wait 認領租約：agent 撿走時蓋時間戳，其他 agent／同一 agent 重啟在租約內不會重撿→防重複開單
+        "ALTER TABLE orders ADD COLUMN lingyue_claimed_at TEXT",
+        // [fix 2026-07-08] 凌越寫入失敗出口：累計嘗試次數與最後錯誤；permanent 或超過上限即移出佇列並顯示原因
+        "ALTER TABLE orders ADD COLUMN lingyue_write_attempts INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE orders ADD COLUMN lingyue_last_error TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -148,6 +209,31 @@ function initSqlite(dbPath) {
         )`);
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_line_sessions_last_activity ON line_collect_sessions(last_activity_at)");
     } catch (e) { console.warn("[migration] line_collect_sessions(SQLite) 建立失敗:", e?.message || e); }
+    // [fix 2026-07-08] 訊息層級持久化去重表：line_message_id 只在「新建訂單」時落地，
+    // 累加品項的訊息僅存記憶體 Set，跨實例／重啟／Cloud Tasks at-least-once 重投遞時 DB 去重查不到 → 品項重複寫入。
+    // 這張表在每則訊息入口先 INSERT，衝突即代表已處理過，直接略過（冪等）。
+    try {
+        sqlite.exec("CREATE TABLE IF NOT EXISTS processed_line_messages (message_id TEXT PRIMARY KEY, processed_at TEXT NOT NULL)");
+    } catch (e) { console.warn("[migration] processed_line_messages(SQLite) 建立失敗:", e?.message || e); }
+    // [fix 2026-07-08] G16: 單位規格/客戶別名 去重＋唯一索引。
+    // 過去兩表皆無唯一鍵，同(品項,單位)重複規格使換算取值不定、同(客戶,別名)重複使解析不定。
+    // 去重保留每組最小 id（與讀取端 ORDER BY id LIMIT 1 一致＝行為不變），再建唯一索引杜絕新重複。
+    try {
+        const d1 = sqlite.prepare("SELECT COUNT(*) AS n FROM product_unit_specs WHERE id NOT IN (SELECT MIN(id) FROM product_unit_specs GROUP BY product_id, unit)").get();
+        if (d1 && d1.n > 0) {
+            sqlite.exec("DELETE FROM product_unit_specs WHERE id NOT IN (SELECT MIN(id) FROM product_unit_specs GROUP BY product_id, unit)");
+            console.warn("[migration] product_unit_specs 移除 %d 筆重複(保留最早)", d1.n);
+        }
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_unit_specs_prod_unit ON product_unit_specs(product_id, unit)");
+    } catch (e) { console.warn("[migration] product_unit_specs 去重/唯一索引失敗:", e?.message || e); }
+    try {
+        const d2 = sqlite.prepare("SELECT COUNT(*) AS n FROM customer_product_aliases WHERE id NOT IN (SELECT MIN(id) FROM customer_product_aliases GROUP BY customer_id, alias)").get();
+        if (d2 && d2.n > 0) {
+            sqlite.exec("DELETE FROM customer_product_aliases WHERE id NOT IN (SELECT MIN(id) FROM customer_product_aliases GROUP BY customer_id, alias)");
+            console.warn("[migration] customer_product_aliases 移除 %d 筆重複(保留最早)", d2.n);
+        }
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_cust_prod_alias_cust_alias ON customer_product_aliases(customer_id, alias)");
+    } catch (e) { console.warn("[migration] customer_product_aliases 去重/唯一索引失敗:", e?.message || e); }
     try {
         sqlite.exec("ALTER TABLE inventory_warehouse_products ADD COLUMN safety_stock REAL NOT NULL DEFAULT 0");
     }
@@ -248,6 +334,9 @@ function initSqlite(dbPath) {
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS wholesale_market_snapshots (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, market_name TEXT NOT NULL, crop_name TEXT NOT NULL, category TEXT, high_price REAL, mid_price REAL, low_price REAL, created_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_wholesale_snap_date ON wholesale_market_snapshots(record_date)");
+        // [feat 2026-07-08] 畜產／家禽（毛豬/白肉雞/雞蛋）行情快照
+        sqlite.exec("CREATE TABLE IF NOT EXISTS livestock_price_snapshots (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, category TEXT NOT NULL, item_label TEXT NOT NULL, price REAL, unit TEXT, market_name TEXT, extra_json TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_livestock_price_date ON livestock_price_snapshots(record_date)");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -490,17 +579,7 @@ function initSqlite(dbPath) {
         }
         catch (_) { /* column may already exist */ }
     }
-    db = {
-        prepare(sql) {
-            const stmt = sqlite.prepare(sql);
-            return {
-                get(...params) { return Promise.resolve(stmt.get(...params)); },
-                all(...params) { return Promise.resolve(stmt.all(...params)); },
-                run(...params) { return Promise.resolve(stmt.run(...params)); },
-            };
-        },
-        close() { sqlite.close(); },
-    };
+    db = makeSqliteWrapper(sqlite);
 }
 function pgPoolOptions() {
     const raw = (DATABASE_URL || "").trim();
@@ -627,6 +706,20 @@ async function initPg() {
                 await client.query("ALTER TABLE orders ADD COLUMN lingyue_queued_by TEXT");
             }
             catch (_) { /* column may already exist */ }
+            // [fix 2026-07-08] 凌越 /wait 認領租約欄位（防多 agent／重啟重複開單）
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_claimed_at TIMESTAMPTZ");
+            }
+            catch (_) { /* column may already exist */ }
+            // [fix 2026-07-08] 凌越寫入失敗出口欄位
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_write_attempts INTEGER NOT NULL DEFAULT 0");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                await client.query("ALTER TABLE orders ADD COLUMN lingyue_last_error TEXT");
+            }
+            catch (_) { /* column may already exist */ }
             try {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_orders_line_message_id ON orders(line_message_id)");
             }
@@ -656,6 +749,29 @@ async function initPg() {
                 )`);
                 await client.query("CREATE INDEX IF NOT EXISTS idx_line_sessions_last_activity ON line_collect_sessions(last_activity_at)");
             } catch (e) { console.warn("[migration] line_collect_sessions(PG) 建立失敗:", e?.message || e); }
+            // [fix 2026-07-08] 訊息層級持久化去重表（PG 版，同 SQLite）：跨實例／重啟／Cloud Tasks 重投遞冪等去重。
+            try {
+                await client.query("CREATE TABLE IF NOT EXISTS processed_line_messages (message_id TEXT PRIMARY KEY, processed_at TIMESTAMPTZ NOT NULL)");
+            } catch (e) { console.warn("[migration] processed_line_messages(PG) 建立失敗:", e?.message || e); }
+            // [fix 2026-07-08] G16: 單位規格/客戶別名 去重＋唯一索引（PG 版，同 SQLite；保留每組最小 id＝與讀取端 ORDER BY id 一致）
+            try {
+                const d1 = await client.query("SELECT COUNT(*) AS n FROM product_unit_specs WHERE id NOT IN (SELECT MIN(id) FROM product_unit_specs GROUP BY product_id, unit)");
+                const n1 = Number(d1.rows?.[0]?.n || 0);
+                if (n1 > 0) {
+                    await client.query("DELETE FROM product_unit_specs WHERE id NOT IN (SELECT MIN(id) FROM product_unit_specs GROUP BY product_id, unit)");
+                    console.warn("[migration] product_unit_specs 移除 %d 筆重複(保留最早)", n1);
+                }
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_unit_specs_prod_unit ON product_unit_specs(product_id, unit)");
+            } catch (e) { console.warn("[migration] product_unit_specs 去重/唯一索引失敗:", e?.message || e); }
+            try {
+                const d2 = await client.query("SELECT COUNT(*) AS n FROM customer_product_aliases WHERE id NOT IN (SELECT MIN(id) FROM customer_product_aliases GROUP BY customer_id, alias)");
+                const n2 = Number(d2.rows?.[0]?.n || 0);
+                if (n2 > 0) {
+                    await client.query("DELETE FROM customer_product_aliases WHERE id NOT IN (SELECT MIN(id) FROM customer_product_aliases GROUP BY customer_id, alias)");
+                    console.warn("[migration] customer_product_aliases 移除 %d 筆重複(保留最早)", n2);
+                }
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_cust_prod_alias_cust_alias ON customer_product_aliases(customer_id, alias)");
+            } catch (e) { console.warn("[migration] customer_product_aliases 去重/唯一索引失敗:", e?.message || e); }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), line_message_id TEXT NOT NULL, created_at TIMESTAMPTZ)");
             }
@@ -770,6 +886,22 @@ async function initPg() {
             created_at TIMESTAMPTZ
           )`);
                 await client.query("CREATE INDEX IF NOT EXISTS idx_wholesale_snap_date ON wholesale_market_snapshots(record_date)");
+            }
+            catch (_) { /* table may already exist */ }
+            // [feat 2026-07-08] 畜產／家禽行情快照
+            try {
+                await client.query(`CREATE TABLE IF NOT EXISTS livestock_price_snapshots (
+            id TEXT PRIMARY KEY,
+            record_date TEXT NOT NULL,
+            category TEXT NOT NULL,
+            item_label TEXT NOT NULL,
+            price DOUBLE PRECISION,
+            unit TEXT,
+            market_name TEXT,
+            extra_json TEXT,
+            created_at TIMESTAMPTZ
+          )`);
+                await client.query("CREATE INDEX IF NOT EXISTS idx_livestock_price_date ON livestock_price_snapshots(record_date)");
             }
             catch (_) { /* table may already exist */ }
             try {

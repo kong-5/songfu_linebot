@@ -422,6 +422,7 @@
       state.idToken = liff.getIDToken();
       if (!state.idToken) {
         setStatus("err", "拿不到 ID Token。請聯絡管理員：LIFF Scopes 需要勾「openid」（LINE Console → LIFF → Edit → Scopes）");
+        setSectionsLoading(false); // [fix 2026-07-08] 早退也要關遮罩，否則錯誤訊息與「載入中…」遮罩並存、輸入被鎖
         return;
       }
       // 若 URL 沒帶 customer，嘗試從 LIFF context 拿 groupId 反查（給 Rich Menu 進入時用）
@@ -438,6 +439,7 @@
       }
       if (!state.customerId) {
         setStatus("err", "缺少 customer 參數，且此群組未綁定客戶。請從群組「空籃」訊息點連結進入。");
+        setSectionsLoading(false); // [fix 2026-07-08] 早退也要關遮罩
         return;
       }
       // 載入今日已存在的紀錄
