@@ -4021,7 +4021,6 @@ function createAdminRouter() {
         for (let i = 6; i >= 0; i--)
             trendDays.push(new Date(todayDate.getTime() - i * 86400000).toISOString().slice(0, 10));
         const sparkOrders = new Array(7).fill(0);
-        const sparkApproved = new Array(7).fill(0);
         const sparkComplaints = new Array(7).fill(0);
         try {
             const isPg = Boolean(process.env.DATABASE_URL);
@@ -4030,9 +4029,48 @@ function createAdminRouter() {
             const idxOf = (d) => trendDays.indexOf(String(d).slice(0, 10));
             const fill = (rows, arr) => { for (const r of rows || []) { const k = idxOf(r.d); if (k >= 0) arr[k] = Number(r.n) || 0; } };
             fill(await db.prepare(`SELECT ${dcol} AS d, COUNT(*) AS n FROM orders WHERE order_date >= ? AND order_date <= ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY ${dcol}`).all(from, today), sparkOrders);
-            fill(await db.prepare(`SELECT ${dcol} AS d, COUNT(*) AS n FROM orders WHERE order_date >= ? AND order_date <= ? AND COALESCE(LOWER(TRIM(status)),'') = 'approved' GROUP BY ${dcol}`).all(from, today), sparkApproved);
             fill(await db.prepare(`SELECT ${dcol} AS d, COUNT(*) AS n FROM orders WHERE order_date >= ? AND order_date <= ? AND LOWER(TRIM(COALESCE(status,''))) = 'complaint' GROUP BY ${dcol}`).all(from, today), sparkComplaints);
         } catch (e) { console.warn("[admin] dashboard sparkline query failed:", e?.message || e); }
+        // ── 北農行情：漲跌幅最大品項（最新快照日 vs 前一快照日，台北一/二以量加權合併均價）──
+        //    點入連到 /admin/logistics/market；附該品項近 14 日均價趨勢線。
+        let marketMover = null, marketSpark = null;
+        try {
+            const latestMk = await wholesale_snapshot_js_1.getLatestWholesaleSnapshotDate(db);
+            if (latestMk) {
+                const prevRow = await db.prepare("SELECT record_date FROM wholesale_market_snapshots WHERE record_date < ? ORDER BY record_date DESC LIMIT 1").get(latestMk);
+                const prevMk = prevRow?.record_date || null;
+                const wavgByCrop = async (d) => {
+                    const rows = await db.prepare("SELECT crop_name, avg_price, volume FROM wholesale_market_snapshots WHERE record_date = ? AND avg_price IS NOT NULL").all(d);
+                    const m = new Map();
+                    for (const r of rows || []) {
+                        const k = String(r.crop_name || "").trim();
+                        if (!k) continue;
+                        const a = Number(r.avg_price), v = Number(r.volume) || 0;
+                        if (!Number.isFinite(a)) continue;
+                        if (!m.has(k)) m.set(k, { wsum: 0, vsum: 0, asum: 0, cnt: 0 });
+                        const o = m.get(k); o.wsum += a * v; o.vsum += v; o.asum += a; o.cnt++;
+                    }
+                    const out = new Map();
+                    for (const [k, o] of m) out.set(k, o.vsum > 0 ? o.wsum / o.vsum : o.asum / o.cnt);
+                    return out;
+                };
+                if (prevMk) {
+                    const tMap = await wavgByCrop(latestMk), pMap = await wavgByCrop(prevMk);
+                    let best = null;
+                    for (const [crop, tAvg] of tMap) {
+                        const pAvg = pMap.get(crop);
+                        if (pAvg == null || pAvg < 1 || tAvg == null) continue;
+                        const pct = (tAvg - pAvg) / pAvg * 100;
+                        if (!best || Math.abs(pct) > Math.abs(best.pct)) best = { crop, pct, todayAvg: tAvg, prevAvg: pAvg };
+                    }
+                    if (best) {
+                        marketMover = { ...best, dir: best.pct >= 0 ? "up" : "down" };
+                        const hist = await wholesale_snapshot_js_1.loadWholesaleCropHistory(db, best.crop, 14);
+                        marketSpark = (hist || []).map(h => (h.avg != null ? Number(h.avg) : null)).filter(v => v != null && Number.isFinite(v));
+                    }
+                }
+            }
+        } catch (e) { console.warn("[admin] dashboard market mover failed:", e?.message || e); }
         let _sparkSeq = 0;
         const sparkSvg = (pts, tone) => {
             if (!Array.isArray(pts) || pts.length < 2 || pts.every(v => !v)) return "";
@@ -4125,7 +4163,9 @@ function createAdminRouter() {
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${kpiCard("今日訂單", totalOrders, "單", "近 7 日走勢 · 昨日 " + yesterdayOrders, "ok", null, "/admin/orders", { tone: "accent", badge: deltaOrders>0?`↑ +${deltaOrders}`:deltaOrders<0?`↓ ${deltaOrders}`:"持平", spark: sparkOrders })}
             ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"目前無待確認品項", pendingOrders>5?"warn":"ok", null, "/admin/orders?status=pending", { badge: pendingOrders>5?"待處理":"正常" })}
-            ${kpiCard("已確認", approvedOrders, "單", "近 7 日完成走勢", "ok", null, "/admin/orders", { badge: totalOrders?`${Math.round(approvedOrders*100/totalOrders)}%`:"—", spark: sparkApproved })}
+            ${marketMover
+                ? kpiCard("北農行情", (marketMover.pct>=0?"+":"")+marketMover.pct.toFixed(1), "%", `${marketMover.crop} $${Math.round(marketMover.prevAvg)}→$${Math.round(marketMover.todayAvg)}`, marketMover.dir==="up"?"bad":"ok", null, "/admin/logistics/market", { badge: marketMover.dir==="up"?"▲ 漲最多":"▼ 跌最多", spark: marketSpark })
+                : kpiCard("北農行情", "查看", "", "點入每日各市場行情表", "info", null, "/admin/logistics/market", { badge: "行情表" })}
             ${kpiCard("客訴", complaintsOpenTotal, "未解決", complaintsTodayNew>0?`今日新增 ${complaintsTodayNew}`:"近 7 日客訴走勢", complaintsOpenTotal>0?"bad":"ok", null, "/admin/complaints", { badge: complaintsOpenTotal>0?"未解決":"清空", spark: sparkComplaints })}
             ${kpiCard("提醒叫貨", reminderTotal, "戶", reminderCritical > 0 ? `嚴重逾期 ${reminderCritical} 戶` : reminderTotal > 0 ? "逾期未叫貨" : "全部準時", reminderCritical > 0 ? "bad" : reminderTotal > 0 ? "warn" : "ok", null, "/admin/reminders", { badge: reminderCritical>0?`嚴重 ${reminderCritical}`:reminderTotal>0?"逾期":"準時" })}
           </div>
