@@ -196,6 +196,12 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             const dateStr = String(req.query.date || req.body?.date || "").trim() || new Date().toISOString().slice(0, 10);
             if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).json({ ok: false, error: "invalid date" }); return; }
             const db = (0, index_js_1.getDb)(dbPath);
+            // 唯讀統計：目前快照涵蓋幾個交易日、最早/最晚日期
+            if (String(req.query.stat || "") === "1") {
+                const c = await db.prepare("SELECT COUNT(DISTINCT record_date) AS days, MIN(record_date) AS min_d, MAX(record_date) AS max_d, COUNT(*) AS rows FROM wholesale_market_snapshots").get();
+                res.json({ ok: true, mode: "stat", days: Number(c?.days) || 0, minDate: c?.min_d || null, maxDate: c?.max_d || null, rows: Number(c?.rows) || 0 });
+                return;
+            }
             // 帶 days 參數時做區間回補（供歷史報表一次抓過去 N 天）；否則只抓當日
             const daysRaw = parseInt(String(req.query.days || req.body?.days || "").trim(), 10);
             if (Number.isFinite(daysRaw) && daysRaw > 1) {
