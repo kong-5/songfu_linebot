@@ -1543,7 +1543,7 @@ function sfSidebar(active) {
         ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
         ${item("/admin/quotes", "quotes", "list", "客戶報價")}
       </details>
-      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","inv-stk-groups","logistics-procurement"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","inv-stk-groups","logistics-procurement","logistics-market","logistics-livestock"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "box", "倉庫設定")}
@@ -1551,6 +1551,8 @@ function sfSidebar(active) {
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
+        ${item("/admin/logistics/market", "logistics-market", "truck", "北農行情")}
+        ${item("/admin/logistics/livestock", "logistics-livestock", "truck", "畜產雞蛋行情")}
       </details>
       <details class="sf-nav-group" ${["customers","products","ai-examples"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">主檔管理</div></summary>
