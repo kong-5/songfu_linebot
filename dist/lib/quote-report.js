@@ -482,6 +482,93 @@ async function seedTemplateReport(db, ym) {
 }
 exports.seedTemplateReport = seedTemplateReport;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 飯店客戶報價：每家飯店各一份報價單。表頭存 hotel_quote，品項沿用 quote_item
+// （report_id = hotel_quote.id）。因此 getItems/addItem/updateItem/deleteItem 皆可共用。
+// ─────────────────────────────────────────────────────────────────────────────
+async function listHotelQuotes(db) {
+    return await db.prepare(
+        "SELECT * FROM hotel_quote ORDER BY customer_name ASC, created_at DESC"
+    ).all();
+}
+exports.listHotelQuotes = listHotelQuotes;
+
+async function getHotelQuote(db, id) {
+    return await db.prepare("SELECT * FROM hotel_quote WHERE id = ?").get(id);
+}
+exports.getHotelQuote = getHotelQuote;
+
+/** 取最新一份月報 id（新增飯店報價時以月報為底帶入品項）。 */
+async function getLatestMonthlyReportId(db) {
+    const row = await db.prepare("SELECT id FROM quote_report ORDER BY ym DESC LIMIT 1").get();
+    return row ? row.id : null;
+}
+exports.getLatestMonthlyReportId = getLatestMonthlyReportId;
+
+/**
+ * 新增飯店報價。預設以「最新月報」為底帶入全部品項與價格，之後再調整飯店專屬價格。
+ * 若無月報則以標準品項清單為底。回傳新 id（hq_ 前綴）。
+ */
+async function createHotelQuote(db, opts) {
+    const name = String(opts.customerName || "").trim();
+    if (!name) throw new Error("請輸入飯店名稱");
+    const id = newId("hq");
+    const header = { ...DEFAULT_HEADER, ...(opts.header || {}) };
+    await db.prepare(
+        `INSERT INTO hotel_quote (id, customer_id, customer_name, title, subtitle, company, address, tel, fax, status, note, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`
+    ).run(
+        id, opts.customerId || null, name, header.title, header.subtitle, header.company,
+        header.address, header.tel, header.fax, opts.note || null, nowIso(), nowIso()
+    );
+    let sourceId = opts.copyFromReportId || (await getLatestMonthlyReportId(db));
+    if (sourceId) {
+        const src = await getItems(db, sourceId);
+        let i = 0;
+        for (const it of src) {
+            await addItem(db, id, {
+                category: it.category, name: it.name, spec: it.spec,
+                price: it.is_quoted ? it.price : null, is_quoted: it.is_quoted, sort_order: i++,
+            });
+        }
+    } else if (opts.seedWhenEmpty !== false) {
+        let i = 0;
+        for (const [nm, spec, price, category] of SEED_JULY_ITEMS) {
+            await addItem(db, id, { category, name: nm, spec, price, sort_order: i++ });
+        }
+    }
+    return id;
+}
+exports.createHotelQuote = createHotelQuote;
+
+async function updateHotelHeader(db, id, header) {
+    const cur = await getHotelQuote(db, id);
+    const name = header.customer_name != null && String(header.customer_name).trim()
+        ? String(header.customer_name).trim()
+        : (cur ? cur.customer_name : "飯店");
+    await db.prepare(
+        `UPDATE hotel_quote SET customer_name = ?, title = ?, subtitle = ?, company = ?, address = ?, tel = ?, fax = ?, note = ?, updated_at = ? WHERE id = ?`
+    ).run(
+        name,
+        header.title ?? DEFAULT_HEADER.title, header.subtitle ?? DEFAULT_HEADER.subtitle,
+        header.company ?? DEFAULT_HEADER.company, header.address ?? DEFAULT_HEADER.address,
+        header.tel ?? DEFAULT_HEADER.tel, header.fax ?? DEFAULT_HEADER.fax,
+        header.note ?? null, nowIso(), id
+    );
+}
+exports.updateHotelHeader = updateHotelHeader;
+
+async function setHotelStatus(db, id, status) {
+    await db.prepare("UPDATE hotel_quote SET status = ?, updated_at = ? WHERE id = ?").run(status, nowIso(), id);
+}
+exports.setHotelStatus = setHotelStatus;
+
+async function deleteHotelQuote(db, id) {
+    await db.prepare("DELETE FROM quote_item WHERE report_id = ?").run(id);
+    await db.prepare("DELETE FROM hotel_quote WHERE id = ?").run(id);
+}
+exports.deleteHotelQuote = deleteHotelQuote;
+
 /**
  * 開機一次性 seed：確保 2026-07 月報存在（帶入 7 月範本），讓使用者一登入就有底稿。
  * 用 app_settings 旗標 quote_seeded_2026_07 記住「已跑過」，之後每次部署都不會重跑；

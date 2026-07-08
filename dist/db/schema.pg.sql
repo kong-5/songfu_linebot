@@ -452,3 +452,21 @@
     created_at TIMESTAMPTZ
   );
   CREATE INDEX IF NOT EXISTS idx_quote_item_report ON quote_item(report_id);
+
+  -- ── 飯店客戶報價：每家飯店各一份；品項沿用 quote_item（report_id = hotel_quote.id）──
+  CREATE TABLE IF NOT EXISTS hotel_quote (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT,
+    customer_name TEXT NOT NULL,
+    title TEXT,
+    subtitle TEXT,
+    company TEXT,
+    address TEXT,
+    tel TEXT,
+    fax TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    note TEXT,
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_hotel_quote_name ON hotel_quote(customer_name);
