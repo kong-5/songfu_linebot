@@ -18316,78 +18316,103 @@ document.addEventListener('keydown',function(e){
             const reports = await quote_report_js_1.listReports(db);
             const reminder = await quote_report_js_1.monthEndReminder(db, todayIso, 7);
             const suggestYm = reminder.targetYm || quote_report_js_1.nextYm(todayIso.slice(0, 7));
-            const logo = await quote_report_js_1.getLogoDataUri(db);
             const okMsg = String(req.query.ok || "");
-            const rowsHtml = reports.length ? reports.map((r) => {
-                const statusPill = r.status === "finalized"
-                    ? `<span class="sf-pill ok">已完成</span>`
-                    : `<span class="sf-pill warn">草稿</span>`;
-                return `<tr>
-                    <td><a href="/admin/quotes/${encodeURIComponent(r.id)}" style="font-weight:600;color:var(--txt-1);">${escapeHtml(r.roc_label || r.ym)}</a><div style="font-size:11px;color:var(--txt-3);">${escapeHtml(r.ym)}</div></td>
-                    <td>${statusPill}</td>
-                    <td style="text-align:right;white-space:nowrap;">
-                      <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}">編輯</a>
-                      <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/sheet" target="_blank">預覽/PDF</a>
-                      <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/image.jpg" target="_blank">JPG</a>
-                    </td>
-                  </tr>`;
-            }).join("") : `<tr><td colspan="3" style="text-align:center;color:var(--txt-3);padding:24px;">尚無月報，請用右上方「新增下月報價」或「匯入 7 月範本」建立。</td></tr>`;
+
+            const createForm = (label) => `
+              <form method="post" action="/admin/quotes/create" class="sf-quote-newform">
+                <label class="sf-quote-newform-ym">月份
+                  <input type="month" name="ym" value="${escapeAttr(suggestYm)}" required>
+                </label>
+                <button class="sf-btn primary" type="submit">${label}</button>
+              </form>`;
+
+            const listCard = reports.length
+                ? `<div class="sf-card sf-quote-list">
+                    <div class="sf-quote-list-head">
+                      <span>月份</span><span>狀態</span><span style="text-align:right;">操作</span>
+                    </div>
+                    ${reports.map((r) => `
+                      <div class="sf-quote-row">
+                        <a class="sf-quote-row-month" href="/admin/quotes/${encodeURIComponent(r.id)}">
+                          <span class="sf-quote-row-roc">${escapeHtml(r.roc_label || r.ym)}</span>
+                          <span class="sf-quote-row-ym">${escapeHtml(r.ym)}</span>
+                        </a>
+                        <div>${r.status === "finalized" ? `<span class="sf-pill ok">已完成</span>` : `<span class="sf-pill warn">草稿</span>`}</div>
+                        <div class="sf-quote-row-actions">
+                          <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}">編輯</a>
+                          <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/sheet" target="_blank">預覽 / PDF</a>
+                          <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/image.jpg" target="_blank">JPG</a>
+                        </div>
+                      </div>`).join("")}
+                  </div>`
+                : `<div class="sf-card sf-quote-empty">
+                    <div class="sf-quote-empty-icon">🧾</div>
+                    <div class="sf-quote-empty-title">尚無月報</div>
+                    <p class="sf-quote-empty-desc">建立第一份月報時，系統會自動帶入完整品項清單當底稿，你只要調整價格即可。之後每個月新增，會自動沿用上一份的品項與價格。</p>
+                    ${createForm("＋ 建立第一份月報")}
+                  </div>`;
 
             const reminderBanner = reminder.show ? `
-              <div class="sf-card" style="border-left:4px solid #f59e0b;padding:14px 18px;">
-                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                  <span style="font-size:20px;">🗓️</span>
-                  <div style="flex:1;min-width:200px;">
-                    <div style="font-weight:600;">月底提醒：請準備 ${escapeHtml(reminder.rocLabel)} 報價單</div>
-                    <div style="font-size:12px;color:var(--txt-3);margin-top:2px;">本月僅剩 ${reminder.daysLeft} 天。${reminder.report ? "已建立草稿，請確認價格後設為完成。" : "尚未建立，新增時會自動帶入上月價格當底稿。"}</div>
-                  </div>
-                  ${reminder.report
+              <div class="sf-card sf-quote-remind">
+                <span class="sf-quote-remind-icon">🗓️</span>
+                <div class="sf-quote-remind-body">
+                  <div class="sf-quote-remind-title">月底提醒：請準備 ${escapeHtml(reminder.rocLabel)} 報價單</div>
+                  <div class="sf-quote-remind-sub">本月僅剩 ${reminder.daysLeft} 天。${reminder.report ? "已建立草稿，請確認價格後設為完成。" : "尚未建立，新增時會自動帶入上月價格當底稿。"}</div>
+                </div>
+                ${reminder.report
                     ? `<a class="sf-btn primary" href="/admin/quotes/${encodeURIComponent(reminder.report.id)}">前往編輯 →</a>`
                     : `<form method="post" action="/admin/quotes/create" style="margin:0;"><input type="hidden" name="ym" value="${escapeAttr(reminder.targetYm)}"><button class="sf-btn primary" type="submit">建立 ${escapeHtml(reminder.rocLabel)} →</button></form>`}
-                </div>
               </div>` : "";
 
-            const body = `
-              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:1000px;margin:0 auto;">
-                <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            const style = `<style>
+              .sf-quote-wrap{ padding:24px 32px; max-width:960px; margin:0 auto; display:flex; flex-direction:column; gap:18px; }
+              .sf-quote-header{ display:flex; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; gap:16px; }
+              .sf-quote-header h1{ margin:0; font-size:22px; font-weight:600; }
+              .sf-quote-header p{ margin:6px 0 0; color:var(--txt-3); font-size:13px; line-height:1.6; max-width:560px; }
+              .sf-quote-newform{ margin:0; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; }
+              .sf-quote-newform-ym{ display:flex; flex-direction:column; gap:4px; font-size:11px; color:var(--txt-3); }
+              .sf-quote-newform-ym input{ font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; color:var(--txt-1); }
+              .sf-quote-flash{ border-left:4px solid #16a34a; padding:10px 16px; font-size:13px; }
+              .sf-quote-remind{ display:flex; align-items:center; gap:12px; padding:14px 18px; border-left:4px solid #f59e0b; }
+              .sf-quote-remind-icon{ font-size:22px; }
+              .sf-quote-remind-body{ flex:1; min-width:200px; }
+              .sf-quote-remind-title{ font-weight:600; }
+              .sf-quote-remind-sub{ font-size:12px; color:var(--txt-3); margin-top:2px; }
+              .sf-quote-list{ padding:0; overflow:hidden; }
+              .sf-quote-list-head, .sf-quote-row{ display:grid; grid-template-columns:1fr auto minmax(220px,auto); gap:16px; align-items:center; padding:12px 18px; }
+              .sf-quote-list-head{ font-size:12px; color:var(--txt-3); border-bottom:var(--hairline); }
+              .sf-quote-row{ border-top:var(--hairline); }
+              .sf-quote-row:first-of-type{ border-top:none; }
+              .sf-quote-row:hover{ background:var(--bg-1); }
+              .sf-quote-row-month{ display:flex; flex-direction:column; text-decoration:none; }
+              .sf-quote-row-roc{ font-weight:600; color:var(--txt-1); }
+              .sf-quote-row-ym{ font-size:11px; color:var(--txt-3); font-family:var(--font-mono,monospace); }
+              .sf-quote-row-actions{ display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap; }
+              .sf-quote-empty{ text-align:center; padding:40px 24px; display:flex; flex-direction:column; align-items:center; gap:8px; }
+              .sf-quote-empty-icon{ font-size:40px; }
+              .sf-quote-empty-title{ font-size:16px; font-weight:600; }
+              .sf-quote-empty-desc{ color:var(--txt-3); font-size:13px; line-height:1.7; max-width:460px; margin:0 0 6px; }
+              @media (max-width:640px){
+                .sf-quote-wrap{ padding:16px; }
+                .sf-quote-list-head{ display:none; }
+                .sf-quote-row{ grid-template-columns:1fr auto; row-gap:10px; }
+                .sf-quote-row-actions{ grid-column:1 / -1; justify-content:flex-start; }
+              }
+            </style>`;
+
+            const body = `${style}
+              <div class="sf-quote-wrap">
+                <div class="sf-quote-header">
                   <div>
                     <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 客戶報價</div>
-                    <h1 style="margin:0;font-size:22px;font-weight:600;">客戶報價（月報）</h1>
-                    <p style="margin:6px 0 0;color:var(--txt-3);font-size:12px;">每月月底前製作下個月報價單。新增月報會自動帶入上月價格當底稿，只需改動有變動的項目；可新增／刪除品項，也可將品項設為「不報價」。</p>
+                    <h1>客戶報價（月報）</h1>
+                    <p>每月月底前製作下個月的報價單。新增月報會自動帶入上月的品項與價格當底稿，只需改動有變動的項目；可隨時新增／刪除品項，也可把品項設為「不報價」。報價單一律套用公司網站標誌，輸出可存 PDF 或下載 JPG。</p>
                   </div>
-                  <form method="post" action="/admin/quotes/create" style="margin:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                    <input type="month" name="ym" value="${escapeAttr(suggestYm)}" required style="font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:6px;">
-                    <button class="sf-btn primary" type="submit">＋ 新增月報（帶入上月）</button>
-                  </form>
+                  ${reports.length ? createForm("＋ 新增月報") : ""}
                 </div>
-                ${okMsg === "created" ? `<div class="sf-card" style="border-left:4px solid #16a34a;padding:10px 16px;font-size:13px;">✅ 月報已建立。</div>` : ""}
-                ${okMsg === "logo" ? `<div class="sf-card" style="border-left:4px solid #16a34a;padding:10px 16px;font-size:13px;">✅ LOGO 已更新，之後產生的報價單與圖都會套用。</div>` : ""}
+                ${okMsg === "created" ? `<div class="sf-card sf-quote-flash">✅ 月報已建立。</div>` : ""}
                 ${reminderBanner}
-                <div class="sf-card">
-                  <div class="sf-card-head"><div class="sf-card-title">月報列表</div></div>
-                  <table style="width:100%;border-collapse:collapse;">
-                    <thead><tr style="text-align:left;font-size:12px;color:var(--txt-3);border-bottom:var(--hairline);">
-                      <th style="padding:8px 16px;">月份</th><th style="padding:8px 16px;">狀態</th><th style="padding:8px 16px;text-align:right;">操作</th>
-                    </tr></thead>
-                    <tbody>${rowsHtml}</tbody>
-                  </table>
-                </div>
-                <div style="display:flex;gap:16px;flex-wrap:wrap;">
-                  <div class="sf-card" style="flex:1;min-width:260px;padding:16px 18px;">
-                    <div style="font-weight:600;margin-bottom:6px;">📋 匯入 7 月範本</div>
-                    <p style="font-size:12px;color:var(--txt-3);margin:0 0 10px;">一鍵建立 115 年 7 月報價單（含全部品項與分類），可直接當底稿修改。</p>
-                    <form method="post" action="/admin/quotes/seed" style="margin:0;"><button class="sf-btn" type="submit">匯入 7 月範本</button></form>
-                  </div>
-                  <div class="sf-card" style="flex:1;min-width:260px;padding:16px 18px;">
-                    <div style="font-weight:600;margin-bottom:6px;">🖼️ 報價單 LOGO</div>
-                    <p style="font-size:12px;color:var(--txt-3);margin:0 0 10px;">${logo ? "已設定自訂 LOGO（顯示在報價單左上角）。" : "目前使用內建公司標誌。上傳圖檔可改用自訂 LOGO。"}</p>
-                    <form method="post" action="/admin/quotes/logo" enctype="multipart/form-data" style="margin:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                      <input type="file" name="file" accept="image/*" required style="font-size:12px;">
-                      <button class="sf-btn" type="submit">上傳 LOGO</button>
-                    </form>
-                    ${logo ? `<div style="margin-top:10px;"><img src="${escapeAttr(logo)}" alt="logo" style="max-height:60px;max-width:160px;border:1px solid var(--line);border-radius:4px;padding:4px;background:#fff;"></div>` : ""}
-                  </div>
-                </div>
+                ${listCard}
               </div>`;
             res.type("text/html").send(notionPage("客戶報價", body, "quotes", res));
         } catch (e) {
@@ -18408,34 +18433,6 @@ document.addEventListener('keydown',function(e){
         }
     });
 
-    // 匯入 7 月範本
-    router.post("/quotes/seed", express_1.default.urlencoded({ extended: true }), async (req, res) => {
-        try {
-            const ym = String(req.body.ym || "2026-07").trim();
-            const id = await quote_report_js_1.seedTemplateReport(db, ym);
-            res.redirect(`/admin/quotes/${encodeURIComponent(id)}?ok=created`);
-        } catch (e) {
-            console.error("[admin] /quotes/seed failed", e);
-            res.status(400).type("text/html").send(notionPage("客戶報價", `<div style="padding:32px;">匯入失敗：${escapeHtml(String(e && e.message || e))}<br><a href="/admin/quotes">返回</a></div>`, "quotes", res));
-        }
-    });
-
-    // 上傳 LOGO（存為 data URI 於 app_settings）
-    router.post("/quotes/logo", upload, async (req, res) => {
-        try {
-            if (!req.file || !req.file.buffer) {
-                res.status(400).type("text/html").send(notionPage("客戶報價", `<div style="padding:32px;">未收到檔案。<br><a href="/admin/quotes">返回</a></div>`, "quotes", res));
-                return;
-            }
-            const mime = req.file.mimetype || "image/png";
-            const dataUri = `data:${mime};base64,${req.file.buffer.toString("base64")}`;
-            await quote_report_js_1.setLogoDataUri(db, dataUri);
-            res.redirect("/admin/quotes?ok=logo");
-        } catch (e) {
-            console.error("[admin] /quotes/logo failed", e);
-            res.status(400).type("text/html").send(notionPage("客戶報價", `<div style="padding:32px;">上傳失敗：${escapeHtml(String(e && e.message || e))}<br><a href="/admin/quotes">返回</a></div>`, "quotes", res));
-        }
-    });
 
     // 編輯頁
     router.get("/quotes/:id", async (req, res) => {
@@ -18501,7 +18498,7 @@ document.addEventListener('keydown',function(e){
                       <thead><tr style="text-align:left;font-size:12px;color:var(--txt-3);border-bottom:var(--hairline);">
                         <th style="padding:6px 8px;width:40px;">#</th><th style="padding:6px 8px;">品名</th><th style="padding:6px 8px;">規格</th><th style="padding:6px 8px;">分類</th><th style="padding:6px 8px;">單價</th><th style="padding:6px 8px;">不報價</th><th style="padding:6px 8px;"></th>
                       </tr></thead>
-                      <tbody>${groupsHtml || `<tr><td colspan="7" style="text-align:center;color:var(--txt-3);padding:20px;">尚無品項，請於下方新增或先「匯入 7 月範本」。</td></tr>`}</tbody>
+                      <tbody>${groupsHtml || `<tr><td colspan="7" style="text-align:center;color:var(--txt-3);padding:20px;">尚無品項，請於下方新增。</td></tr>`}</tbody>
                     </table>
                   </div>
                   <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center;">
@@ -18613,7 +18610,7 @@ document.addEventListener('keydown',function(e){
             const report = await quote_report_js_1.getReport(db, req.params.id);
             if (!report) { res.status(404).type("text/html").send("找不到此月報"); return; }
             const groups = await quote_report_js_1.getItemsGrouped(db, report.id);
-            const logo = await quote_report_js_1.resolveLogoDataUri(db);
+            const logo = await quote_report_js_1.getDefaultLogoDataUri();
             res.type("text/html").send(renderQuoteSheetHtml(report, groups, logo));
         } catch (e) {
             console.error("[admin] /quotes/:id/sheet failed", e);
@@ -18627,7 +18624,7 @@ document.addEventListener('keydown',function(e){
             const report = await quote_report_js_1.getReport(db, req.params.id);
             if (!report) { res.status(404).send("找不到此月報"); return; }
             const groups = await quote_report_js_1.getItemsGrouped(db, report.id);
-            const logo = await quote_report_js_1.resolveLogoDataUri(db);
+            const logo = await quote_report_js_1.getDefaultLogoDataUri();
             const buf = await quote_report_js_1.renderQuoteImage(report, groups, { logoDataUri: logo });
             res.setHeader("Content-Type", "image/jpeg");
             res.setHeader("Content-Disposition", `inline; filename="quote-${report.ym}.jpg"`);
