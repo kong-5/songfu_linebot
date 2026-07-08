@@ -64,6 +64,15 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         await (0, index_js_1.initDb)(dbPath);
         dbReady = true;
         console.log("[startup] 資料庫就緒");
+        // 一次性：確保 2026-07 客戶報價存在，讓後台一登入就有底稿（旗標記住只做一次，不覆蓋既有資料）
+        try {
+            const quote = require("./lib/quote-report.js");
+            const r = await quote.ensureInitialQuoteSeed((0, index_js_1.getDb)(dbPath));
+            if (r && r.seeded) console.log("[startup] 已建立 2026-07 客戶報價範本");
+        }
+        catch (se) {
+            console.error("[startup] 客戶報價範本 seed 略過:", se?.message || se);
+        }
     }
     catch (e) {
         dbError = e?.message || e;
