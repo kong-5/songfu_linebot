@@ -7818,17 +7818,18 @@ function createAdminRouter() {
         const hist = await livestock_price_js_1.loadLivestockHistory(db, 30);
         const thr = Math.max(0.5, Number(process.env.LIVESTOCK_MOVE_THRESHOLD_PCT || 5));
         // 線條圖示（與 SF_ICONS 同風格：thin-line、currentColor）
+        // 標準開源圖示（Tabler egg／pig、Lucide drumstick；24-grid 線條、currentColor）
         const catIcon = {
-            egg: `<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.3"><ellipse cx="8" cy="9" rx="4" ry="5.2"/></svg>`,
-            chicken: `<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="6" cy="10" r="3.2"/><path d="M8.3 7.7l2.8-2.8"/><path d="M10.3 3l2.4 2.4"/></svg>`,
-            pig: `<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.3"><ellipse cx="8" cy="8" rx="5" ry="4"/><circle cx="6.4" cy="8" r=".7" fill="currentColor" stroke="none"/><circle cx="9.6" cy="8" r=".7" fill="currentColor" stroke="none"/></svg>`,
+            egg: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14.083c0 4.154 -2.966 6.74 -7 6.917c-4.2 0 -7 -2.763 -7 -6.917c0 -5.538 3.5 -11.09 7 -11.083c3.5 .007 7 5.545 7 11.083"/></svg>`,
+            chicken: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15.4 15.63a7.875 6 135 1 1 6.23-6.23 4.5 3.43 135 0 0-6.23 6.23"/><path d="m8.29 12.71-2.6 2.6a2.5 2.5 0 1 0-1.65 4.65A2.5 2.5 0 1 0 8.7 18.3l2.59-2.59"/></svg>`,
+            pig: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 11v.01"/><path d="M16 3l0 3.803a6.019 6.019 0 0 1 2.658 3.197h1.341a1 1 0 0 1 1 1v2a1 1 0 0 1 -1 1h-1.342a6.008 6.008 0 0 1 -1.658 2.473v2.027a1.5 1.5 0 0 1 -3 0v-.583a6.04 6.04 0 0 1 -1 .083h-4a6.04 6.04 0 0 1 -1 -.083v.583a1.5 1.5 0 0 1 -3 0v-2l0 -.027a6 6 0 0 1 4 -10.473h2.5l4.5 -3"/></svg>`,
         };
         const catName = { egg: "雞蛋產地價", chicken: "白肉雞", pig: "毛豬全國均價" };
         const WDlabel = ["日", "一", "二", "三", "四", "五", "六"];
         const mmdd = (ds) => { const m = String(ds).match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? `${Number(m[2])}/${Number(m[3])}` : String(ds); };
         const mmddw = (ds) => { const m = String(ds).match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!m) return String(ds); const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])); return `${Number(m[2])}/${Number(m[3])} 週${WDlabel[dt.getUTCDay()]}`; };
         // 折線圖（SVG 自繪）：日變動 >= 門檻標紅/綠點、每點可 hover 看詳情、底部標日期
-        const sparkChart = (points, unit) => {
+        const sparkChart = (points, unit, uid) => {
             const pts = (points || []).filter((p) => p.v != null);
             if (pts.length < 2)
                 return `<div style="height:96px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:12px;">資料累積中（2 天以上才有折線）</div>`;
@@ -7840,27 +7841,26 @@ function createAdminRouter() {
             const Y = (v) => padT + (H - padT - padB) * (1 - (v - mn) / (mx - mn));
             const line = pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(" ");
             const area = `M${X(0).toFixed(1)},${(H - padB).toFixed(1)} ` + pts.map((p, i) => `L${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(" ") + ` L${X(pts.length - 1).toFixed(1)},${(H - padB).toFixed(1)} Z`;
-            let dots = "", hovers = "";
-            for (let i = 0; i < pts.length; i++) {
-                const title = `${mmddw(pts[i].d)}　${pts[i].v} ${unit}`;
-                if (i > 0) {
-                    const pct = pts[i - 1].v ? ((pts[i].v - pts[i - 1].v) / pts[i - 1].v) * 100 : 0;
-                    if (Math.abs(pct) >= thr) {
-                        const up = pct > 0;
-                        dots += `<circle cx="${X(i).toFixed(1)}" cy="${Y(pts[i].v).toFixed(1)}" r="3" fill="${up ? "#dc2626" : "#16a34a"}"/>`;
-                    }
-                }
-                // 透明大點供游標 hover（原生 title 顯示日期+價格）
-                hovers += `<circle cx="${X(i).toFixed(1)}" cy="${Y(pts[i].v).toFixed(1)}" r="7" fill="transparent" style="pointer-events:all;cursor:crosshair;"><title>${escapeHtml(title)}${i > 0 && pts[i - 1].v ? `（${((pts[i].v - pts[i - 1].v) / pts[i - 1].v * 100) >= 0 ? "+" : ""}${((pts[i].v - pts[i - 1].v) / pts[i - 1].v * 100).toFixed(1)}%）` : ""}</title></circle>`;
-            }
             const last = pts[pts.length - 1], first = pts[0];
             const col = (last.v - first.v) >= 0 ? "#dc2626" : "#16a34a";
+            const gid = "lspg_" + (uid || "x");
+            let dots = "", hovers = "";
+            for (let i = 0; i < pts.length; i++) {
+                const pctI = (i > 0 && pts[i - 1].v) ? ((pts[i].v - pts[i - 1].v) / pts[i - 1].v) * 100 : null;
+                const title = `${mmddw(pts[i].d)}　${pts[i].v} ${unit}` + (pctI != null ? `（${pctI >= 0 ? "+" : ""}${pctI.toFixed(1)}%）` : "");
+                if (pctI != null && Math.abs(pctI) >= thr) {
+                    dots += `<circle cx="${X(i).toFixed(1)}" cy="${Y(pts[i].v).toFixed(1)}" r="3" fill="${pctI > 0 ? "#dc2626" : "#16a34a"}"/>`;
+                }
+                // 透明大點供游標 hover（JS tooltip 顯示日期+價格）
+                hovers += `<circle class="lsp-pt" cx="${X(i).toFixed(1)}" cy="${Y(pts[i].v).toFixed(1)}" r="7" fill="transparent" data-t="${escapeAttr(title)}" data-c="${col}" style="pointer-events:all;cursor:crosshair;"></circle>`;
+            }
             const midi = Math.floor((pts.length - 1) / 2);
             const axis = `<text x="${X(0).toFixed(1)}" y="${H - 4}" font-size="8" fill="#9b9a97" text-anchor="start">${mmdd(first.d)}</text>`
                 + (pts.length > 4 ? `<text x="${X(midi).toFixed(1)}" y="${H - 4}" font-size="8" fill="#9b9a97" text-anchor="middle">${mmdd(pts[midi].d)}</text>` : "")
                 + `<text x="${X(pts.length - 1).toFixed(1)}" y="${H - 4}" font-size="8" fill="#9b9a97" text-anchor="end">${mmdd(last.d)}</text>`;
             return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="96" preserveAspectRatio="none" style="display:block;overflow:visible;">
-        <path d="${area}" fill="${col}" opacity="0.06"></path>
+        <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity="0.32"></stop><stop offset="0.9" stop-color="${col}" stop-opacity="0.02"></stop></linearGradient></defs>
+        <path d="${area}" fill="url(#${gid})"></path>
         <path d="${line}" fill="none" stroke="${col}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"></path>
         ${dots}
         <circle cx="${X(pts.length - 1).toFixed(1)}" cy="${Y(last.v).toFixed(1)}" r="2.8" fill="${col}"/>
@@ -7887,7 +7887,7 @@ function createAdminRouter() {
           <div>${changeBadge(ch)}</div>
         </div>
         <div style="font-size:11px;color:var(--txt-3);margin-bottom:6px;">${ch.prev != null ? `前一日 ${fmtP(ch.prev)}` : "尚無前一日"} · 近 30 天（游標指到看當日）</div>
-        ${sparkChart(ser, it.unit)}
+        ${sparkChart(ser, it.unit, it.key)}
       </div>`;
         }).join("");
         // 日曆用：每日 → {egg,chicken,pig}
@@ -7997,6 +7997,15 @@ function createAdminRouter() {
         ${detailCard(catIcon.chicken + " 白肉雞（元/台斤）", "品項", simpleRows(byCat.chicken), false)}
         ${detailCard(catIcon.pig + " 毛豬 各肉品市場（元/公斤）", "市場", pigRows, true)}
       </div>
+      <div id="lspTip" style="position:fixed;z-index:60;pointer-events:none;background:#1f2430;color:#fff;font-size:11.5px;line-height:1.3;padding:4px 8px;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.28);opacity:0;transition:opacity .1s;white-space:nowrap;left:0;top:0;"></div>
+      <script>(function(){
+        var tip=document.getElementById('lspTip'); if(!tip) return;
+        function show(t){ tip.textContent=t.getAttribute('data-t')||''; tip.style.opacity='1'; t.setAttribute('r','4'); t.style.fill=t.getAttribute('data-c')||'#2383e2'; }
+        function hide(t){ tip.style.opacity='0'; t.setAttribute('r','7'); t.style.fill='transparent'; }
+        document.addEventListener('pointerover',function(e){ var t=e.target.closest?e.target.closest('.lsp-pt'):null; if(t) show(t); });
+        document.addEventListener('pointerout',function(e){ var t=e.target.closest?e.target.closest('.lsp-pt'):null; if(t) hide(t); });
+        document.addEventListener('pointermove',function(e){ if(tip.style.opacity==='1'){ var x=e.clientX+12, y=e.clientY-30; if(x+tip.offsetWidth>window.innerWidth-8) x=e.clientX-tip.offsetWidth-12; tip.style.left=x+'px'; tip.style.top=y+'px'; } });
+      })();</script>
       </div>`;
         res.type("text/html").send(notionPage("畜產雞蛋行情", body, "logistics-livestock", res));
     });
