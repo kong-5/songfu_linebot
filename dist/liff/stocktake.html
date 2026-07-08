@@ -89,8 +89,9 @@
   .hz-show{border:1px solid var(--line);background:var(--card);color:var(--accent);font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;cursor:pointer;}
   .batches{border-top:1px dashed var(--line);padding:9px 13px 12px;background:color-mix(in srgb,var(--warn-soft) 40%,var(--card));display:none;}
   .item.exp-open .batches{display:block;}
-  .mid-chip{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--accent-soft);color:var(--accent);flex:none;cursor:pointer;border:1px solid color-mix(in srgb,var(--accent) 26%,transparent);white-space:nowrap;}
-  .mid-chip.filled{background:var(--accent);color:#fff;border-color:transparent;}
+  .more{width:28px;height:30px;flex:none;border:1px solid var(--line);background:var(--field);border-radius:8px;color:var(--txt-3);font-size:14px;font-weight:800;line-height:1;display:grid;place-items:center;cursor:pointer;padding:0;}
+  .more.on{border-color:var(--accent);color:var(--accent);}
+  .more.filled{background:var(--accent);color:#fff;border-color:transparent;font-size:12px;}
   .midbox{border-top:1px dashed var(--line);padding:10px 13px 12px;background:color-mix(in srgb,var(--accent-soft) 45%,var(--card));display:none;}
   .item.mid-show .midbox{display:block;}
   .mid-row{display:flex;align-items:center;gap:9px;margin-bottom:7px;}
@@ -306,12 +307,13 @@
   }
   function rowHtml(it){
     var cnt=isCounted(it)?' counted':''; var open=S.expanded[it.c]?' exp-open':''; var mopen=S.midOpen[it.c]?' mid-show':'';
-    var right='<div class="qtybox">'+diffPill(it)+'<input class="qty" inputmode="decimal" placeholder="'+esc(t('qtyPh'))+'" value="'+esc(S.counts[it.c]!=null?S.counts[it.c]:'')+'" data-c="'+esc(it.c)+'">'+(it.u?'<span class="qu">'+esc(it.u)+'</span>':'')+'</div>';
+    var mv=midVal(it);
+    // 中價貨：平常收起，右邊一個很小的「⋯」；有中貨時顯示「中」並變藍
+    var moreBtn='<button class="more'+(mv!=null?' filled':'')+(S.midOpen[it.c]?' on':'')+'" data-midtoggle aria-label="'+esc(t('midTitle'))+'">'+(mv!=null?esc(t('midChip')):'⋯')+'</button>';
+    var right='<div class="qtybox">'+diffPill(it)+'<input class="qty" inputmode="decimal" placeholder="'+esc(t('qtyPh'))+'" value="'+esc(S.counts[it.c]!=null?S.counts[it.c]:'')+'" data-c="'+esc(it.c)+'">'+(it.u?'<span class="qu">'+esc(it.u)+'</span>':'')+moreBtn+'</div>';
     var nb=(S.batches[it.c]||[]).length;
     var chip=it.exp?'<button class="exp-chip'+(nb?' filled':'')+'" data-toggle>'+esc(t('expChip'))+(nb?' '+esc(t('batchN')(nb)):'')+(S.expanded[it.c]?' ▴':' ▾')+'</button>':'';
-    var mv=midVal(it);
-    var midchip='<button class="mid-chip'+(mv!=null?' filled':'')+'" data-midtoggle>'+esc(t('midChip'))+(mv!=null?' '+fmt(mv):'')+(S.midOpen[it.c]?' ▴':' ＋')+'</button>';
-    return '<div class="item'+cnt+open+mopen+'" data-c="'+esc(it.c)+'"><div class="row"><div class="info"><div class="nm">'+esc(it.n)+chip+midchip+'</div>'
+    return '<div class="item'+cnt+open+mopen+'" data-c="'+esc(it.c)+'"><div class="row"><div class="info"><div class="nm">'+esc(it.n)+chip+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div></div>'
       +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(it.sys)+(it.u?' <span class="su">'+esc(it.u)+'</span>':'')+'</div></div>'+right+'</div>'+midPanel(it)+(it.exp?batchRows(it):'')+'</div>';
   }
@@ -380,7 +382,7 @@
         var item=el.closest('.item'); var it=S.items.find(function(x){return x.c===c;});
         item.classList.toggle('counted',isCounted(it));
         var pill=item.querySelector('.diff'); if(pill) pill.outerHTML=diffPill(it);
-        var chip=item.querySelector('.mid-chip'); if(chip){ var mv=midVal(it); chip.classList.toggle('filled',mv!=null); }
+        var more=item.querySelector('.more'); if(more){ var mv=midVal(it); more.classList.toggle('filled',mv!=null); more.textContent=(mv!=null?t('midChip'):'⋯'); }
         var ms=item.querySelector('.mid-sum'); if(ms) ms.textContent=t('sumLine')(fmt(goodVal(it)||0),fmt(midVal(it)||0),fmt(countedVal(it)==null?0:countedVal(it)));
         updateProg();
       } else if(el.getAttribute('data-k')){
