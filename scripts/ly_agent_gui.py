@@ -404,6 +404,14 @@ class AgentEngine:
                     self.log(f"  [試跑] {name}：{len(row.get('details', []))} 個品項（不寫入）")
                     continue
                 try:
+                    # [fix] 每次寫入前重置 ly_order 的「當日流水快取」，比照 ly_agent_v3。
+                    # 沒重置時，代理會沿用上次寫入後的快取號（如網站已寫到 0065 → 快取 next=0066），
+                    # 但使用者可能又在凌越手打了 66～71。下次網站匯入若用快取 0066，會撞號覆蓋手打的 66。
+                    # 重置後 write_order 會重新查凌越當日實際最大流水 +1（71 → 72），順著編、不撞號。
+                    try:
+                        wb.ly_order._seq_date = None
+                    except Exception:
+                        pass
                     nos = wb.ly_order.write_order(icpno=icpno, rows=[row], verbose=False)
                     no = nos[0]
                     results.append({"order_id": o.get("order_id"), "doc_no": no, "ok": True})
