@@ -1754,6 +1754,7 @@ function renderNotionAppHeader(username, pageTitle, opts = {}) {
       <div class="notion-app-header-left">
         ${showSidebarToggle ? `<button type="button" class="sidebar-toggle" id="sidebarToggleBtn" aria-label="切換側邊欄">☰</button>` : ""}
         <a href="/admin" class="notion-app-logo" title="松富物流">
+          <img src="/admin/assets/logo.svg" alt="松富物流" width="26" height="26">
           <span class="logo-text">松富物流</span>
         </a>
         <span class="notion-app-header-sep">/</span>
@@ -2162,7 +2163,7 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
       })();
     })();</script>`;
     const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">`;
-    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}${uiScript}</body></html>`;
+    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" href="/admin/assets/logo.svg"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}${uiScript}</body></html>`;
 }
 /** 僅允許站內 /admin 路徑，供編輯頁儲存後導回（防開放重導向） */
 function safeAdminReturnPath(s) {
@@ -2247,7 +2248,7 @@ function notionEmbedPage(title, body, res) {
     const shell = headerHtml ? `<div class="notion-app">${headerHtml}${mainWrap}</div>` : `<div class="notion-app">${mainWrap}</div>`;
     const sfTheme = (res && res.locals && res.locals.sfTheme === "dark") ? "dark" : "light";
     const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">`;
-    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}</body></html>`;
+    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" href="/admin/assets/logo.svg"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}</body></html>`;
 }
 /** 編輯距離（品名短字串模糊比對） */
 function levenshteinDistance(a, b) {
@@ -17992,7 +17993,7 @@ document.addEventListener('keydown',function(e){
                   </div>
                   <div class="sf-card" style="flex:1;min-width:260px;padding:16px 18px;">
                     <div style="font-weight:600;margin-bottom:6px;">🖼️ 報價單 LOGO</div>
-                    <p style="font-size:12px;color:var(--txt-3);margin:0 0 10px;">${logo ? "已設定 LOGO（會顯示在報價單左上角）。" : "尚未設定。上傳後會顯示在報價單與 JPG 圖左上角。"}</p>
+                    <p style="font-size:12px;color:var(--txt-3);margin:0 0 10px;">${logo ? "已設定自訂 LOGO（顯示在報價單左上角）。" : "目前使用內建公司標誌。上傳圖檔可改用自訂 LOGO。"}</p>
                     <form method="post" action="/admin/quotes/logo" enctype="multipart/form-data" style="margin:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                       <input type="file" name="file" accept="image/*" required style="font-size:12px;">
                       <button class="sf-btn" type="submit">上傳 LOGO</button>
@@ -18225,7 +18226,7 @@ document.addEventListener('keydown',function(e){
             const report = await quote_report_js_1.getReport(db, req.params.id);
             if (!report) { res.status(404).type("text/html").send("找不到此月報"); return; }
             const groups = await quote_report_js_1.getItemsGrouped(db, report.id);
-            const logo = await quote_report_js_1.getLogoDataUri(db);
+            const logo = await quote_report_js_1.resolveLogoDataUri(db);
             res.type("text/html").send(renderQuoteSheetHtml(report, groups, logo));
         } catch (e) {
             console.error("[admin] /quotes/:id/sheet failed", e);
@@ -18239,7 +18240,7 @@ document.addEventListener('keydown',function(e){
             const report = await quote_report_js_1.getReport(db, req.params.id);
             if (!report) { res.status(404).send("找不到此月報"); return; }
             const groups = await quote_report_js_1.getItemsGrouped(db, report.id);
-            const logo = await quote_report_js_1.getLogoDataUri(db);
+            const logo = await quote_report_js_1.resolveLogoDataUri(db);
             const buf = await quote_report_js_1.renderQuoteImage(report, groups, { logoDataUri: logo });
             res.setHeader("Content-Type", "image/jpeg");
             res.setHeader("Content-Disposition", `inline; filename="quote-${report.ym}.jpg"`);

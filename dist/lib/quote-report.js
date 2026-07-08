@@ -282,6 +282,36 @@ async function setLogoDataUri(db, dataUri) {
 }
 exports.setLogoDataUri = setLogoDataUri;
 
+// 預設 LOGO：讀 dist/admin/assets/logo.svg 光柵化為 PNG data URI（快取）。
+// 用 PNG 而非 SVG，因為 sharp 產報價單 JPG 時以 <image> 內嵌，PNG 相容性最穩。
+let _defaultLogoDataUri = null;
+async function getDefaultLogoDataUri() {
+    if (_defaultLogoDataUri !== null) return _defaultLogoDataUri;
+    try {
+        const sharp = require("sharp");
+        const path = require("path");
+        const fs = require("fs");
+        const svgPath = path.join(__dirname, "..", "admin", "assets", "logo.svg");
+        const svgBuf = fs.readFileSync(svgPath);
+        const png = await sharp(svgBuf, { density: 300 })
+            .resize(300, 300, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+            .png().toBuffer();
+        _defaultLogoDataUri = "data:image/png;base64," + png.toString("base64");
+    } catch (e) {
+        _defaultLogoDataUri = "";
+    }
+    return _defaultLogoDataUri;
+}
+exports.getDefaultLogoDataUri = getDefaultLogoDataUri;
+
+/** 報價單實際使用的 LOGO：有自訂就用自訂，否則用內建公司標誌。 */
+async function resolveLogoDataUri(db) {
+    const custom = await getLogoDataUri(db);
+    if (custom) return custom;
+    return await getDefaultLogoDataUri();
+}
+exports.resolveLogoDataUri = resolveLogoDataUri;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 7 月報價單範本 seed（來自使用者提供的 PDF；價格與規格照抄，空白／X 為不報價）
 // 供「匯入 7 月範本」一鍵建立可立即操作的月報。
