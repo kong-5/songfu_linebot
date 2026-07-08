@@ -451,3 +451,34 @@ CREATE TABLE IF NOT EXISTS line_group_speakers (
   PRIMARY KEY (group_id, line_user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_line_speakers_last ON line_group_speakers(last_spoke_at);
+
+-- ── 客戶報價（月報）：quote_report 表頭、quote_item 明細 ──
+-- 每月月底前做「下月」報價單；價格會浮動故每月重做，新月帶入上月當底稿。
+-- 品項可新增／刪除；is_quoted=0 表「不報價」（單價留白但仍列出）。
+CREATE TABLE IF NOT EXISTS quote_report (
+  id TEXT PRIMARY KEY,
+  ym TEXT NOT NULL UNIQUE,
+  roc_label TEXT,
+  title TEXT,
+  subtitle TEXT,
+  company TEXT,
+  address TEXT,
+  tel TEXT,
+  fax TEXT,
+  status TEXT NOT NULL DEFAULT 'draft',
+  note TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS quote_item (
+  id TEXT PRIMARY KEY,
+  report_id TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT '未分類',
+  name TEXT NOT NULL,
+  spec TEXT,
+  price TEXT,
+  is_quoted INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_quote_item_report ON quote_item(report_id);
