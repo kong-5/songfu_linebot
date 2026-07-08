@@ -199,7 +199,13 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             // 唯讀統計：目前快照涵蓋幾個交易日、最早/最晚日期
             if (String(req.query.stat || "") === "1") {
                 const c = await db.prepare("SELECT COUNT(DISTINCT record_date) AS days, MIN(record_date) AS min_d, MAX(record_date) AS max_d, COUNT(*) AS rows FROM wholesale_market_snapshots").get();
-                res.json({ ok: true, mode: "stat", days: Number(c?.days) || 0, minDate: c?.min_d || null, maxDate: c?.max_d || null, rows: Number(c?.rows) || 0 });
+                // 最新日的種類代碼分布（確認 N04蔬菜/N05水果 有存進去）
+                const maxD = c?.max_d || null;
+                let byCat = [];
+                if (maxD) {
+                    byCat = await db.prepare("SELECT COALESCE(category_code,'(空)') AS cc, COUNT(*) AS n FROM wholesale_market_snapshots WHERE record_date = ? GROUP BY category_code ORDER BY n DESC").all(maxD);
+                }
+                res.json({ ok: true, mode: "stat", days: Number(c?.days) || 0, minDate: c?.min_d || null, maxDate: maxD, rows: Number(c?.rows) || 0, latestByCat: byCat.map((r) => ({ code: r.cc, n: Number(r.n) })) });
                 return;
             }
             // 帶 days 參數時做區間回補（供歷史報表一次抓過去 N 天）；否則只抓當日
