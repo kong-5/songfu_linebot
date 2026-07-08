@@ -95,8 +95,7 @@ DEFAULT_CONFIG = {
     "writeback_key": os.environ.get("LY_WRITEBACK_KEY", ""),
     "icpno": os.environ.get("LY_ICPNO", "00"),
     "stock_times": os.environ.get("LY_STOCK_TIMES", "06:00,12:00"),
-    "wb_auto": True,            # 訂單回寫是否掛著自動跑
-    "wb_interval_min": 10,      # 自動回寫的檢查間隔（分鐘）
+    "wb_auto": True,            # 是否掛著自動處理『上傳凌越』佇列（只寫使用者按過上傳的單）
     "wb_default_whno": os.environ.get("LY_DEFAULT_WHNO", ""),
     "wb_default_price": os.environ.get("LY_DEFAULT_PRICE", ""),
     "autostart": True,          # 開啟程式就自動啟動代理
@@ -178,6 +177,19 @@ def cloud_poll_wait(base: str, key: str, timeout_sec: int = 25) -> bool:
     with urllib.request.urlopen(req, timeout=timeout_sec + 15) as resp:
         res = json.loads(resp.read().decode("utf-8") or "{}")
     return bool(res.get("refresh"))
+
+
+def cloud_wait_orders(base: str, key: str, timeout_sec: int = 25) -> list:
+    """長連線等『上傳凌越』佇列（/wait）。只回使用者在網站按過『上傳凌越』、
+    尚未回寫的訂單；沒有就 hold 到 timeout 才回空。連線失敗會丟例外。"""
+    url = base.rstrip("/") + f"/admin/lingyue-writeback/wait?timeout={timeout_sec}"
+    req = urllib.request.Request(
+        url, method="GET",
+        headers={"X-Writeback-Key": key, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout_sec + 15) as resp:
+        res = json.loads(resp.read().decode("utf-8") or "{}")
+    return res.get("orders", []) or []
 
 
 def cloud_test(base: str, key: str, timeout: int = 8) -> tuple:
@@ -330,56 +342,71 @@ class AgentEngine:
                     "；可能後台版本較舊或該端點異常，需更新後台版本。",
                 )
 
-    def do_writeback(self, *, date=None, dry_run=False, test=False, keep=False):
+    def write_orders(self, orders: list, *, dry_run: bool = False):
+        """只寫「傳入的這批訂單」（來自 /wait 佇列＝使用者在網站按過『上傳凌越』的單）。
+        絕不主動去撈 /pending 全部訂單。dry_run=只印不寫。"""
         base, key, icpno = self.cfg["cloud_base"], self.cfg["writeback_key"], self.cfg["icpno"]
-        if not base or not key:
-            self.log("⚠ 尚未設定網址/金鑰，無法回寫（請按⚙設定）")
-            return
         try:
-            ly_writeback_bridge = local_import("ly_writeback_bridge")  # 強制用隨附版本
+            wb = local_import("ly_writeback_bridge")  # 用隨附版本；提供 map_order/post_callback/ly_order
         except Exception as e:
             self.state["erp"] = "missing"
             self.log(f"⚠ 載入凌越回寫模組失敗（此機無凌越環境？）：{_short(e)}")
             return
-
-        import types
-        ns = types.SimpleNamespace(
-            date=date, base=base, key=key, icpno=icpno,
-            warehouse=self.cfg.get("wb_default_whno", ""),
-            price=self.cfg.get("wb_default_price", ""),
-            dry_run=dry_run, test=test, keep=keep, verbose=False,
-        )
+        whno = self.cfg.get("wb_default_whno", "")
+        price = self.cfg.get("wb_default_price", "")
+        if not (whno or "").strip():
+            self._log_once("nowhno", "⚠ 尚未設定『預設倉別 LY_DEFAULT_WHNO』——寫入凌越的訂單會沒有倉別。"
+                                     "請按⚙設定填倉別代碼（如 FN005）。")
+        else:
+            self._log_once("nowhno", None)
+        results = []
+        ok = 0
         with self.erp_lock:
+            for o in orders:
+                name = o.get("customer_name") or o.get("customer_code") or "?"
+                row = wb.map_order(o, whno=whno, price=price)
+                if dry_run:
+                    self.log(f"  [試跑] {name}：{len(row.get('details', []))} 個品項（不寫入）")
+                    continue
+                try:
+                    nos = wb.ly_order.write_order(icpno=icpno, rows=[row], verbose=False)
+                    no = nos[0]
+                    results.append({"order_id": o.get("order_id"), "doc_no": no, "ok": True})
+                    ok += 1
+                    self.log(f"  ✅ {name} → 凌越單號 {no}")
+                except Exception as e:
+                    results.append({"order_id": o.get("order_id"), "ok": False, "error": _short(e)})
+                    self.log(f"  ❌ {name} 寫入失敗：{_short(e)}")
+            self.state["erp"] = "ok"
+        if dry_run:
+            self.log(f"（試跑完畢：{len(orders)} 張，未寫入任何資料）")
+            return
+        if results:
             try:
-                rc = ly_writeback_bridge.run(ns)
-                self.state["erp"] = "ok"
-                if not dry_run and not test:
-                    self.state["wb_last"] = now_full()
-                    self.state["wb_last_result"] = "完成" if rc == 0 else f"部分失敗(rc={rc})"
+                cb = wb.post_callback(base, key, results)
+                self.log(f"▶ 回填後台：updated={cb.get('updated_count')} failed={cb.get('failed_count')}")
             except Exception as e:
-                self.log(f"❌ 回寫失敗：{_short(e)}")
+                self.log(f"⚠ 回填後台失敗（單已寫入凌越，稍後可重試回填）：{_short(e)}")
+            self.state["wb_last"] = now_full()
+            self.state["wb_last_result"] = f"寫入 {ok}/{len(orders)}"
 
-    def auto_writeback_tick(self):
-        """自動回寫：先看有沒有待回寫的訂單，有才寫（沒有就安靜略過）。"""
+    def check_queue(self, *, dry_run: bool = False):
+        """手動：立刻查一次『上傳凌越』佇列（/wait），有排隊的就寫入（或試跑）。"""
         base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
         if not base or not key:
+            self.log("⚠ 尚未設定網址/金鑰（請按⚙設定）")
             return
         try:
-            ly_writeback_bridge = local_import("ly_writeback_bridge")  # 強制用隨附版本
+            orders = cloud_wait_orders(base, key, timeout_sec=3)
+            self.state["wb_last_check"] = now_full()
         except Exception as e:
-            self.state["erp"] = "missing"
-            self.log(f"⚠ 載入凌越回寫模組失敗：{_short(e)}")
+            self.log(f"⚠ 查詢上傳佇列失敗：{_short(e)}")
             return
-        try:
-            orders = ly_writeback_bridge.fetch_pending(base, key, datetime.date.today().strftime("%Y-%m-%d"))
-        except Exception as e:
-            self.log(f"⚠ 查待回寫訂單失敗：{e}")
-            return
-        self.state["wb_last_check"] = now_full()
         if not orders:
+            self.log("上傳佇列目前沒有訂單（請先在網站點『上傳凌越』把要上傳的單排進來）。")
             return
-        self.log(f"📝 發現 {len(orders)} 張待回寫訂單，開始寫入凌越 …")
-        self.do_writeback()
+        self.log(f"📝 上傳佇列有 {len(orders)} 張，{'試跑' if dry_run else '開始寫入凌越'} …")
+        self.write_orders(orders, dry_run=dry_run)
 
     # ── 背景迴圈：庫存 long-poll ＋ 定時推送 ────────────────────
     def _stock_loop(self):
@@ -447,22 +474,45 @@ class AgentEngine:
                 self._log_once("cloud", f"⚠ 庫存迴圈錯誤：{_short(e)}；5 秒後重試。")
                 self.stop_event.wait(5)
 
-    # ── 背景迴圈：訂單回寫（間隔檢查）──────────────────────────
+    # ── 背景迴圈：訂單回寫（長連線等『上傳凌越』佇列 /wait）──────
+    #   只有使用者在網站點過『上傳凌越』的單才會進佇列、才會被寫入。
+    #   絕不主動撈 /pending 全部訂單（那正是先前誤寫一整天訂單的原因）。
     def _writeback_loop(self):
-        # 啟動後稍等，避免和庫存啟動推送同時打凌越
-        self.stop_event.wait(15)
+        self.stop_event.wait(8)  # 啟動後稍等，避開和庫存啟動推送同時打凌越
         while not self.stop_event.is_set():
-            if self.cfg.get("wb_auto"):
-                self.state["wb_running"] = True
-                try:
-                    self.auto_writeback_tick()
-                except Exception as e:
-                    self.log(f"⚠ 自動回寫錯誤：{e}")
-            else:
+            if not self.cfg.get("wb_auto"):
                 self.state["wb_running"] = False
-            # 依設定的間隔等待（可被停止事件提早喚醒）
-            interval = max(1, int(self.cfg.get("wb_interval_min", 10) or 10))
-            self.stop_event.wait(interval * 60)
+                self.stop_event.wait(5)
+                continue
+            self.state["wb_running"] = True
+            base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
+            if not base or not key:
+                self.stop_event.wait(5)
+                continue
+            try:
+                orders = cloud_wait_orders(base, key, 25)
+                self.state["wb_last_check"] = now_full()
+                self._log_once("wbwait", None)
+                if orders:
+                    self.log(f"📝 收到 {len(orders)} 張『上傳凌越』佇列訂單，寫入中 …")
+                    self.write_orders(orders)
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    self._log_once("wbwait", "ℹ 後台沒有『上傳佇列』端點（/wait 404）——後台版本較舊；"
+                                             "訂單回寫需更新後台版本，目前不會自動寫入。")
+                    self.stop_event.wait(30)
+                elif e.code in (401, 503):
+                    self._log_once("wbwait", f"⚠ 上傳佇列端點 HTTP {e.code}（金鑰或後台設定問題）。")
+                    self.stop_event.wait(20)
+                else:
+                    self._log_once("wbwait", f"⚠ 上傳佇列端點 HTTP {e.code} {e.reason}；重試中。")
+                    self.stop_event.wait(10)
+            except urllib.error.URLError as e:
+                self._log_once("wbwait", f"⚠ 上傳佇列連線問題：{_short(getattr(e, 'reason', e), 80)}")
+                self.stop_event.wait(5)
+            except Exception as e:
+                self._log_once("wbwait", f"⚠ 上傳佇列迴圈錯誤：{_short(e)}")
+                self.stop_event.wait(5)
 
 
 # ======================================================================
@@ -592,9 +642,8 @@ class App(tk.Tk):
 
         opbtn("測試連線", self.test_connection, GREEN)
         opbtn("立即推庫存", lambda: self._async(self.engine.do_stock_push, reason="手動"), BLUE)
-        opbtn("回寫試跑(dry-run)", lambda: self._async(self.engine.do_writeback, dry_run=True))
-        opbtn("回寫測一張", lambda: self._async(self.engine.do_writeback, test=True))
-        opbtn("立即回寫", lambda: self._async(self.engine.do_writeback), AMBER)
+        opbtn("檢查上傳佇列(試跑)", lambda: self._async(self.engine.check_queue, dry_run=True))
+        opbtn("立即處理上傳佇列", lambda: self._async(self.engine.check_queue), AMBER)
 
         # 記錄框
         logwrap = tk.Frame(self, bg=BG)
@@ -660,7 +709,7 @@ class App(tk.Tk):
         )
         self.card_wb.set(
             s["wb_running"],
-            f"自動回寫（每 {self.cfg.get('wb_interval_min', 10)} 分檢查）" if s["wb_running"] else "自動回寫：關閉",
+            "等候『上傳凌越』佇列（只寫你按過上傳的單）" if s["wb_running"] else "自動處理：關閉",
             f"最後回寫：{s['wb_last']} {s['wb_last_result']}",
         )
 
@@ -765,14 +814,14 @@ class SettingsDialog(tk.Toplevel):
         row("每日定時推送 (LY_STOCK_TIMES)", "stock_times",
             "24小時制、逗號分隔，如 06:00,12:00；清空＝只靠按鈕/即時")
 
-        tk.Label(self, text="訂單回寫", fg=BLUE, bg=BG, anchor="w",
+        tk.Label(self, text="訂單回寫（只寫你在網站按過『上傳凌越』的單）", fg=BLUE, bg=BG, anchor="w",
                  font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(12, 2))
         auto_var = tk.BooleanVar(value=bool(cfg.get("wb_auto", True)))
-        tk.Checkbutton(self, text="掛著自動回寫（發現待回寫訂單就寫進凌越）", variable=auto_var,
+        tk.Checkbutton(self, text="掛著自動處理『上傳凌越』佇列（只寫你在網站按過上傳的單，不會動其他訂單）",
+                       variable=auto_var, wraplength=500, justify="left",
                        bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG,
                        font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16)
         self.vars["wb_auto"] = auto_var
-        row("自動檢查間隔（分鐘）", "wb_interval_min", "預設 10 分鐘檢查一次")
         row("預設倉別 (LY_DEFAULT_WHNO)", "wb_default_whno", "留空＝之後在凌越補；凌越不收空倉別才填")
         row("預設單價 (LY_DEFAULT_PRICE)", "wb_default_price", "留空＝讓凌越依客戶售價表帶價")
 
@@ -811,11 +860,6 @@ class SettingsDialog(tk.Toplevel):
                 out[k] = v.get()
             else:
                 out[k] = v.get().strip()
-        # 型別校正
-        try:
-            out["wb_interval_min"] = max(1, int(out.get("wb_interval_min", 10) or 10))
-        except ValueError:
-            out["wb_interval_min"] = 10
         self.on_save(out)
         self.destroy()
 

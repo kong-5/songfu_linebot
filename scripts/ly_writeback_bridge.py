@@ -101,6 +101,19 @@ def post_callback(base: str, key: str, results: list) -> dict:
 #  雲端訂單 → 凌越 write_order row（訂貨單 OR_/OD_ 欄位）
 # ----------------------------------------------------------------------
 
+# 單位正規化：雲端多半給中文「公斤」，凌越要「KG」。其餘未列出的原樣送出。
+UNIT_MAP = {
+    "公斤": "KG", "kg": "KG", "Kg": "KG", "kG": "KG", "KG": "KG",
+}
+
+
+def norm_unit(u: str) -> str:
+    u = (u or "").strip()
+    if not u:
+        return "KG"
+    return UNIT_MAP.get(u, UNIT_MAP.get(u.upper(), u))
+
+
 def map_order(order: dict, *, whno: str, price: str, rem_prefix: str = "") -> dict:
     """把一張雲端 pending 訂單轉成 ly_order.write_order 需要的 row dict。"""
     details = []
@@ -115,8 +128,8 @@ def map_order(order: dict, *, whno: str, price: str, rem_prefix: str = "") -> di
         det = {
             "OD_SKNO": skno,
             "OD_NAME": name,
-            "OD_UNIT": (it.get("unit") or "KG").strip(),
-            "OD_WARE": whno,                       # 預設留空（之後在凌越補倉別）
+            "OD_UNIT": norm_unit(it.get("unit")),  # 公斤→KG
+            "OD_WARE": whno,                       # 倉別：由設定 LY_DEFAULT_WHNO 帶入（見規則文件）
             "OD_QTY": qty if qty is not None else 0,
         }
         # 單價：叫貨單無價。留空（不送 OD_PRICE）→ 讓凌越依「客戶售價表」自動帶價。
