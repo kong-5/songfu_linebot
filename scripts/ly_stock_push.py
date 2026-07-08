@@ -105,6 +105,39 @@ def fetch_stock_items(icpno: str, timeout: int) -> list:
     return items
 
 
+# ── 單品項「進銷存」查詢（庫存頁點品項用）────────────────────────────
+# 重點欄位：存在才顯示；欄名是常見猜測，凌越沒有的自動略過（全部欄位一律附上）。
+SUMMARY_FIELDS = [
+    ("目前庫存", "SK_NOWQTY"), ("單位", "SK_UNIT"), ("規格", "SK_SPEC"),
+    ("預設倉別", "SK_RKWHNO"),
+    ("安全存量", "SK_SAFEQTY"), ("最高存量", "SK_MAXQTY"), ("最低存量", "SK_MINQTY"),
+    ("本月進貨量", "SK_INQTY"), ("本月銷貨量", "SK_OUTQTY"),
+    ("最後進貨日", "SK_LASTINDATE"), ("最後銷貨日", "SK_LASTOUTDATE"),
+    ("最後進價", "SK_LASTINPRICE"), ("售價", "SK_PRICE"), ("平均成本", "SK_AVGCOST"),
+]
+
+
+def fetch_product_record(icpno: str, code: str, timeout: int = 60) -> dict:
+    """撈單一品項的貨品主檔(000000)整筆原始欄位；查不到回 {}。"""
+    ensure_timeout_client(timeout)
+    rows = lystk.query(icpno=icpno, idakd=KIND_GOODS, where="SK_NO='@v1@'", whval=code)
+    return rows[0] if rows else {}
+
+
+def build_txn_payload(rec: dict) -> dict:
+    """把貨品主檔原始欄位整成 {summary:{重點}, fields:{全部}} 給網站顯示。"""
+    if not rec:
+        return {"summary": {}, "fields": {}}
+    summary = {}
+    for label, fkey in SUMMARY_FIELDS:
+        if fkey in rec:
+            v = str(rec.get(fkey, "")).strip()
+            if v != "":
+                summary[label] = v
+    fields = {k: ("" if v is None else str(v).strip()) for k, v in rec.items()}
+    return {"summary": summary, "fields": fields}
+
+
 def push_once(base: str, key: str, icpno: str, timeout: int = 90, verbose: bool = True) -> int:
     """撈凌越目前庫存並 POST 到雲端。回傳推送筆數。"""
     items = fetch_stock_items(icpno, timeout)

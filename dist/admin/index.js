@@ -1891,6 +1891,8 @@ const STK_STYLE = `
 .stk-code{color:var(--notion-text-light,#787774);font-variant-numeric:tabular-nums;}
 .stk-wh{color:var(--notion-text-light,#787774);}
 .stk-table tbody tr:hover{background:rgba(35,131,226,.06);}
+.stk-table tbody tr[data-code]{cursor:pointer;}
+.stk-table tbody tr[data-code] td.stk-code{color:#2383e2;}
 .stk-neg td.stk-qty{color:#c62828;}
 .stk-low{background:rgba(255,193,7,.12);}
 .stk-neg{background:rgba(198,40,40,.08);}
@@ -1943,7 +1945,7 @@ const STK_CLIENT_JS = `
   function rowHtml(it){
     var s=safetyOf(it.c); var neg=it.q<0; var low=(it.q>0&&s>0&&it.q<s);
     var cls=neg?'stk-neg':(low?'stk-low':'');
-    return '<tr class="'+cls+'"><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td></tr>';
+    return '<tr class="'+cls+'" data-code="'+esc(it.c)+'" data-name="'+esc(it.n)+'"><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td></tr>';
   }
   function theadHtml(){ return '<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>凌越倉別</th></tr></thead>'; }
   function renderList(list){
@@ -2017,6 +2019,58 @@ const STK_CLIENT_JS = `
         }).catch(function(){});
       },3000);
     }).catch(function(){ els.refresh.disabled=false; els.status.className='stk-status stk-status-warn'; els.status.textContent='送出失敗，請稍後再試。'; });
+  });
+  // ── 進銷存抽屜：點品項 → 經內網小幫手查凌越 → 顯示 ─────────────
+  var _drawer=document.createElement('div');
+  _drawer.style.cssText='position:fixed;top:0;right:0;height:100%;width:400px;max-width:92vw;background:var(--notion-card,#fff);color:inherit;box-shadow:-6px 0 24px rgba(0,0,0,.18);transform:translateX(100%);transition:transform .22s ease;z-index:9999;display:flex;flex-direction:column;';
+  _drawer.innerHTML='<div style="padding:14px 16px;border-bottom:1px solid var(--notion-border,#eee);display:flex;align-items:center;gap:8px;"><b id="stkDwTitle" style="flex:1;font-size:15px;"></b><button id="stkDwClose" style="border:0;background:var(--notion-bg,#f2f2f2);color:inherit;border-radius:6px;padding:5px 12px;cursor:pointer;">關閉</button></div><div id="stkDwBody" style="padding:14px 16px;overflow:auto;flex:1;font-size:13px;line-height:1.7;"></div>';
+  document.body.appendChild(_drawer);
+  var _back=document.createElement('div');
+  _back.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .22s;z-index:9998;';
+  document.body.appendChild(_back);
+  function dwClose(){ _drawer.style.transform='translateX(100%)'; _back.style.opacity='0'; _back.style.pointerEvents='none'; if(_pt){clearInterval(_pt);_pt=null;} }
+  _drawer.querySelector('#stkDwClose').addEventListener('click',dwClose);
+  _back.addEventListener('click',dwClose);
+  var _pt=null;
+  function kvTable(obj,strong,small){
+    var ks=Object.keys(obj||{}); if(!ks.length) return '';
+    var fs=small?'12px':'13px';
+    var h='<table style="width:100%;border-collapse:collapse;">';
+    for(var i=0;i<ks.length;i++){ h+='<tr><td style="padding:3px 6px;color:var(--notion-text-light,#888);white-space:nowrap;font-size:'+fs+';">'+esc(ks[i])+'</td><td style="padding:3px 6px;font-size:'+fs+';'+(strong?'font-weight:600;text-align:right;':'')+'">'+esc(obj[ks[i]])+'</td></tr>'; }
+    return h+'</table>';
+  }
+  function dwRender(body,m){
+    var d=m.data||{}; var h='';
+    if(m.fetched_at){ h+='<div style="color:var(--notion-text-light,#999);font-size:11px;margin-bottom:10px;">資料時間 '+esc(String(m.fetched_at).replace('T',' ').slice(0,19))+(m.cached?'（快取）':'')+'</div>'; }
+    var sum=kvTable(d.summary,true,false);
+    if(sum) h+='<div style="margin-bottom:14px;">'+sum+'</div>';
+    var fld=kvTable(d.fields,false,true);
+    if(fld) h+='<details'+(sum?'':' open')+'><summary style="cursor:pointer;color:#2383e2;margin-bottom:6px;">凌越全部欄位（'+Object.keys(d.fields||{}).length+'）</summary>'+fld+'</details>';
+    if(!sum&&!fld) h+='<div style="color:var(--notion-text-light,#888);">凌越查無此品項資料。</div>';
+    body.innerHTML=h;
+  }
+  function dwOpen(code,name){
+    if(_pt){clearInterval(_pt);_pt=null;}
+    _drawer.style.transform='translateX(0)'; _back.style.opacity='1'; _back.style.pointerEvents='auto';
+    document.getElementById('stkDwTitle').textContent=(code||'')+'　'+(name||'');
+    var body=document.getElementById('stkDwBody');
+    body.innerHTML='<div style="color:var(--notion-text-light,#888);">查詢凌越進銷存中…（經內網小幫手，約數秒）</div>';
+    fetch('/admin/inventory/stock/txn-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})}).catch(function(){});
+    var tries=0;
+    function tick(){
+      tries++;
+      fetch('/admin/inventory/stock/txn?code='+encodeURIComponent(code)).then(function(r){return r.json();}).then(function(m){
+        if(m.status==='ready'){ if(_pt){clearInterval(_pt);_pt=null;} dwRender(body,m); }
+        else if(m.status==='error'){ if(_pt){clearInterval(_pt);_pt=null;} body.innerHTML='<div style="color:#c0392b;">查詢失敗：'+esc(m.error||'未知')+'</div>'; }
+        else if(tries>=20){ if(_pt){clearInterval(_pt);_pt=null;} body.innerHTML='<div style="color:#b7791f;">等待逾時：內網小幫手（凌越整合代理）可能沒在跑。稍後再試。</div>'; }
+      }).catch(function(){});
+    }
+    tick(); _pt=setInterval(tick,1500);
+  }
+  els.wrap.addEventListener('click',function(e){
+    var tr=e.target.closest?e.target.closest('tr[data-code]'):null;
+    if(!tr) return; var code=tr.getAttribute('data-code'); if(!code) return;
+    dwOpen(code,tr.getAttribute('data-name')||'');
   });
   render();
 })();
@@ -6666,6 +6720,48 @@ function createAdminRouter() {
             res.status(500).json({ error: String(e?.message || e) });
         }
     });
+    // ── 點品項查凌越進銷存（單品項，經內網 agent 長連線回填；跨實例用 app_settings 協調）──
+    const ERP_TXN_FRESH_MS = 5 * 60 * 1000; // 快取 5 分鐘，避免重複打凌越
+    router.post("/inventory/stock/txn-request", express_1.default.json(), async (req, res) => {
+        try {
+            const code = String(req.body?.code || "").trim();
+            const icpno = String(req.body?.icpno || "00").trim() || "00";
+            if (!code) { res.status(400).json({ error: "缺少料號" }); return; }
+            const cached = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_txn_res_" + code);
+            if (cached && cached.value) {
+                try {
+                    const c = JSON.parse(cached.value);
+                    if (!c.error && c.fetched_at && (Date.now() - new Date(c.fetched_at).getTime()) < ERP_TXN_FRESH_MS) {
+                        res.json({ status: "ready", cached: true });
+                        return;
+                    }
+                } catch (_) { }
+            }
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_txn_req_" + code, JSON.stringify({ icpno, at: new Date().toISOString() }));
+            res.json({ status: "queued" });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
+    router.get("/inventory/stock/txn", async (req, res) => {
+        try {
+            const code = String(req.query.code || "").trim();
+            if (!code) { res.status(400).json({ error: "缺少料號" }); return; }
+            const resRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_txn_res_" + code);
+            if (resRow && resRow.value) {
+                let parsed = {};
+                try { parsed = JSON.parse(resRow.value); } catch (_) { }
+                res.json(Object.assign({ status: parsed.error ? "error" : "ready" }, parsed));
+                return;
+            }
+            const reqRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_txn_req_" + code);
+            res.json({ status: reqRow && reqRow.value ? "pending" : "none" });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
     // ── 倉庫設定：凌越倉別代號 → 中文名、是否納入盤點 ─────────────────────
     async function loadWarehouseRows() {
         const snap = await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' GROUP BY wh_code").all();
@@ -10418,6 +10514,68 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         catch (e) {
             console.error("[admin] lingyue-writeback/inventory-wait", e?.message || e);
             res.status(500).json({ error: "inventory-wait 失敗", detail: String(e?.message || e) });
+        }
+    });
+    /**
+     * GET /admin/lingyue-writeback/txn-wait?timeout=25
+     *   長連線：agent 等「使用者在庫存頁點品項要查進銷存」的請求。
+     *   有請求（app_settings.erp_txn_req_<料號>）立刻回 {codes:[{code,icpno}]}；否則 hold 到 timeout。
+     */
+    router.get("/lingyue-writeback/txn-wait", async (req, res) => {
+        let timeoutSec = parseInt(String(req.query.timeout || "25"), 10);
+        if (!Number.isFinite(timeoutSec) || timeoutSec <= 0)
+            timeoutSec = 25;
+        if (timeoutSec > 50)
+            timeoutSec = 50;
+        const deadline = Date.now() + timeoutSec * 1000;
+        try {
+            while (true) {
+                const rows = await db.prepare("SELECT key, value FROM app_settings WHERE key LIKE ?").all("erp_txn_req_%");
+                if (rows && rows.length) {
+                    const codes = rows.map((r) => {
+                        let icpno = "00";
+                        try { icpno = JSON.parse(r.value).icpno || "00"; } catch (_) { }
+                        return { code: String(r.key).slice("erp_txn_req_".length), icpno };
+                    });
+                    res.json({ codes });
+                    return;
+                }
+                if (Date.now() >= deadline) {
+                    res.json({ codes: [] });
+                    return;
+                }
+                await new Promise((r) => setTimeout(r, 1500));
+            }
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/txn-wait", e?.message || e);
+            res.status(500).json({ error: "txn-wait 失敗", detail: String(e?.message || e) });
+        }
+    });
+    /**
+     * POST /admin/lingyue-writeback/txn-callback
+     *   body: { results:[ {code, icpno, data:{summary,fields}, error} ] }
+     *   agent 撈完凌越進銷存後回填；寫 erp_txn_res_<code>、刪 erp_txn_req_<code>。
+     */
+    router.post("/lingyue-writeback/txn-callback", express_1.default.json({ limit: "8mb" }), async (req, res) => {
+        try {
+            const results = Array.isArray(req.body?.results) ? req.body.results : [];
+            const now = new Date().toISOString();
+            let n = 0;
+            for (const r of results) {
+                const code = String(r?.code || "").trim();
+                if (!code)
+                    continue;
+                const payload = JSON.stringify({ icpno: r.icpno || "00", data: r.data || null, error: r.error || null, fetched_at: now });
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_txn_res_" + code, payload);
+                await db.prepare("DELETE FROM app_settings WHERE key = ?").run("erp_txn_req_" + code);
+                n++;
+            }
+            res.json({ ok: true, updated: n });
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/txn-callback", e?.message || e);
+            res.status(500).json({ error: "txn-callback 失敗", detail: String(e?.message || e) });
         }
     });
     /**

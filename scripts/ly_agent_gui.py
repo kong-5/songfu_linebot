@@ -196,6 +196,29 @@ def cloud_wait_orders(base: str, key: str, timeout_sec: int = 25) -> list:
     return res.get("orders", []) or []
 
 
+def cloud_txn_wait(base: str, key: str, timeout_sec: int = 25) -> list:
+    """長連線等『庫存頁點品項要查進銷存』的請求；回 [{code,icpno},...]。"""
+    url = base.rstrip("/") + f"/admin/lingyue-writeback/txn-wait?timeout={timeout_sec}"
+    req = urllib.request.Request(
+        url, method="GET",
+        headers={"X-Writeback-Key": key, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout_sec + 15) as resp:
+        res = json.loads(resp.read().decode("utf-8") or "{}")
+    return res.get("codes", []) or []
+
+
+def cloud_txn_callback(base: str, key: str, results: list) -> dict:
+    url = base.rstrip("/") + "/admin/lingyue-writeback/txn-callback"
+    body = json.dumps({"results": results}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json", "X-Writeback-Key": key, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+
 def cloud_test(base: str, key: str, timeout: int = 8) -> tuple:
     """一次性連線測試。回 (ok, 訊息)。用『待回寫訂單 pending』當探針，因為
     即使後台是舊版、沒有庫存端點，pending 仍在 → 可分辨『網址/金鑰對不對』與
@@ -308,6 +331,7 @@ class AgentEngine:
         self._threads = [
             threading.Thread(target=self._stock_loop, name="stock", daemon=True),
             threading.Thread(target=self._writeback_loop, name="writeback", daemon=True),
+            threading.Thread(target=self._txn_loop, name="txn", daemon=True),
         ]
         for t in self._threads:
             t.start()
@@ -523,6 +547,63 @@ class AgentEngine:
             except Exception as e:
                 self._log_once("wbwait", f"⚠ 上傳佇列迴圈錯誤：{_short(e)}")
                 self.stop_event.wait(5)
+
+    # ── 背景迴圈：庫存頁點品項 → 查凌越進銷存（長連線 txn-wait）──────
+    def _txn_loop(self):
+        self.stop_event.wait(10)
+        while not self.stop_event.is_set():
+            base, key, icpno = self.cfg["cloud_base"], self.cfg["writeback_key"], self.cfg["icpno"]
+            if not base or not key:
+                self.stop_event.wait(5)
+                continue
+            try:
+                reqs = cloud_txn_wait(base, key, 25)
+                self._log_once("txnwait", None)
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    self._log_once("txnwait", "ℹ 後台沒有『進銷存查詢』端點（txn-wait 404）——"
+                                              "此功能需後台更新到最新版才有。")
+                    self.stop_event.wait(30)
+                else:
+                    self._log_once("txnwait", f"⚠ 進銷存佇列端點 HTTP {e.code}；重試中。")
+                    self.stop_event.wait(10)
+                continue
+            except urllib.error.URLError as e:
+                self._log_once("txnwait", f"⚠ 進銷存佇列連線問題：{_short(getattr(e, 'reason', e), 80)}")
+                self.stop_event.wait(5)
+                continue
+            except Exception as e:
+                self._log_once("txnwait", f"⚠ 進銷存佇列迴圈錯誤：{_short(e)}")
+                self.stop_event.wait(5)
+                continue
+
+            if not reqs:
+                continue
+            try:
+                sp = local_import("ly_stock_push")
+            except Exception as e:
+                self.state["erp"] = "missing"
+                self._log_once("txnerp", f"⚠ 載入庫存模組失敗：{_short(e)}")
+                continue
+            results = []
+            with self.erp_lock:
+                for c in reqs:
+                    code = (c.get("code") or "").strip()
+                    cicp = (c.get("icpno") or icpno or "00").strip()
+                    if not code:
+                        continue
+                    try:
+                        rec = sp.fetch_product_record(cicp, code)
+                        results.append({"code": code, "icpno": cicp, "data": sp.build_txn_payload(rec)})
+                        self.log(f"🔎 進銷存查詢 {code} → {'有資料' if rec else '查無'}")
+                    except Exception as e:
+                        results.append({"code": code, "icpno": cicp, "error": _short(e)})
+                        self.log(f"❌ 進銷存查詢 {code} 失敗：{_short(e)}")
+                self.state["erp"] = "ok"
+            try:
+                cloud_txn_callback(base, key, results)
+            except Exception as e:
+                self.log(f"⚠ 進銷存回填失敗：{_short(e)}")
 
 
 # ======================================================================
