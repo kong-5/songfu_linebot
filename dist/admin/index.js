@@ -694,6 +694,13 @@ const NOTION_STYLE = `
     }
     /* 卡片化的表格不要被 .sf-table 的 min-width:560px 撐開造成橫向擠壓 */
     .sf-table:not(.freezer-cal):not(.cal-table) { min-width: 0 !important; }
+    /* 帶 table-layout:fixed + <colgroup> 的 .sf-table（如「忘記叫貨提醒」清單）：
+       卡片堆疊時 td 變 display:block，但 <table> 仍是 display:table，瀏覽器會用固定欄寬
+       把每列擠成窄欄。改讓整個表格以 block 排版（忽略 colgroup/table-layout），每列吃滿寬。 */
+    .sf-table:not(.freezer-cal):not(.cal-table),
+    .sf-table:not(.freezer-cal):not(.cal-table) > tbody { display: block; }
+    .sf-table:not(.freezer-cal):not(.cal-table) { table-layout: auto !important; }
+    .sf-table:not(.freezer-cal):not(.cal-table) > colgroup { display: none; }
     /* 月曆類表格（冷凍庫 .freezer-cal／行事曆 .cal-table）維持 7 欄格狀，
        不套用卡片堆疊，否則會垮成「一天一列」。 */
     table.freezer-cal, table.cal-table {
@@ -4130,8 +4137,9 @@ function createAdminRouter() {
             ${kpiCard("提醒叫貨", reminderTotal, "戶", reminderCritical > 0 ? `嚴重逾期 ${reminderCritical} 戶` : reminderTotal > 0 ? "逾期未叫貨" : "全部準時", reminderCritical > 0 ? "bad" : reminderTotal > 0 ? "warn" : "ok", null, "/admin/reminders", { badge: reminderCritical>0?`嚴重 ${reminderCritical}`:reminderTotal>0?"逾期":"準時" })}
           </div>
           ${quoteReminderCard}
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
           ${reminderTop.length ? `
-          <div class="sf-card" style="border-left:4px solid #f59e0b;">
+          <div class="sf-card" style="flex:1 1 380px;min-width:0;border-left:4px solid #f59e0b;">
             <div class="sf-card-head">
               <a href="/admin/reminders" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
                 <div class="sf-card-title">${SF_ICONS.bell}提醒叫貨 Top ${reminderTop.length}（共 ${reminderTotal} 戶）</div>
@@ -4152,7 +4160,7 @@ function createAdminRouter() {
             </div>
           </div>` : ""}
           ${complaintsTodayOpen.length ? `
-          <div class="sf-card" style="border-left:4px solid #ef4444;">
+          <div class="sf-card" style="flex:1 1 380px;min-width:0;border-left:4px solid #ef4444;">
             <div class="sf-card-head">
               <a href="/admin/complaints" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
                 <div class="sf-card-title">${SF_ICONS.warn}未解決客訴（${complaintsOpenTotal}）</div>
@@ -4175,6 +4183,7 @@ function createAdminRouter() {
               }).join("")}
             </div>
           </div>` : ""}
+          </div>
           <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;">
             <div class="sf-card">
               <div class="sf-card-head">
