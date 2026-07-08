@@ -1944,9 +1944,9 @@ const STK_STYLE = `
 .stk-sw input:focus-visible + .stk-sw-tr{outline:2px solid #2383e2;outline-offset:2px;}
 /* 倉庫左側欄 ＋ 表格 兩欄版面 */
 .stk-main{display:flex;gap:12px;align-items:flex-start;}
-.stk-rail{flex:0 0 212px;display:flex;flex-direction:column;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;overflow:hidden;background:var(--notion-card,#fff);max-height:calc(100vh - 190px);}
+.stk-rail{flex:0 0 212px;display:flex;flex-direction:column;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;overflow:hidden;background:var(--notion-card,#fff);position:sticky;top:8px;}
 .stk-rail-h{flex:0 0 auto;font-size:11px;font-weight:700;color:var(--notion-text-light,#787774);padding:8px 12px;background:var(--notion-bg,#f7f7f5);border-bottom:1px solid var(--notion-border,#e3e2e0);}
-.stk-rail-body{overflow:auto;}
+.stk-rail-body{overflow:visible;}
 .stk-rail-item{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12.5px;cursor:pointer;border-bottom:1px solid var(--notion-border,#f2f1ee);white-space:nowrap;color:inherit;}
 .stk-rail-item:hover{background:rgba(35,131,226,.06);}
 .stk-rail-item.active{background:rgba(35,131,226,.10);color:#2383e2;font-weight:600;box-shadow:inset 3px 0 0 #2383e2;}
@@ -1954,7 +1954,7 @@ const STK_STYLE = `
 .stk-rail-n{margin-left:auto;color:var(--notion-text-light,#787774);font-size:11.5px;font-variant-numeric:tabular-nums;}
 .stk-rail-item.active .stk-rail-n{color:#2383e2;}
 .stk-main .stk-tablewrap{flex:1;min-width:0;}
-@media (max-width:760px){.stk-main{flex-direction:column;}.stk-rail{flex:0 0 auto;width:100%;max-height:210px;}.stk-main .stk-tablewrap{width:100%;}}
+@media (max-width:760px){.stk-main{flex-direction:column;}.stk-rail{flex:0 0 auto;width:100%;max-height:210px;position:static;top:auto;}.stk-rail-body{overflow:auto;}.stk-main .stk-tablewrap{width:100%;}}
 .stk-meta{font-size:12px;color:var(--notion-text-light,#787774);white-space:nowrap;}
 .stk-status{margin:0 0 8px;padding:8px 12px;border-radius:7px;font-size:13px;}
 .stk-status-wait{background:#eef4ff;color:#1d4ed8;}
