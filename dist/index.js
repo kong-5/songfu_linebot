@@ -231,6 +231,9 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             // 回填近 30 天歷史（供折線圖回查；農業部 API 本就回多天，冪等覆蓋）
             try { await (0, livestock_price_js_1.backfillLivestockHistory)(db, 30); }
             catch (e) { console.warn("[livestock-backfill]", e?.message || e); }
+            // 順便預熱北農行情快照（同一排程一起做，讓北農頁也秒開不卡）
+            try { await (0, wholesale_snapshot_js_1.loadOrFetchWholesaleMarketPrices)(db, dateStr); }
+            catch (e) { console.warn("[wholesale-prewarm]", e?.message || e); }
             // 抓完偵測明顯漲跌，必要時推播（每個資料日只推一次；需設 LINE_MARKET_NOTIFY_TO）
             let notify = null;
             try { notify = await (0, livestock_price_js_1.notifyLivestockMovesIfAny)(db); }
