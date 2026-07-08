@@ -1152,6 +1152,21 @@ const SF_TOKENS = `
 .sf-btn.danger { color: var(--bad); border-color: var(--bad-soft); }
 .sf-btn.danger:hover { background: var(--bad-soft); }
 .sf-btn.lg { height: 40px; padding: 0 16px; font-size: 14px; }
+/* ── 統一滑桿元件（全站唯一標準，勿再自刻）──
+   開關 on/off：<label class="sf-switch-label"><input type="checkbox"><span class="sf-switch"></span>文字</label>
+   分段滑桿  ：<div class="sf-seg"><button class="active">A</button><button>B</button></div>
+              或用 <a class="on"> 做導覽型；玻璃通透底、選中子項亮白膠囊。 */
+.sf-switch { position: relative; display: inline-block; vertical-align: middle; width: 36px; height: 20px; flex: 0 0 auto; border-radius: 999px; background: rgba(120,119,116,.28); transition: background .18s; cursor: pointer; }
+.sf-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .18s; }
+input:checked ~ .sf-switch { background: rgba(35,131,226,.9); }
+input:checked ~ .sf-switch::after { transform: translateX(16px); }
+input:focus-visible ~ .sf-switch { outline: 2px solid #2383e2; outline-offset: 2px; }
+.sf-switch-label { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; font-size: 12.5px; white-space: nowrap; cursor: pointer; user-select: none; }
+.sf-switch-label input { position: absolute; opacity: 0; width: 0; height: 0; }
+.sf-seg { display: inline-flex; align-items: center; gap: 2px; background: rgba(35,131,226,.08); border: 1px solid rgba(35,131,226,.18); border-radius: 999px; padding: 3px; }
+.sf-seg > a, .sf-seg > button { border: 0; background: transparent; border-radius: 999px; padding: 6px 15px; font-size: 12.5px; line-height: 1; font-family: inherit; color: #4a6fa5; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; transition: background .18s, color .18s; }
+.sf-seg > a.on, .sf-seg > a.active, .sf-seg > button.active, .sf-seg > button.on { background: rgba(255,255,255,.9); color: #2383e2; font-weight: 700; box-shadow: 0 1px 4px rgba(35,131,226,.18); }
+.sf-seg svg { width: 15px; height: 15px; }
 .sf-btn.sm { height: 26px; padding: 0 8px; font-size: 12px; }
 .sf-btn.icon-only { width: 32px; padding: 0; }
 
@@ -1928,20 +1943,7 @@ const STK_STYLE = `
 .stk-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin:6px 0 8px;}
 .stk-toolbar-left,.stk-toolbar-right{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
 .stk-search{min-width:200px;flex:1 1 200px;padding:6px 10px;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;font-size:13px;background:var(--notion-card,#fff);color:inherit;}
-/* 檢視切換：玻璃通透滑桿（列表 / 依倉庫） */
-.stk-seg{position:relative;display:inline-flex;height:32px;align-items:center;background:rgba(35,131,226,.08);border:1px solid rgba(35,131,226,.18);border-radius:999px;padding:3px;}
-.stk-seg-thumb{position:absolute;top:3px;left:3px;height:calc(100% - 6px);width:calc(50% - 3px);background:rgba(255,255,255,.85);border-radius:999px;box-shadow:0 1px 5px rgba(35,131,226,.18);transition:transform .22s cubic-bezier(.4,0,.2,1);pointer-events:none;}
-.stk-seg.grp .stk-seg-thumb{transform:translateX(100%);}
-.stk-seg button{position:relative;z-index:1;border:0;background:transparent;height:100%;padding:0 15px;font-size:12.5px;cursor:pointer;color:#4a6fa5;}
-.stk-seg button.active{color:#2383e2;font-weight:700;}
-/* 隱藏0 / 只看低量：小開關（on/off toggle，建在真 checkbox 上） */
-.stk-sw{display:inline-flex;align-items:center;gap:8px;height:32px;font-size:12.5px;white-space:nowrap;cursor:pointer;user-select:none;}
-.stk-sw input{position:absolute;opacity:0;width:0;height:0;}
-.stk-sw-tr{position:relative;width:36px;height:20px;border-radius:999px;background:rgba(120,119,116,.28);transition:background .18s;flex:0 0 auto;}
-.stk-sw-tr::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .18s;}
-.stk-sw input:checked + .stk-sw-tr{background:rgba(35,131,226,.9);}
-.stk-sw input:checked + .stk-sw-tr::after{transform:translateX(16px);}
-.stk-sw input:focus-visible + .stk-sw-tr{outline:2px solid #2383e2;outline-offset:2px;}
+/* 檢視切換 用全站標準 .sf-seg；隱藏0/只看低量 用全站標準 .sf-switch（見主樣式表） */
 /* 倉庫左側欄 ＋ 表格 兩欄版面 */
 .stk-main{display:flex;gap:12px;align-items:flex-start;}
 .stk-rail{flex:0 0 212px;display:flex;flex-direction:column;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;overflow:hidden;background:var(--notion-card,#fff);position:sticky;top:8px;}
@@ -2071,12 +2073,10 @@ const STK_CLIENT_JS = `
   }
   var t=null;
   els.search.addEventListener('input',function(){ if(t) clearTimeout(t); t=setTimeout(function(){ state.q=els.search.value.trim().toLowerCase(); render(); },120); });
-  function syncSeg(){ els.view.classList.toggle('grp', state.view==='group'); }
   Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(btn){
-    btn.addEventListener('click',function(){ state.view=btn.getAttribute('data-v'); Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); syncSeg(); save(); render(); });
+    btn.addEventListener('click',function(){ state.view=btn.getAttribute('data-v'); Array.prototype.forEach.call(els.view.querySelectorAll('button'),function(b){ b.classList.toggle('active',b===btn); }); save(); render(); });
     btn.classList.toggle('active', btn.getAttribute('data-v')===state.view);
   });
-  syncSeg();
   els.hideZero.checked=state.hideZero;
   els.hideZero.addEventListener('change',function(){ state.hideZero=els.hideZero.checked; state.wh=''; save(); render(); });
   els.lowOnly.addEventListener('change',function(){ state.low=els.lowOnly.checked; state.wh=''; render(); });
@@ -6855,13 +6855,12 @@ function createAdminRouter() {
         <div class="stk-toolbar no-print">
           <div class="stk-toolbar-left">
             <input type="search" id="stkSearch" class="stk-search" placeholder="搜尋料號 / 品名 / 規格…" autocomplete="off" spellcheck="false">
-            <div class="stk-seg" id="stkView">
-              <span class="stk-seg-thumb"></span>
+            <div class="sf-seg" id="stkView">
               <button type="button" data-v="list" class="active">列表</button>
               <button type="button" data-v="group">依倉庫</button>
             </div>
-            <label class="stk-sw"><input type="checkbox" id="stkHideZero"><span class="stk-sw-tr"></span>隱藏 0</label>
-            <label class="stk-sw"><input type="checkbox" id="stkLowOnly"><span class="stk-sw-tr"></span>只看低量/負量</label>
+            <label class="sf-switch-label"><input type="checkbox" id="stkHideZero"><span class="sf-switch"></span>隱藏 0</label>
+            <label class="sf-switch-label"><input type="checkbox" id="stkLowOnly"><span class="sf-switch"></span>只看低量/負量</label>
           </div>
           <div class="stk-toolbar-right">
             <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項</span>
@@ -16787,10 +16786,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           .pe-toggle-row .pe-tl b { font-weight: 600; }
           .pe-toggle-row .pe-tl span { display:block; font-size: 11px; color: var(--notion-text-muted); margin-top: 2px; }
           .pe-toggle-row input { position:absolute; opacity:0; width:0; height:0; }
-          .pe-switch { width:38px; height:22px; border-radius:11px; background:#cfceca; position:relative; flex:0 0 auto; transition: background .15s; }
-          .pe-switch::after { content:""; position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; transition: left .15s; }
-          .pe-toggle-row input:checked ~ .pe-switch { background: var(--notion-accent); }
-          .pe-toggle-row input:checked ~ .pe-switch::after { left:18px; }
+          /* 開關用全站標準 .sf-switch（見主樣式表） */
           .pe-actions { margin-top: 16px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
           .pe-table { width: 100%; font-size: 13px; border-collapse: collapse; }
           .pe-table thead th { font-weight:600; padding: 7px 8px; background: var(--notion-sidebar); text-align: left; font-size: 12px; color: var(--notion-text-muted); border-bottom: 1px solid var(--notion-border); }
@@ -16837,7 +16833,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               <label class="pe-toggle-row">
                 <span class="pe-tl"><b>啟用此品項</b><span>停用後不會出現在叫貨與匯出清單</span></span>
                 <input type="checkbox" name="active" value="1" ${row.active === 1 ? "checked" : ""}>
-                <span class="pe-switch" aria-hidden="true"></span>
+                <span class="sf-switch" aria-hidden="true"></span>
               </label>
             </div>
             <div class="pe-actions"><button type="submit" class="btn btn-primary">儲存基本資料</button></div>
@@ -19129,10 +19125,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
       .sf-qremind-ico svg{ width:22px; height:22px; }
       /* 編輯頁 */
       .qe-modebar{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-      .qe-seg{ display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
-      .qe-seg a{ padding:7px 14px; font-size:13px; text-decoration:none; color:var(--txt-2); background:var(--bg-0); display:inline-flex; align-items:center; gap:6px; }
-      .qe-seg svg{ width:15px; height:15px; }
-      .qe-seg a.on{ background:var(--notion-accent,#1a6fb5); color:#fff; }
+      /* 分段切換用全站標準 .sf-seg（見主樣式表） */
       .qe-cat{ display:flex; align-items:center; gap:8px; padding:4px 10px; margin-top:8px; background:var(--bg-1); border-radius:6px; font-weight:600; font-size:12px; color:#1a6fb5; }
       .qe-cat .n{ color:var(--txt-3); font-weight:400; font-size:11px; }
       .qe-row{ display:grid; align-items:center; gap:8px; padding:2px 10px; border-bottom:var(--hairline); }
@@ -19232,7 +19225,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
             ${okMsg === "saved" ? `<div class="sf-card sf-qflash">${QI.checkc}<span>已儲存。</span></div>` : ""}
 
             <div class="qe-modebar">
-              <div class="qe-seg">
+              <div class="sf-seg">
                 <a href="/admin/quotes/${enc}" class="${manage ? "" : "on"}">${QI.price}<span>價格</span></a>
                 <a href="/admin/quotes/${enc}?manage=1" class="${manage ? "on" : ""}">${QI.manage}<span>管理品項</span></a>
               </div>
