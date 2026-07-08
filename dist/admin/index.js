@@ -1515,10 +1515,11 @@ function sfSidebar(active) {
         ${item("/admin/reminders", "reminders", "bell", "忘記叫貨提醒")}
         ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
       </details>
-      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","logistics-procurement"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","inv-stk-groups","logistics-procurement"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "box", "倉庫設定")}
+        ${item("/admin/inventory/stocktake-groups", "inv-stk-groups", "box", "盤點群組")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
@@ -6453,6 +6454,77 @@ function createAdminRouter() {
         }
         catch (e) {
             console.error("[admin] warehouse-settings save", e?.message || e);
+            res.status(500).send("儲存失敗：" + String(e?.message || e));
+        }
+    });
+    // ── 盤點群組白名單：只有勾選的 LINE 群組打「#盤點」才會出現盤點按鈕 ──
+    async function loadStocktakeGroupCandidates() {
+        const byId = new Map();
+        const put = (gid, name, src) => {
+            const id = String(gid || "").trim();
+            if (!id) return;
+            const cur = byId.get(id) || { group_id: id, name: "", sources: new Set(), whitelisted: false };
+            if (name && !cur.name) cur.name = String(name).trim();
+            cur.sources.add(src);
+            byId.set(id, cur);
+        };
+        let whitelisted = [];
+        try { whitelisted = await db.prepare("SELECT group_id, group_name FROM stocktake_group").all(); } catch (_) { whitelisted = []; }
+        for (const w of whitelisted) { put(w.group_id, w.group_name, "已納入"); const c = byId.get(String(w.group_id).trim()); if (c) c.whitelisted = true; }
+        try { const pend = await db.prepare("SELECT group_id, group_name FROM pending_line_groups").all(); for (const p of pend) put(p.group_id, p.group_name, "待綁定"); } catch (_) {}
+        try { const cust = await db.prepare("SELECT name, line_group_id FROM customers WHERE line_group_id IS NOT NULL AND line_group_id <> ''").all(); for (const c of cust) put(c.line_group_id, c.name, "客戶群"); } catch (_) {}
+        return Array.from(byId.values()).map((c) => ({ ...c, sources: Array.from(c.sources) }))
+            .sort((a, b) => (Number(b.whitelisted) - Number(a.whitelisted)) || String(a.name || a.group_id).localeCompare(String(b.name || b.group_id)));
+    }
+    router.get("/inventory/stocktake-groups", async (req, res) => {
+        const list = await loadStocktakeGroupCandidates();
+        const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存。</div>` : "";
+        const rowsHtml = list.map((g) => `
+      <tr>
+        <td style="text-align:center;"><input type="checkbox" name="grp[${escapeAttr(g.group_id)}]" value="1" ${g.whitelisted ? "checked" : ""}></td>
+        <td>${escapeHtml(g.name || "（未命名群組）")}</td>
+        <td style="font-variant-numeric:tabular-nums;color:#787774;font-size:12px;word-break:break-all;">${escapeHtml(g.group_id)}</td>
+        <td style="color:#787774;font-size:12px;">${g.sources.map((s) => escapeHtml(s)).join("、")}</td>
+      </tr>`).join("");
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 盤點群組</div>
+      <h1 style="font-size:20px;margin:8px 0 4px;">盤點群組白名單</h1>
+      <p class="notion-hint" style="margin:0 0 14px;">只有勾選的 LINE 群組，成員打「<b>#盤點</b>」才會跳出倉庫盤點按鈕。清單自動收集機器人所在的群組；若你的內部群沒出現，先在群裡對機器人傳一句話讓它露出，或把群組 ID 貼到下方手動加入。</p>
+      ${ok}
+      <form method="post" action="/admin/inventory/stocktake-groups">
+        <table class="notion-table" style="width:100%;max-width:820px;border-collapse:collapse;">
+          <thead><tr>
+            <th style="text-align:center;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);width:64px;">納入盤點</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">群組名稱</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">群組 ID</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--notion-border,#e3e2e0);">來源</th>
+          </tr></thead>
+          <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:#787774;padding:20px;">還沒有偵測到任何群組。請把機器人加入盤點群組後，於群內傳一句話。</td></tr>'}</tbody>
+        </table>
+        <p style="margin:14px 0 6px;font-weight:600;">手動加入群組 ID（每行一個，選填）</p>
+        <textarea name="manual_ids" rows="3" placeholder="Cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" style="width:100%;max-width:820px;padding:8px;border:1px solid var(--notion-border,#e3e2e0);border-radius:6px;background:var(--notion-card,#fff);color:inherit;font-family:monospace;font-size:12px;"></textarea>
+        <p style="margin-top:14px;"><button type="submit" class="btn btn-primary">儲存</button></p>
+      </form>`;
+        res.type("text/html").send(notionPage("盤點群組", body, "inv-stk-groups", res));
+    });
+    router.post("/inventory/stocktake-groups", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const grpMap = (req.body && typeof req.body.grp === "object" && req.body.grp) ? req.body.grp : {};
+            const manualRaw = String((req.body && req.body.manual_ids) || "");
+            const chosen = new Map(); // group_id -> name
+            const cands = await loadStocktakeGroupCandidates();
+            const nameById = new Map(cands.map((c) => [c.group_id, c.name || ""]));
+            for (const k of Object.keys(grpMap)) { const id = String(k).trim(); if (id) chosen.set(id, nameById.get(id) || ""); }
+            for (const line of manualRaw.split(/[\r\n,]+/)) { const id = line.trim(); if (id) chosen.set(id, chosen.get(id) || nameById.get(id) || ""); }
+            const now = new Date().toISOString();
+            await db.prepare("DELETE FROM stocktake_group").run();
+            for (const [gid, name] of chosen) {
+                await db.prepare("INSERT INTO stocktake_group (group_id, group_name, created_at) VALUES (?, ?, ?)").run(gid, name || null, now);
+            }
+            res.redirect("/admin/inventory/stocktake-groups?ok=1");
+        }
+        catch (e) {
+            console.error("[admin] stocktake-groups save", e?.message || e);
             res.status(500).send("儲存失敗：" + String(e?.message || e));
         }
     });
