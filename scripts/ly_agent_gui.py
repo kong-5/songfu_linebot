@@ -29,7 +29,6 @@ lystk.py / ly_order.py（跟原本兩支代理相同的依賴）。打包成 .ex
 import os
 import sys
 import json
-import time
 import queue
 import importlib.util
 import threading
@@ -97,8 +96,10 @@ DEFAULT_CONFIG = {
     "icpno": os.environ.get("LY_ICPNO", "00"),
     "stock_times": os.environ.get("LY_STOCK_TIMES", "06:00,12:00"),
     "wb_auto": True,            # 是否掛著自動處理『上傳凌越』佇列（只寫使用者按過上傳的單）
-    "wb_whno_use_product": True,  # 倉別：每品項用凌越貨品主檔預設倉別(SK_RKWHNO)；查不到用固定倉別補
-    "wb_mark_checked": False,     # 寫入凌越後是否標記為「已審核」(OR_CHECK=1)；預設未審核
+    # 倉別規則固定為：每品項帶凌越貨品主檔預設倉(SK_RKWHNO)、查不到用固定倉別補（bridge 內建）
+    "wb_mark_checked": True,      # 寫入即標「已審核」OR_CHECK=1（拋轉需要；關閉=未審核）
+    "wb_create_name": os.environ.get("LY_CREATE_NAME", "052"),  # 建立人/製單人操作員代碼
+    "wb_maker": os.environ.get("LY_MAKER", ""),                 # 覆寫製單人（通常留空）
     "wb_default_whno": os.environ.get("LY_DEFAULT_WHNO", ""),
     "wb_default_price": os.environ.get("LY_DEFAULT_PRICE", ""),
     "autostart": True,          # 開啟程式就自動啟動代理
@@ -272,8 +273,6 @@ class AgentEngine:
         self.erp_lock = threading.Lock()  # 序列化所有「碰凌越」的操作
         self._threads = []
         self._realtime_off = False        # 後台若無 inventory-wait 端點，改定時模式
-        self._wh_map = {}                 # 料號→凌越預設倉別(SK_RKWHNO) 對照
-        self._wh_map_at = 0.0             # 上次載入時間(monotonic)
 
     # ── 記錄去重：同一則訊息只印一次，狀態改變再印 ──────────────
     def _log_once(self, tag: str, msg):
@@ -347,32 +346,10 @@ class AgentEngine:
                     "；可能後台版本較舊或該端點異常，需更新後台版本。",
                 )
 
-    def _get_wh_map(self, icpno: str, ttl: int = 1800) -> dict:
-        """料號→凌越預設倉別(SK_RKWHNO) 對照；撈整張貨品主檔建表，快取 ttl 秒。
-        必須在持有 erp_lock 時呼叫（與其他凌越操作序列化）。"""
-        now = time.monotonic()
-        if self._wh_map and (now - self._wh_map_at) < ttl:
-            return self._wh_map
-        try:
-            sp = local_import("ly_stock_push")
-            items = sp.fetch_stock_items(icpno, timeout=90)
-            m = {}
-            for it in items:
-                code = (it.get("code") or "").strip()
-                wh = (it.get("wh_code") or "").strip()
-                if code and wh:
-                    m[code] = wh
-            if m:
-                self._wh_map = m
-                self._wh_map_at = now
-                self.log(f"　（已載入凌越倉別對照 {len(m)} 筆）")
-        except Exception as e:
-            self.log(f"⚠ 載入凌越倉別對照失敗，改用固定倉別補：{_short(e)}")
-        return self._wh_map
-
     def write_orders(self, orders: list, *, dry_run: bool = False):
         """只寫「傳入的這批訂單」（來自 /wait 佇列＝使用者在網站按過『上傳凌越』的單）。
-        絕不主動去撈 /pending 全部訂單。dry_run=只印不寫。"""
+        絕不主動去撈 /pending 全部訂單。dry_run=只印不寫。
+        欄位對映一律用 ly_writeback_bridge.map_order（唯一權威，含拋轉必備欄位）。"""
         base, key, icpno = self.cfg["cloud_base"], self.cfg["writeback_key"], self.cfg["icpno"]
         try:
             wb = local_import("ly_writeback_bridge")  # 用隨附版本；提供 map_order/post_callback/ly_order
@@ -382,15 +359,16 @@ class AgentEngine:
             return
         whno = self.cfg.get("wb_default_whno", "")
         price = self.cfg.get("wb_default_price", "")
-        use_product_wh = bool(self.cfg.get("wb_whno_use_product", True))
-        or_check = "1" if bool(self.cfg.get("wb_mark_checked", False)) else "0"
+        or_check = "1" if bool(self.cfg.get("wb_mark_checked", True)) else "0"
+        create_name = (self.cfg.get("wb_create_name") or "052").strip()
+        maker = (self.cfg.get("wb_maker") or "").strip()
         results = []
         ok = 0
         with self.erp_lock:
-            wh_map = self._get_wh_map(icpno) if use_product_wh else {}
             for o in orders:
                 name = o.get("customer_name") or o.get("customer_code") or "?"
-                row = wb.map_order(o, whno=whno, price=price, wh_map=wh_map, or_check=or_check)
+                row = wb.map_order(o, icpno=icpno, whno=whno, price=price,
+                                   create_name=create_name, check=or_check, maker=maker)
                 # 提醒：哪些品項連凌越預設倉別都查不到、又沒有固定倉別可補 → 倉別會留空
                 miss = [(d.get("OD_NAME") or d.get("OD_SKNO")) for d in row.get("details", [])
                         if not (d.get("OD_WARE") or "").strip()]
@@ -855,22 +833,22 @@ class SettingsDialog(tk.Toplevel):
                        font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16)
         self.vars["wb_auto"] = auto_var
 
-        wh_var = tk.BooleanVar(value=bool(cfg.get("wb_whno_use_product", True)))
-        tk.Checkbutton(self, text="每個品項用凌越貨品主檔的預設倉別（SK_RKWHNO）", variable=wh_var,
-                       wraplength=500, justify="left",
-                       bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG,
-                       font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16)
-        self.vars["wb_whno_use_product"] = wh_var
+        tk.Label(self, text="倉別/單位規則固定：每品項帶凌越貨品主檔預設倉(SK_RKWHNO)與正規單位(SK_UNIT)；"
+                            "付款方式/業務員自動從客戶主檔帶入（拋轉必備）",
+                 fg=MUTED, bg=BG, anchor="w", justify="left", wraplength=520,
+                 font=("Microsoft JhengHei UI", 8)).pack(fill="x", padx=16, pady=(2, 0))
 
-        chk_var = tk.BooleanVar(value=bool(cfg.get("wb_mark_checked", False)))
-        tk.Checkbutton(self, text="寫入後標記為「已審核」(OR_CHECK=1)；不勾＝未審核（方便需要時刪除）",
+        chk_var = tk.BooleanVar(value=bool(cfg.get("wb_mark_checked", True)))
+        tk.Checkbutton(self, text="寫入即標記「已審核」(OR_CHECK=1)——拋轉需要；取消勾＝未審核（好刪、但拋轉抓不到）",
                        variable=chk_var, wraplength=500, justify="left",
                        bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG,
                        font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16)
         self.vars["wb_mark_checked"] = chk_var
 
         row("固定倉別 (LY_DEFAULT_WHNO)", "wb_default_whno",
-            "查不到品項預設倉別時用這個補；若上面沒勾＝全部都用這個")
+            "後備：品項在凌越貨品主檔查不到預設倉時用這個補")
+        row("建立人代碼 (LY_CREATE_NAME)", "wb_create_name",
+            "帶入 OR_MAKER/OR_CREATENAME 的操作員代碼，預設 052（拋轉依建立日期/人抓單）")
         row("預設單價 (LY_DEFAULT_PRICE)", "wb_default_price", "留空＝讓凌越依客戶售價表帶價")
 
         # 連線測試結果
