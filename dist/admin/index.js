@@ -694,6 +694,13 @@ const NOTION_STYLE = `
     }
     /* 卡片化的表格不要被 .sf-table 的 min-width:560px 撐開造成橫向擠壓 */
     .sf-table:not(.freezer-cal):not(.cal-table) { min-width: 0 !important; }
+    /* 帶 table-layout:fixed + <colgroup> 的 .sf-table（如「忘記叫貨提醒」清單）：
+       卡片堆疊時 td 變 display:block，但 <table> 仍是 display:table，瀏覽器會用固定欄寬
+       把每列擠成窄欄。改讓整個表格以 block 排版（忽略 colgroup/table-layout），每列吃滿寬。 */
+    .sf-table:not(.freezer-cal):not(.cal-table),
+    .sf-table:not(.freezer-cal):not(.cal-table) > tbody { display: block; }
+    .sf-table:not(.freezer-cal):not(.cal-table) { table-layout: auto !important; }
+    .sf-table:not(.freezer-cal):not(.cal-table) > colgroup { display: none; }
     /* 月曆類表格（冷凍庫 .freezer-cal／行事曆 .cal-table）維持 7 欄格狀，
        不套用卡片堆疊，否則會垮成「一天一列」。 */
     table.freezer-cal, table.cal-table {
