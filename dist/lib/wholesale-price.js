@@ -60,6 +60,21 @@ function toRepublicDate(isoDate) {
     const republicYear = y - 1911;
     return `${republicYear}.${m[2]}.${m[3]}`;
 }
+exports.fromRepublicDate = fromRepublicDate;
+/**
+ * 民國 YYY.MM.DD（農業部 API 回傳格式）轉西元 YYYY-MM-DD。無法解析回 null。
+ */
+function fromRepublicDate(repDate) {
+    if (repDate == null)
+        return null;
+    const m = String(repDate).trim().match(/^(\d{2,3})[.\/-](\d{1,2})[.\/-](\d{1,2})$/);
+    if (!m)
+        return null;
+    const y = parseInt(m[1], 10) + 1911;
+    const mo = String(parseInt(m[2], 10)).padStart(2, "0");
+    const d = String(parseInt(m[3], 10)).padStart(2, "0");
+    return `${y}-${mo}-${d}`;
+}
 
 exports.fetchTaipeiWholesalePricesDetailed = fetchTaipeiWholesalePricesDetailed;
 /**
@@ -102,12 +117,16 @@ async function fetchTaipeiWholesalePricesDetailed(dateStr) {
             }
             for (const row of data) {
                 all.push({
+                    tradeDate: fromRepublicDate(row["交易日期"]) || dateStr,
+                    cropCode: (row["作物代號"] ?? "").toString().trim(),
+                    categoryCode: (row["種類代碼"] ?? "").toString().trim(),
                     cropName: (row["作物名稱"] ?? "").toString().trim(),
                     category: extractCropCategory(row),
                     avgPrice: row["平均價"] != null ? Number(row["平均價"]) : null,
                     highPrice: row["上價"] != null ? Number(row["上價"]) : null,
                     midPrice: row["中價"] != null ? Number(row["中價"]) : null,
                     lowPrice: row["下價"] != null ? Number(row["下價"]) : null,
+                    volume: row["交易量"] != null ? Number(row["交易量"]) : null,
                     marketName: (row["市場名稱"] ?? "").toString().trim(),
                 });
             }
@@ -131,6 +150,75 @@ async function fetchTaipeiWholesalePricesDetailed(dateStr) {
 async function fetchTaipeiWholesalePrices(dateStr) {
     const r = await fetchTaipeiWholesalePricesDetailed(dateStr);
     return r.prices.length > 0 ? r.prices : null;
+}
+
+exports.fetchTaipeiWholesaleRange = fetchTaipeiWholesaleRange;
+/**
+ * 取一段日期區間（含頭尾）的台北一、台北二批發行情。農業部 API 一次就能回整個區間，
+ * 用於歷史回補。回傳依 tradeDate 分組的 Map<isoDate, prices[]>。
+ * @param {string} startIso YYYY-MM-DD
+ * @param {string} endIso   YYYY-MM-DD
+ */
+async function fetchTaipeiWholesaleRange(startIso, endIso) {
+    const repStart = toRepublicDate(startIso);
+    const repEnd = toRepublicDate(endIso);
+    const byDate = new Map();
+    if (!repStart || !repEnd)
+        return { byDate, status: "invalid_date", errors: [`無效日期：${startIso}~${endIso}`] };
+    const markets = ["台北一", "台北二"];
+    const errors = [];
+    let networkOk = false;
+    const TIMEOUT_MS = 30000; // 區間查詢資料量大，逾時放寬
+    for (const market of markets) {
+        try {
+            const url = `${MOA_API}?StartDate=${encodeURIComponent(repStart)}&EndDate=${encodeURIComponent(repEnd)}&Market=${encodeURIComponent(market)}&$top=99999`;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+            let resp;
+            try {
+                resp = await fetch(url, { signal: ctrl.signal });
+            }
+            finally {
+                clearTimeout(timer);
+            }
+            if (!resp.ok) {
+                errors.push(`${market}: HTTP ${resp.status}`);
+                continue;
+            }
+            networkOk = true;
+            const data = await resp.json();
+            if (!Array.isArray(data)) {
+                errors.push(`${market}: 回應格式異常`);
+                continue;
+            }
+            for (const row of data) {
+                const iso = fromRepublicDate(row["交易日期"]);
+                if (!iso)
+                    continue;
+                if (!byDate.has(iso))
+                    byDate.set(iso, []);
+                byDate.get(iso).push({
+                    tradeDate: iso,
+                    cropCode: (row["作物代號"] ?? "").toString().trim(),
+                    categoryCode: (row["種類代碼"] ?? "").toString().trim(),
+                    cropName: (row["作物名稱"] ?? "").toString().trim(),
+                    category: extractCropCategory(row),
+                    avgPrice: row["平均價"] != null ? Number(row["平均價"]) : null,
+                    highPrice: row["上價"] != null ? Number(row["上價"]) : null,
+                    midPrice: row["中價"] != null ? Number(row["中價"]) : null,
+                    lowPrice: row["下價"] != null ? Number(row["下價"]) : null,
+                    volume: row["交易量"] != null ? Number(row["交易量"]) : null,
+                    marketName: (row["市場名稱"] ?? "").toString().trim(),
+                });
+            }
+        }
+        catch (e) {
+            const isTimeout = e?.name === "AbortError";
+            errors.push(`${market}: ${isTimeout ? `逾時 ${TIMEOUT_MS / 1000}s` : (e?.message || String(e))}`);
+        }
+    }
+    const status = byDate.size > 0 ? "ok" : (networkOk ? "empty" : "network_error");
+    return { byDate, status, errors };
 }
 
 /**
