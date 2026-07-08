@@ -6495,16 +6495,24 @@ function createAdminRouter() {
             for (const k of Object.keys(nameMap)) codes[k] = true;
             for (const k of Object.keys(incMap)) codes[k] = true;
             const now = new Date().toISOString();
-            await db.prepare("DELETE FROM erp_warehouse").run();
-            let sort = 0;
-            for (const code of Object.keys(codes)) {
-                const c = String(code).trim();
-                if (!c)
-                    continue;
-                const name = String(nameMap[code] != null ? nameMap[code] : "").trim();
-                const include = incMap[code] ? 1 : 0;
-                await db.prepare("INSERT INTO erp_warehouse (code, name, include_stocktake, sort_order, updated_at) VALUES (?, ?, ?, ?, ?)").run(c, name, include, sort++, now);
-            }
+            // [fix 2026-07-08] DELETE 全表＋迴圈 INSERT 包進交易：中途失敗整批回滾，
+            // 不再把整張倉別中文名/納入盤點設定清空只留半套。
+            const doSave = async (h) => {
+                await h.prepare("DELETE FROM erp_warehouse").run();
+                let sort = 0;
+                for (const code of Object.keys(codes)) {
+                    const c = String(code).trim();
+                    if (!c)
+                        continue;
+                    const name = String(nameMap[code] != null ? nameMap[code] : "").trim();
+                    const include = incMap[code] ? 1 : 0;
+                    await h.prepare("INSERT INTO erp_warehouse (code, name, include_stocktake, sort_order, updated_at) VALUES (?, ?, ?, ?, ?)").run(c, name, include, sort++, now);
+                }
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doSave);
+            else
+                await doSave(db);
             res.redirect("/admin/inventory/warehouse-settings?ok=1");
         }
         catch (e) {
@@ -7145,31 +7153,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
     async function insertRouteEmptyBaskets(orderId, customerId) {
         if (!orderId || !customerId)
             return;
-        try {
-            const cust = await db.prepare("SELECT route_line FROM customers WHERE id = ?").get(customerId);
-            const routeLine = cust?.route_line >= 1 && cust?.route_line <= 9 ? cust.route_line : null;
-            // 沒設路線＝自取，不補任何空籃（含固定四角籃 C0100065）
-            if (routeLine == null) return;
-            const emptyBasketErp = routeLine != null ? "C01000" + (56 + routeLine) : null;
-            const erps = [];
-            if (emptyBasketErp)
-                erps.push(emptyBasketErp);
-            if (!erps.includes("C0100065"))
-                erps.push("C0100065");
-            for (const erp of erps) {
-                const prod = await db.prepare("SELECT id, name, unit FROM products WHERE erp_code = ?").get(erp);
-                if (!prod)
-                    continue;
-                const exists = await db.prepare("SELECT 1 FROM order_items WHERE order_id = ? AND product_id = ? LIMIT 1").get(orderId, prod.id);
-                if (exists)
-                    continue;
-                const itemId = (0, id_js_1.newId)("item");
-                await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer) VALUES (?, ?, ?, ?, 0, ?, 0, 1, NULL)").run(itemId, orderId, prod.id, prod.name, prod.unit || "個");
-            }
-        }
-        catch (e) {
-            console.error("[admin] 重新辨識補空籃失敗 order=%s:", orderId, e?.message || e);
-        }
+        // [fix 2026-07-08] 改為委派給 lib/empty-baskets.js（webhook 收單也用同一支），
+        // 空籃料號對映（查表，跳過4號籃）只維護一處，不再有多份複本可各自壞掉。
+        // 過去這裡是一份獨立複本，且在未提交工作合併時被蓋回舊的 56+路線 連號公式（5-9號線對錯籃）。
+        await empty_baskets_js_1.insertEmptyBaskets(db, customerId, [orderId]);
     }
     async function rebuildOrderItemsFromRawText(orderId, customerId, rawText) {
         const rawTrim = String(rawText || "").trim();
@@ -9801,21 +9788,29 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     snapshotAt,
                 ]);
             }
-            // 全表覆蓋（DELETE + 分批 INSERT），跨 SQLite/PG 皆可
-            await db.prepare("DELETE FROM erp_stock_items").run();
-            const CHUNK = 100;
-            for (let i = 0; i < rows.length; i += CHUNK) {
-                const chunk = rows.slice(i, i + CHUNK);
-                const ph = chunk.map(() => "(?,?,?,?,?,?,?,?)").join(",");
-                const flat = [];
-                for (const r of chunk)
-                    flat.push(...r);
-                await db.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
-            }
-            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
-            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
-            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "done");
-            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", "");
+            // [fix 2026-07-08] 全表覆蓋（DELETE + 分批 INSERT + meta 更新）包進單一交易：
+            // 過去無交易，推送中途失敗（網路斷、pool 瞬斷）會留下「半空的庫存表」且快照時間未更新，
+            // 使用者看到的是殘缺庫存卻無從察覺；交易失敗整批回滾＝保留上一份完整快照。
+            const doReplace = async (h) => {
+                await h.prepare("DELETE FROM erp_stock_items").run();
+                const CHUNK = 100;
+                for (let i = 0; i < rows.length; i += CHUNK) {
+                    const chunk = rows.slice(i, i + CHUNK);
+                    const ph = chunk.map(() => "(?,?,?,?,?,?,?,?)").join(",");
+                    const flat = [];
+                    for (const r of chunk)
+                        flat.push(...r);
+                    await h.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
+                }
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "done");
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", "");
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doReplace);
+            else
+                await doReplace(db);
             res.json({ ok: true, count: rows.length, snapshot_at: snapshotAt });
         }
         catch (e) {
