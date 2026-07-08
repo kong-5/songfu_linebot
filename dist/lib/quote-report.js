@@ -482,6 +482,31 @@ async function seedTemplateReport(db, ym) {
 }
 exports.seedTemplateReport = seedTemplateReport;
 
+/**
+ * 開機一次性 seed：確保 2026-07 月報存在（帶入 7 月範本），讓使用者一登入就有底稿。
+ * 用 app_settings 旗標 quote_seeded_2026_07 記住「已跑過」，之後每次部署都不會重跑；
+ * 若使用者事後刪掉該月報也不會又冒出來，且絕不覆蓋既有資料。非致命：呼叫端請包 try/catch。
+ */
+async function ensureInitialQuoteSeed(db) {
+    const FLAG = "quote_seeded_2026_07";
+    let flag = null;
+    try {
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(FLAG);
+        flag = row && row.value ? row.value : null;
+    } catch (_) { /* app_settings 理應存在；讀失敗當作未 seed */ }
+    if (flag) return { seeded: false, reason: "already-ran" };
+    // 只在完全沒有 2026-07 月報時才建立，避免覆蓋使用者已建立／編輯的內容
+    const existing = await getReportByYm(db, "2026-07");
+    let created = false;
+    if (!existing) {
+        await seedTemplateReport(db, "2026-07");
+        created = true;
+    }
+    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(FLAG, "1");
+    return { seeded: created };
+}
+exports.ensureInitialQuoteSeed = ensureInitialQuoteSeed;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 版面：把已排序品項攤平成「顯示列」（分類標題列 + 品項列），再平均分成兩欄。
 // HTML 列印頁與 JPG 圖共用同一套分欄邏輯，確保兩者版面一致。
