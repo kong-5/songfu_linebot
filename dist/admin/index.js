@@ -1054,6 +1054,8 @@ const SF_TOKENS = `
   --font-ui: 'Inter','Noto Sans TC',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
   --font-mono: 'JetBrains Mono','SF Mono',ui-monospace,Menlo,monospace;
   --hairline: 1px solid var(--line);
+  --shadow-kpi: 0 1px 2px rgba(20,24,34,.05), 0 1px 3px rgba(20,24,34,.06);
+  --shadow-kpi-hover: 0 8px 24px rgba(20,24,34,.10), 0 3px 8px rgba(20,24,34,.06);
 }
 [data-theme="dark"] {
   --bg-0: #0a0c10;
@@ -1081,6 +1083,8 @@ const SF_TOKENS = `
   --bad-soft: oklch(0.66 0.22 25 / 0.14);
   --info: oklch(0.74 0.12 230);
   --info-soft: oklch(0.74 0.12 230 / 0.14);
+  --shadow-kpi: 0 1px 2px rgba(0,0,0,.35);
+  --shadow-kpi-hover: 0 10px 28px rgba(0,0,0,.5);
 }
 /* base */
 .sf-root, .sf-root * { box-sizing: border-box; }
@@ -1238,6 +1242,28 @@ const SF_TOKENS = `
 .sf-kpi-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 28px; font-weight: 600; letter-spacing: -0.02em; }
 .sf-kpi-unit { font-size: 12px; color: var(--txt-3); }
 .sf-kpi-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--txt-3); }
+
+/* KPI 現代版：角落光暈 ＋ 膠囊標籤 ＋ 迷你趨勢線（儀表板專用，不影響其他 .sf-kpi） */
+.sf-kpi.sf-kpi-glow {
+  padding: 18px; border: var(--hairline); border-radius: var(--radius-lg);
+  background: radial-gradient(130% 90% at 0% 0%, var(--kpi-glow, transparent), transparent 62%), var(--bg-1);
+  box-shadow: var(--shadow-kpi);
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+.sf-kpi.sf-kpi-glow:hover { transform: translateY(-3px); box-shadow: var(--shadow-kpi-hover); border-color: var(--line-2); }
+.sf-kpi-glow .sf-kpi-value { margin-top: 2px; }
+.sf-kpi-glow .sf-kpi-num { font-size: 32px; }
+.sf-kpi-badge {
+  font-size: 11px; font-weight: 600; letter-spacing: .01em; white-space: nowrap;
+  padding: 2px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.sf-kpi-badge.ok { background: var(--ok-soft); color: var(--ok); }
+.sf-kpi-badge.warn { background: var(--warn-soft); color: var(--warn); }
+.sf-kpi-badge.bad { background: var(--bad-soft); color: var(--bad); }
+.sf-kpi-badge.info { background: var(--info-soft); color: var(--info); }
+.sf-kpi-badge.accent { background: var(--accent-soft); color: var(--accent); }
+.sf-kpi-spark { display: block; width: 100%; height: 30px; margin: 10px 0 2px; }
 
 /* progress bar */
 .sf-prog { height: 6px; background: var(--bg-3); border-radius: 3px; overflow: hidden; }
@@ -3989,21 +4015,63 @@ function createAdminRouter() {
             freezerRows = await db.prepare("SELECT name, freezer_type FROM freezer_fridge_warehouses ORDER BY name LIMIT 8").all();
         } catch (_) {}
         const tapmc = wholesale_price_js_1.TAPMC_PRICE_URL;
-        const kpiCard = (label, num, unit, sub, status, delta, href) => `
-          <a href="${href || "#"}" class="sf-kpi ${status?"status-"+status:""}" style="text-decoration:none;color:inherit;display:block;transition:transform .12s,box-shadow .12s;cursor:pointer;">
+        // ── 近 7 日走勢（sparkline）：訂單／已確認／客訴 逐日計數（依 order_date）──
+        //    待簽核、提醒叫貨屬「當下狀態」無歷史序列，不畫趨勢線（不假造數據）。
+        const trendDays = [];
+        for (let i = 6; i >= 0; i--)
+            trendDays.push(new Date(todayDate.getTime() - i * 86400000).toISOString().slice(0, 10));
+        const sparkOrders = new Array(7).fill(0);
+        const sparkApproved = new Array(7).fill(0);
+        const sparkComplaints = new Array(7).fill(0);
+        try {
+            const isPg = Boolean(process.env.DATABASE_URL);
+            const dcol = isPg ? "to_char(order_date,'YYYY-MM-DD')" : "order_date";
+            const from = trendDays[0];
+            const idxOf = (d) => trendDays.indexOf(String(d).slice(0, 10));
+            const fill = (rows, arr) => { for (const r of rows || []) { const k = idxOf(r.d); if (k >= 0) arr[k] = Number(r.n) || 0; } };
+            fill(await db.prepare(`SELECT ${dcol} AS d, COUNT(*) AS n FROM orders WHERE order_date >= ? AND order_date <= ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY ${dcol}`).all(from, today), sparkOrders);
+            fill(await db.prepare(`SELECT ${dcol} AS d, COUNT(*) AS n FROM orders WHERE order_date >= ? AND order_date <= ? AND COALESCE(LOWER(TRIM(status)),'') = 'approved' GROUP BY ${dcol}`).all(from, today), sparkApproved);
+            fill(await db.prepare(`SELECT ${dcol} AS d, COUNT(*) AS n FROM orders WHERE order_date >= ? AND order_date <= ? AND LOWER(TRIM(COALESCE(status,''))) = 'complaint' GROUP BY ${dcol}`).all(from, today), sparkComplaints);
+        } catch (e) { console.warn("[admin] dashboard sparkline query failed:", e?.message || e); }
+        let _sparkSeq = 0;
+        const sparkSvg = (pts, tone) => {
+            if (!Array.isArray(pts) || pts.length < 2 || pts.every(v => !v)) return "";
+            const w = 220, h = 30, max = Math.max(...pts), min = Math.min(...pts), rg = (max - min) || 1;
+            const X = (i) => +(i * (w / (pts.length - 1))).toFixed(1);
+            const Y = (v) => +(h - 2 - ((v - min) / rg) * (h - 6)).toFixed(1);
+            let d = "M" + X(0) + " " + Y(pts[0]);
+            for (let i = 1; i < pts.length; i++) d += " L" + X(i) + " " + Y(pts[i]);
+            const area = d + " L" + w + " " + h + " L0 " + h + " Z";
+            const c = "var(--" + (tone || "accent") + ")";
+            const gid = "sfspk" + (++_sparkSeq);
+            return `<svg class="sf-kpi-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+              <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.22"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></linearGradient></defs>
+              <path d="${area}" fill="url(#${gid})"/>
+              <path d="${d}" fill="none" stroke="${c}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+              <circle cx="${X(pts.length - 1)}" cy="${Y(pts[pts.length - 1])}" r="2.4" fill="${c}"/>
+            </svg>`;
+        };
+        const kpiCard = (label, num, unit, sub, status, delta, href, opts = {}) => {
+            const tone = opts.tone || status || "accent";
+            const badge = opts.badge != null ? opts.badge : null;
+            const spark = opts.spark || null;
+            return `
+          <a href="${href || "#"}" class="sf-kpi sf-kpi-glow ${status?"status-"+status:""}" style="--kpi-glow:var(--${tone}-soft);text-decoration:none;color:inherit;display:block;cursor:pointer;">
             <div class="sf-kpi-head">
               <span class="sf-kpi-label">${label}</span>
-              ${status?`<span class="sf-dot ${status}"></span>`:""}
+              ${badge!=null?`<span class="sf-kpi-badge ${tone}">${badge}</span>`:(status?`<span class="sf-dot ${status}"></span>`:"")}
             </div>
             <div class="sf-kpi-value">
               <span class="sf-kpi-num">${num}</span>
               ${unit?`<span class="sf-kpi-unit">${unit}</span>`:""}
             </div>
+            ${spark?sparkSvg(spark, tone):""}
             <div class="sf-kpi-foot">
               ${delta?`<span class="mono">${delta}</span>`:""}
               ${sub?`<span>${sub}</span>`:""}
             </div>
           </a>`;
+        };
         const alertsRows = alerts.length
             ? alerts.map(a => {
                 const s = alertStatusFor(a);
@@ -4055,11 +4123,11 @@ function createAdminRouter() {
             </div>
           </div>
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
-            ${kpiCard("今日訂單", totalOrders, "單", deltaOrders>=0?`vs 昨日 ${yesterdayOrders}`:"", "ok", deltaOrders>0?`↑ +${deltaOrders}`:deltaOrders<0?`↓ ${deltaOrders}`:"· 持平", "/admin/orders")}
-            ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"", pendingOrders>5?"warn":"ok", null, "/admin/orders?status=pending")}
-            ${kpiCard("已確認", approvedOrders, "單", totalOrders?`完成 ${Math.round(approvedOrders*100/totalOrders)}%`:"", "ok", null, "/admin/orders")}
-            ${kpiCard("客訴", complaintsOpenTotal, "未解決", complaintsTodayNew>0?`今日新增 ${complaintsTodayNew}`:"今日無新客訴", complaintsOpenTotal>0?"bad":"ok", null, "/admin/complaints")}
-            ${kpiCard("提醒叫貨", reminderTotal, "戶", reminderCritical > 0 ? `嚴重逾期 ${reminderCritical} 戶` : reminderTotal > 0 ? "逾期未叫貨" : "全部準時", reminderCritical > 0 ? "bad" : reminderTotal > 0 ? "warn" : "ok", null, "/admin/reminders")}
+            ${kpiCard("今日訂單", totalOrders, "單", "近 7 日走勢 · 昨日 " + yesterdayOrders, "ok", null, "/admin/orders", { tone: "accent", badge: deltaOrders>0?`↑ +${deltaOrders}`:deltaOrders<0?`↓ ${deltaOrders}`:"持平", spark: sparkOrders })}
+            ${kpiCard("待簽核", pendingOrders, "單", needReviewCnt?`含品項待確認 ${needReviewCnt}`:"目前無待確認品項", pendingOrders>5?"warn":"ok", null, "/admin/orders?status=pending", { badge: pendingOrders>5?"待處理":"正常" })}
+            ${kpiCard("已確認", approvedOrders, "單", "近 7 日完成走勢", "ok", null, "/admin/orders", { badge: totalOrders?`${Math.round(approvedOrders*100/totalOrders)}%`:"—", spark: sparkApproved })}
+            ${kpiCard("客訴", complaintsOpenTotal, "未解決", complaintsTodayNew>0?`今日新增 ${complaintsTodayNew}`:"近 7 日客訴走勢", complaintsOpenTotal>0?"bad":"ok", null, "/admin/complaints", { badge: complaintsOpenTotal>0?"未解決":"清空", spark: sparkComplaints })}
+            ${kpiCard("提醒叫貨", reminderTotal, "戶", reminderCritical > 0 ? `嚴重逾期 ${reminderCritical} 戶` : reminderTotal > 0 ? "逾期未叫貨" : "全部準時", reminderCritical > 0 ? "bad" : reminderTotal > 0 ? "warn" : "ok", null, "/admin/reminders", { badge: reminderCritical>0?`嚴重 ${reminderCritical}`:reminderTotal>0?"逾期":"準時" })}
           </div>
           ${quoteReminderCard}
           ${reminderTop.length ? `
