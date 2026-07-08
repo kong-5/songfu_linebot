@@ -166,6 +166,16 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        // 盤點：白名單群組、盤點場次、盤點明細、需記效期的品項
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_group (group_id TEXT PRIMARY KEY, group_name TEXT, created_at TEXT)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_session (id TEXT PRIMARY KEY, wh_code TEXT, wh_name TEXT, count_date TEXT, status TEXT, group_id TEXT, created_by TEXT, created_by_name TEXT, item_count INTEGER NOT NULL DEFAULT 0, counted_count INTEGER NOT NULL DEFAULT 0, created_at TEXT, submitted_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_session_date ON stocktake_session(count_date, wh_code)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_count (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, erp_code TEXT, name TEXT, spec TEXT, unit TEXT, sys_qty REAL, counted_qty REAL, expiry_json TEXT, updated_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (erp_code TEXT PRIMARY KEY, expiry_unit TEXT, created_at TEXT)");
+    }
+    catch (_) { /* tables may already exist */ }
+    try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TEXT)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT, raw_name TEXT, quantity REAL NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (order_id) REFERENCES logistics_orders(id), FOREIGN KEY (product_id) REFERENCES products(id))");
     }
@@ -667,6 +677,15 @@ async function initPg() {
                 await client.query("CREATE TABLE IF NOT EXISTS erp_warehouse (code TEXT PRIMARY KEY, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
             }
             catch (_) { /* table may already exist */ }
+            try {
+                await client.query("CREATE TABLE IF NOT EXISTS stocktake_group (group_id TEXT PRIMARY KEY, group_name TEXT, created_at TEXT)");
+                await client.query("CREATE TABLE IF NOT EXISTS stocktake_session (id TEXT PRIMARY KEY, wh_code TEXT, wh_name TEXT, count_date TEXT, status TEXT, group_id TEXT, created_by TEXT, created_by_name TEXT, item_count INTEGER NOT NULL DEFAULT 0, counted_count INTEGER NOT NULL DEFAULT 0, created_at TEXT, submitted_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_stk_session_date ON stocktake_session(count_date, wh_code)");
+                await client.query("CREATE TABLE IF NOT EXISTS stocktake_count (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, erp_code TEXT, name TEXT, spec TEXT, unit TEXT, sys_qty DOUBLE PRECISION, counted_qty DOUBLE PRECISION, expiry_json TEXT, updated_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
+                await client.query("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (erp_code TEXT PRIMARY KEY, expiry_unit TEXT, created_at TEXT)");
+            }
+            catch (_) { /* tables may already exist */ }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TIMESTAMPTZ)");
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES logistics_orders(id), product_id TEXT REFERENCES products(id), raw_name TEXT, quantity DOUBLE PRECISION NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0)");

@@ -77,6 +77,92 @@ function createLiffRouter() {
         serveLiffPage(res, "basket-log.html", (process.env.LIFF_ID_BASKET_LOG || "").trim());
     });
 
+    // ── 盤點 LIFF 頁 + API（誰都可以盤，需 LINE 登入；群組白名單由 #盤點 控制）──
+    const STOCKTAKE_LIFF_ID = (process.env.LIFF_ID_STOCKTAKE || "2010106501-VocNwkbA").trim();
+    router.get("/stocktake", (_req, res) => { serveLiffPage(res, "stocktake.html", STOCKTAKE_LIFF_ID); });
+    function stkTaipeiDate() {
+        try {
+            const p = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+            const g = (t) => (p.find((x) => x.type === t) || {}).value;
+            return g("year") + "-" + g("month") + "-" + g("day");
+        } catch (_) { return new Date().toISOString().slice(0, 10); }
+    }
+    async function stkAuth(req, res) {
+        const idToken = (0, liff_auth_js_1.readBearerIdToken)(req);
+        if (!idToken) { res.status(401).json({ error: "需 LINE 登入" }); return null; }
+        const v = await (0, liff_verify_js_1.verifyLineIdToken)(idToken);
+        if (!v.ok) { res.status(401).json({ error: v.error || "登入驗證失敗" }); return null; }
+        return v;
+    }
+    router.get("/api/stocktake/warehouses", async (req, res) => {
+        try {
+            const v = await stkAuth(req, res); if (!v) return;
+            const db = (0, index_js_1.getDb)(dbPath);
+            const date = stkTaipeiDate();
+            const whRows = await db.prepare("SELECT code, name, include_stocktake, sort_order FROM erp_warehouse").all();
+            const cntRows = await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' GROUP BY wh_code").all();
+            const cnt = {}; (cntRows || []).forEach((r) => { cnt[String(r.code)] = Number(r.cnt || 0); });
+            const doneRows = await db.prepare("SELECT DISTINCT wh_code FROM stocktake_session WHERE count_date = ? AND status = 'submitted'").all(date);
+            const done = {}; (doneRows || []).forEach((r) => { done[String(r.wh_code)] = true; });
+            let list;
+            if ((whRows || []).length) {
+                list = whRows.filter((w) => Number(w.include_stocktake) === 1).map((w) => ({ code: String(w.code), name: String(w.name || ""), sort: Number(w.sort_order || 0), items: cnt[String(w.code)] || 0, countedToday: !!done[String(w.code)] }));
+            } else {
+                list = Object.keys(cnt).map((code) => ({ code, name: "", sort: 0, items: cnt[code], countedToday: !!done[code] }));
+            }
+            list.sort((a, b) => (a.sort - b.sort) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+            res.json({ date, warehouses: list });
+        } catch (e) { console.error("[liff stocktake warehouses]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    router.get("/api/stocktake/items", async (req, res) => {
+        try {
+            const v = await stkAuth(req, res); if (!v) return;
+            const code = String(req.query.warehouse || "").trim();
+            if (!code) { res.status(400).json({ error: "缺少 warehouse" }); return; }
+            const db = (0, index_js_1.getDb)(dbPath);
+            const wh = await db.prepare("SELECT code, name FROM erp_warehouse WHERE code = ?").get(code);
+            const rows = await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE wh_code = ? ORDER BY erp_code").all(code);
+            const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item").all();
+            const exp = {}; (expRows || []).forEach((r) => { exp[String(r.erp_code)] = String(r.expiry_unit || ""); });
+            const items = (rows || []).map((r) => {
+                const c = String(r.erp_code || "");
+                const isExp = Object.prototype.hasOwnProperty.call(exp, c);
+                return { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: Number(r.qty || 0), exp: isExp, eunit: isExp ? (exp[c] || String(r.unit || "")) : "" };
+            });
+            res.json({ date: stkTaipeiDate(), warehouse: { code, name: wh ? String(wh.name || "") : "" }, items });
+        } catch (e) { console.error("[liff stocktake items]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    router.post("/api/stocktake/submit", express_1.json({ limit: "2mb" }), async (req, res) => {
+        try {
+            const v = await stkAuth(req, res); if (!v) return;
+            const body = req.body || {};
+            const code = String(body.warehouse || "").trim();
+            const counts = Array.isArray(body.counts) ? body.counts : null;
+            if (!code || !counts) { res.status(400).json({ error: "缺少 warehouse 或 counts" }); return; }
+            const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || "")) ? String(body.date) : stkTaipeiDate();
+            const db = (0, index_js_1.getDb)(dbPath);
+            const { newId } = require("../lib/id.js");
+            const wh = await db.prepare("SELECT name FROM erp_warehouse WHERE code = ?").get(code);
+            const totalRow = await db.prepare("SELECT COUNT(*) AS n FROM erp_stock_items WHERE wh_code = ?").get(code);
+            const total = totalRow ? Number(totalRow.n || 0) : counts.length;
+            const now = new Date().toISOString();
+            // 同倉同日 → 覆蓋（一天一筆）
+            const old = await db.prepare("SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ?").all(code, date);
+            for (const s of old || []) { await db.prepare("DELETE FROM stocktake_count WHERE session_id = ?").run(s.id); }
+            await db.prepare("DELETE FROM stocktake_session WHERE wh_code = ? AND count_date = ?").run(code, date);
+            const sid = newId("stk");
+            const name = String(body.name || v.name || "").trim();
+            await db.prepare("INSERT INTO stocktake_session (id, wh_code, wh_name, count_date, status, group_id, created_by, created_by_name, item_count, counted_count, created_at, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .run(sid, code, wh ? String(wh.name || "") : "", date, "submitted", null, v.sub || "", name, total, counts.length, now, now);
+            for (const c of counts) {
+                const cv = (c.counted == null || c.counted === "") ? null : Number(c.counted);
+                await db.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, expiry_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    .run(newId("stc"), sid, String(c.code || ""), String(c.name || ""), String(c.spec || ""), String(c.unit || ""), Number(c.sys || 0), cv, JSON.stringify(c.expiry || []), now);
+            }
+            res.json({ ok: true, counted: counts.length, total });
+        } catch (e) { console.error("[liff stocktake submit]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+
     // 查綁定 token 對應的員工帳號（不直接執行綁定，只用來在頁面顯示要綁誰）
     router.get("/api/employee-bind/lookup", async (req, res) => {
         try {
