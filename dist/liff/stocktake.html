@@ -80,9 +80,12 @@
   .qty:focus{border-color:var(--accent);background:var(--card);}
   .qty::placeholder{color:var(--txt-3);font-weight:500;font-size:12px;}
   .diff{font-size:10.5px;font-weight:700;font-variant-numeric:tabular-nums;padding:1px 6px;border-radius:6px;min-width:30px;text-align:center;}
-  .diff.z{background:var(--chip);color:var(--txt-3);}
-  .diff.p{background:var(--pos-soft);color:var(--pos);}
-  .diff.n{background:var(--neg-soft);color:var(--neg);}
+  .diff.todo{background:var(--warn-soft);color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 26%,transparent);}
+  .diff.eq{background:var(--pos-soft);color:var(--pos);}
+  .diff.sp{background:var(--accent-soft);color:var(--accent);}
+  .diff.sn{background:var(--neg-soft);color:var(--neg);}
+  .hz-hint{display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;color:var(--txt-3);padding:12px 8px 4px;}
+  .hz-show{border:1px solid var(--line);background:var(--card);color:var(--accent);font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;cursor:pointer;}
   .batches{border-top:1px dashed var(--line);padding:9px 13px 12px;background:color-mix(in srgb,var(--warn-soft) 40%,var(--card));display:none;}
   .item.exp-open .batches{display:block;}
   .mid-chip{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--accent-soft);color:var(--accent);flex:none;cursor:pointer;border:1px solid color-mix(in srgb,var(--accent) 26%,transparent);white-space:nowrap;}
@@ -137,6 +140,7 @@
       sent:'盤點已送出',finish:'完成',submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',langBtn:'Tiếng Việt',resumed:'續盤（已帶回今日已盤）',
       midChip:'中',midTitle:'中價貨（品質較差）數量',midPh:'中價數量',midDone:'完成收起 ▴',
       sumLine:function(g,m,tot){return '上 '+g+'  ＋  中 '+m+'  ＝  合計 '+tot;},
+      showZero:'顯示庫存0',hiddenN:function(n){return '另有 '+n+' 項庫存 0 已隱藏';},
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
       progN:function(d,a){return '已盤 '+d+'/'+a;},barN:function(d,a){return '已盤 '+d+'/'+a+' · 未盤 '+(a-d);},
       confirm:function(wh,d,a){return '送出盤點？\n\n倉庫：'+wh+'\n已盤 '+d+'/'+a+' 項（未盤的會標「未盤」）';},
@@ -152,6 +156,7 @@
       sent:'Đã gửi kiểm kê',finish:'Xong',submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',langBtn:'中文',resumed:'Tiếp tục (đã tải dữ liệu hôm nay)',
       midChip:'Loại B',midTitle:'Số lượng hàng loại B (chất lượng kém)',midPh:'SL loại B',midDone:'Xong ▴',
       sumLine:function(g,m,tot){return 'Loại A '+g+'  +  Loại B '+m+'  =  Tổng '+tot;},
+      showZero:'Hiện tồn 0',hiddenN:function(n){return 'Còn '+n+' mục tồn 0 đang ẩn';},
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
       progN:function(d,a){return 'Đã kiểm '+d+'/'+a;},barN:function(d,a){return 'Đã kiểm '+d+'/'+a+' · Chưa '+(a-d);},
       confirm:function(wh,d,a){return 'Gửi kiểm kê?\n\nKho: '+wh+'\nĐã kiểm '+d+'/'+a+' (mục chưa kiểm sẽ được đánh dấu "Chưa")';},
@@ -159,7 +164,8 @@
     }
   };
   var initLang='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') initLang='vi'; }catch(_){}
-  var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:false,lang:initLang};
+  var initHz=true; try{ if(localStorage.getItem('stk_hz')==='0') initHz=false; }catch(_){}  // 預設隱藏0
+  var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:initHz,lang:initLang};
   function t(k){return (I18N[S.lang]&&I18N[S.lang][k]!=null)?I18N[S.lang][k]:I18N.zh[k];}
   function toggleLang(){ S.lang=(S.lang==='zh')?'vi':'zh'; try{localStorage.setItem('stk_lang',S.lang);}catch(_){}
     if(S.wh) renderCount(); else showPicker(); }
@@ -240,7 +246,12 @@
   function countedVal(it){ var g=goodVal(it),m=midVal(it); if((g==null||isNaN(g))&&(m==null||isNaN(m))) return null; return Math.round(((g||0)+(m||0))*100)/100; }
   function isCounted(it){ return (S.counts[it.c]!=null&&S.counts[it.c]!=='')||(S.mid[it.c]!=null&&S.mid[it.c]!==''); }
   function batchSum(c){ return (S.batches[c]||[]).reduce(function(s,b){var v=parseFloat(b.qty);return s+(isFinite(v)?v:0);},0); }
-  function diffPill(it){ var d=safetyDiff(it); if(d==null) return '<span class="diff z">'+esc(t('todo'))+'</span>'; var cls=d===0?'z':(d>0?'p':'n'); var txt=d===0?t('match'):(d>0?'+'+fmt(d):fmt(d)); return '<span class="diff '+cls+'">'+esc(txt)+'</span>'; }
+  function diffPill(it){
+    var d=safetyDiff(it);
+    if(d==null) return '<span class="diff todo">'+esc(t('todo'))+'</span>';       // 未盤：琥珀
+    if(d===0)   return '<span class="diff eq">'+esc(t('match'))+'</span>';         // 相符：綠
+    return '<span class="diff '+(d>0?'sp':'sn')+'">'+esc(d>0?'+'+fmt(d):fmt(d))+'</span>'; // 盤盈:藍 / 盤虧:紅
+  }
   function batchRows(it){
     var arr=S.batches[it.c]||[];
     var rows=arr.map(function(b,i){
@@ -272,15 +283,23 @@
   }
   function listHtml(){
     var q=S.q.toLowerCase();
+    var searching=!!q;   // 搜尋時忽略「隱藏0」，讓帳上0但現場有的品項也找得到
     var arr=S.items.filter(function(it){
       if(S.f==='todo'&&isCounted(it)) return false;
       if(S.f==='exp'&&!it.exp) return false;
-      if(S.hz&&Number(it.sys)===0&&!isCounted(it)) return false;
+      if(S.hz&&!searching&&Number(it.sys)===0&&!isCounted(it)) return false;
       if(q&&it.c.toLowerCase().indexOf(q)<0&&it.n.toLowerCase().indexOf(q)<0) return false;
       return true;
     });
-    if(!arr.length) return '<div class="list"><div class="empty">'+esc(t('noMatch'))+'</div></div>';
-    return '<div class="list">'+arr.map(rowHtml).join('')+'</div>';
+    var body=!arr.length?'<div class="list"><div class="empty">'+esc(t('noMatch'))+'</div></div>'
+                        :'<div class="list">'+arr.map(rowHtml).join('')+'</div>';
+    // 隱藏0 提示：讓人知道還有多少庫存0被藏起來，一鍵可顯示
+    var hint='';
+    if(S.hz&&!searching){
+      var hidden=0; for(var i=0;i<S.items.length;i++){ var it2=S.items[i]; if(Number(it2.sys)===0&&!isCounted(it2)) hidden++; }
+      if(hidden) hint='<div class="hz-hint">'+esc(t('hiddenN')(hidden))+'<button class="hz-show" data-showzero>'+esc(t('showZero'))+'</button></div>';
+    }
+    return body+hint;
   }
   function renderCount(){
     var done=S.items.filter(isCounted).length, all=S.items.length;
@@ -308,7 +327,7 @@
   function bindCount(){
     document.getElementById('stBack').addEventListener('click',showPicker);
     document.getElementById('stLang').addEventListener('click',toggleLang);
-    document.getElementById('stHideZero').addEventListener('click',function(){ S.hz=!S.hz; this.classList.toggle('on',S.hz); relist(); });
+    document.getElementById('stHideZero').addEventListener('click',function(){ S.hz=!S.hz; this.classList.toggle('on',S.hz); try{localStorage.setItem('stk_hz',S.hz?'1':'0');}catch(_){} relist(); });
     var t2=null;
     document.getElementById('stQ').addEventListener('input',function(e){ if(t2)clearTimeout(t2); t2=setTimeout(function(){ S.q=e.target.value.trim(); relist(); },120); });
     document.getElementById('stFilter').addEventListener('click',function(e){ var b=e.target.closest('button'); if(!b)return; S.f=b.getAttribute('data-f'); Array.prototype.forEach.call(this.querySelectorAll('button'),function(x){x.classList.toggle('on',x===b);}); relist(); });
@@ -337,7 +356,8 @@
     });
     wrap.addEventListener('click',function(e){
       var add=e.target.closest('[data-add]'),del=e.target.closest('[data-del]'),done=e.target.closest('[data-done]'),tg=e.target.closest('[data-toggle]');
-      var midtg=e.target.closest('[data-midtoggle]'),middone=e.target.closest('[data-middone]');
+      var midtg=e.target.closest('[data-midtoggle]'),middone=e.target.closest('[data-middone]'),showzero=e.target.closest('[data-showzero]');
+      if(showzero){ S.hz=false; try{localStorage.setItem('stk_hz','0');}catch(_){} var hzb=document.getElementById('stHideZero'); if(hzb) hzb.classList.remove('on'); relist(); return; }
       if(add){ var c=e.target.closest('.item').getAttribute('data-c'); S.expanded[c]=true; S.batches[c].push({date:'',qty:''}); relist(); }
       else if(del){ var item=e.target.closest('.item'),c=item.getAttribute('data-c'); S.expanded[c]=true; S.batches[c].splice(+del.getAttribute('data-del'),1); relist(); }
       else if(done){ var c=e.target.closest('.item').getAttribute('data-c'); S.expanded[c]=false; relist(); }
