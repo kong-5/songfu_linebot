@@ -6,22 +6,15 @@
 <title>盤點</title>
 <style>
   :root{
-    --bg:#f4f5f7;--card:#fff;--line:#e5e7ec;--line-soft:#eef0f3;
+    --bg:#ffffff;--card:#ffffff;--line:#e5e7ec;--line-soft:#eef0f3;
     --txt:#1f2430;--txt-2:#5b616e;--txt-3:#8b909c;
     --accent:#2383e2;--accent-soft:#e8f1fd;
     --neg:#d23b3b;--neg-soft:#fdecec;--pos:#1f9d57;--pos-soft:#e7f6ee;
-    --warn:#b9791b;--warn-soft:#fcf3e2;--chip:#eef0f3;
+    --warn:#b9791b;--warn-soft:#fcf3e2;--chip:#eef0f3;--field:#f7f8fa;
     --shadow:0 1px 2px rgba(20,30,50,.06),0 3px 12px rgba(20,30,50,.05);
   }
-  @media (prefers-color-scheme:dark){:root{
-    --bg:#14161b;--card:#1c1f26;--line:#2b2f38;--line-soft:#23262e;
-    --txt:#e8eaef;--txt-2:#a3a9b6;--txt-3:#727886;
-    --accent:#4b9bff;--accent-soft:#16283f;
-    --neg:#ff6b6b;--neg-soft:#33201f;--pos:#4cc987;--pos-soft:#172a20;
-    --warn:#e0a94b;--warn-soft:#2c2413;--chip:#262a33;
-    --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.35);
-  }}
   *{box-sizing:border-box;}
+  html{background:#fff;}
   body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","PingFang TC",sans-serif;-webkit-text-size-adjust:100%;}
   .wrap{max-width:600px;margin:0 auto;}
   .center{min-height:70vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--txt-2);padding:24px;text-align:center;}
@@ -29,9 +22,13 @@
   @keyframes sp{to{transform:rotate(360deg);}}
   @media (prefers-reduced-motion:reduce){.spin{animation:none;}}
   .btn-primary{border:0;border-radius:11px;background:var(--accent);color:#fff;font-size:15px;font-weight:700;padding:12px 20px;cursor:pointer;}
+  /* language toggle */
+  .lang{flex:none;border:1px solid var(--line);background:var(--card);color:var(--txt-2);font-size:12px;font-weight:700;padding:6px 11px;border-radius:99px;cursor:pointer;white-space:nowrap;}
+  .lang:active{transform:translateY(1px);}
   /* picker */
   .pk-head{padding:16px 16px 6px;}
-  .pk-head h1{margin:0;font-size:18px;font-weight:800;letter-spacing:-.01em;}
+  .pk-top{display:flex;align-items:flex-start;gap:10px;}
+  .pk-head h1{margin:0;font-size:18px;font-weight:800;letter-spacing:-.01em;flex:1;}
   .pk-head .sub{font-size:12.5px;color:var(--txt-3);margin-top:2px;}
   .pk-list{padding:10px 12px;display:flex;flex-direction:column;gap:8px;}
   .pk{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:14px 15px;cursor:pointer;text-align:left;}
@@ -54,12 +51,14 @@
   .prog-fill{height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .25s;}
   .prog-num{font-size:12px;color:var(--txt-2);font-variant-numeric:tabular-nums;white-space:nowrap;}
   .prog-num b{color:var(--txt);}
-  .tools{display:flex;gap:8px;padding:0 14px 9px;align-items:center;}
-  .search{flex:1;display:flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:8px 11px;}
+  .tools{display:flex;gap:8px;padding:0 14px 9px;align-items:center;flex-wrap:wrap;}
+  .search{flex:1;min-width:150px;display:flex;align-items:center;gap:7px;background:var(--field);border:1px solid var(--line);border-radius:9px;padding:8px 11px;}
   .search input{border:0;background:transparent;color:inherit;font-size:14px;width:100%;outline:none;}
-  .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--bg);}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--field);}
   .seg button{border:0;background:transparent;color:var(--txt-2);font-size:12.5px;padding:8px 10px;font-weight:600;cursor:pointer;}
   .seg button.on{background:var(--accent);color:#fff;}
+  .tog{border:1px solid var(--line);background:var(--field);color:var(--txt-2);font-size:12.5px;font-weight:600;padding:8px 11px;border-radius:9px;cursor:pointer;white-space:nowrap;}
+  .tog.on{background:var(--accent);color:#fff;border-color:var(--accent);}
   /* list */
   .list{margin:10px 12px;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow);}
   .item{border-bottom:1px solid var(--line-soft);}
@@ -75,7 +74,7 @@
   .sys .lab{font-size:9px;color:var(--txt-3);}
   .sys .v{font-size:13.5px;font-weight:700;line-height:1.1;}
   .qtybox{display:flex;align-items:center;gap:6px;}
-  .qty{width:66px;text-align:right;font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;border:1.5px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--bg);color:var(--txt);outline:none;}
+  .qty{width:66px;text-align:right;font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;border:1.5px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--field);color:var(--txt);outline:none;}
   .qty:focus{border-color:var(--accent);background:var(--card);}
   .qty::placeholder{color:var(--txt-3);font-weight:500;font-size:12px;}
   .diff{font-size:10.5px;font-weight:700;font-variant-numeric:tabular-nums;padding:1px 6px;border-radius:6px;min-width:30px;text-align:center;}
@@ -107,14 +106,48 @@
 </style>
 </head>
 <body>
-<div class="wrap"><div id="app"><div class="center"><div class="spin"></div><div>載入中…</div></div></div></div>
+<div class="wrap"><div id="app"><div class="center"><div class="spin"></div><div>載入中… / Đang tải…</div></div></div></div>
 
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <script>
 (function(){
   var LIFF_ID=window.__LIFF_ID__||"";
   var app=document.getElementById('app');
-  var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},batches:{},expanded:{},q:"",f:"all"};
+
+  // ---------- 中／越 語系 ----------
+  var I18N={
+    zh:{
+      loading:'載入中…',liffNotSet:'⚠ 尚未設定 LIFF ID（LIFF_ID_STOCKTAKE）',liffFail:'⚠ LIFF 初始化失敗',
+      loadWh:'載入倉庫…',pickTitle:'選擇要盤點的倉庫',countDay:'盤點日',noWh:'目前沒有「納入盤點」的倉庫。<br>請先到後台 → 倉庫設定 勾選。',
+      countedToday:'今日已盤',loadWhFail:'⚠ 載入倉庫失敗，請稍後再試',loadItems:'載入品項…',loadItemsFail:'⚠ 載入品項失敗',
+      backWh:'‹ 倉庫',done:'已盤',todo:'未盤',searchPh:'搜尋料號 / 品名',fAll:'全部',fTodo:'未盤',fExp:'效期品',hideZero:'隱藏 0',
+      sys:'系統',qtyPh:'盤點',match:'相符',expChip:'效期',batchTitle:'各效期數量（呆料／到期警示用）',sum:'合計',
+      addBatch:'＋ 新增效期',doneBatch:'完成收起 ▴',noMatch:'沒有符合的品項',submit:'送出盤點',submitting:'送出中…',
+      sent:'盤點已送出',finish:'完成',submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',langBtn:'Tiếng Việt',
+      itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
+      progN:function(d,a){return '已盤 '+d+'/'+a;},barN:function(d,a){return '已盤 '+d+'/'+a+' · 未盤 '+(a-d);},
+      confirm:function(wh,d,a){return '送出盤點？\n\n倉庫：'+wh+'\n已盤 '+d+'/'+a+' 項（未盤的會標「未盤」）';},
+      recorded:function(c,t){return '已記錄 '+c+'/'+t+' 項，未盤 '+(t-c)+' 項';}
+    },
+    vi:{
+      loading:'Đang tải…',liffNotSet:'⚠ Chưa cấu hình LIFF ID',liffFail:'⚠ Khởi tạo LIFF thất bại',
+      loadWh:'Đang tải kho…',pickTitle:'Chọn kho để kiểm kê',countDay:'Ngày kiểm',noWh:'Chưa có kho nào được chọn kiểm kê.<br>Vui lòng vào Cài đặt kho ở trang quản trị.',
+      countedToday:'Đã kiểm hôm nay',loadWhFail:'⚠ Tải kho thất bại, thử lại sau',loadItems:'Đang tải sản phẩm…',loadItemsFail:'⚠ Tải sản phẩm thất bại',
+      backWh:'‹ Kho',done:'Đã kiểm',todo:'Chưa',searchPh:'Tìm mã / tên hàng',fAll:'Tất cả',fTodo:'Chưa kiểm',fExp:'Hàng HSD',hideZero:'Ẩn số 0',
+      sys:'Hệ thống',qtyPh:'Đếm',match:'Khớp',expChip:'HSD',batchTitle:'Số lượng theo HSD (cảnh báo hết hạn)',sum:'Tổng',
+      addBatch:'＋ Thêm HSD',doneBatch:'Xong ▴',noMatch:'Không có sản phẩm phù hợp',submit:'Gửi kiểm kê',submitting:'Đang gửi…',
+      sent:'Đã gửi kiểm kê',finish:'Xong',submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',langBtn:'中文',
+      itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
+      progN:function(d,a){return 'Đã kiểm '+d+'/'+a;},barN:function(d,a){return 'Đã kiểm '+d+'/'+a+' · Chưa '+(a-d);},
+      confirm:function(wh,d,a){return 'Gửi kiểm kê?\n\nKho: '+wh+'\nĐã kiểm '+d+'/'+a+' (mục chưa kiểm sẽ được đánh dấu "Chưa")';},
+      recorded:function(c,t){return 'Đã ghi '+c+'/'+t+' mục, chưa kiểm '+(t-c)+' mục';}
+    }
+  };
+  var initLang='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') initLang='vi'; }catch(_){}
+  var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},batches:{},expanded:{},q:"",f:"all",hz:false,lang:initLang};
+  function t(k){return (I18N[S.lang]&&I18N[S.lang][k]!=null)?I18N[S.lang][k]:I18N.zh[k];}
+  function toggleLang(){ S.lang=(S.lang==='zh')?'vi':'zh'; try{localStorage.setItem('stk_lang',S.lang);}catch(_){}
+    if(S.wh) renderCount(); else showPicker(); }
 
   function esc(s){s=(s==null?'':String(s));return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function fmt(n){if(n===0||n==='0')return '0';return String(n);}
@@ -123,7 +156,7 @@
 
   // ---------- 開始 ----------
   function boot(){
-    if(!LIFF_ID){ showCenter('<div>⚠ 尚未設定 LIFF ID（LIFF_ID_STOCKTAKE）</div>'); return; }
+    if(!LIFF_ID){ showCenter('<div>'+t('liffNotSet')+'</div>'); return; }
     liff.init({liffId:LIFF_ID}).then(function(){
       if(!liff.isLoggedIn()){ liff.login({redirectUri:location.href}); return; }
       S.idToken=liff.getIDToken();
@@ -131,47 +164,48 @@
     }).then(function(){
       var wh=getParam('warehouse');
       if(wh){ openWarehouse(wh); } else { showPicker(); }
-    }).catch(function(e){ showCenter('<div>⚠ LIFF 初始化失敗</div><div style="font-size:12px;color:var(--txt-3)">'+esc(e&&e.message||e)+'</div>'); });
+    }).catch(function(e){ showCenter('<div>'+t('liffFail')+'</div><div style="font-size:12px;color:var(--txt-3)">'+esc(e&&e.message||e)+'</div>'); });
   }
   function getParam(k){
     try{ var u=new URL(location.href); var v=u.searchParams.get(k); if(v) return v; }catch(_){}
-    try{ if(liff.getContext){ } }catch(_){}
-    // liff.state 有時把原始 query 放這
     try{ var st=new URL(location.href).searchParams.get('liff.state'); if(st){ var s2=new URLSearchParams(st.charAt(0)==='?'?st.slice(1):st); var v2=s2.get(k); if(v2) return v2; } }catch(_){}
     return null;
   }
 
   // ---------- 倉庫選擇 ----------
   function showPicker(){
-    showCenter('<div class="spin"></div><div>載入倉庫…</div>');
+    showCenter('<div class="spin"></div><div>'+t('loadWh')+'</div>');
     api('/liff/api/stocktake/warehouses').then(function(res){
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
       var whs=res.warehouses||[];
-      var html='<div class="pk-head"><h1>選擇要盤點的倉庫</h1><div class="sub">盤點日 '+esc(res.date||'')+(S.name?' · '+esc(S.name):'')+'</div></div>';
-      if(!whs.length){ html+='<div class="empty">目前沒有「納入盤點」的倉庫。<br>請先到後台 → 倉庫設定 勾選。</div>'; }
+      var html='<div class="pk-head"><div class="pk-top"><h1>'+esc(t('pickTitle'))+'</h1>'
+        +'<button class="lang" id="stLang">'+esc(t('langBtn'))+'</button></div>'
+        +'<div class="sub">'+esc(t('countDay'))+' '+esc(res.date||'')+(S.name?' · '+esc(S.name):'')+'</div></div>';
+      if(!whs.length){ html+='<div class="empty">'+t('noWh')+'</div>'; }
       else{
         html+='<div class="pk-list">'+whs.map(function(w){
           return '<button class="pk" data-w="'+esc(w.code)+'">'
             +'<div class="pk-ic">📦</div>'
-            +'<div class="pk-i"><div class="n">'+esc(w.name||w.code)+'</div><div class="m">'+esc(w.code)+' · '+w.items+' 項</div></div>'
-            +(w.countedToday?'<span class="pk-done">今日已盤</span>':'')
+            +'<div class="pk-i"><div class="n">'+esc(w.name||w.code)+'</div><div class="m">'+esc(w.code)+' · '+esc(t('itemsN')(w.items))+'</div></div>'
+            +(w.countedToday?'<span class="pk-done">'+esc(t('countedToday'))+'</span>':'')
             +'<span class="pk-arrow">›</span></button>';
         }).join('')+'</div>';
       }
       app.innerHTML='<div class="wrapx">'+html+'</div>';
+      var lb=document.getElementById('stLang'); if(lb) lb.addEventListener('click',toggleLang);
       Array.prototype.forEach.call(app.querySelectorAll('.pk'),function(b){ b.addEventListener('click',function(){ openWarehouse(b.getAttribute('data-w')); }); });
-    }).catch(function(){ showCenter('<div>⚠ 載入倉庫失敗，請稍後再試</div>'); });
+    }).catch(function(){ showCenter('<div>'+t('loadWhFail')+'</div>'); });
   }
 
   // ---------- 載入某倉品項 ----------
   function openWarehouse(code){
-    showCenter('<div class="spin"></div><div>載入品項…</div>');
+    showCenter('<div class="spin"></div><div>'+t('loadItems')+'</div>');
     api('/liff/api/stocktake/items?warehouse='+encodeURIComponent(code)).then(function(res){
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
       S.wh=res.warehouse; S.date=res.date; S.items=res.items||[]; S.counts={}; S.batches={}; S.expanded={};
       S.items.forEach(function(it){ if(it.exp) S.batches[it.c]=[]; });
       renderCount();
-    }).catch(function(){ showCenter('<div>⚠ 載入品項失敗</div>'); });
+    }).catch(function(){ showCenter('<div>'+t('loadItemsFail')+'</div>'); });
   }
 
   // ---------- 盤點畫面 ----------
@@ -179,7 +213,7 @@
   function countedVal(it){ return S.counts[it.c]!=null&&S.counts[it.c]!==''?parseFloat(S.counts[it.c]):null; }
   function isCounted(it){ return S.counts[it.c]!=null&&S.counts[it.c]!==''; }
   function batchSum(c){ return (S.batches[c]||[]).reduce(function(s,b){var v=parseFloat(b.qty);return s+(isFinite(v)?v:0);},0); }
-  function diffPill(it){ var d=safetyDiff(it); if(d==null) return '<span class="diff z">未盤</span>'; var cls=d===0?'z':(d>0?'p':'n'); var t=d===0?'相符':(d>0?'+'+fmt(d):fmt(d)); return '<span class="diff '+cls+'">'+t+'</span>'; }
+  function diffPill(it){ var d=safetyDiff(it); if(d==null) return '<span class="diff z">'+esc(t('todo'))+'</span>'; var cls=d===0?'z':(d>0?'p':'n'); var txt=d===0?t('match'):(d>0?'+'+fmt(d):fmt(d)); return '<span class="diff '+cls+'">'+esc(txt)+'</span>'; }
   function batchRows(it){
     var arr=S.batches[it.c]||[];
     var rows=arr.map(function(b,i){
@@ -187,56 +221,60 @@
         +'<input type="number" inputmode="decimal" placeholder="0" value="'+esc(b.qty||'')+'" data-k="qty">'
         +'<span class="unit">'+esc(it.eunit||it.u)+'</span><button class="del" data-del="'+i+'">×</button></div>';
     }).join('');
-    return '<div class="batches"><div class="b-head"><span class="t">各效期數量（呆料/到期警示用）</span>'
-      +'<span class="b-sum">合計 <b>'+fmt(batchSum(it.c))+'</b> '+esc(it.eunit||it.u)+'</span></div>'+rows
-      +'<div class="b-actions"><button class="add-b" data-add>＋ 新增效期</button><button class="done-b" data-done>完成收起 ▴</button></div></div>';
+    return '<div class="batches"><div class="b-head"><span class="t">'+esc(t('batchTitle'))+'</span>'
+      +'<span class="b-sum">'+esc(t('sum'))+' <b>'+fmt(batchSum(it.c))+'</b> '+esc(it.eunit||it.u)+'</span></div>'+rows
+      +'<div class="b-actions"><button class="add-b" data-add>'+esc(t('addBatch'))+'</button><button class="done-b" data-done>'+esc(t('doneBatch'))+'</button></div></div>';
   }
   function rowHtml(it){
     var cnt=isCounted(it)?' counted':''; var open=S.expanded[it.c]?' exp-open':'';
-    var right='<div class="qtybox">'+diffPill(it)+'<input class="qty" inputmode="decimal" placeholder="盤點" value="'+esc(S.counts[it.c]!=null?S.counts[it.c]:'')+'" data-c="'+esc(it.c)+'"></div>';
+    var right='<div class="qtybox">'+diffPill(it)+'<input class="qty" inputmode="decimal" placeholder="'+esc(t('qtyPh'))+'" value="'+esc(S.counts[it.c]!=null?S.counts[it.c]:'')+'" data-c="'+esc(it.c)+'"></div>';
     var nb=(S.batches[it.c]||[]).length;
-    var chip=it.exp?'<button class="exp-chip'+(nb?' filled':'')+'" data-toggle>效期'+(nb?' '+nb+'批':'')+(S.expanded[it.c]?' ▴':' ▾')+'</button>':'';
+    var chip=it.exp?'<button class="exp-chip'+(nb?' filled':'')+'" data-toggle>'+esc(t('expChip'))+(nb?' '+esc(t('batchN')(nb)):'')+(S.expanded[it.c]?' ▴':' ▾')+'</button>':'';
     return '<div class="item'+cnt+open+'" data-c="'+esc(it.c)+'"><div class="row"><div class="info"><div class="nm">'+esc(it.n)+chip+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div></div>'
-      +'<div class="sys"><div class="lab">系統</div><div class="v">'+fmt(it.sys)+'</div></div>'+right+'</div>'+(it.exp?batchRows(it):'')+'</div>';
+      +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(it.sys)+'</div></div>'+right+'</div>'+(it.exp?batchRows(it):'')+'</div>';
   }
   function listHtml(){
     var q=S.q.toLowerCase();
     var arr=S.items.filter(function(it){
       if(S.f==='todo'&&isCounted(it)) return false;
       if(S.f==='exp'&&!it.exp) return false;
+      if(S.hz&&Number(it.sys)===0&&!isCounted(it)) return false;
       if(q&&it.c.toLowerCase().indexOf(q)<0&&it.n.toLowerCase().indexOf(q)<0) return false;
       return true;
     });
-    if(!arr.length) return '<div class="list"><div class="empty">沒有符合的品項</div></div>';
+    if(!arr.length) return '<div class="list"><div class="empty">'+esc(t('noMatch'))+'</div></div>';
     return '<div class="list">'+arr.map(rowHtml).join('')+'</div>';
   }
   function renderCount(){
     var done=S.items.filter(isCounted).length, all=S.items.length;
     app.innerHTML=''
-      +'<header><div class="head-main"><button class="back" id="stBack">‹ 倉庫</button>'
-        +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">盤點日 '+esc(S.date)+' · 共 '+all+' 項</div></div></div>'
-        +'<div class="prog"><div class="prog-bar"><div class="prog-fill" id="stFill"></div></div><div class="prog-num">已盤 <b id="stDone">0</b>/'+all+'</div></div>'
-        +'<div class="tools"><div class="search"><input id="stQ" placeholder="搜尋料號 / 品名" autocomplete="off"></div>'
-          +'<div class="seg" id="stFilter"><button data-f="all" class="on">全部</button><button data-f="todo">未盤</button><button data-f="exp">效期品</button></div></div>'
+      +'<header><div class="head-main"><button class="back" id="stBack">'+esc(t('backWh'))+'</button>'
+        +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(t('countDay'))+' '+esc(S.date)+' · '+esc(t('totalN')(all))+'</div></div>'
+        +'<button class="lang" id="stLang">'+esc(t('langBtn'))+'</button></div>'
+        +'<div class="prog"><div class="prog-bar"><div class="prog-fill" id="stFill"></div></div><div class="prog-num"><span id="stProgTxt"></span></div></div>'
+        +'<div class="tools"><div class="search"><input id="stQ" placeholder="'+esc(t('searchPh'))+'" autocomplete="off"></div>'
+          +'<div class="seg" id="stFilter"><button data-f="all" class="'+(S.f==='all'?'on':'')+'">'+esc(t('fAll'))+'</button><button data-f="todo" class="'+(S.f==='todo'?'on':'')+'">'+esc(t('fTodo'))+'</button><button data-f="exp" class="'+(S.f==='exp'?'on':'')+'">'+esc(t('fExp'))+'</button></div>'
+          +'<button class="tog'+(S.hz?' on':'')+'" id="stHideZero">'+esc(t('hideZero'))+'</button></div>'
       +'</header>'
       +'<div class="pad" id="stListWrap">'+listHtml()+'</div>'
-      +'<div class="bar"><div class="bar-in"><div class="s">已盤 <b id="stBarDone">0</b>/<b>'+all+'</b> · 未盤 <b id="stBarTodo">'+all+'</b></div>'
-        +'<button class="submit" id="stSubmit">送出盤點</button></div></div>';
+      +'<div class="bar"><div class="bar-in"><div class="s" id="stBarTxt"></div>'
+        +'<button class="submit" id="stSubmit">'+esc(t('submit'))+'</button></div></div>';
     bindCount(); updateProg();
   }
   function relist(){ document.getElementById('stListWrap').innerHTML=listHtml(); }
   function updateProg(){
     var done=S.items.filter(isCounted).length, all=S.items.length;
-    document.getElementById('stDone').textContent=done;
-    document.getElementById('stBarDone').textContent=done;
-    document.getElementById('stBarTodo').textContent=all-done;
+    document.getElementById('stProgTxt').textContent=t('progN')(done,all);
+    document.getElementById('stBarTxt').textContent=t('barN')(done,all);
     document.getElementById('stFill').style.width=(all?Math.round(done/all*100):0)+'%';
   }
   function bindCount(){
     document.getElementById('stBack').addEventListener('click',showPicker);
-    var t=null;
-    document.getElementById('stQ').addEventListener('input',function(e){ if(t)clearTimeout(t); t=setTimeout(function(){ S.q=e.target.value.trim(); relist(); },120); });
+    document.getElementById('stLang').addEventListener('click',toggleLang);
+    document.getElementById('stHideZero').addEventListener('click',function(){ S.hz=!S.hz; this.classList.toggle('on',S.hz); relist(); });
+    var t2=null;
+    document.getElementById('stQ').addEventListener('input',function(e){ if(t2)clearTimeout(t2); t2=setTimeout(function(){ S.q=e.target.value.trim(); relist(); },120); });
     document.getElementById('stFilter').addEventListener('click',function(e){ var b=e.target.closest('button'); if(!b)return; S.f=b.getAttribute('data-f'); Array.prototype.forEach.call(this.querySelectorAll('button'),function(x){x.classList.toggle('on',x===b);}); relist(); });
     var wrap=document.getElementById('stListWrap');
     wrap.addEventListener('input',function(e){
@@ -263,8 +301,8 @@
   // ---------- 送出 ----------
   function submit(){
     var done=S.items.filter(isCounted).length;
-    if(!confirm('送出盤點？\n\n倉庫：'+(S.wh.name||S.wh.code)+'\n已盤 '+done+'/'+S.items.length+' 項（未盤的會標「未盤」）')) return;
-    var btn=document.getElementById('stSubmit'); btn.disabled=true; btn.textContent='送出中…';
+    if(!confirm(t('confirm')(S.wh.name||S.wh.code,done,S.items.length))) return;
+    var btn=document.getElementById('stSubmit'); btn.disabled=true; btn.textContent=t('submitting');
     var counts=[];
     S.items.forEach(function(it){
       var cv=countedVal(it);
@@ -275,13 +313,13 @@
     fetch('/liff/api/stocktake/submit',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(S.idToken||'')},
       body:JSON.stringify({warehouse:S.wh.code,date:S.date,name:S.name,counts:counts})
     }).then(function(r){return r.json();}).then(function(res){
-      if(res.error){ btn.disabled=false; btn.textContent='送出盤點'; alert('送出失敗：'+res.error); return; }
-      showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">盤點已送出</div>'
+      if(res.error){ btn.disabled=false; btn.textContent=t('submit'); alert(t('submitFail')+res.error); return; }
+      showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(t('sent'))+'</div>'
         +'<div>'+esc(S.wh.name||S.wh.code)+' · '+esc(S.date)+'</div>'
-        +'<div style="font-size:13px;color:var(--txt-3)">已記錄 '+res.counted+'/'+res.total+' 項，未盤 '+(res.total-res.counted)+' 項</div>'
-        +'<button class="btn-primary" id="stClose" style="margin-top:8px">完成</button>');
+        +'<div style="font-size:13px;color:var(--txt-3)">'+esc(t('recorded')(res.counted,res.total))+'</div>'
+        +'<button class="btn-primary" id="stClose" style="margin-top:8px">'+esc(t('finish'))+'</button>');
       document.getElementById('stClose').addEventListener('click',function(){ try{ if(liff.isInClient()) liff.closeWindow(); else showPicker(); }catch(_){ showPicker(); } });
-    }).catch(function(){ btn.disabled=false; btn.textContent='送出盤點'; alert('送出失敗，請稍後再試'); });
+    }).catch(function(){ btn.disabled=false; btn.textContent=t('submit'); alert(t('submitFailRetry')); });
   }
 
   boot();
