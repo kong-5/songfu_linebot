@@ -1662,8 +1662,20 @@ function parseAdminCookies(header) {
     }
     return out;
 }
+let _sessionSecretCache = null;
 function getAdminSessionSecret() {
-    return process.env.ADMIN_SESSION_SECRET || "songfu-admin-dev-secret-change-in-production";
+    const env = (process.env.ADMIN_SESSION_SECRET || "").trim();
+    if (env)
+        return env;
+    // [fix 2026-07-08 資安] 未設定時「絕不」回傳寫死在原始碼的預設值——該值公開在 git，
+    // 任何看得到程式碼的人都能用它偽造管理員 session cookie 直接登入（含負責人帳號）。
+    // 改為 fail-closed：用「本次啟動隨機」祕密（安全，但重啟會使所有 session 失效需重新登入）。
+    // 正式環境務必在 Cloud Run 設定固定的 ADMIN_SESSION_SECRET，讓登入跨重啟穩定。
+    if (!_sessionSecretCache) {
+        _sessionSecretCache = crypto_1.randomBytes(48).toString("hex");
+        console.error("[SECURITY] 未設定 ADMIN_SESSION_SECRET！已改用本次啟動隨機祕密（每次重啟會登出所有人）。請盡快在 Cloud Run 設定固定值。");
+    }
+    return _sessionSecretCache;
 }
 function hashAdminPassword(password) {
     const salt = crypto_1.randomBytes(16).toString("hex");
