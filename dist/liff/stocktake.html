@@ -83,6 +83,15 @@
   .diff.n{background:var(--neg-soft);color:var(--neg);}
   .batches{border-top:1px dashed var(--line);padding:9px 13px 12px;background:color-mix(in srgb,var(--warn-soft) 40%,var(--card));display:none;}
   .item.exp-open .batches{display:block;}
+  .mid-chip{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--accent-soft);color:var(--accent);flex:none;cursor:pointer;border:1px solid color-mix(in srgb,var(--accent) 26%,transparent);white-space:nowrap;}
+  .mid-chip.filled{background:var(--accent);color:#fff;border-color:transparent;}
+  .midbox{border-top:1px dashed var(--line);padding:10px 13px 12px;background:color-mix(in srgb,var(--accent-soft) 45%,var(--card));display:none;}
+  .item.mid-show .midbox{display:block;}
+  .mid-row{display:flex;align-items:center;gap:9px;margin-bottom:7px;}
+  .mid-lab{font-size:12px;color:var(--txt-2);font-weight:600;flex:1;}
+  .midq{width:96px;font-size:15px;font-weight:700;text-align:right;padding:7px 9px;border:1.5px solid var(--line);border-radius:8px;background:var(--card);color:var(--txt);}
+  .midq:focus{border-color:var(--accent);}
+  .mid-sum{font-size:12.5px;color:var(--txt-2);font-variant-numeric:tabular-nums;}
   .b-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;}
   .b-head .t{font-size:11.5px;color:var(--txt-2);font-weight:600;}
   .b-sum{font-size:11.5px;color:var(--txt-2);font-variant-numeric:tabular-nums;}
@@ -124,6 +133,8 @@
       sys:'系統',qtyPh:'盤點',match:'相符',expChip:'效期',batchTitle:'各效期數量（呆料／到期警示用）',sum:'合計',
       addBatch:'＋ 新增效期',doneBatch:'完成收起 ▴',noMatch:'沒有符合的品項',submit:'送出盤點',submitting:'送出中…',
       sent:'盤點已送出',finish:'完成',submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',langBtn:'Tiếng Việt',resumed:'續盤（已帶回今日已盤）',
+      midChip:'中',midTitle:'中價貨（品質較差）數量',midPh:'中價數量',midDone:'完成收起 ▴',
+      sumLine:function(g,m,tot){return '上 '+g+'  ＋  中 '+m+'  ＝  合計 '+tot;},
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
       progN:function(d,a){return '已盤 '+d+'/'+a;},barN:function(d,a){return '已盤 '+d+'/'+a+' · 未盤 '+(a-d);},
       confirm:function(wh,d,a){return '送出盤點？\n\n倉庫：'+wh+'\n已盤 '+d+'/'+a+' 項（未盤的會標「未盤」）';},
@@ -137,6 +148,8 @@
       sys:'Hệ thống',qtyPh:'Đếm',match:'Khớp',expChip:'HSD',batchTitle:'Số lượng theo HSD (cảnh báo hết hạn)',sum:'Tổng',
       addBatch:'＋ Thêm HSD',doneBatch:'Xong ▴',noMatch:'Không có sản phẩm phù hợp',submit:'Gửi kiểm kê',submitting:'Đang gửi…',
       sent:'Đã gửi kiểm kê',finish:'Xong',submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',langBtn:'中文',resumed:'Tiếp tục (đã tải dữ liệu hôm nay)',
+      midChip:'Loại B',midTitle:'Số lượng hàng loại B (chất lượng kém)',midPh:'SL loại B',midDone:'Xong ▴',
+      sumLine:function(g,m,tot){return 'Loại A '+g+'  +  Loại B '+m+'  =  Tổng '+tot;},
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
       progN:function(d,a){return 'Đã kiểm '+d+'/'+a;},barN:function(d,a){return 'Đã kiểm '+d+'/'+a+' · Chưa '+(a-d);},
       confirm:function(wh,d,a){return 'Gửi kiểm kê?\n\nKho: '+wh+'\nĐã kiểm '+d+'/'+a+' (mục chưa kiểm sẽ được đánh dấu "Chưa")';},
@@ -144,7 +157,7 @@
     }
   };
   var initLang='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') initLang='vi'; }catch(_){}
-  var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},batches:{},expanded:{},q:"",f:"all",hz:false,lang:initLang};
+  var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:false,lang:initLang};
   function t(k){return (I18N[S.lang]&&I18N[S.lang][k]!=null)?I18N[S.lang][k]:I18N.zh[k];}
   function toggleLang(){ S.lang=(S.lang==='zh')?'vi':'zh'; try{localStorage.setItem('stk_lang',S.lang);}catch(_){}
     if(S.wh) renderCount(); else showPicker(); }
@@ -202,14 +215,15 @@
     showCenter('<div class="spin"></div><div>'+t('loadItems')+'</div>');
     api('/liff/api/stocktake/items?warehouse='+encodeURIComponent(code)).then(function(res){
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
-      S.wh=res.warehouse; S.date=res.date; S.items=res.items||[]; S.counts={}; S.batches={}; S.expanded={};
+      S.wh=res.warehouse; S.date=res.date; S.items=res.items||[]; S.counts={}; S.mid={}; S.midOpen={}; S.batches={}; S.expanded={};
       S.items.forEach(function(it){ if(it.exp) S.batches[it.c]=[]; });
-      // 續盤：帶回今日已存的實盤數與效期批號
+      // 續盤：帶回今日已存的上貨/中貨/效期批號
       S.resumed=!!res.resumed;
       var sv=res.saved||{};
       S.items.forEach(function(it){
         var s=sv[it.c]; if(!s) return;
         if(s.counted!=null) S.counts[it.c]=String(s.counted);
+        if(s.mid!=null){ S.mid[it.c]=String(s.mid); S.midOpen[it.c]=true; }
         if(s.expiry&&s.expiry.length){ S.batches[it.c]=s.expiry.map(function(b){return {date:b.date||'',qty:(b.qty==null?'':String(b.qty))};}); }
       });
       renderCount();
@@ -217,9 +231,12 @@
   }
 
   // ---------- 盤點畫面 ----------
+  function goodVal(it){ return S.counts[it.c]!=null&&S.counts[it.c]!==''?parseFloat(S.counts[it.c]):null; }
+  function midVal(it){ return S.mid[it.c]!=null&&S.mid[it.c]!==''?parseFloat(S.mid[it.c]):null; }
   function safetyDiff(it){ var cv=countedVal(it); if(cv==null||isNaN(cv)) return null; return Math.round((cv-it.sys)*100)/100; }
-  function countedVal(it){ return S.counts[it.c]!=null&&S.counts[it.c]!==''?parseFloat(S.counts[it.c]):null; }
-  function isCounted(it){ return S.counts[it.c]!=null&&S.counts[it.c]!==''; }
+  // 合計 = 上貨 + 中貨（任一有值即計）
+  function countedVal(it){ var g=goodVal(it),m=midVal(it); if((g==null||isNaN(g))&&(m==null||isNaN(m))) return null; return Math.round(((g||0)+(m||0))*100)/100; }
+  function isCounted(it){ return (S.counts[it.c]!=null&&S.counts[it.c]!=='')||(S.mid[it.c]!=null&&S.mid[it.c]!==''); }
   function batchSum(c){ return (S.batches[c]||[]).reduce(function(s,b){var v=parseFloat(b.qty);return s+(isFinite(v)?v:0);},0); }
   function diffPill(it){ var d=safetyDiff(it); if(d==null) return '<span class="diff z">'+esc(t('todo'))+'</span>'; var cls=d===0?'z':(d>0?'p':'n'); var txt=d===0?t('match'):(d>0?'+'+fmt(d):fmt(d)); return '<span class="diff '+cls+'">'+esc(txt)+'</span>'; }
   function batchRows(it){
@@ -233,14 +250,23 @@
       +'<span class="b-sum">'+esc(t('sum'))+' <b>'+fmt(batchSum(it.c))+'</b> '+esc(it.eunit||it.u)+'</span></div>'+rows
       +'<div class="b-actions"><button class="add-b" data-add>'+esc(t('addBatch'))+'</button><button class="done-b" data-done>'+esc(t('doneBatch'))+'</button></div></div>';
   }
+  function midPanel(it){
+    var g=goodVal(it),m=midVal(it),tot=countedVal(it);
+    return '<div class="midbox"><div class="mid-row"><span class="mid-lab">'+esc(t('midTitle'))+'</span>'
+      +'<input type="number" inputmode="decimal" class="midq" placeholder="'+esc(t('midPh'))+'" value="'+esc(S.mid[it.c]!=null?S.mid[it.c]:'')+'" data-midc="'+esc(it.c)+'"><span class="unit">'+esc(it.u)+'</span></div>'
+      +'<div class="mid-sum">'+esc(t('sumLine')(fmt(g||0),fmt(m||0),fmt(tot==null?0:tot)))+'</div>'
+      +'<div class="b-actions"><button class="done-b" data-middone>'+esc(t('midDone'))+'</button></div></div>';
+  }
   function rowHtml(it){
-    var cnt=isCounted(it)?' counted':''; var open=S.expanded[it.c]?' exp-open':'';
+    var cnt=isCounted(it)?' counted':''; var open=S.expanded[it.c]?' exp-open':''; var mopen=S.midOpen[it.c]?' mid-show':'';
     var right='<div class="qtybox">'+diffPill(it)+'<input class="qty" inputmode="decimal" placeholder="'+esc(t('qtyPh'))+'" value="'+esc(S.counts[it.c]!=null?S.counts[it.c]:'')+'" data-c="'+esc(it.c)+'"></div>';
     var nb=(S.batches[it.c]||[]).length;
     var chip=it.exp?'<button class="exp-chip'+(nb?' filled':'')+'" data-toggle>'+esc(t('expChip'))+(nb?' '+esc(t('batchN')(nb)):'')+(S.expanded[it.c]?' ▴':' ▾')+'</button>':'';
-    return '<div class="item'+cnt+open+'" data-c="'+esc(it.c)+'"><div class="row"><div class="info"><div class="nm">'+esc(it.n)+chip+'</div>'
+    var mv=midVal(it);
+    var midchip='<button class="mid-chip'+(mv!=null?' filled':'')+'" data-midtoggle>'+esc(t('midChip'))+(mv!=null?' '+fmt(mv):'')+(S.midOpen[it.c]?' ▴':' ＋')+'</button>';
+    return '<div class="item'+cnt+open+mopen+'" data-c="'+esc(it.c)+'"><div class="row"><div class="info"><div class="nm">'+esc(it.n)+chip+midchip+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div></div>'
-      +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(it.sys)+'</div></div>'+right+'</div>'+(it.exp?batchRows(it):'')+'</div>';
+      +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(it.sys)+'</div></div>'+right+'</div>'+midPanel(it)+(it.exp?batchRows(it):'')+'</div>';
   }
   function listHtml(){
     var q=S.q.toLowerCase();
@@ -289,8 +315,19 @@
       var el=e.target;
       if(el.classList.contains('qty')){
         var c=el.getAttribute('data-c'); S.counts[c]=el.value;
-        var item=el.closest('.item'); item.classList.toggle('counted',el.value!=='');
-        var it=S.items.find(function(x){return x.c===c;}); var pill=item.querySelector('.diff'); if(pill) pill.outerHTML=diffPill(it); updateProg();
+        var item=el.closest('.item'); var it=S.items.find(function(x){return x.c===c;});
+        item.classList.toggle('counted',isCounted(it));
+        var pill=item.querySelector('.diff'); if(pill) pill.outerHTML=diffPill(it);
+        var ms=item.querySelector('.mid-sum'); if(ms) ms.textContent=t('sumLine')(fmt(goodVal(it)||0),fmt(midVal(it)||0),fmt(countedVal(it)==null?0:countedVal(it)));
+        updateProg();
+      } else if(el.classList.contains('midq')){
+        var c=el.getAttribute('data-midc'); S.mid[c]=el.value;
+        var item=el.closest('.item'); var it=S.items.find(function(x){return x.c===c;});
+        item.classList.toggle('counted',isCounted(it));
+        var pill=item.querySelector('.diff'); if(pill) pill.outerHTML=diffPill(it);
+        var chip=item.querySelector('.mid-chip'); if(chip){ var mv=midVal(it); chip.classList.toggle('filled',mv!=null); }
+        var ms=item.querySelector('.mid-sum'); if(ms) ms.textContent=t('sumLine')(fmt(goodVal(it)||0),fmt(midVal(it)||0),fmt(countedVal(it)==null?0:countedVal(it)));
+        updateProg();
       } else if(el.getAttribute('data-k')){
         var item=el.closest('.item'), c=item.getAttribute('data-c'), i=+el.closest('.brow').getAttribute('data-i');
         S.batches[c][i][el.getAttribute('data-k')]=el.value; item.querySelector('.b-sum b').textContent=fmt(batchSum(c));
@@ -298,10 +335,13 @@
     });
     wrap.addEventListener('click',function(e){
       var add=e.target.closest('[data-add]'),del=e.target.closest('[data-del]'),done=e.target.closest('[data-done]'),tg=e.target.closest('[data-toggle]');
+      var midtg=e.target.closest('[data-midtoggle]'),middone=e.target.closest('[data-middone]');
       if(add){ var c=e.target.closest('.item').getAttribute('data-c'); S.expanded[c]=true; S.batches[c].push({date:'',qty:''}); relist(); }
       else if(del){ var item=e.target.closest('.item'),c=item.getAttribute('data-c'); S.expanded[c]=true; S.batches[c].splice(+del.getAttribute('data-del'),1); relist(); }
       else if(done){ var c=e.target.closest('.item').getAttribute('data-c'); S.expanded[c]=false; relist(); }
       else if(tg){ var c=e.target.closest('.item').getAttribute('data-c'); S.expanded[c]=!S.expanded[c]; relist(); }
+      else if(midtg){ var c=e.target.closest('.item').getAttribute('data-c'); S.midOpen[c]=!S.midOpen[c]; relist(); }
+      else if(middone){ var c=e.target.closest('.item').getAttribute('data-c'); S.midOpen[c]=false; relist(); }
     });
     document.getElementById('stSubmit').addEventListener('click',submit);
   }
@@ -313,10 +353,11 @@
     var btn=document.getElementById('stSubmit'); btn.disabled=true; btn.textContent=t('submitting');
     var counts=[];
     S.items.forEach(function(it){
-      var cv=countedVal(it);
+      var g=goodVal(it), m=midVal(it);
       var bx=(S.batches[it.c]||[]).filter(function(b){return (b.date&&b.date!=='')||(b.qty&&b.qty!=='');});
-      if(cv==null && !bx.length) return; // 未盤
-      counts.push({ code:it.c, name:it.n, spec:it.s, unit:it.u, sys:it.sys, counted:(cv==null?null:cv), expiry:bx });
+      if(g==null && m==null && !bx.length) return; // 未盤
+      // counted 傳「上貨」，mid 傳「中貨」；後端合計存 counted_qty
+      counts.push({ code:it.c, name:it.n, spec:it.s, unit:it.u, sys:it.sys, counted:(g==null?null:g), mid:(m==null?null:m), expiry:bx });
     });
     fetch('/liff/api/stocktake/submit',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(S.idToken||'')},
       body:JSON.stringify({warehouse:S.wh.code,date:S.date,name:S.name,counts:counts})

@@ -113,6 +113,8 @@ function initSqlite(dbPath) {
         // 凌越按需匯入：使用者在網站點「轉入凌越」→ 標記排隊，內網 agent 長連線等待後寫入
         "ALTER TABLE orders ADD COLUMN lingyue_queued_at TEXT",
         "ALTER TABLE orders ADD COLUMN lingyue_queued_by TEXT",
+        // 盤點：中價貨（品質較差）數量，與上貨合計為 counted_qty；mid_qty 單獨保留供品質標注
+        "ALTER TABLE stocktake_count ADD COLUMN mid_qty REAL",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -684,6 +686,7 @@ async function initPg() {
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_count (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, erp_code TEXT, name TEXT, spec TEXT, unit TEXT, sys_qty DOUBLE PRECISION, counted_qty DOUBLE PRECISION, expiry_json TEXT, updated_at TEXT)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (erp_code TEXT PRIMARY KEY, expiry_unit TEXT, created_at TEXT)");
+                await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS mid_qty DOUBLE PRECISION");
             }
             catch (_) { /* tables may already exist */ }
             try {
