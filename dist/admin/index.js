@@ -13684,7 +13684,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 }
                 const qtyRaw = body["qty_" + itemId];
                 const qtyParsed = parseFloat(qtyRaw);
-                const nextQty = Number.isFinite(qtyParsed) && qtyParsed >= 0 ? qtyParsed : (Number.isFinite(Number(row.quantity)) ? Number(row.quantity) : 0);
+                let nextQty = Number.isFinite(qtyParsed) && qtyParsed >= 0 ? qtyParsed : (Number.isFinite(Number(row.quantity)) ? Number(row.quantity) : 0);
                 const unitRaw = (body["unit_" + itemId] ?? "").trim();
                 const inputUnit = unitRaw || "公斤";
                 const remarkInput = (body["remark_" + itemId] ?? "").trim();
