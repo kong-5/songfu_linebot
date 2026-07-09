@@ -138,9 +138,35 @@ def build_txn_payload(rec: dict) -> dict:
     return {"summary": summary, "fields": fields}
 
 
+def _report_refresh(base: str, key: str, ok: bool, error: str = "") -> None:
+    """把庫存刷新結果/失敗原因回報雲端，讓網站顯示真正原因（best-effort，失敗不影響主流程）。"""
+    try:
+        payload = json.dumps({"ok": ok, "error": error[:500]}).encode("utf-8")
+        url = base.rstrip("/") + "/admin/lingyue-writeback/inventory-report"
+        req = urllib.request.Request(
+            url, data=payload, method="POST",
+            headers={"Content-Type": "application/json", "X-Writeback-Key": key},
+        )
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception:
+        pass
+
+
+def _friendly_ly_error(e: Exception) -> str:
+    """把凌越常見錯誤轉成看得懂的話。"""
+    s = str(e)
+    if "LyGetPassKey" in s or "192.168." in s or "Read timed out" in s or "timed out" in s:
+        return "連不到凌越主機（可能凌越那台沒開機、太忙、或內網不通）；" + s[:200]
+    return s[:300]
+
+
 def push_once(base: str, key: str, icpno: str, timeout: int = 90, verbose: bool = True) -> int:
-    """撈凌越目前庫存並 POST 到雲端。回傳推送筆數。"""
-    items = fetch_stock_items(icpno, timeout)
+    """撈凌越目前庫存並 POST 到雲端。回傳推送筆數。失敗時回報原因給雲端。"""
+    try:
+        items = fetch_stock_items(icpno, timeout)
+    except Exception as e:
+        _report_refresh(base, key, False, _friendly_ly_error(e))
+        raise RuntimeError(_friendly_ly_error(e)) from None
     snapshot_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     payload = json.dumps({"icpno": icpno, "snapshot_at": snapshot_at, "items": items}).encode("utf-8")
     url = base.rstrip("/") + "/admin/lingyue-writeback/inventory-push"
@@ -153,8 +179,10 @@ def push_once(base: str, key: str, icpno: str, timeout: int = 90, verbose: bool 
             res = json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
+        _report_refresh(base, key, False, f"推送到雲端失敗 HTTP {e.code}")
         raise RuntimeError(f"HTTP {e.code} POST {url}\n  {detail}") from None
     except urllib.error.URLError as e:
+        _report_refresh(base, key, False, f"推送到雲端失敗：{e.reason}")
         raise RuntimeError(f"連線失敗 POST {url}：{e.reason}") from None
     if verbose:
         print(f"✅ 已推送 {res.get('count', len(items))} 品項（snapshot_at={res.get('snapshot_at', snapshot_at)}）", flush=True)

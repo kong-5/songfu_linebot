@@ -2103,12 +2103,15 @@ const STK_CLIENT_JS = `
     els.refresh.disabled=true;
     els.status.style.display=''; els.status.className='stk-status stk-status-wait'; els.status.textContent='已送出更新請求，等待內網代理刷新…';
     var baseline='';
+    var clickAt=new Date().toISOString();
     fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){ baseline=m.snapshot_at||''; return fetch('/admin/inventory/stock/refresh',{method:'POST'}); }).then(function(r){return r.json();}).then(function(){
       var tries=0; var iv=setInterval(function(){
         tries++;
         fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){
           if(m.snapshot_at&&m.snapshot_at!==baseline){ clearInterval(iv); els.status.className='stk-status stk-status-ok'; els.status.textContent='已更新，重新載入…'; setTimeout(function(){ location.reload(); },600); return; }
-          if(tries>=24){ clearInterval(iv); els.refresh.disabled=false; els.status.className='stk-status stk-status-warn'; els.status.textContent='等待逾時：內網代理（ly_stock_agent）可能未執行。請求已記錄，代理下次上線會補刷新。'; }
+          // 代理已回報這次請求後的錯誤（如凌越連線逾時）→ 直接顯示真正原因
+          if(m.refresh_error&&m.refresh_error_at&&m.refresh_error_at>=clickAt){ clearInterval(iv); els.refresh.disabled=false; els.status.className='stk-status stk-status-warn'; els.status.textContent='更新失敗：'+m.refresh_error; return; }
+          if(tries>=24){ clearInterval(iv); els.refresh.disabled=false; els.status.className='stk-status stk-status-warn'; els.status.textContent='等待逾時：可能凌越連線異常或代理未執行。資料仍會在下次定時（06:00／12:00）自動更新。'; }
         }).catch(function(){});
       },3000);
     }).catch(function(){ els.refresh.disabled=false; els.status.className='stk-status stk-status-warn'; els.status.textContent='送出失敗，請稍後再試。'; });
@@ -6900,6 +6903,8 @@ function createAdminRouter() {
             item_count: await get("erp_stock_item_count"),
             refresh_status: await get("erp_stock_refresh_status"),
             refresh_requested_at: await get("erp_stock_refresh_requested_at"),
+            refresh_error: await get("erp_stock_refresh_error"),
+            refresh_error_at: await get("erp_stock_refresh_error_at"),
         };
     }
     router.get("/inventory/stock", async (req, res) => {
@@ -10946,6 +10951,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "done");
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", "");
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error", "");
             };
             if (typeof db.transaction === "function")
                 await db.transaction(doReplace);
@@ -10993,6 +10999,26 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         catch (e) {
             console.error("[admin] lingyue-writeback/inventory-wait", e?.message || e);
             res.status(500).json({ error: "inventory-wait 失敗", detail: String(e?.message || e) });
+        }
+    });
+    // 代理回報庫存刷新失敗原因（如凌越連線逾時），讓網站顯示真正原因而非「代理未執行」
+    router.post("/lingyue-writeback/inventory-report", express_1.default.json({ limit: "64kb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const now = new Date().toISOString();
+            if (body.ok) {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error", "");
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "done");
+            } else {
+                const err = String(body.error || "未知錯誤").slice(0, 500);
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error", err);
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error_at", now);
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "error");
+            }
+            res.json({ ok: true });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
         }
     });
     /**
