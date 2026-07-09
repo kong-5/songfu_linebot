@@ -160,6 +160,48 @@ def _friendly_ly_error(e: Exception) -> str:
     return s[:300]
 
 
+def check_lingyue(icpno: str = "00", timeout: int = 12) -> dict:
+    """快速檢測凌越是否連得上。
+    先測 TCP(主機/埠通不通)，再測凌越 API(登入＋查 1 筆)。
+    回傳 {tcp_ok, api_ok, host, port, tcp_ms, api_ms, detail}。
+    用短逾時且用完還原 lystk._client，避免影響代理正在用的連線。"""
+    import socket
+    import time as _time
+    import urllib.parse
+    res = {"tcp_ok": False, "api_ok": False, "host": "", "port": 80, "tcp_ms": 0, "api_ms": 0, "detail": ""}
+    try:
+        u = urllib.parse.urlparse(getattr(lystk, "API_URL", "") or "")
+        host = u.hostname or "192.168.4.11"
+        port = u.port or (443 if u.scheme == "https" else 80)
+    except Exception:
+        host, port = "192.168.4.11", 80
+    res["host"], res["port"] = host, port
+    # 1) TCP 連線測試
+    t0 = _time.time()
+    try:
+        socket.create_connection((host, port), timeout=timeout).close()
+        res["tcp_ok"] = True
+        res["tcp_ms"] = int((_time.time() - t0) * 1000)
+    except Exception as e:
+        res["tcp_ms"] = int((_time.time() - t0) * 1000)
+        res["detail"] = f"連不到主機 {host}:{port}（{e}）"
+        return res
+    # 2) 凌越 API 測試（登入＋查 1 筆），用臨時短逾時 client，測完還原
+    t1 = _time.time()
+    old_client = getattr(lystk, "_client", None)
+    try:
+        lystk._client = None
+        ensure_timeout_client(timeout)
+        lystk.query(icpno=icpno, idakd=KIND_GOODS, limit=1)
+        res["api_ok"] = True
+    except Exception as e:
+        res["detail"] = _friendly_ly_error(e)
+    finally:
+        lystk._client = old_client
+        res["api_ms"] = int((_time.time() - t1) * 1000)
+    return res
+
+
 def push_once(base: str, key: str, icpno: str, timeout: int = 90, verbose: bool = True) -> int:
     """撈凌越目前庫存並 POST 到雲端。回傳推送筆數。失敗時回報原因給雲端。"""
     try:
