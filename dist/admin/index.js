@@ -10976,6 +10976,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_stock_refresh_requested_at");
                 const reqAt = row && row.value ? String(row.value).trim() : "";
                 if (reqAt) {
+                    // 一領到就清掉旗標：避免推送失敗時旗標一直在、代理每次輪詢又重撈重推（無限重試風暴、狂打凌越）。
+                    // 單次請求＝單次嘗試；失敗就等使用者再按或下次定時推。成功推送時 inventory-push 也會再清一次（冪等）。
+                    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", "");
                     await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "running");
                     res.json({ refresh: true, requested_at: reqAt });
                     return;
