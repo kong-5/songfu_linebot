@@ -7154,7 +7154,7 @@ function createAdminRouter() {
             res.status(500).send("儲存失敗：" + String(e?.message || e));
         }
     });
-    // ── 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無 group_features 列＝三項全開。 ──
+    // ── 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空籃」。無 group_features 列＝三項全開。 ──
     async function loadStocktakeGroupCandidates() {
         const gnorm = (s) => String(s || "").replace(/\s/g, "").toLowerCase();
         const byId = new Map();
@@ -7182,7 +7182,7 @@ function createAdminRouter() {
         const onFalse = (v) => (v == null ? false : !!Number(v));
         return Array.from(byId.values()).map((c) => {
             const fr = featMap.get(gnorm(c.group_id));
-            // 無資料列：訂單／空藍預設開、盤點預設關（opt-in 白名單）。
+            // 無資料列：訂單／空籃預設開、盤點預設關（opt-in 白名單）。
             const feats = fr ? { order: onTrue(fr.feat_order), stocktake: onFalse(fr.feat_stocktake), basket: onTrue(fr.feat_basket) } : { order: true, stocktake: false, basket: true };
             return { ...c, sources: Array.from(c.sources), isCustomer: !!c.isCustomer, feats };
         }).sort((a, b) => (Number(a.isCustomer) - Number(b.isCustomer)) || String(a.name || a.group_id).localeCompare(String(b.name || b.group_id)));
@@ -7196,39 +7196,61 @@ function createAdminRouter() {
             return `<span style="display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:6px;background:#eef0f3;color:#5b616e;">一般</span>`;
         };
         const sw = (name, gid, on) => `<label class="sf-switch-label" style="justify-content:center;"><input type="checkbox" name="${name}[${escapeAttr(gid)}]" value="1" ${on ? "checked" : ""}><span class="sf-switch"></span></label>`;
-        const rowsHtml = list.map((g) => `
-      <tr>
+        const rowsHtml = list.map((g) => {
+          const typeText = g.isCustomer ? ("客戶群 " + (g.customerName || "")) : (!g.feats.order ? "內部群" : "一般");
+          const searchStr = [g.name || "", g.group_id, typeText].join(" ").toLowerCase();
+          return `
+      <tr class="gf-row" data-search="${escapeAttr(searchStr)}">
         <td>${escapeHtml(g.name || "（未命名群組）")}</td>
         <td style="font-variant-numeric:tabular-nums;color:var(--notion-text-muted);font-size:12px;word-break:break-all;">${escapeHtml(g.group_id)}</td>
         <td>${typeTag(g)}</td>
         <td style="text-align:center;">${sw("order", g.group_id, g.feats.order)}</td>
         <td style="text-align:center;">${sw("stk", g.group_id, g.feats.stocktake)}</td>
         <td style="text-align:center;">${sw("bsk", g.group_id, g.feats.basket)}</td>
-      </tr>`).join("");
+      </tr>`;
+        }).join("");
         const knownIds = list.map((g) => g.group_id).join(",");
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 群組功能</div>
       <h1 class="notion-page-title">群組功能</h1>
-      <p class="notion-hint" style="margin:-2px 0 18px;">每個 LINE 群組可分別開關三項功能（勾＝開）：<b>辨識訂單</b>＝把一般文字送 AI 當訂單解析（<b>預設開</b>）；<b>盤點</b>＝群內打「<b>#盤點</b>」跳出倉庫盤點按鈕（<b>預設關</b>，白名單制，只有勾選的群組才回應）；<b>空藍</b>＝群內打「空藍/空籃」跳出空籃記帳（<b>預設開</b>）。關閉「辨識訂單」的群組＝<b>內部群</b>：機器人仍收訊息、仍回應指令，只是不把文字當訂單。客戶群的功能也可在「<a href="/admin/customers">客戶管理</a> → 編輯客戶」裡設定，兩處同步。清單自動收集機器人所在的群組；若沒出現，先在群裡對機器人傳一句話，或把群組 ID 貼到下方手動加入。</p>
+      <p class="notion-hint" style="margin:-2px 0 18px;">每個 LINE 群組可分別開關三項功能（勾＝開）：<b>辨識訂單</b>＝把一般文字送 AI 當訂單解析（<b>預設開</b>）；<b>盤點</b>＝群內打「<b>#盤點</b>」跳出倉庫盤點按鈕（<b>預設關</b>，白名單制，只有勾選的群組才回應）；<b>空籃</b>＝群內打「空籃」跳出空籃記帳 LIFF（<b>預設開</b>；也收常打錯的「空藍」）。關閉「辨識訂單」的群組＝<b>內部群</b>：機器人仍收訊息、仍回應指令，只是不把文字當訂單。客戶群的功能也可在「<a href="/admin/customers">客戶管理</a> → 編輯客戶」裡設定，兩處同步。清單自動收集機器人所在的群組；若沒出現，先在群裡對機器人傳一句話，或把群組 ID 貼到下方手動加入。</p>
       ${ok}
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
+        <input id="gfSearch" type="text" class="sf-input" placeholder="搜尋群組名稱 / ID / 類型…" autocomplete="off" style="max-width:360px;" oninput="gfFilter(this.value)">
+        <span id="gfCount" style="color:var(--notion-text-muted);font-size:12px;"></span>
+      </div>
       <form method="post" action="/admin/inventory/stocktake-groups">
         <input type="hidden" name="known_ids" value="${escapeAttr(knownIds)}">
         <div class="notion-card" style="padding:0;overflow:hidden;">
           <table>
             <thead><tr>
               <th>群組名稱</th><th>群組 ID</th><th style="width:130px;">類型</th>
-              <th style="text-align:center;width:84px;">辨識訂單</th><th style="text-align:center;width:84px;">盤點</th><th style="text-align:center;width:84px;">空藍</th>
+              <th style="text-align:center;width:84px;">辨識訂單</th><th style="text-align:center;width:84px;">盤點</th><th style="text-align:center;width:84px;">空籃</th>
             </tr></thead>
             <tbody>${rowsHtml || '<tr><td colspan="6" style="text-align:center;color:var(--notion-text-muted);padding:22px;">還沒有偵測到任何群組。請把機器人加入群組後，於群內傳一句話。</td></tr>'}</tbody>
           </table>
         </div>
         <div class="notion-card" style="margin-top:16px;">
           <h2>手動加入群組 ID</h2>
-          <p class="notion-hint" style="margin:-6px 0 10px;">每行一個，選填。新加入的群組預設辨識訂單／空藍開、盤點關，之後可在上表調整。適用於群組沒自動出現時。</p>
+          <p class="notion-hint" style="margin:-6px 0 10px;">每行一個，選填。新加入的群組預設辨識訂單／空籃開、盤點關，之後可在上表調整。適用於群組沒自動出現時。</p>
           <textarea name="manual_ids" rows="3" placeholder="Cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" class="sf-textarea" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
         </div>
         <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
-      </form>`;
+      </form>
+      <script>
+        function gfFilter(q){
+          q = (q || '').trim().toLowerCase();
+          var rows = document.querySelectorAll('tr.gf-row'), shown = 0;
+          rows.forEach(function(r){
+            var hit = !q || (r.getAttribute('data-search') || '').indexOf(q) >= 0;
+            r.style.display = hit ? '' : 'none';
+            if (hit) shown++;
+          });
+          var c = document.getElementById('gfCount');
+          if (c) c.textContent = q ? (shown + ' / ' + rows.length + ' 個群組') : (rows.length + ' 個群組');
+        }
+        document.addEventListener('DOMContentLoaded', function(){ gfFilter(''); });
+      </script>`;
         res.type("text/html").send(notionPage("群組功能", body, "inv-stk-groups", res));
     });
     router.post("/inventory/stocktake-groups", express_1.default.urlencoded({ extended: true }), async (req, res) => {
@@ -15274,7 +15296,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             }
             const v = (s) => escapeAttr(s ?? "");
             const activeChecked = customer.active === undefined || customer.active === null || customer.active === 1;
-            // 群組功能白名單（辨識訂單／盤點／空藍）：以此客戶綁定的 LINE 群組 ID 為鍵；無設定＝三項全開。
+            // 群組功能白名單（辨識訂單／盤點／空籃）：以此客戶綁定的 LINE 群組 ID 為鍵；無設定＝三項全開。
             const hasGroupId = !!(customer.line_group_id && String(customer.line_group_id).trim());
             const gfeat = await group_features_js_1.getGroupFeatures(db, customer.line_group_id);
             const editMsg = req.query.ok === "alias" ? "<p style='color:green'>已新增專用別名。</p>" : req.query.ok === "alias_del" ? "<p style='color:green'>已刪除專用別名。</p>" : req.query.err === "alias" ? "<p style='color:red'>請填寫別名與品項。</p>" : req.query.err === "dup" ? "<p style='color:red'>此客戶已存在相同別名。</p>" : "";
@@ -15356,12 +15378,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt-1);"><input type="checkbox" name="active" value="1" ${activeChecked ? "checked" : ""}> 啟用（未勾選＝停用）</label>
             <div style="border-top:1px solid var(--line, #eceae5);margin-top:4px;padding-top:12px;">
               <div style="font-size:12px;color:var(--txt-2);margin-bottom:2px;font-weight:600;">此群組功能（白名單）</div>
-              <p style="margin:0 0 10px;font-size:12px;color:var(--txt-3);line-height:1.5;">勾選＝開啟。辨識訂單／空藍預設開、<b>盤點預設關</b>（白名單制）。關閉「辨識訂單」後，機器人仍會收訊息、仍回應 <b>#盤點</b>／<b>空藍</b>／取得群組ID 等指令，只是<b>不把一般文字當訂單解析</b>（適合內部群）。${hasGroupId ? "" : "<br><span style=\"color:var(--bad,#b3261e);\">尚未填 LINE 群組 ID，功能設定要先綁定群組 ID 才會生效。</span>"}</p>
+              <p style="margin:0 0 10px;font-size:12px;color:var(--txt-3);line-height:1.5;">勾選＝開啟。辨識訂單／空籃預設開、<b>盤點預設關</b>（白名單制）。關閉「辨識訂單」後，機器人仍會收訊息、仍回應 <b>#盤點</b>／<b>空籃</b>／取得群組ID 等指令，只是<b>不把一般文字當訂單解析</b>（適合內部群）。${hasGroupId ? "" : "<br><span style=\"color:var(--bad,#b3261e);\">尚未填 LINE 群組 ID，功能設定要先綁定群組 ID 才會生效。</span>"}</p>
               <input type="hidden" name="feat_form" value="1">
             <div style="display:flex;flex-wrap:wrap;gap:16px;">
                 <label class="sf-switch-label"><input type="checkbox" name="feat_order" value="1" ${gfeat.order ? "checked" : ""}><span class="sf-switch"></span>辨識訂單</label>
                 <label class="sf-switch-label"><input type="checkbox" name="feat_stocktake" value="1" ${gfeat.stocktake ? "checked" : ""}><span class="sf-switch"></span>盤點（#盤點）</label>
-                <label class="sf-switch-label"><input type="checkbox" name="feat_basket" value="1" ${gfeat.basket ? "checked" : ""}><span class="sf-switch"></span>空藍</label>
+                <label class="sf-switch-label"><input type="checkbox" name="feat_basket" value="1" ${gfeat.basket ? "checked" : ""}><span class="sf-switch"></span>空籃</label>
               </div>
             </div>
             <div style="margin-top:6px;"><button type="submit" class="sf-btn primary">${SF_ICONS.check}<span>儲存</span></button></div>
@@ -15432,7 +15454,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(lineGroupId);
                 }
                 catch (_) { /* 表可能尚未建立 */ }
-                // 群組功能白名單（辨識訂單／盤點／空藍）以綁定的群組 ID 為鍵存 group_features。
+                // 群組功能白名單（辨識訂單／盤點／空籃）以綁定的群組 ID 為鍵存 group_features。
                 // 只在完整編輯表單（含 feat_form 標記）時寫入，避免部分欄位的 AJAX 儲存把開關全清成關。
                 if (req.body.feat_form === "1") {
                     try {

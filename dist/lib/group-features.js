@@ -1,8 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 
-// 每個 LINE 群組的功能白名單：辨識訂單 / 盤點 / 空藍。
-// 設計：group_features 無資料列時，辨識訂單／空藍預設「開」、盤點預設「關」（盤點為 opt-in 白名單制，
+// 每個 LINE 群組的功能白名單：辨識訂單 / 盤點 / 空籃。
+// 設計：group_features 無資料列時，辨識訂單／空籃預設「開」、盤點預設「關」（盤點為 opt-in 白名單制，
 // 只有明確設為開的群組才回應 #盤點）；有列則各欄 1/0 決定。
 // 比對一律正規化（去空白＋小寫），避免白名單存的 ID 與實際 groupId 有空白/大小寫差異而失效。
 
@@ -15,9 +15,9 @@ function normGid(s) {
 }
 
 function rowToFeatures(row) {
-    // 無資料列：辨識訂單／空藍預設開、盤點預設關。
+    // 無資料列：辨識訂單／空籃預設開、盤點預設關。
     if (!row) return { order: true, stocktake: false, basket: true };
-    // 有列：訂單／空藍欄位為 NULL 時視為開；盤點欄位為 NULL 時視為關。
+    // 有列：訂單／空籃欄位為 NULL 時視為開；盤點欄位為 NULL 時視為關。
     const onTrue = (v) => (v == null ? true : !!Number(v));
     const onFalse = (v) => (v == null ? false : !!Number(v));
     return {
@@ -39,8 +39,8 @@ async function getGroupFeatures(db, groupId) {
         const row = (rows || []).find((r) => normGid(r.group_id) === needle) || null;
         return rowToFeatures(row);
     } catch (e) {
-        // 讀取失敗：訂單／空藍維持開（絕不意外斷單），盤點維持關（opt-in）。
-        console.warn("[group-features] 讀取失敗，改用預設（訂單/空藍開、盤點關）:", e?.message || e);
+        // 讀取失敗：訂單／空籃維持開（絕不意外斷單），盤點維持關（opt-in）。
+        console.warn("[group-features] 讀取失敗，改用預設（訂單/空籃開、盤點關）:", e?.message || e);
         return { order: true, stocktake: false, basket: true };
     }
 }
