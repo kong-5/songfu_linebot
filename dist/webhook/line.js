@@ -837,7 +837,7 @@ function createLineWebhook() {
                     console.log("[LINE] source.type=%s 識別碼長度=%s", sourceType, groupId.length);
                 if (groupId)
                     console.log("[LINE] 群組/聊天室 ID：", groupId, "（長度", groupId.length, "）");
-                // 群組功能白名單（辨識訂單／盤點／空藍），單次查詢後記憶，供本則訊息各閘門共用。無設定＝三項全開。
+                // 群組功能白名單（辨識訂單／盤點／空籃），單次查詢後記憶，供本則訊息各閘門共用。無設定＝三項全開。
                 let _groupFeat = null;
                 const getGroupFeat = async () => {
                     if (_groupFeat) return _groupFeat;
@@ -886,7 +886,7 @@ function createLineWebhook() {
                     }
                 }
                 // ── 空籃觸發詞 → 回 LIFF 連結（早期攔截：先於員工身份偵測） ─────────
-                // 空藍功能為白名單制：群組關閉「空藍」時，「空籃」視為一般文字（不攔截、往下走）。
+                // 空籃功能為白名單制：群組關閉「空籃」時，「空籃」視為一般文字（不攔截、往下走）。
                 if (groupId && msgType === "text" && textEarly && (0, basket_log_js_1.isBasketTrigger)(textEarly) && (await getGroupFeat()).basket) {
                     try {
                         // 查群組綁定客戶
@@ -1011,7 +1011,7 @@ function createLineWebhook() {
                     }
                 }
                 // ── 訂單辨識白名單：關閉「辨識訂單」的群組不把文字送進 AI 解析、也不回「無法收單」──
-                // 前面的明確指令（#盤點／取得群組ID／員工綁定／空藍等）與 LIFF 已各自處理完並 continue，
+                // 前面的明確指令（#盤點／取得群組ID／員工綁定／空籃等）與 LIFF 已各自處理完並 continue，
                 // 故關閉訂單辨識＝機器人仍收訊息、仍回應指令，只是不把一般文字當訂單。此開關對已綁客戶的群組同樣生效。
                 if (groupId && !(await getGroupFeat()).order) {
                     console.log("[LINE] 群組關閉訂單辨識，略過訂單解析 group=%s msgType=%s", groupId, msgType);
