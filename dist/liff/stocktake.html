@@ -85,6 +85,7 @@
   .diff.eq{background:var(--pos-soft);color:var(--pos);}
   .diff.sp{background:var(--accent-soft);color:var(--accent);}
   .diff.sn{background:var(--neg-soft);color:var(--neg);}
+  .zsep{font-size:11px;font-weight:700;color:var(--txt-3);letter-spacing:.02em;text-align:center;padding:9px 8px;background:var(--bg);border-top:1px solid var(--line);border-bottom:1px solid var(--line-soft);}
   .hz-hint{display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;color:var(--txt-3);padding:12px 8px 4px;}
   .hz-show{border:1px solid var(--line);background:var(--card);color:var(--accent);font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;cursor:pointer;}
   .batches{border-top:1px dashed var(--line);padding:9px 13px 12px;background:color-mix(in srgb,var(--warn-soft) 40%,var(--card));display:none;}
@@ -143,6 +144,7 @@
       midChip:'中',midTitle:'中價貨（品質較差）數量',midPh:'中價數量',midDone:'完成收起 ▴',
       sumLine:function(g,m,tot){return '上 '+g+'  ＋  中 '+m+'  ＝  合計 '+tot;},
       showZero:'顯示庫存0',hiddenN:function(n){return '另有 '+n+' 項庫存 0 已隱藏';},
+      zeroSep:function(n){return '— 帳上 0（現場有再盤）· '+n+' 項 —';},
       draftResumed:'已回復未送出',drafting:'盤點中(未送出)',
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
       progN:function(d,a){return '已盤 '+d+'/'+a;},barN:function(d,a){return '已盤 '+d+'/'+a+' · 未盤 '+(a-d);},
@@ -160,6 +162,7 @@
       midChip:'Loại B',midTitle:'Số lượng hàng loại B (chất lượng kém)',midPh:'SL loại B',midDone:'Xong ▴',
       sumLine:function(g,m,tot){return 'Loại A '+g+'  +  Loại B '+m+'  =  Tổng '+tot;},
       showZero:'Hiện tồn 0',hiddenN:function(n){return 'Còn '+n+' mục tồn 0 đang ẩn';},
+      zeroSep:function(n){return '— Tồn 0 (có hàng thì kiểm) · '+n+' —';},
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
       progN:function(d,a){return 'Đã kiểm '+d+'/'+a;},barN:function(d,a){return 'Đã kiểm '+d+'/'+a+' · Chưa '+(a-d);},
       confirm:function(wh,d,a){return 'Gửi kiểm kê?\n\nKho: '+wh+'\nĐã kiểm '+d+'/'+a+' (mục chưa kiểm sẽ được đánh dấu "Chưa")';},
@@ -167,7 +170,7 @@
     }
   };
   var initLang='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') initLang='vi'; }catch(_){}
-  var initHz=true; try{ if(localStorage.getItem('stk_hz')==='0') initHz=false; }catch(_){}  // 預設隱藏0
+  var initHz=false; try{ if(localStorage.getItem('stk_hz')==='1') initHz=true; }catch(_){}  // 預設不隱藏，0 排最後；可切成隱藏0
   var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:initHz,lang:initLang};
   function t(k){return (I18N[S.lang]&&I18N[S.lang][k]!=null)?I18N[S.lang][k]:I18N.zh[k];}
   function toggleLang(){ S.lang=(S.lang==='zh')?'vi':'zh'; try{localStorage.setItem('stk_lang',S.lang);}catch(_){}
@@ -317,22 +320,33 @@
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div></div>'
       +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(it.sys)+(it.u?' <span class="su">'+esc(it.u)+'</span>':'')+'</div></div>'+right+'</div>'+midPanel(it)+(it.exp?batchRows(it):'')+'</div>';
   }
+  function isZeroIdle(it){ return Number(it.sys)===0 && !isCounted(it); }  // 帳上0且尚未盤
   function listHtml(){
     var q=S.q.toLowerCase();
-    var searching=!!q;   // 搜尋時忽略「隱藏0」，讓帳上0但現場有的品項也找得到
+    var searching=!!q;   // 搜尋時忽略隱藏/排序，讓帳上0但現場有的品項也找得到
     var arr=S.items.filter(function(it){
       if(S.f==='todo'&&isCounted(it)) return false;
       if(S.f==='exp'&&!it.exp) return false;
-      if(S.hz&&!searching&&Number(it.sys)===0&&!isCounted(it)) return false;
+      if(S.hz&&!searching&&isZeroIdle(it)) return false;   // 選用：完全隱藏0
       if(q&&it.c.toLowerCase().indexOf(q)<0&&it.n.toLowerCase().indexOf(q)<0) return false;
       return true;
     });
-    var body=!arr.length?'<div class="list"><div class="empty">'+esc(t('noMatch'))+'</div></div>'
-                        :'<div class="list">'+arr.map(rowHtml).join('')+'</div>';
-    // 隱藏0 提示：讓人知道還有多少庫存0被藏起來，一鍵可顯示
+    if(!arr.length) return '<div class="list"><div class="empty">'+esc(t('noMatch'))+'</div></div>';
+    var body;
+    if(searching||S.hz){
+      body='<div class="list">'+arr.map(rowHtml).join('')+'</div>';
+    } else {
+      // 預設：有量/已盤的排上面，帳上0未盤的沉到最後，中間放分隔
+      var top=[],zeros=[];
+      for(var i=0;i<arr.length;i++){ (isZeroIdle(arr[i])?zeros:top).push(arr[i]); }
+      var html=top.map(rowHtml).join('');
+      if(zeros.length) html+='<div class="zsep">'+esc(t('zeroSep')(zeros.length))+'</div>'+zeros.map(rowHtml).join('');
+      body='<div class="list">'+html+'</div>';
+    }
+    // 隱藏0 模式的提示：告知還有多少 0 被藏起來，一鍵顯示
     var hint='';
     if(S.hz&&!searching){
-      var hidden=0; for(var i=0;i<S.items.length;i++){ var it2=S.items[i]; if(Number(it2.sys)===0&&!isCounted(it2)) hidden++; }
+      var hidden=0; for(var j=0;j<S.items.length;j++){ if(isZeroIdle(S.items[j])) hidden++; }
       if(hidden) hint='<div class="hz-hint">'+esc(t('hiddenN')(hidden))+'<button class="hz-show" data-showzero>'+esc(t('showZero'))+'</button></div>';
     }
     return body+hint;
