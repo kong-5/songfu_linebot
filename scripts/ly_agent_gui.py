@@ -404,10 +404,9 @@ class AgentEngine:
                     self.log(f"  [試跑] {name}：{len(row.get('details', []))} 個品項（不寫入）")
                     continue
                 try:
-                    # [fix] 每次寫入前重置 ly_order 的「當日流水快取」，比照 ly_agent_v3。
-                    # 沒重置時，代理會沿用上次寫入後的快取號（如網站已寫到 0065 → 快取 next=0066），
-                    # 但使用者可能又在凌越手打了 66～71。下次網站匯入若用快取 0066，會撞號覆蓋手打的 66。
-                    # 重置後 write_order 會重新查凌越當日實際最大流水 +1（71 → 72），順著編、不撞號。
+                    # 撞號防護的權威層在 ly_writeback_bridge.py（載入時已把 write_order
+                    # 包成「每次呼叫前重置當日流水快取」，換 .py 即生效、不必重打包 exe）。
+                    # 這裡的重置保留當雙保險（例如 exe 同層放的是舊版 bridge 時仍有防護）。
                     try:
                         wb.ly_order._seq_date = None
                     except Exception:

@@ -55,6 +55,38 @@ import lystk     # noqa: E402  查客戶主檔(000001)/貨品主檔(000000)
 
 TEST_REM_PREFIX = "【API測試請刪除】"
 
+
+# ----------------------------------------------------------------------
+#  撞號防護（權威層）：write_order 每次呼叫前重置當日流水快取
+# ----------------------------------------------------------------------
+#  ly_order 會把「當日流水號」快取在模組變數 _seq_date，同一天的第二張起
+#  直接用 快取號+1，不再回查凌越。若使用者這中間在凌越手打了新單
+#  （例：網站寫到 …0051 → 手打 0052/0053 → 下一張網站單用快取的 0052），
+#  LyDataAdd 同號會直接覆蓋手打單（2026-07-09 事故）。
+#
+#  修正曾放在 ly_agent_gui.py（每次寫入前重置），但 GUI 打包成 exe 後
+#  「換 .py 不重打包」的部署方式帶不到那層。放在本檔（local_import 熱替換層）
+#  包住 write_order，舊 exe 只要換掉同資料夾的 ly_writeback_bridge.py 就生效，
+#  且 GUI／CLI 批次／任何 import 本檔的呼叫端全部涵蓋。
+
+def _install_seq_reset_guard():
+    fn = getattr(ly_order, "write_order", None)
+    if fn is None or getattr(fn, "_sf_seq_reset_guard", False):
+        return
+
+    def write_order_with_seq_reset(*args, **kwargs):
+        try:
+            ly_order._seq_date = None  # 清快取 → write_order 重查凌越當日實際最大流水 +1
+        except Exception:
+            pass
+        return fn(*args, **kwargs)
+
+    write_order_with_seq_reset._sf_seq_reset_guard = True
+    ly_order.write_order = write_order_with_seq_reset
+
+
+_install_seq_reset_guard()
+
 # ----------------------------------------------------------------------
 #  單位正規化：雲端多半給中文「公斤」，凌越要「KG」。
 #  ※ 實際寫入時優先用貨品主檔 SK_UNIT（見 product_info），這張表是退路。
