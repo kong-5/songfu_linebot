@@ -219,19 +219,34 @@ def post_callback(base: str, key: str, results: list) -> dict:
 #  雲端訂單 → 凌越 write_order row（唯一權威對映）
 # ----------------------------------------------------------------------
 
-def map_order(order: dict, *, icpno: str, whno: str = "", price: str = "",
+def map_order(order: dict, *, icpno: str = "", whno: str = "", price: str = "",
               create_name: str = "052", check: str = "1", maker: str = "",
-              rem_prefix: str = "") -> dict:
+              rem_prefix: str = "", wh_map: dict | None = None,
+              or_check: str | None = None, **_legacy) -> dict:
     """把一張雲端訂單轉成 ly_order.write_order 需要的 row dict。
 
     規則（詳見 docs/資料處理規則.md）：
-      倉別  OD_WARE：料號→貨品主檔 SK_RKWHNO；查不到 → whno(LY_DEFAULT_WHNO)。
+      倉別  OD_WARE：料號→貨品主檔 SK_RKWHNO；查不到 → wh_map（舊版對照）→ whno(LY_DEFAULT_WHNO)。
       單位  OD_UNIT：貨品主檔 SK_UNIT 優先；退回雲端單位時「公斤→KG」正規化。
       審核  OR_CHECK：預設 "1" 已審核（拋轉需要）；"0"=未審核。
       人/時 OR_MAKER/OR_CREATE*/OR_MODIFY*：操作員代碼（maker 或 create_name）＋現在時間。
       客戶  OR_FKFS/OR_SALES：由客戶主檔帶入。
       缺料號品項：跳過並警示（凌越不收無料號明細行）。
+
+    ★ 本檔會被 local_import 熱替換到「各版本」打包的代理 exe 旁，簽名必須向下相容：
+      PR#30 之前的舊 exe 呼叫 map_order(o, whno=…, price=…, wh_map=…, or_check=…)，
+      不帶 icpno。故 icpno 缺省時讀 LY_ICPNO（預設 00）、or_check 是 check 的舊名、
+      wh_map（料號→預設倉別對照）當倉別備援，其餘未知參數忽略並警示。
     """
+    # ── 舊版 exe 相容 ───────────────────────────────────────────
+    icpno = (icpno or os.environ.get("LY_ICPNO") or "00").strip()
+    if or_check is not None:
+        check = or_check
+    wh_map = wh_map or {}
+    if _legacy:
+        print(f"    ⚠ map_order 忽略未知參數（呼叫端 exe 版本不同）：{', '.join(_legacy)}",
+              file=sys.stderr)
+
     details = []
     for it in order.get("items", []) or []:
         skno = (it.get("product_code") or "").strip()
@@ -246,7 +261,7 @@ def map_order(order: dict, *, icpno: str, whno: str = "", price: str = "",
             "OD_SKNO": skno,
             "OD_NAME": name,
             "OD_UNIT": (pinfo.get("unit") or norm_unit(it.get("unit"))).strip(),
-            "OD_WARE": pinfo.get("whno") or whno,
+            "OD_WARE": pinfo.get("whno") or wh_map.get(skno) or whno,
             "OD_QTY": qty if qty is not None else 0,
         }
         # 單價：留空＝不送 OD_PRICE → 凌越依客戶售價表自動帶價。
