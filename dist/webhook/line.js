@@ -23,6 +23,7 @@ const order_parsed_heuristics_js_1 = require("../lib/order-parsed-heuristics.js"
 const cloud_tasks_line_js_1 = require("../lib/cloud-tasks-line.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
+const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const line_conversation_js_1 = require("../lib/line-conversation.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
@@ -836,6 +837,13 @@ function createLineWebhook() {
                     console.log("[LINE] source.type=%s 識別碼長度=%s", sourceType, groupId.length);
                 if (groupId)
                     console.log("[LINE] 群組/聊天室 ID：", groupId, "（長度", groupId.length, "）");
+                // 群組功能白名單（辨識訂單／盤點／空藍），單次查詢後記憶，供本則訊息各閘門共用。無設定＝三項全開。
+                let _groupFeat = null;
+                const getGroupFeat = async () => {
+                    if (_groupFeat) return _groupFeat;
+                    _groupFeat = groupId ? await (0, group_features_js_1.getGroupFeatures)(db, groupId) : { order: true, stocktake: true, basket: true };
+                    return _groupFeat;
+                };
                 /** 休眠：非收單時段不跑 OCR／Gemini／訂單；僅允許「取得群組ID」（無 AI） */
                 let textEarly = null;
                 if (msgType === "text" && event.message.text) {
@@ -878,7 +886,8 @@ function createLineWebhook() {
                     }
                 }
                 // ── 空籃觸發詞 → 回 LIFF 連結（早期攔截：先於員工身份偵測） ─────────
-                if (groupId && msgType === "text" && textEarly && (0, basket_log_js_1.isBasketTrigger)(textEarly)) {
+                // 空藍功能為白名單制：群組關閉「空藍」時，「空籃」視為一般文字（不攔截、往下走）。
+                if (groupId && msgType === "text" && textEarly && (0, basket_log_js_1.isBasketTrigger)(textEarly) && (await getGroupFeat()).basket) {
                     try {
                         // 查群組綁定客戶
                         const allActiveBsk = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE (active IS NULL OR active = 1)").all();
@@ -944,13 +953,12 @@ function createLineWebhook() {
                         continue;
                     }
                 }
-                // ── #盤點 指令：僅限「盤點群組白名單」內的群組 ──
+                // ── #盤點 指令：僅限開啟「盤點」功能的群組 ──
                 if (groupId && msgType === "text" && textEarly && textEarly.replace(/\s/g, "") === "#盤點") {
                     try {
-                        const wl = await db.prepare("SELECT group_id FROM stocktake_group WHERE group_id = ?").get(groupId);
-                        if (!wl) {
-                            // 非白名單群組：靜默略過（不回覆、不進 AI 解析）
-                            console.log("[LINE] #盤點 於非白名單群組略過 group=%s", groupId);
+                        if (!(await getGroupFeat()).stocktake) {
+                            // 未開啟盤點功能：靜默略過（不回覆、不進 AI 解析）
+                            console.log("[LINE] #盤點 於未開啟盤點功能的群組略過 group=%s", groupId);
                             continue;
                         }
                         const stkLiffId = (process.env.LIFF_ID_STOCKTAKE || "2010106501-VocNwkbA").trim();
@@ -1002,26 +1010,12 @@ function createLineWebhook() {
                         continue;
                     }
                 }
-                // ── 內部群組（盤點群組白名單）：不辨識訂單、不回「無法收單」；只回應前面已處理的明確指令（#盤點／取得群組ID／員工綁定等）與 LIFF ──
-                // 安全防呆：已綁定客戶的群組永遠仍辨識訂單，避免誤把客戶群設為內部群而中斷收單。
-                // 比對一律正規化（去空白＋小寫），避免白名單存的 ID 與實際 groupId 有空白/大小寫差異而失效。
-                if (groupId) {
-                    try {
-                        const gnorm = (s) => String(s || "").replace(/\s/g, "").toLowerCase();
-                        const needleGid = gnorm(groupId);
-                        const stkRows = await db.prepare("SELECT group_id FROM stocktake_group").all();
-                        const isInternal = (stkRows || []).some((r) => gnorm(r.group_id) === needleGid);
-                        if (isInternal) {
-                            const custRows = await db.prepare("SELECT id, line_group_id FROM customers WHERE line_group_id IS NOT NULL AND line_group_id <> '' AND (active IS NULL OR active = 1)").all();
-                            const boundCust = (custRows || []).find((r) => gnorm(r.line_group_id) === needleGid) || null;
-                            if (boundCust) {
-                                console.log("[LINE] 群組同時綁客戶，仍辨識訂單（忽略內部群設定）group=%s customer=%s", groupId, boundCust.id);
-                            } else {
-                                console.log("[LINE] 內部群組，略過訂單辨識 group=%s msgType=%s", groupId, msgType);
-                                continue;
-                            }
-                        }
-                    } catch (e) { console.warn("[LINE] 內部群組判斷失敗:", e?.message || e); }
+                // ── 訂單辨識白名單：關閉「辨識訂單」的群組不把文字送進 AI 解析、也不回「無法收單」──
+                // 前面的明確指令（#盤點／取得群組ID／員工綁定／空藍等）與 LIFF 已各自處理完並 continue，
+                // 故關閉訂單辨識＝機器人仍收訊息、仍回應指令，只是不把一般文字當訂單。此開關對已綁客戶的群組同樣生效。
+                if (groupId && !(await getGroupFeat()).order) {
+                    console.log("[LINE] 群組關閉訂單辨識，略過訂單解析 group=%s msgType=%s", groupId, msgType);
+                    continue;
                 }
                 // ── 員工身份偵測：若 senderUserId 是員工，跳過 AI 解析，只記錄 ──
                 if (senderUserId) {

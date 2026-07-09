@@ -69,6 +69,7 @@ const rhythm_analysis_js_1 = require("../lib/rhythm-analysis.js");
 const daily_summary_push_js_1 = require("../lib/daily-summary-push.js");
 const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
+const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const line_conversation_js_1 = require("../lib/line-conversation.js");
 const announcement_templates_js_1 = require("../lib/announcement-templates.js");
@@ -1636,7 +1637,7 @@ function sfSidebar(active) {
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "box", "倉庫設定")}
-        ${item("/admin/inventory/stocktake-groups", "inv-stk-groups", "box", "盤點群組")}
+        ${item("/admin/inventory/stocktake-groups", "inv-stk-groups", "box", "群組功能")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
@@ -7153,87 +7154,105 @@ function createAdminRouter() {
             res.status(500).send("儲存失敗：" + String(e?.message || e));
         }
     });
-    // ── 盤點群組白名單：只有勾選的 LINE 群組打「#盤點」才會出現盤點按鈕 ──
+    // ── 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無 group_features 列＝三項全開。 ──
     async function loadStocktakeGroupCandidates() {
+        const gnorm = (s) => String(s || "").replace(/\s/g, "").toLowerCase();
         const byId = new Map();
         const put = (gid, name, src) => {
             const id = String(gid || "").trim();
             if (!id) return;
-            const cur = byId.get(id) || { group_id: id, name: "", sources: new Set(), whitelisted: false };
+            const cur = byId.get(id) || { group_id: id, name: "", sources: new Set() };
             if (name && !cur.name) cur.name = String(name).trim();
             cur.sources.add(src);
             byId.set(id, cur);
         };
-        let whitelisted = [];
-        try { whitelisted = await db.prepare("SELECT group_id, group_name FROM stocktake_group").all(); } catch (_) { whitelisted = []; }
-        for (const w of whitelisted) { put(w.group_id, w.group_name, "已納入"); const c = byId.get(String(w.group_id).trim()); if (c) c.whitelisted = true; }
+        // group_features 為功能設定的權威來源；先收錄所有已設定的群組。
+        let featRows = [];
+        try { featRows = await db.prepare("SELECT group_id, feat_order, feat_stocktake, feat_basket FROM group_features").all(); } catch (_) { featRows = []; }
+        const featMap = new Map((featRows || []).map((r) => [gnorm(r.group_id), r]));
+        for (const r of (featRows || [])) put(r.group_id, null, "已設定");
+        // 舊盤點群組白名單：作為群組探索來源（行為已改由 group_features 決定）。
+        try { const wl = await db.prepare("SELECT group_id, group_name FROM stocktake_group").all(); for (const w of wl) put(w.group_id, w.group_name, "已納入"); } catch (_) {}
         try { const pend = await db.prepare("SELECT group_id, group_name FROM pending_line_groups").all(); for (const p of pend) put(p.group_id, p.group_name, "待綁定"); } catch (_) {}
         try {
             const cust = await db.prepare("SELECT name, line_group_id FROM customers WHERE line_group_id IS NOT NULL AND line_group_id <> ''").all();
             for (const c of cust) { put(c.line_group_id, c.name, "客戶群"); const it = byId.get(String(c.line_group_id).trim()); if (it) { it.isCustomer = true; it.customerName = String(c.name || ""); } }
         } catch (_) {}
-        return Array.from(byId.values()).map((c) => ({ ...c, sources: Array.from(c.sources), isCustomer: !!c.isCustomer }))
-            .sort((a, b) => (Number(b.whitelisted) - Number(a.whitelisted)) || (Number(a.isCustomer) - Number(b.isCustomer)) || String(a.name || a.group_id).localeCompare(String(b.name || b.group_id)));
+        const on = (v) => (v == null ? true : !!Number(v));
+        return Array.from(byId.values()).map((c) => {
+            const fr = featMap.get(gnorm(c.group_id));
+            const feats = fr ? { order: on(fr.feat_order), stocktake: on(fr.feat_stocktake), basket: on(fr.feat_basket) } : { order: true, stocktake: true, basket: true };
+            return { ...c, sources: Array.from(c.sources), isCustomer: !!c.isCustomer, feats };
+        }).sort((a, b) => (Number(a.isCustomer) - Number(b.isCustomer)) || String(a.name || a.group_id).localeCompare(String(b.name || b.group_id)));
     }
     router.get("/inventory/stocktake-groups", async (req, res) => {
         const list = await loadStocktakeGroupCandidates();
         const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:16px;">已儲存。</div>` : "";
         const typeTag = (g) => {
-            if (g.isCustomer) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#fdecec;color:#b3261e;">⚠ 已綁客戶${g.customerName ? "：" + escapeHtml(g.customerName) : ""}</span>`;
-            if (g.whitelisted) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#e7f6ee;color:#1f7a46;">內部群</span>`;
-            return `<span style="display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:6px;background:#eef0f3;color:#5b616e;">待綁定</span>`;
+            if (g.isCustomer) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#eef2fb;color:#3457b1;">客戶群${g.customerName ? "：" + escapeHtml(g.customerName) : ""}</span>`;
+            if (!g.feats.order) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#e7f6ee;color:#1f7a46;">內部群</span>`;
+            return `<span style="display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:6px;background:#eef0f3;color:#5b616e;">一般</span>`;
         };
+        const sw = (name, gid, on) => `<label class="sf-switch-label" style="justify-content:center;"><input type="checkbox" name="${name}[${escapeAttr(gid)}]" value="1" ${on ? "checked" : ""}><span class="sf-switch"></span></label>`;
         const rowsHtml = list.map((g) => `
-      <tr${g.isCustomer ? ' style="background:#fdf3f2;"' : ""}>
-        <td style="text-align:center;"><input type="checkbox" name="grp[${escapeAttr(g.group_id)}]" value="1" ${g.whitelisted ? "checked" : ""}></td>
+      <tr>
         <td>${escapeHtml(g.name || "（未命名群組）")}</td>
         <td style="font-variant-numeric:tabular-nums;color:var(--notion-text-muted);font-size:12px;word-break:break-all;">${escapeHtml(g.group_id)}</td>
         <td>${typeTag(g)}</td>
+        <td style="text-align:center;">${sw("order", g.group_id, g.feats.order)}</td>
+        <td style="text-align:center;">${sw("stk", g.group_id, g.feats.stocktake)}</td>
+        <td style="text-align:center;">${sw("bsk", g.group_id, g.feats.basket)}</td>
       </tr>`).join("");
-        const custCount = list.filter((g) => g.isCustomer && g.whitelisted).length;
-        const warnBanner = custCount ? `<div style="background:#fdecec;color:#b3261e;padding:11px 14px;border-radius:8px;margin-bottom:16px;font-size:13px;">⚠ 有 <b>${custCount}</b> 個已勾選的群組同時綁定了客戶（見紅底列）。這些群組會<b>持續辨識訂單</b>（收單優先，盤點內部群設定不生效）。若那其實是內部群，請到「客戶管理」把該客戶的「LINE 群組 ID」清空；若那是客戶群，請在下方取消勾選。</div>` : "";
+        const knownIds = list.map((g) => g.group_id).join(",");
         const body = `
-      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 盤點群組</div>
-      <h1 class="notion-page-title">盤點群組</h1>
-      <p class="notion-hint" style="margin:-2px 0 18px;">列在這裡的 LINE 群組視為「內部群組」：成員打「<b>#盤點</b>」會跳出倉庫盤點按鈕，且機器人<b>不辨識訂單、不回「無法收單」</b>。<b>已綁客戶的群組（紅底）為安全起見一律仍辨識訂單</b>，不會被當內部群。清單自動收集機器人所在的群組；若內部群沒出現，先在群裡對機器人傳一句話讓它露出，或把群組 ID 貼到下方手動加入。</p>
-      ${warnBanner}
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 群組功能</div>
+      <h1 class="notion-page-title">群組功能</h1>
+      <p class="notion-hint" style="margin:-2px 0 18px;">每個 LINE 群組可分別開關三項功能（勾＝開，預設全開）：<b>辨識訂單</b>＝把一般文字送 AI 當訂單解析；<b>盤點</b>＝群內打「<b>#盤點</b>」跳出倉庫盤點按鈕；<b>空藍</b>＝群內打「空藍/空籃」跳出空籃記帳。關閉「辨識訂單」的群組＝<b>內部群</b>：機器人仍收訊息、仍回應指令，只是不把文字當訂單。客戶群的功能也可在「<a href="/admin/customers">客戶管理</a> → 編輯客戶」裡設定，兩處同步。清單自動收集機器人所在的群組；若沒出現，先在群裡對機器人傳一句話，或把群組 ID 貼到下方手動加入。</p>
       ${ok}
       <form method="post" action="/admin/inventory/stocktake-groups">
+        <input type="hidden" name="known_ids" value="${escapeAttr(knownIds)}">
         <div class="notion-card" style="padding:0;overflow:hidden;">
           <table>
             <thead><tr>
-              <th style="text-align:center;width:72px;">納入盤點</th><th>群組名稱</th><th>群組 ID</th><th style="width:150px;">類型</th>
+              <th>群組名稱</th><th>群組 ID</th><th style="width:130px;">類型</th>
+              <th style="text-align:center;width:84px;">辨識訂單</th><th style="text-align:center;width:84px;">盤點</th><th style="text-align:center;width:84px;">空藍</th>
             </tr></thead>
-            <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:var(--notion-text-muted);padding:22px;">還沒有偵測到任何群組。請把機器人加入盤點群組後，於群內傳一句話。</td></tr>'}</tbody>
+            <tbody>${rowsHtml || '<tr><td colspan="6" style="text-align:center;color:var(--notion-text-muted);padding:22px;">還沒有偵測到任何群組。請把機器人加入群組後，於群內傳一句話。</td></tr>'}</tbody>
           </table>
         </div>
         <div class="notion-card" style="margin-top:16px;">
           <h2>手動加入群組 ID</h2>
-          <p class="notion-hint" style="margin:-6px 0 10px;">每行一個，選填。適用於內部群沒自動出現時。</p>
+          <p class="notion-hint" style="margin:-6px 0 10px;">每行一個，選填。新加入的群組預設三項全開，之後可在上表調整。適用於群組沒自動出現時。</p>
           <textarea name="manual_ids" rows="3" placeholder="Cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" class="sf-textarea" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
         </div>
         <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
       </form>`;
-        res.type("text/html").send(notionPage("盤點群組", body, "inv-stk-groups", res));
+        res.type("text/html").send(notionPage("群組功能", body, "inv-stk-groups", res));
     });
     router.post("/inventory/stocktake-groups", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
-            const grpMap = (req.body && typeof req.body.grp === "object" && req.body.grp) ? req.body.grp : {};
+            const orderMap = (req.body && typeof req.body.order === "object" && req.body.order) ? req.body.order : {};
+            const stkMap = (req.body && typeof req.body.stk === "object" && req.body.stk) ? req.body.stk : {};
+            const bskMap = (req.body && typeof req.body.bsk === "object" && req.body.bsk) ? req.body.bsk : {};
+            const knownRaw = String((req.body && req.body.known_ids) || "");
             const manualRaw = String((req.body && req.body.manual_ids) || "");
-            const chosen = new Map(); // group_id -> name
-            const cands = await loadStocktakeGroupCandidates();
-            const nameById = new Map(cands.map((c) => [c.group_id, c.name || ""]));
-            for (const k of Object.keys(grpMap)) { const id = String(k).trim(); if (id) chosen.set(id, nameById.get(id) || ""); }
-            for (const line of manualRaw.split(/[\r\n,]+/)) { const id = line.trim(); if (id) chosen.set(id, chosen.get(id) || nameById.get(id) || ""); }
-            const now = new Date().toISOString();
-            await db.prepare("DELETE FROM stocktake_group").run();
-            for (const [gid, name] of chosen) {
-                await db.prepare("INSERT INTO stocktake_group (group_id, group_name, created_at) VALUES (?, ?, ?)").run(gid, name || null, now);
+            // 已列出的群組：用各自的勾選狀態（未勾＝關）；手動新增的群組：預設三項全開。
+            const universe = new Map(); // group_id -> {order,stocktake,basket}
+            for (const line of knownRaw.split(/[\r\n,]+/)) {
+                const id = line.trim(); if (!id) continue;
+                universe.set(id, { order: orderMap[id] === "1", stocktake: stkMap[id] === "1", basket: bskMap[id] === "1" });
+            }
+            for (const line of manualRaw.split(/[\r\n,]+/)) {
+                const id = line.trim(); if (!id || universe.has(id)) continue;
+                universe.set(id, { order: true, stocktake: true, basket: true });
+            }
+            for (const [gid, feats] of universe) {
+                await group_features_js_1.setGroupFeatures(db, gid, feats);
             }
             res.redirect("/admin/inventory/stocktake-groups?ok=1");
         }
         catch (e) {
-            console.error("[admin] stocktake-groups save", e?.message || e);
+            console.error("[admin] group-features save", e?.message || e);
             res.status(500).send("儲存失敗：" + String(e?.message || e));
         }
     });
@@ -15253,6 +15272,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             }
             const v = (s) => escapeAttr(s ?? "");
             const activeChecked = customer.active === undefined || customer.active === null || customer.active === 1;
+            // 群組功能白名單（辨識訂單／盤點／空藍）：以此客戶綁定的 LINE 群組 ID 為鍵；無設定＝三項全開。
+            const hasGroupId = !!(customer.line_group_id && String(customer.line_group_id).trim());
+            const gfeat = await group_features_js_1.getGroupFeatures(db, customer.line_group_id);
             const editMsg = req.query.ok === "alias" ? "<p style='color:green'>已新增專用別名。</p>" : req.query.ok === "alias_del" ? "<p style='color:green'>已刪除專用別名。</p>" : req.query.err === "alias" ? "<p style='color:red'>請填寫別名與品項。</p>" : req.query.err === "dup" ? "<p style='color:red'>此客戶已存在相同別名。</p>" : "";
             const custAliases = await db.prepare(`
       SELECT cpa.id, cpa.alias, p.name AS product_name
@@ -15330,6 +15352,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <label style="font-size:12px;color:var(--txt-2);">叫貨備註／習慣說明 <textarea class="sf-input" name="order_notes" placeholder="此客戶叫貨的習慣、特定說法或規則，僅供內部參考" style="margin-top:4px;min-height:60px;">${v(customer.order_notes)}</textarea></label>
             <label style="font-size:12px;color:var(--txt-2);">專屬子客戶/分店名單（逗號分隔） <input class="sf-input" type="text" name="known_sub_customers" value="${v(customer.known_sub_customers)}" placeholder="例：東大附小,豐源國小,馬蘭國小" style="margin-top:4px;"></label>
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt-1);"><input type="checkbox" name="active" value="1" ${activeChecked ? "checked" : ""}> 啟用（未勾選＝停用）</label>
+            <div style="border-top:1px solid var(--line, #eceae5);margin-top:4px;padding-top:12px;">
+              <div style="font-size:12px;color:var(--txt-2);margin-bottom:2px;font-weight:600;">此群組功能（白名單）</div>
+              <p style="margin:0 0 10px;font-size:12px;color:var(--txt-3);line-height:1.5;">勾選＝開啟。預設三項全開。關閉「辨識訂單」後，機器人仍會收訊息、仍回應 <b>#盤點</b>／<b>空藍</b>／取得群組ID 等指令，只是<b>不把一般文字當訂單解析</b>（適合內部群）。${hasGroupId ? "" : "<br><span style=\"color:var(--bad,#b3261e);\">尚未填 LINE 群組 ID，功能設定要先綁定群組 ID 才會生效。</span>"}</p>
+              <input type="hidden" name="feat_form" value="1">
+            <div style="display:flex;flex-wrap:wrap;gap:16px;">
+                <label class="sf-switch-label"><input type="checkbox" name="feat_order" value="1" ${gfeat.order ? "checked" : ""}><span class="sf-switch"></span>辨識訂單</label>
+                <label class="sf-switch-label"><input type="checkbox" name="feat_stocktake" value="1" ${gfeat.stocktake ? "checked" : ""}><span class="sf-switch"></span>盤點（#盤點）</label>
+                <label class="sf-switch-label"><input type="checkbox" name="feat_basket" value="1" ${gfeat.basket ? "checked" : ""}><span class="sf-switch"></span>空藍</label>
+              </div>
+            </div>
             <div style="margin-top:6px;"><button type="submit" class="sf-btn primary">${SF_ICONS.check}<span>儲存</span></button></div>
           </form>
         </div>
@@ -15398,6 +15430,18 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(lineGroupId);
                 }
                 catch (_) { /* 表可能尚未建立 */ }
+                // 群組功能白名單（辨識訂單／盤點／空藍）以綁定的群組 ID 為鍵存 group_features。
+                // 只在完整編輯表單（含 feat_form 標記）時寫入，避免部分欄位的 AJAX 儲存把開關全清成關。
+                if (req.body.feat_form === "1") {
+                    try {
+                        await group_features_js_1.setGroupFeatures(db, lineGroupId, {
+                            order: req.body.feat_order === "1",
+                            stocktake: req.body.feat_stocktake === "1",
+                            basket: req.body.feat_basket === "1",
+                        });
+                    }
+                    catch (e) { console.warn("[admin] group_features 儲存失敗:", e?.message || e); }
+                }
             }
         }
         catch (e) {

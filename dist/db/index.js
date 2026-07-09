@@ -261,6 +261,12 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_count (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, erp_code TEXT, name TEXT, spec TEXT, unit TEXT, sys_qty REAL, counted_qty REAL, expiry_json TEXT, updated_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (erp_code TEXT PRIMARY KEY, expiry_unit TEXT, created_at TEXT)");
+        // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
+        // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。
+        // 維持既有行為：非客戶群的內部群＝不辨識訂單（feat_order=0）；已綁客戶的群組先前靠安全防呆仍收單，
+        // 故 feat_order=1 保留收單（避免任何客戶群突然斷單），由使用者事後自行到客戶頁取消勾選。盤點/空藍皆維持開啟。
+        sqlite.exec("INSERT INTO group_features (group_id, feat_order, feat_stocktake, feat_basket, updated_at) SELECT sg.group_id, CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.line_group_id IS NOT NULL AND c.line_group_id <> '' AND LOWER(REPLACE(c.line_group_id,' ','')) = LOWER(REPLACE(sg.group_id,' ',''))) THEN 1 ELSE 0 END, 1, 1, datetime('now') FROM stocktake_group sg WHERE NOT EXISTS (SELECT 1 FROM group_features gf WHERE gf.group_id = sg.group_id)");
     }
     catch (_) { /* tables may already exist */ }
     try {
@@ -808,6 +814,12 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (erp_code TEXT PRIMARY KEY, expiry_unit TEXT, created_at TEXT)");
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS mid_qty DOUBLE PRECISION");
+                // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
+                await client.query("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
+                // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。
+                // 維持既有行為：非客戶群的內部群＝不辨識訂單（feat_order=0）；已綁客戶的群組先前靠安全防呆仍收單，
+                // 故 feat_order=1 保留收單（避免任何客戶群突然斷單），由使用者事後自行到客戶頁取消勾選。盤點/空藍皆維持開啟。
+                await client.query("INSERT INTO group_features (group_id, feat_order, feat_stocktake, feat_basket, updated_at) SELECT sg.group_id, CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.line_group_id IS NOT NULL AND c.line_group_id <> '' AND LOWER(REPLACE(c.line_group_id,' ','')) = LOWER(REPLACE(sg.group_id,' ',''))) THEN 1 ELSE 0 END, 1, 1, to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SS') FROM stocktake_group sg WHERE NOT EXISTS (SELECT 1 FROM group_features gf WHERE gf.group_id = sg.group_id)");
             }
             catch (_) { /* tables may already exist */ }
             try {

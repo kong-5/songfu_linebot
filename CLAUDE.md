@@ -43,13 +43,19 @@
   倉庫選擇→緊湊盤點清單→送出；白底、可隱藏0、**中／越雙語**、**續盤**（重開帶回今日已盤）。
   - **效期品**：由 `stocktake_expiry_item` 標記的品項才出現效期批號輸入。
   - **中價貨**：盤點數旁的小「⋯」點開才填中貨（極少數品項才有，方案B）；**counted_qty 存上＋中合計**，`mid_qty` 單獨保留。
-- **`#盤點` 指令**：只在「盤點群組」白名單（後台 庫存管理 → 盤點群組）的群組生效。
-  **列入白名單＝內部群組：可 `#盤點`＋機器人不辨識訂單/不回「無法收單」**。
-  安全防呆：**已綁客戶的群組一律仍辨識訂單**（忽略內部群設定，避免中斷收單）。
+- **群組功能白名單 `group_features`（新，取代舊「盤點群組」開關）**：每個 LINE 群組可分別開關三項功能——
+  **辨識訂單／盤點／空藍**。無資料列＝**三項全開**（預設全勾）。權威 helper：`dist/lib/group-features.js`
+  的 `getGroupFeatures(db, groupId)`（查不到或出錯一律回傳全開，絕不意外斷單）＋ `setGroupFeatures`。
+  比對一律正規化（去空白＋小寫）。`line.js` 三個閘門都讀它：
+  - **辨識訂單 off** ＝內部群：機器人仍收訊息、仍回應 `#盤點`／空藍／取得群組ID 等指令，只是**不把一般文字送 AI 當訂單**（也不回「無法收單」）。此開關對**已綁客戶的群組同樣生效**（舊的「綁客戶就強制收單」安全防呆已移除）。
+  - **盤點 off** ＝群內打 `#盤點` 靜默略過。
+  - **空藍 off** ＝「空藍/空籃」不攔截（視為一般文字）。
+  - 設定入口：**客戶管理 → 編輯客戶**（該客戶綁定群組的三開關）＋**庫存管理 → 群組功能**（所有群組總表，含非客戶內部群），兩處同步寫 `group_features`。
+  - 遷移：舊 `stocktake_group` 於 DB init 一次性帶入 `group_features`（非客戶群→訂單 off；已綁客戶群→訂單 on 保留收單），冪等。`stocktake_group` 保留為群組探索來源，行為已不再依賴它。
 - **後台每日盤點** `/admin/inventory`：選日期一次列出當日各倉盤點卡片（盤點人、比例、
   **盤差/盤差%**、含中貨、效期），可「只看盤差」、CSV 匯出。舊自建庫房盤點在 `/admin/inventory/legacy`。
 - 資料表：`stocktake_session`（一倉一日一筆）、`stocktake_count`（逐品項，含 `mid_qty`）、
-  `erp_warehouse`（倉號→中文名＋納入盤點）、`stocktake_group`（群組白名單）、`stocktake_expiry_item`。
+  `erp_warehouse`（倉號→中文名＋納入盤點）、`group_features`（群組三功能開關）、`stocktake_group`（舊白名單／探索來源）、`stocktake_expiry_item`。
 
 ## 資料庫可攜性（務必雙寫）
 - `dist/db/index.js` 同時支援 **SQLite（本機）與 Postgres/Cloud SQL（雲端）**。
