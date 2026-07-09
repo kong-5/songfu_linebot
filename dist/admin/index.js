@@ -6205,6 +6205,7 @@ function createAdminRouter() {
         try { includedWh = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY sort_order, code").all()) || []; } catch (_) { includedWh = []; }
         let recentDates = [];
         try { recentDates = (await db.prepare("SELECT count_date AS d, COUNT(*) AS n FROM stocktake_session GROUP BY count_date ORDER BY count_date DESC LIMIT 14").all()) || []; } catch (_) { recentDates = []; }
+        const byWh = {}; day.forEach((x) => { byWh[String(x.session.wh_code)] = x; });
         const countedWh = new Set(day.map((x) => String(x.session.wh_code)));
         const pendingWh = includedWh.filter((w) => !countedWh.has(String(w.code)));
         const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
@@ -6216,9 +6217,41 @@ function createAdminRouter() {
         };
         const diffCls = (it) => (it.diff == null ? "" : it.diff === 0 ? "stk-z" : it.diff > 0 ? "stk-p" : "stk-n");
         const expiryTxt = (arr) => (arr || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"} × ${b.qty || "?"}`).join("、");
-        const cards = day.map(({ session: s, items, diffCount }) => {
+        // 左欄倉庫清單 = 納入盤點的倉 ∪ 當日有盤的倉
+        const whList = [];
+        const seen = new Set();
+        for (const w of includedWh) { whList.push({ code: String(w.code), name: String(w.name || "") }); seen.add(String(w.code)); }
+        for (const x of day) { const c = String(x.session.wh_code); if (!seen.has(c)) { whList.push({ code: c, name: String(x.session.wh_name || "") }); seen.add(c); } }
+        // 預設選第一個「有盤」的倉
+        const firstCounted = day[0] ? String(day[0].session.wh_code) : (whList[0] ? whList[0].code : "");
+        const selWh = String(req.query.wh || "").trim() || firstCounted;
+        const sel = byWh[selWh] || null;
+        const totalDiff = day.reduce((s, x) => s + x.diffCount, 0);
+        const chips = recentDates.map((r) => `<a class="stk-chip ${String(r.d) === date ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(String(r.d))}">${escapeHtml(String(r.d))}<span>${r.n}倉</span></a>`).join("");
+        // 左欄
+        const whItemsHtml = whList.map((w) => {
+            const x = byWh[w.code];
+            const on = w.code === selWh;
+            if (x) {
+                const done = Number(x.session.counted_count || 0), all = Number(x.session.item_count || 0);
+                return `<a class="wh-it ${on ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(date)}&wh=${encodeURIComponent(w.code)}">
+                  <div class="wh-n">${escapeHtml(w.name || w.code)}<span class="wh-c">${escapeHtml(w.code)}</span></div>
+                  <div class="wh-m"><span>已盤 ${done}/${all}</span>${x.diffCount ? `<span class="wh-diff">盤差 ${x.diffCount}</span>` : `<span class="wh-ok">✓</span>`}</div>
+                </a>`;
+            }
+            return `<div class="wh-it idle">
+                  <div class="wh-n">${escapeHtml(w.name || w.code)}<span class="wh-c">${escapeHtml(w.code)}</span></div>
+                  <div class="wh-m"><span class="wh-pend">未盤</span></div>
+                </div>`;
+        }).join("");
+        // 右欄（選定倉）
+        let rightHtml;
+        if (!sel) {
+            rightHtml = `<div class="stk-empty">${day.length ? "請從左邊選一個倉庫查看。" : "此日期沒有盤點紀錄。<br>盤點方式：在白名單群組輸入「#盤點」，點倉庫按鈕進入 LIFF 盤點並送出。"}</div>`;
+        } else {
+            const s = sel.session;
             const done = Number(s.counted_count || 0), all = Number(s.item_count || 0);
-            const rowsHtml = items.map((it) => `
+            const rowsHtml = sel.items.map((it) => `
               <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
                 <td>${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
@@ -6228,7 +6261,7 @@ function createAdminRouter() {
                 <td class="stk-num">${diffPct(it)}</td>
                 <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
               </tr>`).join("");
-            return `
+            rightHtml = `
           <div class="stk-card">
             <div class="stk-card-h">
               <div class="stk-card-t"><b>${escapeHtml(s.wh_name || s.wh_code)}</b><span class="stk-code2">${escapeHtml(s.wh_code)}</span></div>
@@ -6236,17 +6269,19 @@ function createAdminRouter() {
                 <span>盤點人 ${escapeHtml(s.created_by_name || "—")}</span>
                 <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
                 <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
-                <span class="stk-badge ${diffCount ? "warn" : "ok"}">盤差 ${diffCount} 項</span>
+                <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
+                <button type="button" class="stk-togbtn sm" id="stkOnlyDiff">只看盤差</button>
               </div>
             </div>
+            <div class="stk-note">系統量為<b>盤點當下</b>的凌越現有量（已凍結，不隨之後庫存變動）；盤差＝實盤−盤點當下系統量。</div>
+            <div style="overflow-x:auto;">
             <table class="stk-tbl">
-              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統</th><th class="stk-num">實盤（含中）</th><th class="stk-num">盤差</th><th class="stk-num">盤差%</th><th>效期</th></tr></thead>
+              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差</th><th class="stk-num">盤差%</th><th>效期</th></tr></thead>
               <tbody>${rowsHtml || `<tr><td colspan="7" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
             </table>
+            </div>
           </div>`;
-        }).join("");
-        const chips = recentDates.map((r) => `<a class="stk-chip ${String(r.d) === date ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(String(r.d))}">${escapeHtml(String(r.d))}<span>${r.n}倉</span></a>`).join("");
-        const totalDiff = day.reduce((s, x) => s + x.diffCount, 0);
+        }
         const body = `
       <style>
         .stk-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 12px;}
@@ -6261,16 +6296,34 @@ function createAdminRouter() {
         .stk-chip span{margin-left:5px;color:#9b9a97;}
         .stk-chip.on{background:#2383e2;color:#fff;border-color:#2383e2;}
         .stk-chip.on span{color:#d7e9fb;}
-        .stk-card{background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;margin:0 0 14px;overflow:hidden;}
-        .stk-card-h{padding:10px 14px;border-bottom:1px solid var(--notion-border,#e3e2e0);display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;justify-content:space-between;}
+        .stk-grid{display:grid;grid-template-columns:246px minmax(0,1fr);gap:14px;align-items:start;}
+        @media(max-width:760px){.stk-grid{grid-template-columns:1fr;}}
+        .wh-panel{background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;overflow:hidden;}
+        .wh-panel-h{padding:9px 13px;font-size:11px;font-weight:700;color:#787774;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--notion-border,#e3e2e0);}
+        .wh-it{display:block;padding:9px 13px;border-bottom:1px solid var(--notion-border-soft,#f0efed);text-decoration:none;color:inherit;cursor:pointer;}
+        .wh-it:last-child{border-bottom:0;}
+        .wh-it.on{background:#e8f1fd;box-shadow:inset 3px 0 0 #2383e2;}
+        .wh-it.idle{opacity:.62;cursor:default;}
+        .wh-it:hover:not(.idle):not(.on){background:rgba(55,53,47,.03);}
+        .wh-n{font-size:13.5px;font-weight:600;line-height:1.2;}
+        .wh-c{margin-left:7px;font-size:11px;color:#9b9a97;font-variant-numeric:tabular-nums;font-weight:400;}
+        .wh-m{display:flex;gap:8px;align-items:center;margin-top:3px;font-size:11.5px;color:#787774;font-variant-numeric:tabular-nums;}
+        .wh-diff{color:#b3261e;font-weight:600;}
+        .wh-ok{color:#1f7a46;font-weight:700;}
+        .wh-pend{color:#8a5a10;background:#fcf3e2;padding:1px 7px;border-radius:5px;font-weight:600;}
+        .stk-card{background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;overflow:hidden;}
+        .stk-card-h{padding:10px 14px;border-bottom:1px solid var(--notion-border,#e3e2e0);display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-content:space-between;}
         .stk-card-t b{font-size:15px;}
         .stk-code2{margin-left:8px;font-size:12px;color:#9b9a97;font-variant-numeric:tabular-nums;}
         .stk-card-m{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:#787774;align-items:center;}
+        .stk-note{padding:7px 14px;font-size:11.5px;color:#8a5a10;background:#fcf8ee;border-bottom:1px solid var(--notion-border-soft,#f0efed);}
+        .stk-note b{color:#6b4a0e;}
         .stk-badge{font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:6px;background:#eef0f3;color:#5b616e;}
         .stk-badge.ok{background:#e7f6ee;color:#1f7a46;}
         .stk-badge.warn{background:#fdecec;color:#b3261e;}
         .stk-tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
         .stk-tbl th{position:sticky;top:0;text-align:left;padding:5px 10px;background:var(--notion-bg,#f7f6f3);border-bottom:1px solid var(--notion-border,#e3e2e0);font-size:11px;color:#787774;font-weight:600;}
+        .stk-th2{font-size:9.5px;font-weight:500;color:#9b9a97;}
         .stk-tbl td{padding:4px 10px;border-bottom:1px solid var(--notion-border-soft,#f0efed);vertical-align:top;}
         .stk-tbl tr:last-child td{border-bottom:0;}
         .stk-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
@@ -6284,6 +6337,7 @@ function createAdminRouter() {
         tr.stk-z .stk-diff{color:#9b9a97;}
         tr.stk-n{background:#fdf3f2;}
         .stk-togbtn{font-size:12.5px;padding:6px 12px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;}
+        .stk-togbtn.sm{padding:4px 10px;font-size:11.5px;}
         .stk-togbtn.on{background:#2383e2;border-color:#2383e2;color:#fff;}
         .stk-empty{background:var(--notion-card,#fff);border:1px dashed var(--notion-border,#e3e2e0);border-radius:12px;padding:34px 16px;text-align:center;color:#787774;}
       </style>
@@ -6291,7 +6345,7 @@ function createAdminRouter() {
       <h1 class="notion-page-title" style="margin-bottom:14px;">每日盤點</h1>
       <form method="get" action="/admin/inventory" class="stk-bar">
         <input type="date" name="date" value="${escapeAttr(date)}" onchange="this.form.submit()">
-        <button type="button" class="stk-togbtn" id="stkOnlyDiff">只看盤差</button>
+        ${selWh ? `<input type="hidden" name="wh" value="${escapeAttr(selWh)}">` : ""}
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
         <span style="flex:1"></span>
         <a href="/admin/inventory/legacy" style="font-size:12px;color:#9b9a97;">舊版盤點作業 →</a>
@@ -6302,7 +6356,13 @@ function createAdminRouter() {
         ${pendingWh.length ? `<span class="stk-pill warn">未盤：${pendingWh.map((w) => escapeHtml(w.name || w.code)).join("、")}</span>` : (includedWh.length ? `<span class="stk-pill ok">全部倉庫已盤 ✓</span>` : "")}
       </div>
       ${chips ? `<div class="stk-chips">${chips}</div>` : ""}
-      ${cards || `<div class="stk-empty">此日期沒有盤點紀錄。<br>盤點方式：在白名單群組輸入「#盤點」，點倉庫按鈕進入 LIFF 盤點並送出。</div>`}
+      <div class="stk-grid">
+        <div class="wh-panel">
+          <div class="wh-panel-h">倉庫（${date}）</div>
+          ${whItemsHtml || `<div class="wh-it idle"><div class="wh-n">尚無倉庫</div></div>`}
+        </div>
+        <div>${rightHtml}</div>
+      </div>
       <script>
       (function(){
         var btn=document.getElementById('stkOnlyDiff'); if(!btn) return;
