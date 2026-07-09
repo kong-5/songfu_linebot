@@ -7178,10 +7178,12 @@ function createAdminRouter() {
             const cust = await db.prepare("SELECT name, line_group_id FROM customers WHERE line_group_id IS NOT NULL AND line_group_id <> ''").all();
             for (const c of cust) { put(c.line_group_id, c.name, "客戶群"); const it = byId.get(String(c.line_group_id).trim()); if (it) { it.isCustomer = true; it.customerName = String(c.name || ""); } }
         } catch (_) {}
-        const on = (v) => (v == null ? true : !!Number(v));
+        const onTrue = (v) => (v == null ? true : !!Number(v));
+        const onFalse = (v) => (v == null ? false : !!Number(v));
         return Array.from(byId.values()).map((c) => {
             const fr = featMap.get(gnorm(c.group_id));
-            const feats = fr ? { order: on(fr.feat_order), stocktake: on(fr.feat_stocktake), basket: on(fr.feat_basket) } : { order: true, stocktake: true, basket: true };
+            // 無資料列：訂單／空藍預設開、盤點預設關（opt-in 白名單）。
+            const feats = fr ? { order: onTrue(fr.feat_order), stocktake: onFalse(fr.feat_stocktake), basket: onTrue(fr.feat_basket) } : { order: true, stocktake: false, basket: true };
             return { ...c, sources: Array.from(c.sources), isCustomer: !!c.isCustomer, feats };
         }).sort((a, b) => (Number(a.isCustomer) - Number(b.isCustomer)) || String(a.name || a.group_id).localeCompare(String(b.name || b.group_id)));
     }
@@ -7207,7 +7209,7 @@ function createAdminRouter() {
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 群組功能</div>
       <h1 class="notion-page-title">群組功能</h1>
-      <p class="notion-hint" style="margin:-2px 0 18px;">每個 LINE 群組可分別開關三項功能（勾＝開，預設全開）：<b>辨識訂單</b>＝把一般文字送 AI 當訂單解析；<b>盤點</b>＝群內打「<b>#盤點</b>」跳出倉庫盤點按鈕；<b>空藍</b>＝群內打「空藍/空籃」跳出空籃記帳。關閉「辨識訂單」的群組＝<b>內部群</b>：機器人仍收訊息、仍回應指令，只是不把文字當訂單。客戶群的功能也可在「<a href="/admin/customers">客戶管理</a> → 編輯客戶」裡設定，兩處同步。清單自動收集機器人所在的群組；若沒出現，先在群裡對機器人傳一句話，或把群組 ID 貼到下方手動加入。</p>
+      <p class="notion-hint" style="margin:-2px 0 18px;">每個 LINE 群組可分別開關三項功能（勾＝開）：<b>辨識訂單</b>＝把一般文字送 AI 當訂單解析（<b>預設開</b>）；<b>盤點</b>＝群內打「<b>#盤點</b>」跳出倉庫盤點按鈕（<b>預設關</b>，白名單制，只有勾選的群組才回應）；<b>空藍</b>＝群內打「空藍/空籃」跳出空籃記帳（<b>預設開</b>）。關閉「辨識訂單」的群組＝<b>內部群</b>：機器人仍收訊息、仍回應指令，只是不把文字當訂單。客戶群的功能也可在「<a href="/admin/customers">客戶管理</a> → 編輯客戶」裡設定，兩處同步。清單自動收集機器人所在的群組；若沒出現，先在群裡對機器人傳一句話，或把群組 ID 貼到下方手動加入。</p>
       ${ok}
       <form method="post" action="/admin/inventory/stocktake-groups">
         <input type="hidden" name="known_ids" value="${escapeAttr(knownIds)}">
@@ -7222,7 +7224,7 @@ function createAdminRouter() {
         </div>
         <div class="notion-card" style="margin-top:16px;">
           <h2>手動加入群組 ID</h2>
-          <p class="notion-hint" style="margin:-6px 0 10px;">每行一個，選填。新加入的群組預設三項全開，之後可在上表調整。適用於群組沒自動出現時。</p>
+          <p class="notion-hint" style="margin:-6px 0 10px;">每行一個，選填。新加入的群組預設辨識訂單／空藍開、盤點關，之後可在上表調整。適用於群組沒自動出現時。</p>
           <textarea name="manual_ids" rows="3" placeholder="Cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" class="sf-textarea" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
         </div>
         <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
@@ -7244,7 +7246,7 @@ function createAdminRouter() {
             }
             for (const line of manualRaw.split(/[\r\n,]+/)) {
                 const id = line.trim(); if (!id || universe.has(id)) continue;
-                universe.set(id, { order: true, stocktake: true, basket: true });
+                universe.set(id, { order: true, stocktake: false, basket: true });
             }
             for (const [gid, feats] of universe) {
                 await group_features_js_1.setGroupFeatures(db, gid, feats);
@@ -15354,7 +15356,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt-1);"><input type="checkbox" name="active" value="1" ${activeChecked ? "checked" : ""}> 啟用（未勾選＝停用）</label>
             <div style="border-top:1px solid var(--line, #eceae5);margin-top:4px;padding-top:12px;">
               <div style="font-size:12px;color:var(--txt-2);margin-bottom:2px;font-weight:600;">此群組功能（白名單）</div>
-              <p style="margin:0 0 10px;font-size:12px;color:var(--txt-3);line-height:1.5;">勾選＝開啟。預設三項全開。關閉「辨識訂單」後，機器人仍會收訊息、仍回應 <b>#盤點</b>／<b>空藍</b>／取得群組ID 等指令，只是<b>不把一般文字當訂單解析</b>（適合內部群）。${hasGroupId ? "" : "<br><span style=\"color:var(--bad,#b3261e);\">尚未填 LINE 群組 ID，功能設定要先綁定群組 ID 才會生效。</span>"}</p>
+              <p style="margin:0 0 10px;font-size:12px;color:var(--txt-3);line-height:1.5;">勾選＝開啟。辨識訂單／空藍預設開、<b>盤點預設關</b>（白名單制）。關閉「辨識訂單」後，機器人仍會收訊息、仍回應 <b>#盤點</b>／<b>空藍</b>／取得群組ID 等指令，只是<b>不把一般文字當訂單解析</b>（適合內部群）。${hasGroupId ? "" : "<br><span style=\"color:var(--bad,#b3261e);\">尚未填 LINE 群組 ID，功能設定要先綁定群組 ID 才會生效。</span>"}</p>
               <input type="hidden" name="feat_form" value="1">
             <div style="display:flex;flex-wrap:wrap;gap:16px;">
                 <label class="sf-switch-label"><input type="checkbox" name="feat_order" value="1" ${gfeat.order ? "checked" : ""}><span class="sf-switch"></span>辨識訂單</label>

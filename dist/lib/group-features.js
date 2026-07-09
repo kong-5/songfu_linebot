@@ -2,24 +2,28 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 
 // 每個 LINE 群組的功能白名單：辨識訂單 / 盤點 / 空藍。
-// 設計：group_features 無資料列＝三項全開（預設全勾）；有列則各欄 1/0 決定。
+// 設計：group_features 無資料列時，辨識訂單／空藍預設「開」、盤點預設「關」（盤點為 opt-in 白名單制，
+// 只有明確設為開的群組才回應 #盤點）；有列則各欄 1/0 決定。
 // 比對一律正規化（去空白＋小寫），避免白名單存的 ID 與實際 groupId 有空白/大小寫差異而失效。
 
 exports.getGroupFeatures = getGroupFeatures;
 exports.setGroupFeatures = setGroupFeatures;
-exports.DEFAULT_FEATURES = { order: true, stocktake: true, basket: true };
+exports.DEFAULT_FEATURES = { order: true, stocktake: false, basket: true };
 
 function normGid(s) {
     return String(s || "").replace(/\s/g, "").toLowerCase();
 }
 
 function rowToFeatures(row) {
-    if (!row) return { order: true, stocktake: true, basket: true };
-    const on = (v) => (v == null ? true : !!Number(v));
+    // 無資料列：辨識訂單／空藍預設開、盤點預設關。
+    if (!row) return { order: true, stocktake: false, basket: true };
+    // 有列：訂單／空藍欄位為 NULL 時視為開；盤點欄位為 NULL 時視為關。
+    const onTrue = (v) => (v == null ? true : !!Number(v));
+    const onFalse = (v) => (v == null ? false : !!Number(v));
     return {
-        order: on(row.feat_order),
-        stocktake: on(row.feat_stocktake),
-        basket: on(row.feat_basket),
+        order: onTrue(row.feat_order),
+        stocktake: onFalse(row.feat_stocktake),
+        basket: onTrue(row.feat_basket),
     };
 }
 
@@ -28,15 +32,16 @@ function rowToFeatures(row) {
  * @returns {Promise<{order:boolean, stocktake:boolean, basket:boolean}>}
  */
 async function getGroupFeatures(db, groupId) {
-    if (!groupId) return { order: true, stocktake: true, basket: true };
+    if (!groupId) return { order: true, stocktake: false, basket: true };
     try {
         const needle = normGid(groupId);
         const rows = await db.prepare("SELECT group_id, feat_order, feat_stocktake, feat_basket FROM group_features").all();
         const row = (rows || []).find((r) => normGid(r.group_id) === needle) || null;
         return rowToFeatures(row);
     } catch (e) {
-        console.warn("[group-features] 讀取失敗，改用全開:", e?.message || e);
-        return { order: true, stocktake: true, basket: true };
+        // 讀取失敗：訂單／空藍維持開（絕不意外斷單），盤點維持關（opt-in）。
+        console.warn("[group-features] 讀取失敗，改用預設（訂單/空藍開、盤點關）:", e?.message || e);
+        return { order: true, stocktake: false, basket: true };
     }
 }
 
