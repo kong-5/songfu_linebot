@@ -2038,7 +2038,7 @@ const STK_CLIENT_JS = `
   function rowHtml(it){
     var s=safetyOf(it.c); var neg=it.q<0; var low=(it.q>0&&s>0&&it.q<s);
     var cls=neg?'stk-neg':(low?'stk-low':'');
-    return '<tr class="'+cls+'" data-code="'+esc(it.c)+'" data-name="'+esc(it.n)+'"><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td></tr>';
+    return '<tr class="'+cls+'"'+(TXN_ENABLED?(' data-code="'+esc(it.c)+'" data-name="'+esc(it.n)+'"'):'')+'><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td></tr>';
   }
   function theadHtml(){ return '<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>凌越倉別</th></tr></thead>'; }
   function renderList(list){
@@ -2117,6 +2117,7 @@ const STK_CLIENT_JS = `
     }).catch(function(){ els.refresh.disabled=false; els.status.className='stk-status stk-status-warn'; els.status.textContent='送出失敗，請稍後再試。'; });
   });
   // ── 進銷存抽屜：點品項 → 經內網小幫手查凌越 → 顯示 ─────────────
+  var TXN_ENABLED=false;   // 進銷查詢暫時關閉（會打凌越，先停用避免壞）；要開回來改成 true
   var _drawer=document.createElement('div');
   _drawer.style.cssText='position:fixed;top:0;right:0;height:100%;width:400px;max-width:92vw;background:var(--notion-card,#fff);color:inherit;box-shadow:-6px 0 24px rgba(0,0,0,.18);transform:translateX(100%);transition:transform .22s ease;z-index:9999;display:flex;flex-direction:column;';
   _drawer.innerHTML='<div style="padding:14px 16px;border-bottom:1px solid var(--notion-border,#eee);display:flex;align-items:center;gap:8px;"><b id="stkDwTitle" style="flex:1;font-size:15px;"></b><button id="stkDwClose" style="border:0;background:var(--notion-bg,#f2f2f2);color:inherit;border-radius:6px;padding:5px 12px;cursor:pointer;">關閉</button></div><div id="stkDwBody" style="padding:14px 16px;overflow:auto;flex:1;font-size:13px;line-height:1.7;"></div>';
@@ -2194,6 +2195,7 @@ const STK_CLIENT_JS = `
     tick(); _pt=setInterval(tick,1500);
   }
   els.wrap.addEventListener('click',function(e){
+    if(!TXN_ENABLED) return;   // 進銷查詢暫時關閉
     var tr=e.target.closest?e.target.closest('tr[data-code]'):null;
     if(!tr) return; var code=tr.getAttribute('data-code'); if(!code) return;
     dwOpen(code,tr.getAttribute('data-name')||'');
@@ -6181,7 +6183,8 @@ function createAdminRouter() {
         try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, hour: "2-digit", minute: "2-digit" }); }
         catch (_) { return String(iso); }
     }
-    async function loadStocktakeDay(date) {
+    async function loadStocktakeDay(date, latestMap) {
+        const lm = latestMap || {};
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
         for (const s of sessions || []) {
@@ -6191,9 +6194,13 @@ function createAdminRouter() {
                 const counted = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty);
                 const mid = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
                 const diff = counted == null ? null : Math.round((counted - sys) * 100) / 100;
+                const code = String(r.erp_code || "");
+                const hasLatest = Object.prototype.hasOwnProperty.call(lm, code);
+                const latest = hasLatest ? Number(lm[code]) : null;
+                const diffLatest = (counted == null || latest == null) ? null : Math.round((counted - latest) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
-                return { code: String(r.erp_code || ""), name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, expiry };
+                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, diffLatest, expiry };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
             out.push({ session: s, items, diffCount });
@@ -6203,7 +6210,14 @@ function createAdminRouter() {
     router.get("/inventory", async (req, res) => {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
-        const day = await loadStocktakeDay(date);
+        // 最新庫存快照（供「對最新盤差」對照）
+        const latestMap = {};
+        let stockMeta = {};
+        try {
+            (await db.prepare("SELECT erp_code, qty FROM erp_stock_items").all() || []).forEach((r) => { latestMap[String(r.erp_code)] = Number(r.qty || 0); });
+            stockMeta = await readStockMeta();
+        } catch (_) { /* 無庫存快照時照樣顯示 */ }
+        const day = await loadStocktakeDay(date, latestMap);
         let includedWh = [];
         try { includedWh = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY sort_order, code").all()) || []; } catch (_) { includedWh = []; }
         let recentDates = [];
@@ -6254,6 +6268,7 @@ function createAdminRouter() {
         } else {
             const s = sel.session;
             const done = Number(s.counted_count || 0), all = Number(s.item_count || 0);
+            const dLatestCls = (d) => (d == null ? "" : d === 0 ? "stk-z" : d > 0 ? "stk-p" : "stk-n");
             const rowsHtml = sel.items.map((it) => `
               <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
@@ -6262,6 +6277,8 @@ function createAdminRouter() {
                 <td class="stk-num">${fmtN(it.counted)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}</td>
                 <td class="stk-num stk-diff">${it.diff == null ? "—" : (it.diff > 0 ? "+" : "") + it.diff}</td>
                 <td class="stk-num">${diffPct(it)}</td>
+                <td class="stk-num stk-latest">${fmtN(it.latest)}</td>
+                <td class="stk-num ${dLatestCls(it.diffLatest)}"><b>${it.diffLatest == null ? "—" : (it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b></td>
                 <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
               </tr>`).join("");
             rightHtml = `
@@ -6276,11 +6293,11 @@ function createAdminRouter() {
                 <button type="button" class="stk-togbtn sm" id="stkOnlyDiff">只看盤差</button>
               </div>
             </div>
-            <div class="stk-note">系統量為<b>盤點當下</b>的凌越現有量（已凍結，不隨之後庫存變動）；盤差＝實盤−盤點當下系統量。</div>
+            <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自目前庫存快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")})，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
-              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差</th><th class="stk-num">盤差%</th><th>效期</th></tr></thead>
-              <tbody>${rowsHtml || `<tr><td colspan="7" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
+              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下</span></th><th class="stk-num">盤差%</th><th class="stk-num">最新<br><span class="stk-th2">系統</span></th><th class="stk-num">對最新<br><span class="stk-th2">盤差</span></th><th>效期</th></tr></thead>
+              <tbody>${rowsHtml || `<tr><td colspan="9" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
             </table>
             </div>
           </div>`;
@@ -6335,6 +6352,7 @@ function createAdminRouter() {
         .stk-spec{margin-left:6px;font-size:11px;color:#9b9a97;}
         .stk-exp{font-size:11.5px;color:#8a5a10;max-width:220px;}
         .stk-mid{display:block;font-size:10.5px;color:#2383e2;font-weight:600;}
+        .stk-latest{color:#5b616e;}
         tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}
         tr.stk-p .stk-diff{color:#1f7a46;font-weight:700;}
         tr.stk-z .stk-diff{color:#9b9a97;}
@@ -6349,7 +6367,9 @@ function createAdminRouter() {
       <form method="get" action="/admin/inventory" class="stk-bar">
         <input type="date" name="date" value="${escapeAttr(date)}" onchange="this.form.submit()">
         ${selWh ? `<input type="hidden" name="wh" value="${escapeAttr(selWh)}">` : ""}
+        <button type="button" class="stk-togbtn" id="stkRefreshInv">↻ 更新最新庫存</button>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
+        <span id="stkRefreshMsg" style="font-size:12px;color:#8a5a10;"></span>
         <span style="flex:1"></span>
         <a href="/admin/inventory/legacy" style="font-size:12px;color:#9b9a97;">舊版盤點作業 →</a>
       </form>
@@ -6368,13 +6388,28 @@ function createAdminRouter() {
       </div>
       <script>
       (function(){
-        var btn=document.getElementById('stkOnlyDiff'); if(!btn) return;
-        var on=false;
-        btn.addEventListener('click',function(){
+        var btn=document.getElementById('stkOnlyDiff');
+        if(btn){ var on=false; btn.addEventListener('click',function(){
           on=!on; btn.classList.toggle('on',on);
           var rows=document.querySelectorAll('tr[data-diff]');
           Array.prototype.forEach.call(rows,function(tr){ tr.style.display=(on&&tr.getAttribute('data-diff')==='0')?'none':''; });
-        });
+        }); }
+        // 更新最新庫存：觸發內網代理拉一次凌越，成功後重載頁面（對最新盤差就會更新）
+        var rb=document.getElementById('stkRefreshInv'), msg=document.getElementById('stkRefreshMsg');
+        if(rb){ rb.addEventListener('click',function(){
+          rb.disabled=true; msg.textContent='已送出更新請求，等待內網代理刷新…';
+          var baseline='', clickAt=new Date().toISOString();
+          fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){ baseline=m.snapshot_at||''; return fetch('/admin/inventory/stock/refresh',{method:'POST'}); }).then(function(){
+            var tries=0; var iv=setInterval(function(){
+              tries++;
+              fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){
+                if(m.snapshot_at&&m.snapshot_at!==baseline){ clearInterval(iv); msg.style.color='#1f7a46'; msg.textContent='已更新，重新載入…'; setTimeout(function(){ location.reload(); },500); return; }
+                if(m.refresh_error&&m.refresh_error_at&&m.refresh_error_at>=clickAt){ clearInterval(iv); rb.disabled=false; msg.style.color='#b3261e'; msg.textContent='更新失敗：'+m.refresh_error; return; }
+                if(tries>=24){ clearInterval(iv); rb.disabled=false; msg.style.color='#b3261e'; msg.textContent='等待逾時：可能凌越連線異常或代理未執行。'; }
+              }).catch(function(){});
+            },3000);
+          }).catch(function(){ rb.disabled=false; msg.style.color='#b3261e'; msg.textContent='送出失敗，請稍後再試。'; });
+        }); }
       })();
       </script>`;
         res.type("text/html").send(notionPage("每日盤點", body, "inventory", res));
@@ -6382,14 +6417,16 @@ function createAdminRouter() {
     router.get("/inventory/stocktake.csv", async (req, res) => {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
-        const day = await loadStocktakeDay(date);
+        const latestMapCsv = {};
+        try { (await db.prepare("SELECT erp_code, qty FROM erp_stock_items").all() || []).forEach((r) => { latestMapCsv[String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) {}
+        const day = await loadStocktakeDay(date, latestMapCsv);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
-        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量,實盤量(含中),其中中貨,盤差,盤差%,效期明細,盤點人,送出時間"];
+        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量,對最新盤差,效期明細,盤點人,送出時間"];
         for (const { session: s, items } of day) {
             for (const it of items) {
                 const dp = it.diff == null ? "" : (it.sys === 0 ? "" : ((it.diff / it.sys) * 100).toFixed(1) + "%");
                 const exp = (it.expiry || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"}x${b.qty || "?"}`).join(" / ");
-                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
+                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latest == null ? "" : it.latest, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
             }
         }
         res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
