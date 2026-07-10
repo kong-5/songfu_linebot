@@ -6155,7 +6155,24 @@ function createAdminRouter() {
         const lm = latestMap || {};
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
+        // [分倉庫存 2026-07-10] 「最新系統／對最新盤差」的基準：該倉在 erp_stock_wh_qty 有任何分倉列
+        // → 用該倉分倉量（品項無列＝0）；整倉無分倉資料 → fallback 總量（erp_stock_items，latestMap）。
+        // 一倉一次查（快取），不逐品項查。latestSource 供卡片顯示「分倉／總量」基準標記。
+        // 注意：sys_qty（盤差「對當下」）是盤點送出當下寫進 stocktake_count 的凍結快照，這裡原樣讀出、
+        // 不回溯改動——只有「最新系統」欄與新建立的 session 用新基準。
+        const whLatestCache = {};
+        const getWhLatest = async (whCode) => {
+            if (Object.prototype.hasOwnProperty.call(whLatestCache, whCode)) return whLatestCache[whCode];
+            let m = null;
+            try {
+                const rows = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(whCode);
+                if ((rows || []).length) { m = {}; for (const r of rows) m[String(r.erp_code || "")] = Number(r.qty || 0); }
+            } catch (_) { m = null; /* 查詢失敗 → 沿用總量基準 */ }
+            whLatestCache[whCode] = m;
+            return m;
+        };
         for (const s of sessions || []) {
+            const whm = await getWhLatest(String(s.wh_code || ""));
             const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
             const items = (rows || []).map((r) => {
                 const sys = Number(r.sys_qty || 0);
@@ -6163,15 +6180,20 @@ function createAdminRouter() {
                 const mid = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
                 const diff = counted == null ? null : Math.round((counted - sys) * 100) / 100;
                 const code = String(r.erp_code || "");
-                const hasLatest = Object.prototype.hasOwnProperty.call(lm, code);
-                const latest = hasLatest ? Number(lm[code]) : null;
+                let latest;
+                if (whm) {
+                    latest = Number(whm[code] || 0); // 分倉基準：該品項無分倉列＝0
+                } else {
+                    const hasLatest = Object.prototype.hasOwnProperty.call(lm, code);
+                    latest = hasLatest ? Number(lm[code]) : null;
+                }
                 const diffLatest = (counted == null || latest == null) ? null : Math.round((counted - latest) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
                 return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, diffLatest, expiry };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
-            out.push({ session: s, items, diffCount });
+            out.push({ session: s, items, diffCount, latestSource: whm ? "warehouse" : "total" });
         }
         return out;
     }
@@ -6258,10 +6280,11 @@ function createAdminRouter() {
                 <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
                 <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
                 <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
+                <span class="stk-badge" title="「最新系統」欄的資料基準：分倉＝該倉在凌越的分倉庫存量；總量＝全公司總庫存量（該倉無分倉資料時的後備）">最新基準：${sel.latestSource === "warehouse" ? "分倉" : "總量"}</span>
                 <button type="button" class="stk-togbtn sm" id="stkOnlyDiff">只看盤差</button>
               </div>
             </div>
-            <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自目前庫存快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")})，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
+            <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
               <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下</span></th><th class="stk-num">盤差%</th><th class="stk-num">最新<br><span class="stk-th2">系統</span></th><th class="stk-num">對最新<br><span class="stk-th2">盤差</span></th><th>效期</th></tr></thead>
@@ -6389,12 +6412,13 @@ function createAdminRouter() {
         try { (await db.prepare("SELECT erp_code, qty FROM erp_stock_items").all() || []).forEach((r) => { latestMapCsv[String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) {}
         const day = await loadStocktakeDay(date, latestMapCsv);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
-        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量,對最新盤差,效期明細,盤點人,送出時間"];
-        for (const { session: s, items } of day) {
+        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量,最新系統基準,對最新盤差,效期明細,盤點人,送出時間"];
+        for (const { session: s, items, latestSource } of day) {
+            const baseTxt = latestSource === "warehouse" ? "分倉" : "總量";
             for (const it of items) {
                 const dp = it.diff == null ? "" : (it.sys === 0 ? "" : ((it.diff / it.sys) * 100).toFixed(1) + "%");
                 const exp = (it.expiry || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"}x${b.qty || "?"}`).join(" / ");
-                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latest == null ? "" : it.latest, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
+                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latest == null ? "" : it.latest, baseTxt, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
             }
         }
         res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
@@ -6905,6 +6929,8 @@ function createAdminRouter() {
         };
         return {
             snapshot_at: await get("erp_stock_snapshot_at"),
+            // 分倉庫存（erp_stock_wh_qty）最後覆蓋時間；推送沒帶 warehouse_qty 時不會更新
+            wh_snapshot_at: await get("erp_stock_wh_snapshot_at"),
             item_count: await get("erp_stock_item_count"),
             refresh_status: await get("erp_stock_refresh_status"),
             refresh_requested_at: await get("erp_stock_refresh_requested_at"),
@@ -11039,6 +11065,24 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     snapshotAt,
                 ]);
             }
+            // [分倉庫存 2026-07-10] 頂層 warehouse_qty（來自 ly_stock_push.py 查 000009）：
+            // 「欄位存在且為陣列」＝本批有分倉資料 → 同一交易內全表覆蓋 erp_stock_wh_qty；
+            // 欄位不存在（內網查 000009 失敗/無資料時保證完全不帶）→ 完全不動該表，保留上一份分倉快照。
+            // 用 Map 以 (erp_code, wh_code) 去重（後者蓋前者），避免 payload 重複列撞 PK。
+            const hasWhQty = Array.isArray(body.warehouse_qty);
+            let whRows = null;
+            if (hasWhQty) {
+                const whMap = new Map();
+                for (const w of body.warehouse_qty) {
+                    const c = String(w?.erp_code ?? "").trim();
+                    const wc = String(w?.wh_code ?? "").trim();
+                    if (!c || !wc)
+                        continue;
+                    const q = Number(w?.qty);
+                    whMap.set(c + " " + wc, [c, wc, Number.isFinite(q) ? q : 0, snapshotAt]);
+                }
+                whRows = Array.from(whMap.values());
+            }
             // [fix 2026-07-08] 全表覆蓋（DELETE + 分批 INSERT + meta 更新）包進單一交易：
             // 過去無交易，推送中途失敗（網路斷、pool 瞬斷）會留下「半空的庫存表」且快照時間未更新，
             // 使用者看到的是殘缺庫存卻無從察覺；交易失敗整批回滾＝保留上一份完整快照。
@@ -11053,6 +11097,20 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         flat.push(...r);
                     await h.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
                 }
+                // 分倉快照：同交易內覆蓋（失敗整批回滾，與主表一致）；沒帶 warehouse_qty 就跳過不動
+                if (whRows) {
+                    await h.prepare("DELETE FROM erp_stock_wh_qty").run();
+                    const WCHUNK = 50;
+                    for (let i = 0; i < whRows.length; i += WCHUNK) {
+                        const chunk = whRows.slice(i, i + WCHUNK);
+                        const ph = chunk.map(() => "(?,?,?,?)").join(",");
+                        const flat = [];
+                        for (const r of chunk)
+                            flat.push(...r);
+                        await h.prepare("INSERT INTO erp_stock_wh_qty (erp_code, wh_code, qty, updated_at) VALUES " + ph).run(...flat);
+                    }
+                    await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_wh_snapshot_at", snapshotAt);
+                }
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "done");
@@ -11063,7 +11121,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 await db.transaction(doReplace);
             else
                 await doReplace(db);
-            res.json({ ok: true, count: rows.length, snapshot_at: snapshotAt });
+            console.log("[admin] inventory-push 完成：items", rows.length, "筆；warehouse_qty", whRows ? whRows.length + " 筆（分倉快照已覆蓋）" : "未帶（分倉快照保留上一份）");
+            res.json({ ok: true, count: rows.length, warehouse_qty_count: whRows ? whRows.length : null, snapshot_at: snapshotAt });
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/inventory-push", e?.message || e);
