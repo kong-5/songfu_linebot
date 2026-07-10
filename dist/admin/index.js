@@ -1080,6 +1080,9 @@ const SF_TOKENS = `
   --hairline: 1px solid var(--line);
   --shadow-kpi: 0 1px 2px rgba(20,24,34,.05), 0 1px 3px rgba(20,24,34,.06);
   --shadow-kpi-hover: 0 8px 24px rgba(20,24,34,.10), 0 3px 8px rgba(20,24,34,.06);
+  /* 卡片底色（notion-* 頁沿用；深色主題於下方覆寫） */
+  --notion-card: #ffffff;
+  --notion-border-soft: #f0efed;
 }
 [data-theme="dark"] {
   --bg-0: #0a0c10;
@@ -1121,6 +1124,8 @@ const SF_TOKENS = `
   --notion-hover: rgba(255, 255, 255, 0.07);
   --notion-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
   --notion-shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.5);
+  --notion-card: var(--bg-1);
+  --notion-border-soft: rgba(255, 255, 255, 0.06);
 }
 /* base */
 .sf-root, .sf-root * { box-sizing: border-box; }
@@ -1666,12 +1671,14 @@ function sfSidebar(active) {
         ${item("/admin/products", "products", "box", "貨品管理")}
         ${item("/admin/ai-examples", "ai-examples", "spark", "AI 學習庫")}
       </details>
-      <details class="sf-nav-group" ${["audit","analytics","recognition-stats","broadcast"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["audit","analytics","recognition-stats","broadcast","announcements","calendar"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">報表與通訊</div></summary>
         ${item("/admin/analytics", "analytics", "spark", "營運分析")}
         ${item("/admin/audit", "audit", "history", "稽核軌跡")}
         ${item("/admin/recognition-stats", "recognition-stats", "spark", "辨識成效")}
         ${item("/admin/broadcast", "broadcast", "bell", "群發訊息")}
+        ${item("/admin/announcements", "announcements", "megaphone", "公告管理")}
+        ${item("/admin/calendar", "calendar", "calendar", "行事曆")}
       </details>
       <details class="sf-nav-group" ${["line-bot","users"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">系統設定</div></summary>
@@ -1685,82 +1692,6 @@ function sfSidebar(active) {
   `;
 }
 
-const NOTION_SIDEBAR = (active) => `
-  <nav class="notion-sidebar">
-    <a href="/admin" class="notion-sidebar-home ${active === "dashboard" ? "active" : ""}">儀表板</a>
-    <details class="sidebar-group" ${active === "line-bot" || active === "line-bot-unit" || active === "ai-examples" || active === "recognition-stats" || active === "gemini-prompts" || active === "order-eval" ? "open" : ""}>
-      <summary class="sidebar-group-title">LINE 機器人</summary>
-      <div class="sidebar-links">
-        <a href="/admin/line-bot" class="${active === "line-bot" ? "active" : ""}">啟動與排程</a>
-        <a href="/admin/line-bot/unit-conversion" class="${active === "line-bot-unit" ? "active" : ""}">叫貨單位換算</a>
-        <a href="/admin/gemini-prompts" class="${active === "gemini-prompts" ? "active" : ""}">Gemini Prompt 版本</a>
-        <a href="/admin/ai-examples" class="${active === "ai-examples" ? "active" : ""}">AI 學習庫管理</a>
-        <a href="/admin/recognition-stats" class="${active === "recognition-stats" ? "active" : ""}">辨識成效儀表</a>
-        <a href="/admin/order-eval" class="${active === "order-eval" ? "active" : ""}">訂單圖 Eval 評測</a>
-      </div>
-    </details>
-    <details class="sidebar-group">
-      <summary class="sidebar-group-title">客戶管理</summary>
-      <div class="sidebar-links">
-        <a href="/admin/customers/new">新增客戶</a>
-        <a href="/admin/customers">客戶管理</a>
-        <a href="/admin/import-customers">批次匯入客戶</a>
-      </div>
-    </details>
-    <details class="sidebar-group">
-      <summary class="sidebar-group-title">貨品管理</summary>
-      <div class="sidebar-links">
-        <a href="/admin/products">品項與俗名</a>
-        <a href="/admin/import">批次匯入品項</a>
-      </div>
-    </details>
-    <details class="sidebar-group">
-      <summary class="sidebar-group-title">訂單管理</summary>
-      <div class="sidebar-links">
-        <a href="/admin/orders">訂單審核</a>
-        <a href="/admin/review">待確認品項</a>
-        <a href="/admin/export">資料匯出</a>
-        <a href="/admin/rhythm" class="${active === "rhythm" ? "active" : ""}">週期與預期清單</a>
-        <a href="/admin/backup" class="${active === "backup" ? "active" : ""}">資料備份</a>
-      </div>
-    </details>
-    <details class="sidebar-group" ${active === "inventory" ? "open" : ""}>
-      <summary class="sidebar-group-title">盤點作業</summary>
-      <div class="sidebar-links">
-        <a href="/admin/inventory" class="${active === "inventory" ? "active" : ""}">盤點作業</a>
-        <a href="/admin/inventory/warehouses" class="${active === "inv-wh" ? "active" : ""}">庫房管理</a>
-        <a href="/admin/inventory/assign" class="${active === "inv-assign" ? "active" : ""}">品項歸倉</a>
-        <a href="/admin/inventory/daily" class="${active === "inv-daily" ? "active" : ""}">每日盤點</a>
-        <a href="/admin/inventory/import-erp" class="${active === "inv-erp" ? "active" : ""}">匯入 ERP 資料</a>
-        <a href="/admin/inventory/variance-report" class="${active === "inv-report" ? "active" : ""}">盤差報表</a>
-        <a href="/admin/inventory/manager" class="${active === "inv-manager" ? "active" : ""}">管理人設定</a>
-      </div>
-    </details>
-    <details class="sidebar-group" ${active === "logistics" || active === "logistics-procurement" || active === "logistics-market" || active === "logistics-commodities" ? "open" : ""}>
-      <summary class="sidebar-group-title">物流工具</summary>
-      <div class="sidebar-links">
-        <a href="/admin/logistics/procurement" class="${active === "logistics-procurement" ? "active" : ""}">採購分析</a>
-        <a href="/admin/logistics/market" class="${active === "logistics-market" ? "active" : ""}">北農行情</a>
-        <a href="/admin/logistics/livestock" class="${active === "logistics-livestock" ? "active" : ""}">畜產雞蛋行情</a>
-        <a href="/admin/logistics/commodities" class="${active === "logistics-commodities" ? "active" : ""}">原物料行情</a>
-      </div>
-    </details>
-    <details class="sidebar-group" ${active === "env" ? "open" : ""}>
-      <summary class="sidebar-group-title">環境衛生管理</summary>
-      <div class="sidebar-links">
-        <a href="/admin/freezer-fridge" class="${active === "env" ? "active" : ""}">冷凍庫冷藏庫檢查表</a>
-      </div>
-    </details>
-    <details class="sidebar-group" ${active === "broadcast" || active === "announcements" || active === "calendar" ? "open" : ""}>
-      <summary class="sidebar-group-title">公告與訊息</summary>
-      <div class="sidebar-links">
-        <a href="/admin/announcements" class="${active === "announcements" ? "active" : ""}">公告管理</a>
-        <a href="/admin/calendar" class="${active === "calendar" ? "active" : ""}">行事曆</a>
-        <a href="/admin/broadcast" class="${active === "broadcast" ? "active" : ""}">即時群發</a>
-      </div>
-    </details>
-  </nav>
-`;
 function parseAdminCookies(header) {
     const out = {};
     if (!header)
@@ -2853,6 +2784,20 @@ function createAdminRouter() {
         { title: "資料匯出", href: "/admin/export", keywords: ["export", "csv", "匯出"] },
         { title: "LINE 綁定檢查", href: "/admin/line-binding", keywords: ["binding", "綁定"] },
         { title: "Gemini Prompt", href: "/admin/gemini-prompts", keywords: ["prompt", "gemini", "ab"] },
+        { title: "報價管理", href: "/admin/quotes", keywords: ["quotes", "報價", "報價單"] },
+        { title: "客訴處理", href: "/admin/complaints", keywords: ["complaints", "客訴", "退貨"] },
+        { title: "空籃記帳", href: "/admin/baskets", keywords: ["baskets", "空籃", "空藍", "籃子"] },
+        { title: "忘記叫貨提醒", href: "/admin/reminders", keywords: ["reminders", "提醒", "未叫貨", "漏單"] },
+        { title: "營運分析", href: "/admin/analytics", keywords: ["analytics", "營運", "分析", "報表"] },
+        { title: "群組功能", href: "/admin/inventory/stocktake-groups", keywords: ["group", "群組", "白名單", "盤點群組", "辨識訂單", "空籃"] },
+        { title: "倉庫設定", href: "/admin/inventory/warehouse-settings", keywords: ["warehouse", "倉庫", "倉別", "盤點倉"] },
+        { title: "公告管理", href: "/admin/announcements", keywords: ["announcements", "公告", "flex", "海報", "模板"] },
+        { title: "行事曆", href: "/admin/calendar", keywords: ["calendar", "行事曆", "假日", "公休", "加班", "國定假日"] },
+        { title: "客戶×品項週期分析", href: "/admin/rhythm", keywords: ["rhythm", "週期", "預期清單", "節奏"] },
+        { title: "資料備份", href: "/admin/backup", keywords: ["backup", "備份", "下載資料庫"] },
+        { title: "訂單圖 Golden Set 評測", href: "/admin/order-eval", keywords: ["eval", "golden", "評測", "harness", "訂單圖"] },
+        { title: "叫貨單位換算（LINE）", href: "/admin/line-bot/unit-conversion", keywords: ["unit", "單位", "換算", "conversion"] },
+        { title: "大宗原物料行情", href: "/admin/logistics/commodities", keywords: ["commodities", "原物料", "黃豆", "玉米", "小麥", "行情"] },
     ];
     router.get("/api/search", async (req, res) => {
         const q = String(req.query.q || "").trim();
@@ -3064,7 +3009,7 @@ function createAdminRouter() {
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
             <div>
-              <div class="sf-breadcrumb" style="margin-bottom:6px;">設定 / 人員管理</div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">系統設定 / 人員管理</div>
               <h1 style="margin:0;font-size:22px;font-weight:600;">人員管理</h1>
               <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">僅<strong>經理</strong>可進入本頁。負責人：<code class="mono" style="font-size:11px;">${escapeHtml(ADMIN_OWNER_EMAIL)}</code>。新帳號須由負責人核准後才可登入。</p>
             </div>
@@ -3549,7 +3494,7 @@ function createAdminRouter() {
         const body = `
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div>
-            <div class="sf-breadcrumb" style="margin-bottom:6px;">設定 / LINE 機器人</div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">系統設定 / LINE 機器人</div>
             <h1 style="margin:0;font-size:22px;font-weight:600;">LINE 機器人：啟動與排程</h1>
           </div>
           ${_req.query.ok === "1" ? `<div class="sf-pill ok" style="align-self:flex-start;">已儲存設定</div>` : ""}
@@ -4209,7 +4154,7 @@ function createAdminRouter() {
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:20px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
             <div>
-              <div class="sf-breadcrumb" style="margin-bottom:6px;">儀表板 / 今日營運</div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 儀表板</div>
               <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em;">松富物流 · HACCP 監控中心</h1>
               <div style="margin-top:6px;font-size:12px;color:var(--txt-3);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
                 <span class="mono">作業日 · ${today} (週${weekdayZh})</span>
@@ -4709,7 +4654,7 @@ function createAdminRouter() {
               <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:1200px;margin:0 auto;">
                 <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
                   <div>
-                    <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核與報表 / 營運分析</div>
+                    <div class="sf-breadcrumb" style="margin-bottom:6px;">報表與通訊 / 營運分析</div>
                     <h1 style="margin:0;font-size:22px;font-weight:600;">營運分析</h1>
                     <p style="margin:6px 0 0;color:var(--txt-3);font-size:12px;">期間：${escapeHtml(fromIso)} ~ ${escapeHtml(todayIso)}（${periodDays} 天）。不含已作廢／客訴訂單。</p>
                   </div>
@@ -5603,7 +5548,7 @@ function createAdminRouter() {
         const body = `
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div>
-            <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核軌跡 / DATA CHANGE LOG</div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">報表與通訊 / 稽核軌跡</div>
             <h1 style="margin:0;font-size:22px;font-weight:600;">稽核軌跡</h1>
             <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">所有資料變更皆永久保存。誰、何時、改了什麼，皆可追溯。重大事件（作廢／刪除品項）會以紅色標示。</p>
           </div>
@@ -5854,7 +5799,7 @@ function createAdminRouter() {
         const body = `
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div>
-            <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核與報表 / 辨識成效儀表</div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">報表與通訊 / 辨識成效儀表</div>
             <h1 style="margin:0;font-size:22px;font-weight:600;">辨識成效儀表</h1>
             <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">統計區間：<strong style="color:var(--txt-1);">${escapeHtml(rangeLabel)}</strong>　訂單／待確認依 <code>order_date</code>；後台改品項依 <code>data_change_log</code> 紀錄日；Gemini 依 <code>gemini_usage_log</code>。筆跡對照／Few-Shot 為目前 DB 累積，不受區間限制。</p>
           </div>
@@ -6345,7 +6290,7 @@ function createAdminRouter() {
         .wh-panel-h{padding:9px 13px;font-size:11px;font-weight:700;color:#787774;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--notion-border,#e3e2e0);}
         .wh-it{display:block;padding:9px 13px;border-bottom:1px solid var(--notion-border-soft,#f0efed);text-decoration:none;color:inherit;cursor:pointer;}
         .wh-it:last-child{border-bottom:0;}
-        .wh-it.on{background:#e8f1fd;box-shadow:inset 3px 0 0 #2383e2;}
+        .wh-it.on{background:rgba(35,131,226,.14);box-shadow:inset 3px 0 0 #2383e2;}
         .wh-it.idle{opacity:.62;cursor:default;}
         .wh-it:hover:not(.idle):not(.on){background:rgba(55,53,47,.03);}
         .wh-n{font-size:13.5px;font-weight:600;line-height:1.2;}
@@ -6379,7 +6324,7 @@ function createAdminRouter() {
         tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}
         tr.stk-p .stk-diff{color:#1f7a46;font-weight:700;}
         tr.stk-z .stk-diff{color:#9b9a97;}
-        tr.stk-n{background:#fdf3f2;}
+        tr.stk-n{background:rgba(179,38,30,.08);}
         .stk-togbtn{font-size:12.5px;padding:6px 12px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;}
         .stk-togbtn.sm{padding:4px 10px;font-size:11.5px;}
         .stk-togbtn.on{background:#2383e2;border-color:#2383e2;color:#fff;}
@@ -7780,7 +7725,7 @@ function createAdminRouter() {
             : snapSource === "snapshot" ? `<span class="sf-pill" style="background:#fef3c7;color:#92400e;">本地快照</span>`
             : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 北農行情</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 北農行情</div>
         <h1 class="notion-page-title">北農行情 — 台北一、台北二 批發</h1>
         <p class="notion-hint">資料來源為<a href="${wholesale_price_js_1.TAPMC_PRICE_URL}" target="_blank" rel="noopener">臺北農產運銷「單日交易行情」</a>同一批發市場（農業部開放資料）。價格單位<strong>元／公斤</strong>、交易量<strong>公斤</strong>。每日自動抓存本地快照可回查。</p>
         <div style="display:flex;align-items:center;gap:10px;margin:4px 0 10px;flex-wrap:wrap;">
@@ -7903,7 +7848,7 @@ function createAdminRouter() {
             + `<span>${escapeHtml(c.cropName)}</span>`
             + `<span style="color:var(--txt-3);font-size:11px;margin-left:auto;">${c.dayCount}天</span></label>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / <a href="/admin/logistics/market">北農行情</a> / 歷史查詢</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / <a href="/admin/logistics/market">北農行情</a> / 歷史查詢</div>
         <h1 class="notion-page-title">北農行情 — 歷史走勢查詢</h1>
         <p class="notion-hint">左側勾選品項（可搜尋、可多選對照），選日期區間後看每日中價折線走勢（台北一／二以交易量加權合併）。游標移到圖上即顯示當日各品項價格。</p>
         ${req.query.msg ? `<p class="notion-msg ok" style="padding:10px 12px;background:#e7f5e9;border:1px solid #b7e0c0;border-radius:6px;color:#047857;">${escapeHtml((req.query.msg || "").toString().slice(0, 200))}</p>` : ""}
@@ -8127,7 +8072,7 @@ function createAdminRouter() {
       </div>`;
         const body = `
       <div class="sf-root" style="padding:20px 28px;display:flex;flex-direction:column;gap:14px;">
-      <div class="sf-breadcrumb">物流工具 / 畜產雞蛋行情</div>
+      <div class="sf-breadcrumb">庫存管理 / 畜產雞蛋行情</div>
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
         <h1 style="font-size:22px;font-weight:600;margin:0;">畜產雞蛋行情</h1>
         <div style="display:flex;gap:8px;align-items:center;">
@@ -8305,7 +8250,7 @@ function createAdminRouter() {
 .cm-form input, .cm-form select, .cm-form textarea { width:100%; padding:6px 8px; border:1px solid var(--notion-border-strong); border-radius:5px; font-size:13px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
 </style>
 <div class="notion-page-content">
-<div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 原物料行情</div>
+<div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 原物料行情</div>
 <h1 class="notion-page-title" style="margin-bottom:6px;">大宗原物料行情</h1>
 <p class="notion-hint" style="margin:0 0 14px;">豬肉 / 雞肉 / 雞蛋 等。目前無穩定公開 API，先以手動每日輸入為主，留歷史紀錄供比價判斷。</p>
 ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding:8px 12px;border-radius:6px;border:1px solid #a7f3d0;font-size:13px;">✓ ${escapeHtml(okMsg)}</p>` : ""}
@@ -8745,7 +8690,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             ? "<tr><td colspan='4'>此區間無資料</td></tr>"
             : rows.map((r) => `<tr><td>${escapeHtml(r.product_name || r.raw_name || "待確認")}</td><td>${Number(r.total_qty)}</td><td>${escapeHtml(r.unit || "—")}</td><td>${escapeHtml(r.raw_name && !r.product_name ? "待對照" : "—")}</td></tr>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 採購分析</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 採購分析</div>
         <h1 class="notion-page-title">採購分析</h1>
         <p>依日期區間彙總「訂單整理」內紙本訂單，某日某品項需採購數量（供採購人員使用）。</p>
         <div class="notion-card">
@@ -8790,7 +8735,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             calRows.push(week);
         const calHtml = "<table class=\"freezer-cal\"><thead><tr><th>日</th><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th></tr></thead><tbody>" + calRows.map((row) => "<tr>" + row.map((cell) => "<td>" + (cell || "") + "</td>").join("") + "</tr>").join("") + "</tbody></table>";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 環境衛生管理 / 冷凍庫冷藏庫檢查表</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 冷凍庫冷藏庫檢查表</div>
         <h1 class="notion-page-title">冷凍庫冷藏庫檢查表</h1>
         <p class="notion-hint" style="margin-bottom:16px;">每日填寫各庫房溫度、電源、電燈、電熱；請先至「庫房管理」新增庫房。</p>
         <p style="margin-bottom:16px;"><a href="/admin/freezer-fridge/warehouses" class="btn">庫房管理</a>（共 ${warehouses.length} 個庫房）</p>
@@ -15783,7 +15728,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
             <div>
-              <div class="sf-breadcrumb" style="margin-bottom:6px;">管理 / 客戶</div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">主檔管理 / 客戶管理</div>
               <h1 style="margin:0;font-size:22px;font-weight:600;">客戶管理</h1>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
@@ -17607,7 +17552,7 @@ YY小吃, C5678...,</pre>
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
             <div>
-              <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核與報表 / 群發訊息</div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">報表與通訊 / 群發訊息</div>
               <h1 style="margin:0;font-size:22px;font-weight:600;">群發訊息</h1>
               <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">先選擇要發送的內容類型（限時優惠／公告／行事曆／圖片），編輯後送出，或先存成草稿之後再用。</p>
             </div>
@@ -18547,16 +18492,16 @@ YY小吃, C5678...,</pre>
     // ============================================================
     const ANN_CSS = `<style>
 .ann-tpl-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:14px; margin-top:14px; }
-.ann-tpl-card { display:block; padding:18px 20px; background:#fff; border:1px solid var(--notion-border); border-radius:10px; text-decoration:none; color:var(--notion-text); transition:border-color .15s,transform .15s,box-shadow .15s; }
+.ann-tpl-card { display:block; padding:18px 20px; background:var(--notion-card); border:1px solid var(--notion-border); border-radius:10px; text-decoration:none; color:var(--notion-text); transition:border-color .15s,transform .15s,box-shadow .15s; }
 .ann-tpl-card:hover { border-color:#3b82c4; transform:translateY(-2px); box-shadow:0 4px 16px rgba(59,130,196,0.12); text-decoration:none; }
 .ann-tpl-icon { font-size:32px; line-height:1; margin-bottom:8px; }
 .ann-tpl-name { font-size:16px; font-weight:600; margin-bottom:4px; }
 .ann-tpl-desc { font-size:12px; color:var(--notion-text-muted); line-height:1.45; }
 .ann-form { max-width:760px; }
 .ann-form .field { margin-bottom:18px; }
-.ann-form label.fl { display:block; font-size:13px; font-weight:500; color:#444; margin-bottom:5px; }
+.ann-form label.fl { display:block; font-size:13px; font-weight:500; color:var(--notion-text); margin-bottom:5px; }
 .ann-form .hint { font-size:12px; color:var(--notion-text-muted); margin-top:3px; }
-.ann-form input[type=text], .ann-form input[type=date], .ann-form textarea { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
+.ann-form input[type=text], .ann-form input[type=date], .ann-form textarea { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:var(--notion-canvas); color:var(--notion-text); font-family:inherit; }
 .ann-form textarea { min-height:96px; resize:vertical; }
 .ann-item-rows .row { display:flex; gap:6px; margin-bottom:6px; }
 .ann-item-rows .row input { flex:1; padding:6px 8px; border:1px solid var(--notion-border-strong); border-radius:5px; font-size:13px; }
@@ -18569,7 +18514,7 @@ YY小吃, C5678...,</pre>
 .ann-list-table { width:100%; border-collapse:collapse; }
 .ann-list-table th { text-align:left; padding:10px 12px; font-size:12px; color:#666; border-bottom:1px solid var(--notion-border); font-weight:500; }
 .ann-list-table td { padding:12px; border-bottom:1px solid var(--notion-border); font-size:13px; }
-.ann-list-table tr:hover td { background:#fafafa; }
+.ann-list-table tr:hover td { background:var(--notion-hover); }
 .ann-status { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
 .ann-status.draft { background:#f4f4f0; color:#666; }
 .ann-status.sent { background:#ecfdf5; color:#047857; }
@@ -18898,7 +18843,7 @@ ${sentInfo}
   <form method="post" action="/admin/announcements/${encodeURIComponent(id)}/send" onsubmit="if(this.dataset.submitting)return false;if(!confirm('確定傳送至選定的 LINE 群組？'))return false;this.dataset.submitting='1';return true;">
     <div class="field" style="margin-bottom:14px;">
       <label class="fl">傳送對象</label>
-      <select name="recipients" style="width:100%;max-width:340px;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:6px;background:#fafafa;">
+      <select name="recipients" style="width:100%;max-width:340px;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:6px;background:var(--notion-canvas);color:var(--notion-text);">
         <option value="all">全部客戶（${customers.length} 個 LINE 群組）</option>
         ${customers.map((c) => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join("")}
       </select>
@@ -19035,13 +18980,13 @@ ${quickAnnLink}
             }).join("")}</tr>`).join("");
 
         const body = `<style>
-.cal-table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--notion-border); border-radius:8px; overflow:hidden; }
-.cal-table th { padding:8px; font-size:12px; font-weight:500; color:#666; background:#f7f6f3; border-bottom:1px solid var(--notion-border); }
+.cal-table { width:100%; border-collapse:collapse; background:var(--notion-card); border:1px solid var(--notion-border); border-radius:8px; overflow:hidden; }
+.cal-table th { padding:8px; font-size:12px; font-weight:500; color:var(--notion-text-muted); background:var(--notion-sidebar); border-bottom:1px solid var(--notion-border); }
 .cal-cell { vertical-align:top; padding:6px 6px 28px; height:96px; width:14.28%; border:1px solid var(--notion-border); position:relative; }
-.cal-cell.cal-filler { background:#fbfbfa; }
-.cal-cell.cal-today { background:#eff6ff; }
+.cal-cell.cal-filler { background:var(--notion-canvas); }
+.cal-cell.cal-today { background:rgba(35,131,226,0.12); }
 .cal-cell.cal-weekend .cal-day { color:#c0392b; }
-.cal-day { font-size:14px; font-weight:600; color:#37352f; margin-bottom:4px; }
+.cal-day { font-size:14px; font-weight:600; color:var(--notion-text); margin-bottom:4px; }
 .cal-event { display:flex; align-items:center; gap:4px; font-size:11px; padding:2px 6px; border-radius:4px; margin-bottom:3px; line-height:1.4; }
 .cal-event > span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cal-event-del { color:inherit; opacity:0.5; text-decoration:none; padding:0 2px; cursor:pointer; }
@@ -19057,11 +19002,11 @@ ${quickAnnLink}
 .cal-legend span { padding:2px 8px; border-radius:10px; }
 .cal-modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.4); z-index:1000; align-items:center; justify-content:center; padding:20px; }
 .cal-modal-overlay.is-open { display:flex; }
-.cal-modal { background:#fff; border-radius:10px; padding:24px; max-width:440px; width:100%; box-shadow:0 8px 32px rgba(0,0,0,0.2); }
+.cal-modal { background:var(--notion-card); border-radius:10px; padding:24px; max-width:440px; width:100%; box-shadow:0 8px 32px rgba(0,0,0,0.2); }
 .cal-modal h2 { margin:0 0 6px; font-size:18px; }
 .cal-modal .cal-modal-date { color:var(--notion-text-muted); font-size:13px; margin-bottom:14px; }
-.cal-modal label { display:block; font-size:13px; color:#444; margin:10px 0 4px; }
-.cal-modal input, .cal-modal select { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
+.cal-modal label { display:block; font-size:13px; color:var(--notion-text-muted); margin:10px 0 4px; }
+.cal-modal input, .cal-modal select { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:var(--notion-canvas); color:var(--notion-text); font-family:inherit; }
 .cal-modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:18px; }
 </style>
 <div class="notion-page-content">
