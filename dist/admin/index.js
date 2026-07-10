@@ -6954,7 +6954,10 @@ function createAdminRouter() {
             refresh_requested_at: await get("erp_stock_refresh_requested_at"),
             refresh_error: await get("erp_stock_refresh_error"),
             refresh_error_at: await get("erp_stock_refresh_error_at"),
-            agent_last_wait_at: await get("ly_agent_last_wait_at"), // 內網代理最後連上 /wait 的心跳
+            // 內網代理三條背景線各自的心跳（/wait＝訂單回寫、inventory-wait＝庫存推送、txn-wait＝進銷存查詢）
+            agent_last_wait_at: await get("ly_agent_last_wait_at"),
+            agent_last_inventory_wait_at: await get("ly_agent_last_inventory_wait_at"),
+            agent_last_txn_wait_at: await get("ly_agent_last_txn_wait_at"),
         };
     }
     router.get("/inventory/stock", async (req, res) => {
@@ -6992,18 +6995,34 @@ function createAdminRouter() {
         const dataJson = JSON.stringify({ items, assign, whname }).replace(/</g, "\\u003c");
         const meta = await readStockMeta();
         const snapLabel = meta.snapshot_at ? fmtTaipeiYMDHM(meta.snapshot_at, "尚無資料") : "尚無資料";
-        // [ops 2026-07-10] 內網代理心跳顯示：讀 ly_agent_last_wait_at（/wait 每次進來都會 upsert），
-        // 超過 10 分鐘沒連線＝代理可能掛了，顯示紅字提醒（偵測交由此處顯示，不做定時器）。
+        // [ops 2026-07-10] 內網代理心跳顯示：代理有三條背景線（訂單回寫 /wait、庫存推送 inventory-wait、
+        // 進銷存查詢 txn-wait），各自 upsert 自己的心跳鍵。GUI 可單獨關掉回寫自動處理（wb_auto），
+        // 屆時 /wait 不再進來、但庫存線仍正常——所以「最後連線」取三鍵的最大值，避免庫存明明正常卻紅字；
+        // 三線各自時間放進 title（滑過可看哪條線多久沒動）。超過 10 分鐘三線都沒連＝代理可能掛了，紅字提醒
+        // （偵測交由此處顯示，不做定時器）。
+        const agentBeats = [
+            ["訂單回寫", meta.agent_last_wait_at],
+            ["庫存推送", meta.agent_last_inventory_wait_at],
+            ["進銷存查詢", meta.agent_last_txn_wait_at],
+        ];
         let agentLabel = "尚無紀錄";
         let agentStale = false;
-        if (meta.agent_last_wait_at) {
-            const t = Date.parse(meta.agent_last_wait_at);
-            if (Number.isFinite(t)) {
-                const mins = Math.max(0, Math.floor((Date.now() - t) / 60000));
-                agentStale = mins > 10;
-                agentLabel = mins < 1 ? "剛剛" : `${mins} 分鐘前`;
-            }
+        let agentLastTs = NaN;
+        for (const [, iso] of agentBeats) {
+            if (!iso)
+                continue;
+            const t = Date.parse(iso);
+            if (Number.isFinite(t) && (!Number.isFinite(agentLastTs) || t > agentLastTs))
+                agentLastTs = t;
         }
+        if (Number.isFinite(agentLastTs)) {
+            const mins = Math.max(0, Math.floor((Date.now() - agentLastTs) / 60000));
+            agentStale = mins > 10;
+            agentLabel = mins < 1 ? "剛剛" : `${mins} 分鐘前`;
+        }
+        const agentTitle = agentBeats
+            .map(([nm, iso]) => `${nm}：${iso ? fmtTaipeiYMDHM(iso, "尚無紀錄") : "尚無紀錄"}`)
+            .join("\n");
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 目前庫存</div>
       <style>${STK_STYLE}</style>
@@ -7019,7 +7038,7 @@ function createAdminRouter() {
             <label class="sf-switch-label"><input type="checkbox" id="stkLowOnly"><span class="sf-switch"></span>只看低量/負量</label>
           </div>
           <div class="stk-toolbar-right">
-            <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項 · 內網代理最後連線：<b${agentStale ? ' style="color:#b91c1c;"' : ""}>${escapeHtml(agentLabel)}</b></span>
+            <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項 · 內網代理最後連線：<b title="${escapeHtml(agentTitle)}"${agentStale ? ' style="color:#b91c1c;"' : ""}>${escapeHtml(agentLabel)}</b></span>
             <button type="button" id="stkExport" class="btn">匯出</button>
             <button type="button" id="stkRefresh" class="btn btn-primary">庫存更新</button>
           </div>
