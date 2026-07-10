@@ -542,6 +542,10 @@ const NOTION_STYLE = `
   /* 單位不符＋低信心同時發生：黃底為主、紅左邊條（避免互相蓋掉） */
   table.order-detail-table tbody tr.order-item-unit-mismatch.order-item-low-conf > td { background: #fef9c3; }
   .unit-mismatch-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+  /* 訂單明細：remark 以「⚠」開頭＝AI 標記警示（如照片辨識幾何校驗「⚠ 字跡跨列」）→ 淡黃底＋琥珀左邊條 */
+  table.order-detail-table tbody tr.order-item-remark-warn > td { background: #fef9c3; }
+  table.order-detail-table tbody tr.order-item-remark-warn > td:first-child { box-shadow: inset 4px 0 0 #d97706; }
+  table.order-detail-table tbody tr.order-item-remark-warn.order-item-low-conf > td { background: #fef9c3; }
   /* 辨識信心分數小徽章（顯示在品項旁） */
   .conf-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; border: 1px solid transparent; }
   .conf-pill.conf-high { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
@@ -754,6 +758,7 @@ const NOTION_STYLE = `
     table.order-detail-table tbody tr.order-item-need-review { background: #fff7ed; }
     table.order-detail-table tbody tr.order-item-low-conf { background: #fef2f2; }
     table.order-detail-table tbody tr.order-item-unit-mismatch { background: #fef9c3; border-left: 4px solid #ca8a04; }
+    table.order-detail-table tbody tr.order-item-remark-warn { background: #fef9c3; border-left: 4px solid #d97706; }
     .order-detail-layout { flex-direction: column; flex-wrap: wrap; }
     .order-detail-raw-col { flex: none; width: 100%; min-width: 0; }
     .order-detail-raw-inner { position: static; max-height: 220px; }
@@ -11582,9 +11587,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const unitMismatchBadge = isUnitMismatchKg
                 ? `<span class="unit-mismatch-badge" title="此品項在貨品主檔以「公斤」計價，但這張單辨識成「${escapeHtml(i.unit || "")}」。請確認後修改單位／數量。">⚠ 單位非公斤</span>`
                 : "";
+            // remark 以「⚠」開頭＝AI 標記警示（如照片辨識幾何校驗「⚠ 字跡跨列（A/B），請確認」）
+            // → 品名旁琥珀徽章（沿用 unit-mismatch-badge 樣式）＋整列淡黃底（order-item-remark-warn）
+            const remarkTrimmed = (i.remark && String(i.remark).trim()) || "";
+            const isRemarkWarn = remarkTrimmed.startsWith("⚠");
+            const remarkWarnBadge = isRemarkWarn
+                ? `<span class="unit-mismatch-badge" title="${escapeAttr(remarkTrimmed)}">⚠ ${escapeHtml(remarkTrimmed.replace(/^⚠\s*/, "").split(/[，,；;\n]/)[0].slice(0, 20) || "備註警示")}</span>`
+                : "";
             const productCell = i.need_review === 1
-                ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
-                : `<span class="order-final-product">${nameEditLink}</span>${confPill}${unitMismatchBadge} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
+                ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>${remarkWarnBadge}`
+                : `<span class="order-final-product">${nameEditLink}</span>${confPill}${unitMismatchBadge}${remarkWarnBadge} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
             const subCustomerVal = (i.sub_customer && String(i.sub_customer).trim()) ? escapeAttr(String(i.sub_customer).trim()) : "";
             const isLowConf = i.need_review !== 1 && conf != null && conf < lowConfThreshold;
@@ -11592,6 +11604,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             if (i.need_review === 1) rowClasses = "order-item-need-review";
             else if (isLowConf) rowClasses = "order-item-low-conf";
             if (isUnitMismatchKg) rowClasses = rowClasses ? (rowClasses + " order-item-unit-mismatch") : "order-item-unit-mismatch";
+            if (isRemarkWarn) rowClasses = rowClasses ? (rowClasses + " order-item-remark-warn") : "order-item-remark-warn";
             const rawCard = `${idx + 1}. 原始：${String(i.raw_name ?? "").trim() || "—"} ${String(q)}${(i.unit && i.unit.trim()) || ""}`;
             return `<tr data-item-id="${escapeAttr(i.item_id)}" data-raw-name="${escapeAttr(i.raw_name ?? "")}" data-line-unit="${escapeAttr((i.unit && i.unit.trim()) || "")}" data-raw-card="${escapeAttr(rawCard)}" class="${escapeAttr(rowClasses)}">
             <td class="order-detail-col-cb"><input type="checkbox" class="item-select-cb" name="selected_items" value="${escapeAttr(i.item_id)}"></td>
