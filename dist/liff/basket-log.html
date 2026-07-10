@@ -368,10 +368,11 @@
       }
       if (state.square.to || state.square.pk) lines.push({ kind: "square", no: 0, takenTo: state.square.to||0, pickedUp: state.square.pk||0 });
       if (state.round.to || state.round.pk) lines.push({ kind: "round", no: 0, takenTo: state.round.to||0, pickedUp: state.round.pk||0 });
+      // [fix 2026-07-10] idToken 改走 Authorization header，body 不再帶 token
       const resp = await fetch("/liff/api/basket-log/save", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idToken: state.idToken, customerId: state.customerId, date: state.date, lines }),
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + state.idToken },
+        body: JSON.stringify({ customerId: state.customerId, date: state.date, lines }),
       });
       const data = await resp.json();
       if (!data?.ok) throw new Error(data?.error || "儲存失敗");
@@ -431,7 +432,10 @@
           const ctx = liff.getContext();
           const gid = ctx?.groupId || ctx?.roomId || "";
           if (gid) {
-            const r0 = await fetch(`/liff/api/basket-log/lookup-by-group?groupId=${encodeURIComponent(gid)}&idToken=${encodeURIComponent(state.idToken)}`);
+            // [fix 2026-07-10] idToken 改走 Authorization header（與 order-review 模式一致），URL 不再帶 token
+            const r0 = await fetch(`/liff/api/basket-log/lookup-by-group?groupId=${encodeURIComponent(gid)}`, {
+              headers: { "Authorization": "Bearer " + state.idToken },
+            });
             const d0 = await r0.json();
             if (d0?.ok && d0.customerId) state.customerId = d0.customerId;
           }
@@ -444,7 +448,10 @@
       }
       // 載入今日已存在的紀錄
       setStatus("", "載入今日資料…");
-      const r = await fetch(`/liff/api/basket-log/load?customer=${encodeURIComponent(state.customerId)}&date=${encodeURIComponent(state.date)}&idToken=${encodeURIComponent(state.idToken)}`);
+      // [fix 2026-07-10] idToken 改走 Authorization header，URL 不再帶 token
+      const r = await fetch(`/liff/api/basket-log/load?customer=${encodeURIComponent(state.customerId)}&date=${encodeURIComponent(state.date)}`, {
+        headers: { "Authorization": "Bearer " + state.idToken },
+      });
       const data = await r.json();
       if (!data?.ok) throw new Error(data?.error || "載入失敗");
       state.customerName = data.customerName || state.customerId;

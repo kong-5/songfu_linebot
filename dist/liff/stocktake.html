@@ -142,6 +142,8 @@
       addBatch:'＋ 新增效期',doneBatch:'完成收起 ▴',noMatch:'沒有符合的品項',submit:'送出盤點',submitting:'送出中…',
       sent:'盤點已送出',finish:'完成',submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',langBtn:'Tiếng Việt',resumed:'續盤（已帶回今日已盤）',
       midChip:'中',midTitle:'中價貨（品質較差）數量',midPh:'中價數量',midDone:'完成收起 ▴',
+      conflictTaken:'此倉今日盤點已被其他人送出，請重新載入',
+      conflictStale:'開頁後已有他人送出此倉盤點，請重載後續盤再送出',
       sumLine:function(g,m,tot){return '上 '+g+'  ＋  中 '+m+'  ＝  合計 '+tot;},
       showZero:'顯示庫存0',hiddenN:function(n){return '另有 '+n+' 項庫存 0 已隱藏';},
       zeroSep:function(n){return '— 帳上 0（現場有再盤）· '+n+' 項 —';},
@@ -160,6 +162,8 @@
       addBatch:'＋ Thêm HSD',doneBatch:'Xong ▴',noMatch:'Không có sản phẩm phù hợp',submit:'Gửi kiểm kê',submitting:'Đang gửi…',
       sent:'Đã gửi kiểm kê',finish:'Xong',submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',langBtn:'中文',resumed:'Tiếp tục (đã tải dữ liệu hôm nay)',
       midChip:'Loại B',midTitle:'Số lượng hàng loại B (chất lượng kém)',midPh:'SL loại B',midDone:'Xong ▴',
+      conflictTaken:'Kiểm kê kho này hôm nay đã được người khác gửi, vui lòng tải lại',
+      conflictStale:'Sau khi bạn mở trang, đã có người khác gửi kiểm kê kho này. Vui lòng tải lại, kiểm tiếp rồi gửi lại',
       sumLine:function(g,m,tot){return 'Loại A '+g+'  +  Loại B '+m+'  =  Tổng '+tot;},
       showZero:'Hiện tồn 0',hiddenN:function(n){return 'Còn '+n+' mục tồn 0 đang ẩn';},
       zeroSep:function(n){return '— Tồn 0 (có hàng thì kiểm) · '+n+' —';},
@@ -171,7 +175,7 @@
   };
   var initLang='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') initLang='vi'; }catch(_){}
   var initHz=false; try{ if(localStorage.getItem('stk_hz')==='1') initHz=true; }catch(_){}  // 預設不隱藏，0 排最後；可切成隱藏0
-  var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:initHz,lang:initLang};
+  var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:initHz,lang:initLang,baseSubmittedAt:null};
   function t(k){return (I18N[S.lang]&&I18N[S.lang][k]!=null)?I18N[S.lang][k]:I18N.zh[k];}
   function toggleLang(){ S.lang=(S.lang==='zh')?'vi':'zh'; try{localStorage.setItem('stk_lang',S.lang);}catch(_){}
     if(S.wh) renderCount(); else showPicker(); }
@@ -251,6 +255,8 @@
     api('/liff/api/stocktake/items?warehouse='+encodeURIComponent(code)).then(function(res){
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
       S.wh=res.warehouse; S.date=res.date; S.items=res.items||[]; S.counts={}; S.mid={}; S.midOpen={}; S.batches={}; S.expanded={};
+      // 樂觀鎖基準：開頁當下該 session 的 submitted_at（無 session 為 null），送出時帶回伺服器比對
+      S.baseSubmittedAt=(res.submittedAt==null?null:res.submittedAt);
       S.items.forEach(function(it){ if(it.exp) S.batches[it.c]=[]; });
       // 續盤：帶回今日已存的上貨/中貨/效期批號
       S.resumed=!!res.resumed;
@@ -433,8 +439,17 @@
       counts.push({ code:it.c, name:it.n, spec:it.s, unit:it.u, sys:it.sys, counted:(g==null?null:g), mid:(m==null?null:m), expiry:bx });
     });
     fetch('/liff/api/stocktake/submit',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(S.idToken||'')},
-      body:JSON.stringify({warehouse:S.wh.code,date:S.date,name:S.name,counts:counts})
-    }).then(function(r){return r.json();}).then(function(res){
+      body:JSON.stringify({warehouse:S.wh.code,date:S.date,name:S.name,counts:counts,baseSubmittedAt:(S.baseSubmittedAt==null?null:S.baseSubmittedAt)})
+    }).then(function(r){ return r.json().then(function(j){ return {status:r.status,res:j}; }); }).then(function(o){
+      var res=o.res||{};
+      if(o.status===409){
+        // 開頁後已有他人送出此倉盤點（樂觀鎖/唯一約束擋下）：提示後重新載入資料，
+        // 本機草稿（localStorage）未清除，重載後會照舊蓋回，不會遺失已盤內容
+        btn.disabled=false; btn.textContent=t('submit');
+        alert(res.code==='conflict_taken'?t('conflictTaken'):t('conflictStale'));
+        openWarehouse(S.wh.code);
+        return;
+      }
       if(res.error){ btn.disabled=false; btn.textContent=t('submit'); alert(t('submitFail')+res.error); return; }
       clearDraft(); // 已送出，清掉本機暫存
       showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(t('sent'))+'</div>'
