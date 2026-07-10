@@ -120,6 +120,10 @@ async function parseOrderMessage(text, fallbackUnit, options) {
     const rows = await parseOrderWithGeminiText(t, geminiOpts);
     if (!rows || !rows.length)
         return [];
+    // [fix 2026-07-10] 子客戶拆單閘門：客戶未設定 known_sub_customers 就一律不帶 sub_customer。
+    // Gemini schema 強制每筆都要輸出 sub_customer，未設定的客戶（如娜路灣、南豐）會被模型
+    // 憑排版臆造出子客戶名 → 下游依 subCustomer 誤拆成多張單。拆單資格只認客戶主檔設定。
+    const allowSubCustomer = Boolean(options?.knownSubCustomers && String(options.knownSubCustomers).trim());
     const fb = (fallbackUnit && String(fallbackUnit).trim()) || "公斤";
     // 客戶整段叫貨文字若「數字後面完全沒寫任何單位」，Gemini 仍可能臆測出「份／把」等單位。
     // 依台東團膳慣例：沒寫單位即視為公斤（fallbackUnit），避免出貨單位錯誤。
@@ -136,7 +140,7 @@ async function parseOrderMessage(text, fallbackUnit, options) {
             quantity: Number.isFinite(q) ? q : 0,
             unit: u,
             remark: remarkRaw !== "" ? remarkRaw : null,
-            subCustomer: subRaw !== "" ? subRaw : null,
+            subCustomer: allowSubCustomer && subRaw !== "" ? subRaw : null,
             confidenceScore: p.confidenceScore != null ? p.confidenceScore : null,
         };
     });

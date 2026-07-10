@@ -192,6 +192,16 @@ async function resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer) {
     }
     return targetOrderId;
 }
+/** 全站 head 共用 meta：favicon＋PWA（加到手機主畫面用公司 LOGO 圖示與正式站名，不再顯示「儀」字）。
+ * icon PNG 由 scripts/generate-app-icons.js 從 assets/logo.svg 產生；/admin/assets 為公開靜態路徑（掛在登入驗證前）。 */
+const SF_APP_HEAD_META = [
+    '<link rel="icon" type="image/svg+xml" href="/admin/assets/logo.svg">',
+    '<link rel="apple-touch-icon" sizes="180x180" href="/admin/assets/app-icon-180.png">',
+    '<link rel="manifest" href="/admin/assets/manifest.webmanifest">',
+    '<meta name="apple-mobile-web-app-title" content="松富物流">',
+    '<meta name="application-name" content="松富物流數位管理系統">',
+    '<meta name="theme-color" content="#1a6fb5">',
+].join("");
 const NOTION_STYLE = `
   :root {
     --notion-bg: #ffffff;
@@ -1639,20 +1649,20 @@ function sfSidebar(active) {
         ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
         ${item("/admin/quotes", "quotes", "list", "報價管理")}
       </details>
-      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","inv-stk-groups","logistics-procurement","logistics-market","logistics-livestock"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","logistics-procurement","logistics-market","logistics-livestock"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "box", "倉庫設定")}
-        ${item("/admin/inventory/stocktake-groups", "inv-stk-groups", "box", "群組功能")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
         ${item("/admin/logistics/market", "logistics-market", "truck", "北農行情")}
         ${item("/admin/logistics/livestock", "logistics-livestock", "truck", "畜產雞蛋行情")}
       </details>
-      <details class="sf-nav-group" ${["customers","products","ai-examples"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["customers","cust-groups","products","ai-examples"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">主檔管理</div></summary>
         ${item("/admin/customers", "customers", "users", "客戶管理")}
+        ${item("/admin/customers/groups", "cust-groups", "users", "群組功能")}
         ${item("/admin/products", "products", "box", "貨品管理")}
         ${item("/admin/ai-examples", "ai-examples", "spark", "AI 學習庫")}
       </details>
@@ -2393,7 +2403,7 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
       })();
     })();</script>`;
     const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">`;
-    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" href="/admin/assets/logo.svg"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}${uiScript}</body></html>`;
+    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${SF_APP_HEAD_META}<title>${escapeHtml(title)} － 松富物流數位管理系統</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}${uiScript}</body></html>`;
 }
 /** 僅允許站內 /admin 路徑，供編輯頁儲存後導回（防開放重導向） */
 function safeAdminReturnPath(s) {
@@ -2478,7 +2488,7 @@ function notionEmbedPage(title, body, res) {
     const shell = headerHtml ? `<div class="notion-app">${headerHtml}${mainWrap}</div>` : `<div class="notion-app">${mainWrap}</div>`;
     const sfTheme = (res && res.locals && res.locals.sfTheme === "dark") ? "dark" : "light";
     const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">`;
-    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" href="/admin/assets/logo.svg"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}</body></html>`;
+    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${SF_APP_HEAD_META}<title>${escapeHtml(title)} － 松富物流數位管理系統</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}</body></html>`;
 }
 /** 編輯距離（品名短字串模糊比對） */
 function levenshteinDistance(a, b) {
@@ -2692,7 +2702,7 @@ function createAdminRouter() {
         const disabled = _req.query.disabled === "1";
         const pendingMsg = _req.query.pending === "1";
         const nextParam = typeof _req.query.next === "string" && _req.query.next.startsWith("/admin") ? _req.query.next : "/admin";
-        res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>登入 － 松富物流後台</title><style>:root{color-scheme:light;}*{box-sizing:border-box;}body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:#f7f6f3;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:clamp(12px,4vw,24px);} .box{max-width:420px;width:100%;background:#fff;border:1px solid #e3e2e0;border-radius:12px;padding:clamp(16px,4vw,28px);box-shadow:0 4px 16px rgba(15,23,42,.06);} .box h1{font-size:clamp(20px,5vw,24px);line-height:1.3;margin:0 0 14px;color:#37352f;}form{display:flex;flex-direction:column;gap:12px;}label{display:block;font-size:14px;color:#37352f;}input{width:100%;padding:12px;border:1px solid #d7d6d4;border-radius:8px;font-size:16px;margin-top:6px;line-height:1.25;}input:focus{outline:2px solid rgba(35,131,226,.28);border-color:#2383e2;}button{margin-top:6px;width:100%;padding:12px;background:#2383e2;color:#fff;border:none;border-radius:8px;font-size:16px;line-height:1.2;cursor:pointer;font-weight:700;min-height:44px;}button:active{transform:translateY(1px);} .err,.ok,.warn{padding:10px 12px;border-radius:8px;font-size:14px;margin:0 0 10px;} .err{background:#ffebee;color:#c62828;} .ok{background:#e7f5e9;color:#2e7d32;} .warn{background:#fff8e1;color:#856404;}@media (max-width:480px){body{align-items:flex-start;padding:12px;} .box{margin-top:12px;border-radius:10px;} .box h1{margin-bottom:12px;}}</style></head><body><div class="box"><h1>松富物流 後台登入</h1>${err ? "<div class=\"err\">帳號或密碼錯誤。</div>" : ""}${disabled ? "<div class=\"err\">此帳號已停用，請聯絡管理員。</div>" : ""}${pendingMsg ? "<div class=\"warn\">若帳號尚待審核，請待負責人核准後再登入。</div>" : ""}${ok ? "<div class=\"ok\">已建立管理員，請登入。</div>" : ""}<form method="post" action="/admin/login"><input type="hidden" name="next" value="${escapeAttr(nextParam)}"><label>帳號 <input type="text" name="username" required autocomplete="username"></label><label>密碼 <input type="password" name="password" required autocomplete="current-password"></label><button type="submit">登入</button></form></div></body></html>`);
+        res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">${SF_APP_HEAD_META}<title>登入 － 松富物流數位管理系統</title><style>:root{color-scheme:light;}*{box-sizing:border-box;}body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:#f7f6f3;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:clamp(12px,4vw,24px);} .box{max-width:420px;width:100%;background:#fff;border:1px solid #e3e2e0;border-radius:12px;padding:clamp(16px,4vw,28px);box-shadow:0 4px 16px rgba(15,23,42,.06);} .box h1{font-size:clamp(20px,5vw,24px);line-height:1.3;margin:0 0 14px;color:#37352f;}form{display:flex;flex-direction:column;gap:12px;}label{display:block;font-size:14px;color:#37352f;}input{width:100%;padding:12px;border:1px solid #d7d6d4;border-radius:8px;font-size:16px;margin-top:6px;line-height:1.25;}input:focus{outline:2px solid rgba(35,131,226,.28);border-color:#2383e2;}button{margin-top:6px;width:100%;padding:12px;background:#2383e2;color:#fff;border:none;border-radius:8px;font-size:16px;line-height:1.2;cursor:pointer;font-weight:700;min-height:44px;}button:active{transform:translateY(1px);} .err,.ok,.warn{padding:10px 12px;border-radius:8px;font-size:14px;margin:0 0 10px;} .err{background:#ffebee;color:#c62828;} .ok{background:#e7f5e9;color:#2e7d32;} .warn{background:#fff8e1;color:#856404;}@media (max-width:480px){body{align-items:flex-start;padding:12px;} .box{margin-top:12px;border-radius:10px;} .box h1{margin-bottom:12px;}}</style></head><body><div class="box"><h1>松富物流數位管理系統</h1>${err ? "<div class=\"err\">帳號或密碼錯誤。</div>" : ""}${disabled ? "<div class=\"err\">此帳號已停用，請聯絡管理員。</div>" : ""}${pendingMsg ? "<div class=\"warn\">若帳號尚待審核，請待負責人核准後再登入。</div>" : ""}${ok ? "<div class=\"ok\">已建立管理員，請登入。</div>" : ""}<form method="post" action="/admin/login"><input type="hidden" name="next" value="${escapeAttr(nextParam)}"><label>帳號 <input type="text" name="username" required autocomplete="username"></label><label>密碼 <input type="password" name="password" required autocomplete="current-password"></label><button type="submit">登入</button></form></div></body></html>`);
     });
     router.get("/setup", async (_req, res) => {
         const users = await loadAdminUsers();
@@ -2702,7 +2712,7 @@ function createAdminRouter() {
         }
         const err = _req.query.err;
         const errHtml = err === "weak" ? "<div class=\"err\">帳號至少 2 字元、密碼至少 4 字元。</div>" : "";
-        res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>首次設定管理員 － 松富物流</title><style>:root{color-scheme:light;}*{box-sizing:border-box;}body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:#f7f6f3;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:clamp(12px,4vw,24px);} .box{max-width:420px;width:100%;background:#fff;border:1px solid #e3e2e0;border-radius:12px;padding:clamp(16px,4vw,28px);box-shadow:0 4px 16px rgba(15,23,42,.06);} .box h1{font-size:clamp(20px,5vw,24px);line-height:1.3;margin:0 0 8px;color:#37352f;}p{color:#787774;font-size:14px;margin:0 0 16px;line-height:1.5;}form{display:flex;flex-direction:column;gap:12px;}label{display:block;font-size:14px;color:#37352f;}input{width:100%;padding:12px;border:1px solid #d7d6d4;border-radius:8px;font-size:16px;margin-top:6px;line-height:1.25;}input:focus{outline:2px solid rgba(35,131,226,.28);border-color:#2383e2;}button{margin-top:6px;width:100%;padding:12px;background:#2383e2;color:#fff;border:none;border-radius:8px;font-size:16px;line-height:1.2;cursor:pointer;font-weight:700;min-height:44px;}button:active{transform:translateY(1px);} .err{background:#ffebee;color:#c62828;padding:10px 12px;border-radius:8px;font-size:14px;margin:0 0 10px;}@media (max-width:480px){body{align-items:flex-start;padding:12px;} .box{margin-top:12px;border-radius:10px;} .box h1{margin-bottom:10px;}}</style></head><body><div class="box"><h1>首次設定管理員</h1><p>尚無後台帳號，請建立第一組帳號密碼。</p>${errHtml}<form method="post" action="/admin/setup"><label>帳號 <input type="text" name="username" required minlength="2" autocomplete="username"></label><label>密碼 <input type="password" name="password" required minlength="4" autocomplete="new-password"></label><button type="submit">建立並前往登入</button></form></div></body></html>`);
+        res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">${SF_APP_HEAD_META}<title>首次設定管理員 － 松富物流數位管理系統</title><style>:root{color-scheme:light;}*{box-sizing:border-box;}body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:#f7f6f3;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:clamp(12px,4vw,24px);} .box{max-width:420px;width:100%;background:#fff;border:1px solid #e3e2e0;border-radius:12px;padding:clamp(16px,4vw,28px);box-shadow:0 4px 16px rgba(15,23,42,.06);} .box h1{font-size:clamp(20px,5vw,24px);line-height:1.3;margin:0 0 8px;color:#37352f;}p{color:#787774;font-size:14px;margin:0 0 16px;line-height:1.5;}form{display:flex;flex-direction:column;gap:12px;}label{display:block;font-size:14px;color:#37352f;}input{width:100%;padding:12px;border:1px solid #d7d6d4;border-radius:8px;font-size:16px;margin-top:6px;line-height:1.25;}input:focus{outline:2px solid rgba(35,131,226,.28);border-color:#2383e2;}button{margin-top:6px;width:100%;padding:12px;background:#2383e2;color:#fff;border:none;border-radius:8px;font-size:16px;line-height:1.2;cursor:pointer;font-weight:700;min-height:44px;}button:active{transform:translateY(1px);} .err{background:#ffebee;color:#c62828;padding:10px 12px;border-radius:8px;font-size:14px;margin:0 0 10px;}@media (max-width:480px){body{align-items:flex-start;padding:12px;} .box{margin-top:12px;border-radius:10px;} .box h1{margin-bottom:10px;}}</style></head><body><div class="box"><h1>首次設定管理員</h1><p>尚無後台帳號，請建立第一組帳號密碼。</p>${errHtml}<form method="post" action="/admin/setup"><label>帳號 <input type="text" name="username" required minlength="2" autocomplete="username"></label><label>密碼 <input type="password" name="password" required minlength="4" autocomplete="new-password"></label><button type="submit">建立並前往登入</button></form></div></body></html>`);
     });
     router.post("/setup", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const users = await loadAdminUsers();
@@ -2826,6 +2836,7 @@ function createAdminRouter() {
         { title: "訂單審核", href: "/admin/orders", keywords: ["orders", "訂單", "查詢"] },
         { title: "待確認品名", href: "/admin/review", keywords: ["review", "待對應"] },
         { title: "客戶管理", href: "/admin/customers", keywords: ["customers", "客戶"] },
+        { title: "群組功能", href: "/admin/customers/groups", keywords: ["groups", "群組", "白名單", "辨識訂單", "盤點群組", "空籃"] },
         { title: "貨品管理", href: "/admin/products", keywords: ["products", "品項", "俗名"] },
         { title: "AI 學習庫", href: "/admin/ai-examples", keywords: ["ai", "few-shot", "範例"] },
         { title: "稽核軌跡", href: "/admin/audit", keywords: ["audit", "稽核", "log"] },
@@ -7218,8 +7229,8 @@ function createAdminRouter() {
         try { const wl = await db.prepare("SELECT group_id, group_name FROM stocktake_group").all(); for (const w of wl) put(w.group_id, w.group_name, "已納入"); } catch (_) {}
         try { const pend = await db.prepare("SELECT group_id, group_name FROM pending_line_groups").all(); for (const p of pend) put(p.group_id, p.group_name, "待綁定"); } catch (_) {}
         try {
-            const cust = await db.prepare("SELECT name, line_group_id FROM customers WHERE line_group_id IS NOT NULL AND line_group_id <> ''").all();
-            for (const c of cust) { put(c.line_group_id, c.name, "客戶群"); const it = byId.get(String(c.line_group_id).trim()); if (it) { it.isCustomer = true; it.customerName = String(c.name || ""); } }
+            const cust = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE line_group_id IS NOT NULL AND line_group_id <> ''").all();
+            for (const c of cust) { put(c.line_group_id, c.name, "客戶群"); const it = byId.get(String(c.line_group_id).trim()); if (it) { it.isCustomer = true; it.customerName = String(c.name || ""); it.customerId = String(c.id || ""); } }
         } catch (_) {}
         const onTrue = (v) => (v == null ? true : !!Number(v));
         const onFalse = (v) => (v == null ? false : !!Number(v));
@@ -7230,11 +7241,13 @@ function createAdminRouter() {
             return { ...c, sources: Array.from(c.sources), isCustomer: !!c.isCustomer, feats };
         }).sort((a, b) => (Number(a.isCustomer) - Number(b.isCustomer)) || String(a.name || a.group_id).localeCompare(String(b.name || b.group_id)));
     }
-    router.get("/inventory/stocktake-groups", async (req, res) => {
+    // [change 2026-07-10] 群組功能整併進「客戶管理」：正式路徑 /admin/customers/groups
+    //（收單來源就是 LINE 群組，設定歸客戶主檔）。舊路徑 /admin/inventory/stocktake-groups 轉跳保留。
+    const renderGroupFeaturesPage = async (req, res) => {
         const list = await loadStocktakeGroupCandidates();
         const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:16px;">已儲存。</div>` : "";
         const typeTag = (g) => {
-            if (g.isCustomer) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#eef2fb;color:#3457b1;">客戶群${g.customerName ? "：" + escapeHtml(g.customerName) : ""}</span>`;
+            if (g.isCustomer) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#eef2fb;color:#3457b1;">客戶群${g.customerName ? "：" + (g.customerId ? `<a href="/admin/customers/${encodeURIComponent(g.customerId)}/edit" style="color:inherit;">${escapeHtml(g.customerName)}</a>` : escapeHtml(g.customerName)) : ""}</span>`;
             if (!g.feats.order) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#e7f6ee;color:#1f7a46;">內部群</span>`;
             return `<span style="display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:6px;background:#eef0f3;color:#5b616e;">一般</span>`;
         };
@@ -7254,7 +7267,7 @@ function createAdminRouter() {
         }).join("");
         const knownIds = list.map((g) => g.group_id).join(",");
         const body = `
-      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 群組功能</div>
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / 群組功能</div>
       <h1 class="notion-page-title">群組功能</h1>
       <p class="notion-hint" style="margin:-2px 0 18px;">每個 LINE 群組可分別開關三項功能（勾＝開）：<b>辨識訂單</b>＝把一般文字送 AI 當訂單解析（<b>預設開</b>）；<b>盤點</b>＝群內打「<b>#盤點</b>」跳出倉庫盤點按鈕（<b>預設關</b>，白名單制，只有勾選的群組才回應）；<b>空籃</b>＝群內打「空籃」跳出空籃記帳 LIFF（<b>預設開</b>；也收常打錯的「空藍」）。關閉「辨識訂單」的群組＝<b>內部群</b>：機器人仍收訊息、仍回應指令，只是不把文字當訂單。客戶群的功能也可在「<a href="/admin/customers">客戶管理</a> → 編輯客戶」裡設定，兩處同步。清單自動收集機器人所在的群組；若沒出現，先在群裡對機器人傳一句話，或把群組 ID 貼到下方手動加入。</p>
       ${ok}
@@ -7262,7 +7275,7 @@ function createAdminRouter() {
         <input id="gfSearch" type="text" class="sf-input" placeholder="搜尋群組名稱 / ID / 類型…" autocomplete="off" style="max-width:360px;" oninput="gfFilter(this.value)">
         <span id="gfCount" style="color:var(--notion-text-muted);font-size:12px;"></span>
       </div>
-      <form method="post" action="/admin/inventory/stocktake-groups">
+      <form method="post" action="/admin/customers/groups">
         <input type="hidden" name="known_ids" value="${escapeAttr(knownIds)}">
         <div class="notion-card" style="padding:0;overflow:hidden;">
           <table>
@@ -7294,9 +7307,9 @@ function createAdminRouter() {
         }
         document.addEventListener('DOMContentLoaded', function(){ gfFilter(''); });
       </script>`;
-        res.type("text/html").send(notionPage("群組功能", body, "inv-stk-groups", res));
-    });
-    router.post("/inventory/stocktake-groups", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        res.type("text/html").send(notionPage("群組功能", body, "cust-groups", res));
+    };
+    const saveGroupFeatures = async (req, res) => {
         try {
             const orderMap = (req.body && typeof req.body.order === "object" && req.body.order) ? req.body.order : {};
             const stkMap = (req.body && typeof req.body.stk === "object" && req.body.stk) ? req.body.stk : {};
@@ -7316,13 +7329,18 @@ function createAdminRouter() {
             for (const [gid, feats] of universe) {
                 await group_features_js_1.setGroupFeatures(db, gid, feats);
             }
-            res.redirect("/admin/inventory/stocktake-groups?ok=1");
+            res.redirect("/admin/customers/groups?ok=1");
         }
         catch (e) {
             console.error("[admin] group-features save", e?.message || e);
             res.status(500).send("儲存失敗：" + String(e?.message || e));
         }
-    });
+    };
+    router.get("/customers/groups", renderGroupFeaturesPage);
+    router.post("/customers/groups", express_1.default.urlencoded({ extended: true }), saveGroupFeatures);
+    // 舊網址相容：頁面轉跳新位置；舊表單 POST 仍可儲存
+    router.get("/inventory/stocktake-groups", (_req, res) => res.redirect(301, "/admin/customers/groups"));
+    router.post("/inventory/stocktake-groups", express_1.default.urlencoded({ extended: true }), saveGroupFeatures);
     router.get("/inventory/variance-report", async (req, res) => {
         const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
         const dateFrom = (req.query.date_from || "").trim();
@@ -15769,6 +15787,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               <h1 style="margin:0;font-size:22px;font-weight:600;">客戶管理</h1>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+              <a class="sf-btn" href="/admin/customers/groups">${SF_ICONS.users}<span>群組功能</span></a>
               <a class="sf-btn" href="/admin/import-customers">${SF_ICONS.dl}<span>匯入 CSV</span></a>
               <a class="sf-btn" href="/admin/customers/export.csv">${SF_ICONS.dl}<span>匯出客戶 CSV</span></a>
               <a class="sf-btn" href="/admin/groups/export.xlsx">${SF_ICONS.dl}<span>下載群組 Excel</span></a>
