@@ -344,10 +344,22 @@
       S.draftRestored=false;
       var dr=loadDraft(S.wh.code,S.date);
       if(dr){
-        if(dr.counts) S.counts=Object.assign({},S.counts,dr.counts);
-        if(dr.mid) S.mid=Object.assign({},S.mid,dr.mid);
+        // [fix 2026-07-10 #63回歸] 合併時略過草稿值為 ''／null 的鍵：''＝該品項「未盤」＝無資訊
+        // （submit 端本來就略過 ''），不該蓋掉他人已送出、由 saved 帶回的值——否則 A 開頁久放的
+        // 空白草稿會把 B 剛盤好的品項回彈成未盤。batches 的空陣列同理（＝沒填任何批號）。
+        // trade-off：若使用者「刻意清空」某格想取消已送出的值，重載後會回彈成伺服器值；
+        // 兩害相權取其輕（誤清他人資料會直接造成盤點資料遺失，回彈只需再清一次）。
+        var mergeSkipEmpty=function(base,draft,isEmpty){
+          var out=Object.assign({},base);
+          Object.keys(draft||{}).forEach(function(k){ var v=draft[k]; if(isEmpty(v)) return; out[k]=v; });
+          return out;
+        };
+        var emptyStr=function(v){ return v==null||String(v)===''; };
+        var emptyArr=function(v){ return v==null||(Array.isArray(v)&&v.length===0); };
+        if(dr.counts) S.counts=mergeSkipEmpty(S.counts,dr.counts,emptyStr);
+        if(dr.mid) S.mid=mergeSkipEmpty(S.mid,dr.mid,emptyStr);
         if(dr.midOpen) S.midOpen=Object.assign({},S.midOpen,dr.midOpen);
-        if(dr.batches) S.batches=Object.assign({},S.batches,dr.batches);
+        if(dr.batches) S.batches=mergeSkipEmpty(S.batches,dr.batches,emptyArr);
         if(dr.expanded) S.expanded=Object.assign({},S.expanded,dr.expanded);
         S.draftRestored=true;
       }

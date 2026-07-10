@@ -466,10 +466,13 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, needReviewFlag, itemRemark, subC, confidence);
         // [fix 2026-07-10] 刪項軌跡的時間邊界：客戶「刪第N項」後同日又叫同品項時，結單 rebuild
         // 依 created_at 重放 delete 會把「重叫」的品項也刪掉（漏出貨）。故新品項成功寫入後，
-        // 查該單 order_item_edits 是否已有同 match_key 的軌跡：
+        // 查該單 order_item_edits 是否已有同 match_key 的「delete」軌跡：
         //   含 delete → 追加一筆 action='add'（帶新品項名/量/單位，created_at=now）抵銷——重放時
-        //               delete 先刪、後到的 add 會把品項補回（或更新既存品項數量）；
-        //   只有 set（無 delete）→ 追加新 set 軌跡（新數量），時間序重放以最新數量為準。
+        //               delete 先刪、後到的 add 會把品項補回（消耗式匹配：更新對應那筆重建品項）。
+        // [fix 2026-07-10 #63回歸] 原「只有 set（無 delete）→ 追加新 set 軌跡」規則整段移除：
+        // 第二次叫同品項是「加購」語意（raw_message 會多一行、rebuild 會多一筆品項），
+        // 追加 set 會讓重放把管理員改過的第一筆數量蓋成新叫的數量（5+2 變 2+2），必然出錯；
+        // set 軌跡只該由「改第N項」等明確修改指令產生。
         // 查詢／寫入失敗一律吞錯不阻斷收單（降級＝結單 rebuild 可能還原，不影響本次寫入）。
         try {
             const mk = (0, rebuild_order_from_sources_js_1.normalizeOrderItemMatchKey)(item.rawName);
@@ -479,9 +482,6 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
                     const priorActs = priorEdits.map((r) => String(r.action || "").trim().toLowerCase());
                     if (priorActs.includes("delete")) {
                         await recordOrderItemEdit(db, { orderId, action: "add", rawName: item.rawName, quantity: qty, unit, editedBy: "system:reorder_after_delete" });
-                    }
-                    else if (priorActs.includes("set")) {
-                        await recordOrderItemEdit(db, { orderId, action: "set", rawName: item.rawName, quantity: qty, unit, editedBy: "system:reorder_after_set" });
                     }
                 }
             }
@@ -517,16 +517,20 @@ async function appendRawLineToOrders(db, orderIds, lineText, nowSql, opts) {
         return;
     if (isRawMessageNoise(line)) return;
     // [fix 2026-07-10] skipIfPresent：僅「接手逾時租約的重跑」（isRetry）路徑啟用——前次執行可能已把
-    // 同一行附加進 raw_message，重跑再附加會使結單 rebuild 品項雙倍。整行比對（split('\n')）已含即略過。
+    // 同一行附加進 raw_message，重跑再附加會使結單 rebuild 品項雙倍。
     // 正常路徑不啟用：客戶連傳兩則相同文字仍應是兩行（行為不變）。
+    // [fix 2026-07-10 #63回歸] 附加內容可能是「多行」（圖片 OCR 文字整段附加）：比對改為
+    // 「整段＋行邊界」——把既有 raw 與待附加內容都用換行包起來做子字串比對，
+    // 單行時等價於舊的逐行完全比對（split('\n').includes），多行時要求整段連續出現才算已附加
+    // （逐行比對會把「部分行已存在」誤判為已附加而漏掉整段，故採整段比對）。
     const skipIfPresent = Boolean(opts && opts.skipIfPresent);
     for (const oid of orderIds) {
         if (skipIfPresent) {
             try {
                 const prevRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
-                const prevLines = String(prevRow?.raw_message ?? "").split("\n");
-                if (prevLines.includes(line)) {
-                    console.log("[LINE] raw_message 已含完全相同一行（重跑冪等略過）orderId=%s", oid);
+                const prevRaw = String(prevRow?.raw_message ?? "");
+                if (("\n" + prevRaw + "\n").includes("\n" + line + "\n")) {
+                    console.log("[LINE] raw_message 已含完全相同內容段（重跑冪等略過）orderId=%s", oid);
                     continue;
                 }
             } catch (_) { /* 查詢失敗照舊附加（寧可重複不可斷單） */ }
@@ -869,6 +873,12 @@ function createLineWebhook() {
             let ownsLineMessage = false;
             let eventFailed = false;
             let lineMessageIsRetry = false;
+            // [fix 2026-07-10 #63回歸] claimNowIso＝本次執行寫入佔位列的 claimed_at 值（INSERT 佔位或
+            // 接手逾時租約時設定；佔位流程因例外「放行」時維持 null）。finally 收尾與提前釋放都帶此值
+            // 當條件，只動「自己的」佔位列，絕不覆蓋／誤刪已被他實例接手的列。
+            // claimedByInsert＝本次佔位列是「自己 INSERT 成功」（changes=1）建立的（非接手他人逾時列）。
+            let claimNowIso = null;
+            let claimedByInsert = false;
             try {
                 if (event.type === "join" || event.type === "memberJoined") {
                     try {
@@ -979,6 +989,11 @@ function createLineWebhook() {
                         const ins = await db.prepare(
                             "INSERT INTO processed_line_messages (message_id, processed_at, status, claimed_at) VALUES (?, " + nowSqlClaim + ", 'processing', ?) ON CONFLICT (message_id) DO NOTHING"
                         ).run(curLineMessageId, nowIso);
+                        if ((ins?.changes ?? 0) === 1) {
+                            // 自己 INSERT 佔位成功：記下 claimed_at 供 finally／提前釋放辨識「自己的列」
+                            claimNowIso = nowIso;
+                            claimedByInsert = true;
+                        }
                         if ((ins?.changes ?? 0) === 0) {
                             const claimRow = await db.prepare("SELECT status, claimed_at FROM processed_line_messages WHERE message_id = ?").get(curLineMessageId);
                             // 舊列 status=NULL＝舊語意的完成標記；列消失（極端競態：他實例失敗剛刪除）也保守略過，等 redelivery
@@ -1000,6 +1015,7 @@ function createLineWebhook() {
                                 console.log("[LINE] 逾時租約已被他實例接手（或已完成），略過 messageId=%s", curLineMessageId);
                                 continue;
                             }
+                            claimNowIso = nowIso; // 接手成功：佔位列 claimed_at 已改為本次的 nowIso
                             lineMessageIsRetry = true;
                             console.warn("[LINE] 接手逾時 processing 租約重跑 messageId=%s（原 claimed_at=%s，前次可能已寫入部分資料，下游改走冪等路徑）", curLineMessageId, claimRow.claimed_at);
                         }
@@ -1009,6 +1025,15 @@ function createLineWebhook() {
                     }
                 }
                 if (!consumeLineWebhookMessageOnce(event.message?.id)) {
+                    // [fix 2026-07-10 #63回歸] 罕見時序：DB 佔位 INSERT 成功（前次失敗列已被刪、記憶體 Set 仍記得）
+                    // 但記憶體去重擋下 → 剛插入的 processing 列會殘留到租約逾時（10 分鐘）才可被接手。
+                    // 這裡本次不會處理訊息，先刪掉「自己剛插入的」佔位列（帶 claimed_at 條件只刪自己的），
+                    // 讓他實例／redelivery 不被無謂卡住。接手（takeover）情境不刪：同程序 Set 命中＝先前執行仍在途。
+                    if (claimedByInsert && curLineMessageId && claimNowIso != null) {
+                        try {
+                            await db.prepare("DELETE FROM processed_line_messages WHERE message_id = ? AND status = 'processing' AND claimed_at = ?").run(curLineMessageId, claimNowIso);
+                        } catch (_) { /* best-effort：刪不掉頂多等租約逾時被接手 */ }
+                    }
                     console.log("[LINE] 略過重複訊息（同 message.id），避免重複建品項");
                     continue;
                 }
@@ -1365,8 +1390,6 @@ function createLineWebhook() {
                         scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         const ocrLine = ocrText || "[圖片]";
                         const orderDateVal = (await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId))?.order_date || getTaipeiOrderDate();
-                        const baseRawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
-                        const newRawAppend = (baseRawRow?.raw_message ? baseRawRow.raw_message + "\n" : "") + ocrLine;
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
                             // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶（rebuild 過濾語意見 helper 註解），
@@ -1385,7 +1408,7 @@ function createLineWebhook() {
                                     lineMessageId: curLineMessageId,
                                 });
                                 if (!created)
-                                    await appendRawLineToOrders(db, [oid], ocrLine, nowSql);
+                                    await appendRawLineToOrders(db, [oid], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                                 touchedOrderIds.push(oid);
                                 await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
                                 await insertParsedItemsForOrder(db, oid, session.customerId, items, fallbackUnitImg);
@@ -1399,12 +1422,15 @@ function createLineWebhook() {
                             // [fix 2026-07-10] 改走 duplicateAttachmentToOrders（含 (order_id, line_message_id) 冪等查重），重試路徑不重複掛圖
                             await duplicateAttachmentToOrders(db, messageId, [session.orderId], nowSql);
                             await insertParsedItemsForOrder(db, session.orderId, session.customerId, parsedFromImg, fallbackUnitImg);
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, session.orderId);
+                            // [fix 2026-07-10 #63回歸] OCR 文字附加改走 appendRawLineToOrders 原子 UPDATE
+                            //（原「SELECT raw → 串接 → UPDATE」讀改寫在併發下互相蓋寫），
+                            // 接手逾時租約重跑時啟用 skipIfPresent（整段比對）避免同段 OCR 重複附加。
+                            await appendRawLineToOrders(db, [session.orderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         }
                         else {
-                            // [fix 2026-07-10] 同上：冪等掛附件
+                            // [fix 2026-07-10] 同上：冪等掛附件；OCR 附加同上改原子 UPDATE＋重跑冪等
                             await duplicateAttachmentToOrders(db, messageId, [session.orderId], nowSql);
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, session.orderId);
+                            await appendRawLineToOrders(db, [session.orderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         }
                     }
                     else {
@@ -1431,7 +1457,7 @@ function createLineWebhook() {
                                     lineMessageId: curLineMessageId,
                                 });
                                 if (!created)
-                                    await appendRawLineToOrders(db, [oid], ocrLine, nowSql);
+                                    await appendRawLineToOrders(db, [oid], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                                 if (subKey === "")
                                     mainBucketOrderId = oid;
                                 touchedOrderIds.push(oid);
@@ -1474,11 +1500,13 @@ function createLineWebhook() {
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                             }
                             await duplicateAttachmentToOrders(db, messageId, [orderId], nowSql);
-                            const newRawImg = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + ocrLine;
                             if (parsedFromImg.length > 0) {
                                 await insertParsedItemsForOrder(db, orderId, customer.id, parsedFromImg, fallbackUnitImg);
                             }
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawImg, orderId);
+                            // [fix 2026-07-10 #63回歸] 原以稍早 SELECT 的 orderRow.raw_message 串接後整欄 UPDATE
+                            //（讀改寫，併發下蓋掉期間他人附加的行），改走 appendRawLineToOrders 原子 UPDATE；
+                            // 接手逾時租約重跑時啟用 skipIfPresent（整段比對）避免同段 OCR 重複附加。
+                            await appendRawLineToOrders(db, [orderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         }
                     }
                     continue;
@@ -1542,9 +1570,9 @@ function createLineWebhook() {
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         }
                         if (lineForRaw) {
-                            const orderRowRaw = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
-                            const newRaw = (orderRowRaw?.raw_message ? orderRowRaw.raw_message + "\n" : "") + lineForRaw;
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, orderId);
+                            // [fix 2026-07-10 #63回歸] 讀改寫（SELECT raw → 串接 → UPDATE）改走 appendRawLineToOrders
+                            // 原子 UPDATE；接手逾時租約重跑時啟用 skipIfPresent 避免重複附加同一行。
+                            await appendRawLineToOrders(db, [orderId], lineForRaw, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         }
                         continue;
                     }
@@ -1574,7 +1602,7 @@ function createLineWebhook() {
                                 lineMessageId: curLineMessageId,
                             });
                             if (!created && lineForRaw)
-                                await appendRawLineToOrders(db, [oid], lineForRaw, nowSql);
+                                await appendRawLineToOrders(db, [oid], lineForRaw, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                             if (subKey === "")
                                 mainBucketOrderId = oid;
                             touchedOrderIds.push(oid);
@@ -1618,10 +1646,10 @@ function createLineWebhook() {
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                     }
                     await insertParsedItemsForOrder(db, orderId, customerId, parsed, fallbackUnit);
-                    const orderRowRaw = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
                     if (lineForRaw) {
-                        const newRaw = (orderRowRaw?.raw_message ? orderRowRaw.raw_message + "\n" : "") + lineForRaw;
-                        await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, orderId);
+                        // [fix 2026-07-10 #63回歸] 讀改寫（SELECT raw → 串接 → UPDATE）改走 appendRawLineToOrders
+                        // 原子 UPDATE；接手逾時租約重跑時啟用 skipIfPresent 避免重複附加同一行。
+                        await appendRawLineToOrders(db, [orderId], lineForRaw, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                     }
                     continue;
                 }
@@ -2126,10 +2154,21 @@ function createLineWebhook() {
                     const nowSqlDone = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
                     if (!eventFailed) {
                         try {
-                            const done = await db.prepare(
-                                "UPDATE processed_line_messages SET status = 'done', processed_at = " + nowSqlDone + " WHERE message_id = ?"
-                            ).run(curLineMessageId);
-                            if ((done?.changes ?? 0) === 0) {
+                            // [fix 2026-07-10 #63回歸] done UPDATE 加 claimed_at 條件：本次處理若超過租約時長，
+                            // 佔位列可能已被他實例接手（claimed_at 被改掉）——舊寫法無條件改 done 會把「接手者
+                            // 處理中」的狀態蓋掉。帶 claimed_at 只標「自己的」列；claimNowIso 為 null（入口佔位
+                            // 曾因例外放行、本次沒有自己的列）則跳過 UPDATE 直接走補 INSERT。
+                            let doneChanges = 0;
+                            if (claimNowIso != null) {
+                                const done = await db.prepare(
+                                    "UPDATE processed_line_messages SET status = 'done', processed_at = " + nowSqlDone + " WHERE message_id = ? AND claimed_at = ?"
+                                ).run(curLineMessageId, claimNowIso);
+                                doneChanges = done?.changes ?? 0;
+                            }
+                            if (doneChanges === 0) {
+                                // changes=0 的兩種情況：①列不存在（放行路徑）→ 補 INSERT 完成標記；
+                                // ②列存在但 claimed_at 不同＝已被他實例接手 → 不可覆蓋接手者狀態，
+                                // ON CONFLICT DO NOTHING 天然安全（列存在時整句無作用），毋須另判斷。
                                 await db.prepare(
                                     "INSERT INTO processed_line_messages (message_id, processed_at, status, claimed_at) VALUES (?, " + nowSqlDone + ", 'done', NULL) ON CONFLICT (message_id) DO NOTHING"
                                 ).run(curLineMessageId);
@@ -2140,9 +2179,14 @@ function createLineWebhook() {
                         }
                     } else {
                         releaseLineWebhookMessageOnce(curLineMessageId);
-                        try {
-                            await db.prepare("DELETE FROM processed_line_messages WHERE message_id = ? AND status = 'processing'").run(curLineMessageId);
-                        } catch (_) { /* best-effort：刪不掉時租約 10 分鐘後逾時仍可被接手，不阻斷 */ }
+                        // [fix 2026-07-10 #63回歸] 失敗釋放同樣帶 claimed_at 條件只刪「自己的」processing 列：
+                        // 被他實例接手後不可誤刪接手者的佔位；claimNowIso 為 null（放行路徑、沒有自己的列）
+                        // 則完全不刪——舊寫法會把「他實例正在處理」的 processing 列刪掉造成雙跑。
+                        if (claimNowIso != null) {
+                            try {
+                                await db.prepare("DELETE FROM processed_line_messages WHERE message_id = ? AND status = 'processing' AND claimed_at = ?").run(curLineMessageId, claimNowIso);
+                            } catch (_) { /* best-effort：刪不掉時租約 10 分鐘後逾時仍可被接手，不阻斷 */ }
+                        }
                         console.warn("[LINE] 訊息處理失敗，已釋放去重佔位供 LINE redelivery 重試 messageId=%s", curLineMessageId);
                     }
                 }

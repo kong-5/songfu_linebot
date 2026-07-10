@@ -28,22 +28,35 @@ function normalizeOrderItemMatchKey(s) {
  * （「改第N項」「刪第N項」）被 isRawMessageNoise 排除在 raw_message 外 → 人工修正會被默默還原。
  * 修法：改單當下 webhook 端同步寫 order_item_edits（match_key＝當下品項 raw_name 快照正規化），
  * 這裡在重建 INSERT 完成後、同一交易內依 created_at 升冪重放：
- *   - set    → 以 match_key 對正規化 raw_name 找重建後品項（多筆取第一筆）更新 quantity/unit；
- *              對不到品項 → 視為 add（人工確認過的內容不可默默消失）。
- *   - delete → 刪除第一筆匹配品項；對不到＝重建本來就沒有該品項，視為已生效。
- *   - add    → 以軌跡的 raw_name/quantity/unit 補插一筆，display_order 排最後、need_review=1。
+ *   - set    → 以 match_key 對正規化 raw_name 找「第一筆存活且未消耗」品項更新 quantity/unit 並標 consumed；
+ *              全部同 key 品項都已消耗 → 視為「再次修正同一品項」，回頭更新最近一筆已消耗品項；
+ *              完全對不到品項 → 視為 add 補插（人工確認過的內容不可默默消失）。
+ *   - delete → 刪除第一筆匹配品項（含已消耗者，改完再刪是合法時序）；對不到＝重建本來就沒有該品項，視為已生效。
+ *   - add    → 同 set 先找未消耗品項更新並標 consumed；對不到未消耗品項才補插一筆
+ *              （display_order 排最後、need_review=1），補插品項直接視為已消耗。
+ * [fix 2026-07-10 #63回歸] 消耗式匹配（consumed 旗標）：set/add 應用到某品項後即標記已消耗，
+ * 後續軌跡不再命中同一筆。修前每筆 set/add 永遠打到「第一筆存活同 key 品項」——
+ * 「刪後重叫2再叫4」的兩筆抵銷 add 會先後打到同一品項（結果 4+4 而非 2+4），
+ * 「管理員 set 後客戶加叫」亦然。delete 沿用既有 deleted 標記（等價於 delete 的消耗）。
  * 注意：h 為交易 handle（或無交易時的 db 本體），全程沿用呼叫端交易，失敗會整批 ROLLBACK。
  * [fix 2026-07-10] edits 由呼叫端在「交易外」讀好傳入（見 replaceOrderItemsFromParsedRows）：
  * 原本在此函式開頭 SELECT order_item_edits 並吞錯繼續，但 PG 交易內任一句失敗即毒化整個交易
  * （後續語句全報 25P02、COMMIT 實為 ROLLBACK）→ 整個 rebuild 靜默回滾卻回報成功。
  * 交易內不得再有「吞例外後繼續」的語句；此處僅剩 order_items 的讀寫（該表必存在，失敗即整批 ROLLBACK 上拋）。
  */
-async function replayOrderItemEditsInTx(h, orderId, edits) {
+async function replayOrderItemEditsInTx(h, orderId, edits, insertedItems) {
     if (!edits || !edits.length)
         return;
-    // 重建後的品項快照（newId 帶時間前綴，ORDER BY id ≒ 插入順序＝顯示順序）；「取第一筆」以此序為準
-    const itemRows = await h.prepare("SELECT id, raw_name FROM order_items WHERE order_id = ? ORDER BY id").all(orderId);
-    const live = (itemRows || []).map((it) => ({ id: it.id, key: normalizeOrderItemMatchKey(it.raw_name), deleted: false }));
+    // 重建後的品項快照，「取第一筆」以此序為準。
+    // [fix 2026-07-10 #63回歸] 順序改由呼叫端傳入「實際插入順序」（insertedItems）：
+    // newId 的時間前綴只有毫秒精度＋隨機尾碼，同一毫秒內插入的多筆品項 ORDER BY id 會亂序，
+    // 消耗式匹配（第一筆＝raw 第一行）就會對錯品項（實測同名多筆品項時約半數機率錯位）。
+    // 呼叫端沒提供時才退回 ORDER BY id（近似插入順序，僅容錯用）。
+    const itemRows = Array.isArray(insertedItems)
+        ? insertedItems
+        : await h.prepare("SELECT id, raw_name FROM order_items WHERE order_id = ? ORDER BY id").all(orderId);
+    // consumed＝該品項已被某筆 set/add 軌跡「用掉」，之後的軌跡改配對下一筆同 key 品項（消耗式匹配）
+    const live = (itemRows || []).map((it) => ({ id: it.id, key: normalizeOrderItemMatchKey(it.raw_name), deleted: false, consumed: false }));
     // add／set 補插的 display_order 排最後：既有全 NULL 時維持 NULL（讀取端以 id 序為準，時間前綴已保證排最後）
     const maxRow = await h.prepare("SELECT MAX(display_order) AS m FROM order_items WHERE order_id = ?").get(orderId);
     let nextDisplayOrder = maxRow && maxRow.m != null ? Number(maxRow.m) + 1 : null;
@@ -54,8 +67,9 @@ async function replayOrderItemEditsInTx(h, orderId, edits) {
         const action = String(ed.action || "").trim().toLowerCase();
         // match_key 為權威；舊資料若缺 match_key 則退回以 raw_name 現算（同一正規化）
         const key = normalizeOrderItemMatchKey(ed.match_key != null && String(ed.match_key).trim() !== "" ? ed.match_key : ed.raw_name);
-        const hit = key ? live.find((x) => !x.deleted && x.key === key) : null;
         if (action === "delete") {
+            // delete 不受 consumed 影響：改完再刪（set→delete）是合法時序，須能刪到已消耗品項
+            const hit = key ? live.find((x) => !x.deleted && x.key === key) : null;
             if (hit) {
                 await h.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(hit.id, orderId);
                 hit.deleted = true;
@@ -67,25 +81,47 @@ async function replayOrderItemEditsInTx(h, orderId, edits) {
         if (action === "set" || action === "add") {
             const qty = Number.isFinite(Number(ed.quantity)) ? Number(ed.quantity) : 0;
             const unitVal = ed.unit != null && String(ed.unit).trim() !== "" ? String(ed.unit).trim() : null;
-            // [fix 2026-07-10] set 與 add 一致：已有「存活」同 key 品項 → 更新其 quantity/unit，不補插。
-            // add 原本無條件補插，但「刪後重叫」的抵銷 add 對應品項通常已由 raw_message 重建插入，
-            // 再補插＝同品項雙倍出貨；改為更新既存品項也順帶緩解品名飄移造成的重複品項。
+            // [fix 2026-07-10 #63回歸] 消耗式匹配：只找「存活且未消耗」的同 key 品項；
+            // 應用後標 consumed，讓下一筆同 key 軌跡配對到下一筆品項（刪後重叫2再叫4＝2+4，不再 4+4）。
+            const hit = key ? live.find((x) => !x.deleted && !x.consumed && x.key === key) : null;
             if (hit) {
                 if (unitVal != null)
                     await h.prepare("UPDATE order_items SET quantity = ?, unit = ? WHERE id = ? AND order_id = ?").run(qty, unitVal, hit.id, orderId);
                 else
                     await h.prepare("UPDATE order_items SET quantity = ? WHERE id = ? AND order_id = ?").run(qty, hit.id, orderId);
+                hit.consumed = true;
                 setCnt += 1;
                 console.log("[rebuild-order] 重放改單軌跡 %s（更新既存品項）：%s → %s%s（itemId=%s editId=%s）", action, ed.raw_name || key, qty, unitVal || "", hit.id, ed.id);
                 continue;
             }
-            // 對不到存活品項才補插（set：人工確認過的內容不可默默消失；add：刪後重叫但 rebuild 未解析出該品名）；need_review=1 供後台複核
+            // set 對不到「未消耗」品項但存在「已消耗」同 key 品項 → 視為對同一品項的再次修正
+            // （如「改第1項 5」後又「改第1項 6」會留下兩筆 set 軌跡），回頭更新「最近被消耗」那筆
+            // （同 key 的消耗依陣列序推進，倒序找到的第一筆＝最近消耗），絕不能補插成兩筆。
+            if (action === "set") {
+                let recon = null;
+                for (let i = live.length - 1; i >= 0; i--) {
+                    const x = live[i];
+                    if (!x.deleted && x.consumed && x.key === key) { recon = x; break; }
+                }
+                if (recon) {
+                    if (unitVal != null)
+                        await h.prepare("UPDATE order_items SET quantity = ?, unit = ? WHERE id = ? AND order_id = ?").run(qty, unitVal, recon.id, orderId);
+                    else
+                        await h.prepare("UPDATE order_items SET quantity = ? WHERE id = ? AND order_id = ?").run(qty, recon.id, orderId);
+                    setCnt += 1;
+                    console.log("[rebuild-order] 重放改單軌跡 set（再次修正已消耗品項）：%s → %s%s（itemId=%s editId=%s）", ed.raw_name || key, qty, unitVal || "", recon.id, ed.id);
+                    continue;
+                }
+            }
+            // 對不到品項才補插（set：人工確認過的內容不可默默消失；add：刪後重叫但 rebuild 未解析出該品名，
+            // 或同 key 品項已全被先前軌跡消耗＝本筆代表「又一次加叫」）；need_review=1 供後台複核。
+            // 補插品項直接標 consumed：它就是本筆軌跡的產物，不可再被後續軌跡改寫（後續 add 應再插新筆）。
             const itemId = (0, id_js_1.newId)("item");
             await h.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, include_export, display_order) VALUES (?, ?, NULL, ?, ?, ?, 1, ?, 1, ?)")
                 .run(itemId, orderId, ed.raw_name || key || "", qty, unitVal, ed.remark != null && String(ed.remark).trim() !== "" ? String(ed.remark).trim() : null, nextDisplayOrder);
             if (nextDisplayOrder != null)
                 nextDisplayOrder += 1;
-            live.push({ id: itemId, key, deleted: false });
+            live.push({ id: itemId, key, deleted: false, consumed: true });
             addCnt += 1;
             console.log("[rebuild-order] 重放改單軌跡 %s（補插）：%s %s%s（itemId=%s editId=%s）", action === "set" ? "set→add" : "add", ed.raw_name || key, qty, unitVal || "", itemId, ed.id);
             continue;
@@ -156,7 +192,9 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
         }
         // [fix 2026-07-10] 重建完成後、同一交易內重放人工改單軌跡（order_item_edits），
         // 避免 LINE「改第N項／刪第N項」等人工修正被 rebuild 默默還原（同日重開 session 再結單也會再覆寫一次）。
-        await replayOrderItemEditsInTx(h, orderId, editsForReplay);
+        // [fix 2026-07-10 #63回歸] 品項順序以「剛 INSERT 的實際順序」直接傳入（rows＝raw 解析順序），
+        // 不再讓重放端 ORDER BY id 反推（同毫秒插入時 id 亂序 → 消耗式匹配會對錯品項）。
+        await replayOrderItemEditsInTx(h, orderId, editsForReplay, rows.map((r) => ({ id: r[0], raw_name: r[3] })));
     };
     if (typeof db.transaction === "function") {
         await db.transaction(doWrite);

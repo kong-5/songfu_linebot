@@ -253,6 +253,15 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        // 凌越分倉庫存（資料種類 000009「目前庫存-廠內倉」）快照：每「品項×倉別」一筆。
+        // 由 inventory-push 的頂層 warehouse_qty 全表覆蓋（DELETE+INSERT；接收端下一階段實作）；
+        // payload 沒帶 warehouse_qty＝該批推送無分倉資料，此表不動。用途：盤點按倉別進行時的分倉帳面基準
+        //（取代單一公司總量 SK_NOWQTY 造成的多倉共用品項盤差失真）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (erp_code, wh_code))");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
         // 凌越倉別設定：代號→中文名、是否納入盤點。代號來源＝erp_stock_items.wh_code。
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_warehouse (code TEXT PRIMARY KEY, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
     }
@@ -856,6 +865,15 @@ async function initPg() {
                 // 凌越貨品主檔目前庫存（SK_NOWQTY）快照。內網 agent 每次推送整批 → 全表覆蓋（DELETE+INSERT）。
                 await client.query("CREATE TABLE IF NOT EXISTS erp_stock_items (erp_code TEXT PRIMARY KEY, name TEXT, spec TEXT, unit TEXT, qty DOUBLE PRECISION NOT NULL DEFAULT 0, wh_code TEXT, icpno TEXT, updated_at TEXT)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh ON erp_stock_items(wh_code)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                // 凌越分倉庫存（資料種類 000009「目前庫存-廠內倉」）快照：每「品項×倉別」一筆。
+                // 由 inventory-push 的頂層 warehouse_qty 全表覆蓋（DELETE+INSERT；接收端下一階段實作）；
+                // payload 沒帶 warehouse_qty＝該批推送無分倉資料，此表不動。用途：盤點按倉別進行時的分倉帳面基準
+                //（取代單一公司總量 SK_NOWQTY 造成的多倉共用品項盤差失真）。
+                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (erp_code, wh_code))");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
             }
             catch (_) { /* table may already exist */ }
             try {

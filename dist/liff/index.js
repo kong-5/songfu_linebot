@@ -124,12 +124,27 @@ function createLiffRouter() {
             const db = (0, index_js_1.getDb)(dbPath);
             const wh = await db.prepare("SELECT code, name FROM erp_warehouse WHERE code = ?").get(code);
             const rows = await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE wh_code = ? ORDER BY erp_code").all(code);
+            // [分倉庫存 2026-07-10] 系統量基準：erp_stock_wh_qty「該倉」有任何分倉列 → 各品項 sys 用分倉量
+            // （該品項無列＝0）；整倉完全無分倉資料 → fallback 現行總量（erp_stock_items.qty）。
+            // 一次查整倉組 Map（不逐品項查）。sysQtySource 回給前端標示基準來源。
+            // 語意：這裡的 sys 只影響「這次開頁之後」送出的盤點——submit 時前端把 sys 原樣帶回、
+            // 寫進 stocktake_count.sys_qty 成為建立當下的凍結快照，已送出的 session 不回溯改動。
+            let whQtyMap = null;
+            try {
+                const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(code);
+                if ((wq || []).length) {
+                    whQtyMap = {};
+                    for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0);
+                }
+            } catch (_) { whQtyMap = null; /* 查詢失敗 → 沿用總量基準，不擋盤點 */ }
+            const sysQtySource = whQtyMap ? "warehouse" : "total";
             const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item").all();
             const exp = {}; (expRows || []).forEach((r) => { exp[String(r.erp_code)] = String(r.expiry_unit || ""); });
             const items = (rows || []).map((r) => {
                 const c = String(r.erp_code || "");
                 const isExp = Object.prototype.hasOwnProperty.call(exp, c);
-                return { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: Number(r.qty || 0), exp: isExp, eunit: isExp ? (exp[c] || String(r.unit || "")) : "" };
+                const sysv = whQtyMap ? Number(whQtyMap[c] || 0) : Number(r.qty || 0);
+                return { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: sysv, exp: isExp, eunit: isExp ? (exp[c] || String(r.unit || "")) : "" };
             });
             // 續盤：同倉同日若已送出過，帶回已存的實盤數與效期，重開可接著盤
             const date = stkTaipeiDate();
@@ -151,7 +166,7 @@ function createLiffRouter() {
                 resumed = (cRows || []).length > 0;
                 submittedAt = sess.submitted_at != null && sess.submitted_at !== "" ? String(sess.submitted_at) : null;
             }
-            res.json({ date, warehouse: { code, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt });
+            res.json({ date, warehouse: { code, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt, sysQtySource });
         } catch (e) { console.error("[liff stocktake items]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
     // 唯一索引衝突判斷（pg: 23505；better-sqlite3: SQLITE_CONSTRAINT*／UNIQUE constraint failed）
