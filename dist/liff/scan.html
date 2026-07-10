@@ -149,9 +149,21 @@
 <script>
 (function(){
   var LIFF_ID=window.__LIFF_ID__||"";
+  // 兩種入口：① LINE LIFF（走 /liff/api/*、LINE 登入）② 後台網頁版（__SCAN_WEB__，走 /admin/scan/*、後台 cookie 登入）
+  var WEB=!!window.__SCAN_WEB__;
+  var APIB=window.__SCAN_API__||'/admin/scan';
   var app=document.getElementById('app');
   var COMPANY={'00':'松富','01':'龍港','02':'松揚','03':'松成'};
   var CO_ORDER=['02','00','01','03']; // 掃碼主要給松揚用，排最前
+  function apiUrl(kind){
+    if(WEB) return APIB+'/'+kind; // /admin/scan/warehouses|items|barcodes|search|bind|submit
+    switch(kind){
+      case 'warehouses': return '/liff/api/stocktake/warehouses';
+      case 'items': return '/liff/api/stocktake/items';
+      case 'submit': return '/liff/api/stocktake/submit';
+      default: return '/liff/api/scan/'+kind; // barcodes|search|bind
+    }
+  }
 
   var S={idToken:null,name:'',icpno:'02',wh:null,date:'',items:[],itemIdx:{},counts:{},order:[],
          barcodes:{},cur:null,scanning:false,stream:null,detector:null,zreader:null,engine:'',extra:{},
@@ -159,8 +171,14 @@
 
   function esc(s){s=(s==null?'':String(s));return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function fmt(n){var v=Number(n);if(!isFinite(v))return '0';return String(Math.round(v*100)/100);}
-  function api(path){return fetch(path,{headers:{'Authorization':'Bearer '+(S.idToken||'')}}).then(function(r){return r.json();});}
-  function post(path,body){return fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(S.idToken||'')},body:JSON.stringify(body)}).then(function(r){return r.json();});}
+  function api(path){
+    if(WEB) return fetch(path,{credentials:'same-origin'}).then(function(r){return r.json();});
+    return fetch(path,{headers:{'Authorization':'Bearer '+(S.idToken||'')}}).then(function(r){return r.json();});
+  }
+  function post(path,body){
+    if(WEB) return fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json();});
+    return fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(S.idToken||'')},body:JSON.stringify(body)}).then(function(r){return r.json();});
+  }
   function showCenter(html){app.innerHTML='<div class="center">'+html+'</div>';}
   function coName(){return COMPANY[S.icpno]||('公司'+S.icpno);}
 
@@ -199,9 +217,14 @@
     return null;
   }
   function boot(){
-    if(!LIFF_ID){showCenter('<div>⚠ 尚未設定 LIFF ID（LIFF_ID_SCAN）</div>');return;}
     var p=getParam('icpno');if(p&&/^\d{2}$/.test(p))S.icpno=p;
     else{try{var last=localStorage.getItem('scan_icpno');if(last&&/^\d{2}$/.test(last))S.icpno=last;}catch(_){}}
+    if(WEB){ // 後台網頁版：不需要 LINE 登入，身分由後台 cookie session 決定
+      S.name=window.__SCAN_NAME__||'';
+      showPicker();
+      return;
+    }
+    if(!LIFF_ID){showCenter('<div>⚠ 尚未設定 LIFF ID（LIFF_ID_SCAN）</div>');return;}
     liff.init({liffId:LIFF_ID}).then(function(){
       if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}
       S.idToken=liff.getIDToken();
@@ -219,7 +242,7 @@
   function showPicker(){
     stopScan();
     showCenter('<div class="spin"></div><div>載入倉庫…</div>');
-    api('/liff/api/stocktake/warehouses?icpno='+encodeURIComponent(S.icpno)).then(function(res){
+    api(apiUrl('warehouses')+'?icpno='+encodeURIComponent(S.icpno)).then(function(res){
       if(res.error){showCenter('<div>⚠ '+esc(res.error)+'</div>');return;}
       var whs=res.warehouses||[];
       var html='<div class="pk-head"><h1>掃碼盤點</h1>'
@@ -251,8 +274,8 @@
   function openWarehouse(code){
     showCenter('<div class="spin"></div><div>載入品項與條碼…</div>');
     Promise.all([
-      api('/liff/api/stocktake/items?warehouse='+encodeURIComponent(code)+'&icpno='+encodeURIComponent(S.icpno)),
-      api('/liff/api/scan/barcodes?icpno='+encodeURIComponent(S.icpno))
+      api(apiUrl('items')+'?warehouse='+encodeURIComponent(code)+'&icpno='+encodeURIComponent(S.icpno)),
+      api(apiUrl('barcodes')+'?icpno='+encodeURIComponent(S.icpno))
     ]).then(function(rs){
       var res=rs[0],bc=rs[1];
       if(res.error){showCenter('<div>⚠ '+esc(res.error)+'</div>');return;}
@@ -431,7 +454,7 @@
     openBind(raw);
   }
   function fetchItem(code,cb){
-    api('/liff/api/scan/search?icpno='+encodeURIComponent(S.icpno)+'&q='+encodeURIComponent(code)).then(function(res){
+    api(apiUrl('search')+'?icpno='+encodeURIComponent(S.icpno)+'&q='+encodeURIComponent(code)).then(function(res){
       var it=(res.items||[]).filter(function(x){return x.c===code;})[0]||null;
       if(it)S.extra[code]=it;
       cb(it);
@@ -574,7 +597,7 @@
       var qps=parseFloat(document.getElementById('bindQps').value);
       if(!isFinite(qps)||qps<=0)qps=1;
       var btn=this;btn.disabled=true;btn.textContent='綁定中…';
-      post('/liff/api/scan/bind',{icpno:S.icpno,barcode:B.barcode,erp_code:B.sel.c,qty_per_scan:qps}).then(function(res){
+      post(apiUrl('bind'),{icpno:S.icpno,barcode:B.barcode,erp_code:B.sel.c,qty_per_scan:qps}).then(function(res){
         if(res.error){btn.disabled=false;btn.textContent='綁定並帶入';alert('綁定失敗：'+res.error);return;}
         S.barcodes[B.barcode]={c:B.sel.c,q:qps};
         if(!S.itemIdx[B.sel.c])S.extra[B.sel.c]=B.sel;
@@ -588,7 +611,7 @@
     var box=document.getElementById('bindRes');if(!box)return;
     if(!q){box.innerHTML='';return;}
     box.innerHTML='<div class="hint">搜尋中…</div>';
-    api('/liff/api/scan/search?icpno='+encodeURIComponent(S.icpno)+'&q='+encodeURIComponent(q)).then(function(res){
+    api(apiUrl('search')+'?icpno='+encodeURIComponent(S.icpno)+'&q='+encodeURIComponent(q)).then(function(res){
       var items=res.items||[];
       if(!items.length){box.innerHTML='<div class="hint">找不到符合的品項</div>';return;}
       box.innerHTML=items.map(function(it,i){
@@ -619,7 +642,7 @@
       var v=parseFloat(S.counts[c]);if(!isFinite(v))return;
       counts.push({code:it.c,name:it.n,spec:it.s,unit:it.u,sys:it.sys,counted:v,mid:null,expiry:[]});
     });
-    post('/liff/api/stocktake/submit',{warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:S.baseSubmittedAt}).then(function(res){
+    post(apiUrl('submit'),{warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:S.baseSubmittedAt}).then(function(res){
       if(res.error){
         btn.disabled=false;btn.textContent='送出盤點';
         if(res.code==='conflict_stale'||res.code==='conflict_taken'){alert('這個倉今天已經有人送出盤點了，請退回重進、續盤後再送出。');return;}
