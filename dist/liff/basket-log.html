@@ -217,11 +217,23 @@
   }
   function clamp(n){ n = Math.max(0, Math.min(9999, n|0)); return n; }
   function isDirty(){
-    // 與載入基準快照比對：只有真的改過數字才算 dirty（避免載入既有紀錄後恆為 dirty）
+    // 與載入基準快照比對：只有真的改過數字才算 dirty（避免載入既有紀錄後恆為 dirty）。
+    // 只用於「取消」的遺失確認，不用於送出鈕啟用（見 hasAnyData）。
     return snapshot() !== baseline;
   }
+  // [fix 2026-07-10 #63回歸] 送出鈕啟用還原為「有任何數字就可送」：司機「數字沒變、
+  // 想重發群組記帳訊息」是正當路徑，不可因「與載入基準相同」而 disabled。
+  function hasAnyData(){
+    if (state.square.to || state.square.pk) return true;
+    if (state.round.to || state.round.pk) return true;
+    for (const k of Object.keys(state.numbered)) {
+      const x = state.numbered[k];
+      if (x && (x.to || x.pk)) return true;
+    }
+    return false;
+  }
   function refreshSaveBtn(){
-    saveBtn.disabled = !isDirty();
+    saveBtn.disabled = !hasAnyData();
   }
 
   // ─── 號碼籃網格 ────────────────────────────
@@ -384,6 +396,12 @@
       });
       const data = await resp.json();
       if (!data?.ok) throw new Error(data?.error || "儲存失敗");
+      // [fix 2026-07-10 #63回歸] 送出成功＝伺服器狀態已與畫面一致 → 更新基準快照並恢復送出鈕：
+      // closeWindow 失敗（外部瀏覽器等）留在頁面時，「取消」不再誤報「內容將遺失」，也可再次送出。
+      // 今日已有紀錄改為 true：留在頁面再送會先跳「覆蓋確認」。
+      baseline = snapshot();
+      state.hasExisting = true;
+      refreshSaveBtn();
       setStatus("ok", "✅ 已記帳，準備送回群組…");
       // 用 liff.sendMessages 以司機身份發到群組（免費）
       try {
