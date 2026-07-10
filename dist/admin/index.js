@@ -77,6 +77,7 @@ const announcement_image_js_1 = require("../lib/announcement-image.js");
 const calendar_holidays_js_1 = require("../lib/calendar-holidays.js");
 const route_war_room_js_1 = require("../lib/route-war-room.js");
 const quote_report_js_1 = require("../lib/quote-report.js");
+const ops_notify_js_1 = require("../lib/ops-notify.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
@@ -542,6 +543,10 @@ const NOTION_STYLE = `
   /* 單位不符＋低信心同時發生：黃底為主、紅左邊條（避免互相蓋掉） */
   table.order-detail-table tbody tr.order-item-unit-mismatch.order-item-low-conf > td { background: #fef9c3; }
   .unit-mismatch-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+  /* 訂單明細：remark 以「⚠」開頭＝AI 標記警示（如照片辨識幾何校驗「⚠ 字跡跨列」）→ 淡黃底＋琥珀左邊條 */
+  table.order-detail-table tbody tr.order-item-remark-warn > td { background: #fef9c3; }
+  table.order-detail-table tbody tr.order-item-remark-warn > td:first-child { box-shadow: inset 4px 0 0 #d97706; }
+  table.order-detail-table tbody tr.order-item-remark-warn.order-item-low-conf > td { background: #fef9c3; }
   /* 辨識信心分數小徽章（顯示在品項旁） */
   .conf-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; border: 1px solid transparent; }
   .conf-pill.conf-high { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
@@ -754,6 +759,7 @@ const NOTION_STYLE = `
     table.order-detail-table tbody tr.order-item-need-review { background: #fff7ed; }
     table.order-detail-table tbody tr.order-item-low-conf { background: #fef2f2; }
     table.order-detail-table tbody tr.order-item-unit-mismatch { background: #fef9c3; border-left: 4px solid #ca8a04; }
+    table.order-detail-table tbody tr.order-item-remark-warn { background: #fef9c3; border-left: 4px solid #d97706; }
     .order-detail-layout { flex-direction: column; flex-wrap: wrap; }
     .order-detail-raw-col { flex: none; width: 100%; min-width: 0; }
     .order-detail-raw-inner { position: static; max-height: 220px; }
@@ -2750,7 +2756,12 @@ function createAdminRouter() {
                 res.status(503).json({ error: "LINGYUE_WRITEBACK_KEY 未設定（請於 Cloud Run 環境變數設定後再用）" });
                 return;
             }
-            if (!provided || provided !== expected) {
+            // [fix 2026-07-10] 金鑰比對改 timingSafeEqual：避免逐字元比較的時間側信道（長度不同先擋，
+            // timingSafeEqual 要求兩邊等長，長度本身不視為秘密）。
+            const providedBuf = Buffer.from(provided, "utf8");
+            const expectedBuf = Buffer.from(expected, "utf8");
+            if (!provided || providedBuf.length !== expectedBuf.length
+                || !crypto_1.timingSafeEqual(providedBuf, expectedBuf)) {
                 res.status(401).json({ error: "unauthorized" });
                 return;
             }
@@ -6943,6 +6954,7 @@ function createAdminRouter() {
             refresh_requested_at: await get("erp_stock_refresh_requested_at"),
             refresh_error: await get("erp_stock_refresh_error"),
             refresh_error_at: await get("erp_stock_refresh_error_at"),
+            agent_last_wait_at: await get("ly_agent_last_wait_at"), // 內網代理最後連上 /wait 的心跳
         };
     }
     router.get("/inventory/stock", async (req, res) => {
@@ -6980,6 +6992,18 @@ function createAdminRouter() {
         const dataJson = JSON.stringify({ items, assign, whname }).replace(/</g, "\\u003c");
         const meta = await readStockMeta();
         const snapLabel = meta.snapshot_at ? fmtTaipeiYMDHM(meta.snapshot_at, "尚無資料") : "尚無資料";
+        // [ops 2026-07-10] 內網代理心跳顯示：讀 ly_agent_last_wait_at（/wait 每次進來都會 upsert），
+        // 超過 10 分鐘沒連線＝代理可能掛了，顯示紅字提醒（偵測交由此處顯示，不做定時器）。
+        let agentLabel = "尚無紀錄";
+        let agentStale = false;
+        if (meta.agent_last_wait_at) {
+            const t = Date.parse(meta.agent_last_wait_at);
+            if (Number.isFinite(t)) {
+                const mins = Math.max(0, Math.floor((Date.now() - t) / 60000));
+                agentStale = mins > 10;
+                agentLabel = mins < 1 ? "剛剛" : `${mins} 分鐘前`;
+            }
+        }
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 目前庫存</div>
       <style>${STK_STYLE}</style>
@@ -6995,7 +7019,7 @@ function createAdminRouter() {
             <label class="sf-switch-label"><input type="checkbox" id="stkLowOnly"><span class="sf-switch"></span>只看低量/負量</label>
           </div>
           <div class="stk-toolbar-right">
-            <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項</span>
+            <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項 · 內網代理最後連線：<b${agentStale ? ' style="color:#b91c1c;"' : ""}>${escapeHtml(agentLabel)}</b></span>
             <button type="button" id="stkExport" class="btn">匯出</button>
             <button type="button" id="stkRefresh" class="btn btn-primary">庫存更新</button>
           </div>
@@ -9217,6 +9241,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
       ORDER BY o.order_date DESC, o.id DESC
       LIMIT 300
     `).all(filterDateFrom, filterDateTo);
+            // 查詢硬上限 LIMIT 300：結果剛好滿 300 筆＝很可能被截斷，列表頂部要提示使用者縮小日期區間
+            const ordersHitLimit = Array.isArray(lineOrders) && lineOrders.length === 300;
             let deletedOrders = await db.prepare(`
       SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, c.name AS customer_name,
              o.voided_at, o.voided_by, o.void_reason, o.void_note
@@ -9626,39 +9652,26 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 </div>
               </div>
             </div>
+            <!-- 批次作廢 modal：與訂單明細「作廢此訂單」共用同一組原因選單（voidReasonModalHtml） -->
+            ${voidReasonModalHtml({ prefix: "batchVoid", title: "批次作廢訂單" })}
             <script>
             (function(){
               const btn = document.getElementById("btnBatchVoid");
               if (!btn) return;
               btn.addEventListener("click", function(){
-                const form = document.getElementById("batchOrderActionsForm");
                 const checked = document.querySelectorAll('input.order-batch-cb:checked').length;
                 if (!checked) { alert("請先勾選要作廢的訂單"); return; }
-                const r = window.prompt(
-                  "作廢 " + checked + " 筆訂單的原因？\\n\\n" +
-                  "  1 = AI 辨識整單錯誤（會回饋學習庫）\\n" +
-                  "  2 = 客訴問題\\n" +
-                  "  3 = 客戶取消\\n" +
-                  "  4 = 重複叫貨\\n" +
-                  "  5 = 內部錯誤\\n" +
-                  "  6 = 其他\\n\\n" +
-                  "按「取消」放棄作廢。",
-                  "1"
-                );
-                if (r === null) return;
-                const map = { "1":"ai_wrong", "2":"customer_complaint", "3":"customer_cancelled", "4":"duplicate", "5":"staff_error", "6":"other" };
-                const reason = map[String(r).trim()] || "other";
-                let note = "";
-                if (reason !== "ai_wrong") {
-                  note = window.prompt("備註（可留白）：", "") || "";
-                }
+                window.batchVoidModalOpen("將作廢 <strong>" + checked + "</strong> 筆訂單。選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。");
+              });
+              window.batchVoidModalSubmit = function(reason, note){
                 document.getElementById("batchVoidReason").value = reason;
                 document.getElementById("batchVoidNote").value = note;
-                form.submit();
-              });
+                document.getElementById("batchOrderActionsForm").submit();
+              };
             })();
             </script>
           </div>
+          ${ordersHitLimit ? `<p class="notion-msg" style="margin:0;background:#fef9c3;color:#854d0e;border:1px solid #fde047;">⚠ 已達 300 筆顯示上限，可能有訂單未列出——請縮小日期區間。</p>` : ""}
           <div class="sf-table-wrap">
             <table class="sf-table">
               <thead>
@@ -10863,9 +10876,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         // [fix 2026-07-08] 認領租約：過去 /wait 對「已排隊未回寫」的單無條件回傳，
         // 多個 agent 或 agent 重啟同時 /wait 會拿到同一批單 → 各自寫入凌越 → 重複開單。
         // 改成每張單先用條件式 UPDATE 蓋 claimed_at 認領；只有 changes=1（本次真的搶到）才回傳。
-        // 租約 90 秒內其他 /wait 不會再撿到同一張；agent 若掛掉沒回填，租約到期後自動重新可撿（自帶重試）。
-        const LEASE_MS = 90000;
+        // 租約期間其他 /wait 不會再撿到同一張；agent 若掛掉沒回填，租約到期後自動重新可撿（自帶重試）。
+        // [fix 2026-07-10] 租約 90 秒 → 10 分鐘：一批單最壞寫入時間（凌越 SOAP 逐張寫＋逐張查倉別）
+        // 遠超 90 秒，租約先過期＝別條 /wait 重撿同單＝重複開單。10 分鐘涵蓋最壞批次＋回報時間。
+        // 同時單批上限 20 → 5（下方 SQL LIMIT）：縮短「已寫入凌越、尚未回填」的風險窗口。
+        const LEASE_MS = 600000;
         try {
+            // [ops 2026-07-10] 心跳：記錄內網代理最後一次連上 /wait 的時間（後台庫存頁顯示「內網代理最後連線」）。
+            try {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ly_agent_last_wait_at", new Date().toISOString());
+            }
+            catch (_) { /* 心跳寫入失敗不影響主流程 */ }
             while (true) {
                 const claimBefore = new Date(Date.now() - LEASE_MS).toISOString();
                 const rows = await db.prepare(`
@@ -10876,7 +10897,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
             AND (o.lingyue_claimed_at IS NULL OR o.lingyue_claimed_at < ?)
           ORDER BY o.lingyue_queued_at ASC, o.id ASC
-          LIMIT 20
+          LIMIT 5
         `).all(claimBefore);
                 if (rows && rows.length) {
                     const orders = [];
@@ -10941,14 +10962,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 }
                 if (!ok || !docNo) {
                     // [fix 2026-07-08] 失敗出口：記錄錯誤。permanent（如缺料號）或累計 >=3 次即移出佇列（清 queued/claimed），
-                    // 否則保留佇列讓租約到期後自動重試（不清 claimed_at＝維持 90 秒節流，不狂重試）。
+                    // 否則保留佇列讓租約到期後自動重試（不清 claimed_at＝維持租約節流，不狂重試）。
                     const errMsg = (r?.error ? String(r.error) : "寫入未成功或缺少 doc_no").slice(0, 500);
                     const permanent = r?.permanent === true;
                     try {
-                        const cur = await db.prepare("SELECT COALESCE(lingyue_write_attempts, 0) AS n FROM orders WHERE id = ?").get(orderId);
+                        const cur = await db.prepare("SELECT COALESCE(lingyue_write_attempts, 0) AS n, order_no FROM orders WHERE id = ?").get(orderId);
                         const n = (cur?.n || 0) + 1;
                         if (permanent || n >= 3) {
                             await db.prepare("UPDATE orders SET lingyue_write_attempts = ?, lingyue_last_error = ?, lingyue_queued_at = NULL, lingyue_claimed_at = NULL WHERE id = ?").run(n, errMsg, orderId);
+                            // [ops 2026-07-10] 三振出局（或永久失敗）＝移出佇列後不會再自動重試，推播告警提醒人工處理。
+                            ops_notify_js_1.notifyOps(db, `凌越回寫失敗已移出佇列（${permanent ? "永久錯誤" : `已重試 ${n} 次`}）：訂單 ${cur?.order_no || orderId}，錯誤：${errMsg.slice(0, 200)}`).catch(() => { });
                         }
                         else {
                             await db.prepare("UPDATE orders SET lingyue_write_attempts = ?, lingyue_last_error = ? WHERE id = ?").run(n, errMsg, orderId);
@@ -10959,6 +10982,27 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     continue;
                 }
                 try {
+                    // [fix 2026-07-10] 冪等防護：agent 可能因 callback 失敗而重送（journal 重播）。
+                    //  - 已有相同 doc_no → 視為冪等成功，不再覆寫（保留原 written_at）。
+                    //  - 已有「不同」doc_no → 衝突（可能重複開單）：不覆蓋，記 lingyue_last_error ＋推播告警，人工到凌越核對。
+                    const cur = await db.prepare("SELECT lingyue_doc_no, order_no FROM orders WHERE id = ?").get(orderId);
+                    if (!cur) {
+                        failed.push({ order_id: orderId, reason: "查無此訂單" });
+                        continue;
+                    }
+                    const existing = cur.lingyue_doc_no != null ? String(cur.lingyue_doc_no).trim() : "";
+                    if (existing && existing === docNo) {
+                        updated.push({ order_id: orderId, doc_no: docNo, idempotent: true });
+                        continue;
+                    }
+                    if (existing && existing !== docNo) {
+                        const conflictMsg = `凌越單號衝突：後台已記 ${existing}，agent 又回報 ${docNo}（未覆蓋）。可能重複開單，請到凌越核對並刪除多餘的單。`;
+                        console.error("[admin] lingyue-writeback/callback 單號衝突", orderId, "existing=", existing, "incoming=", docNo);
+                        await db.prepare("UPDATE orders SET lingyue_last_error = ? WHERE id = ?").run(conflictMsg.slice(0, 500), orderId);
+                        ops_notify_js_1.notifyOps(db, `訂單 ${cur.order_no || orderId} ${conflictMsg}`).catch(() => { });
+                        failed.push({ order_id: orderId, reason: conflictMsg, conflict: true });
+                        continue;
+                    }
                     // 成功：回填單號＋時間，並清掉失敗計數/錯誤與認領。
                     const ret = await db.prepare("UPDATE orders SET lingyue_doc_no = ?, lingyue_written_at = ?, lingyue_last_error = NULL, lingyue_write_attempts = 0, lingyue_claimed_at = NULL WHERE id = ?").run(docNo, now, orderId);
                     if (ret && (ret.changes === 0)) {
@@ -11041,6 +11085,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/inventory-push", e?.message || e);
+            // [ops 2026-07-10] 庫存推送失敗＝後台庫存可能過期，推播告警（交易已回滾、保留上一份快照）。
+            ops_notify_js_1.notifyOps(db, `凌越庫存推送（inventory-push）失敗：${String(e?.message || e).slice(0, 200)}`).catch(() => { });
             res.status(500).json({ error: "inventory-push 失敗", detail: String(e?.message || e) });
         }
     });
@@ -11058,6 +11104,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             timeoutSec = 50;
         const deadline = Date.now() + timeoutSec * 1000;
         try {
+            // [ops 2026-07-10] 心跳：記錄內網代理最後一次連上 inventory-wait 的時間。
+            try {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ly_agent_last_inventory_wait_at", new Date().toISOString());
+            }
+            catch (_) { /* 心跳寫入失敗不影響主流程 */ }
             while (true) {
                 const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_stock_refresh_requested_at");
                 const reqAt = row && row.value ? String(row.value).trim() : "";
@@ -11094,6 +11145,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error", err);
                 await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error_at", now);
                 await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "error");
+                // [ops 2026-07-10] 代理回報庫存刷新失敗（如凌越連線逾時）→ 推播告警。
+                ops_notify_js_1.notifyOps(db, `凌越庫存刷新失敗（代理回報）：${err.slice(0, 200)}`).catch(() => { });
             }
             res.json({ ok: true });
         }
@@ -11114,6 +11167,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             timeoutSec = 50;
         const deadline = Date.now() + timeoutSec * 1000;
         try {
+            // [ops 2026-07-10] 心跳：記錄內網代理最後一次連上 txn-wait 的時間。
+            try {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ly_agent_last_txn_wait_at", new Date().toISOString());
+            }
+            catch (_) { /* 心跳寫入失敗不影響主流程 */ }
             while (true) {
                 const rows = await db.prepare("SELECT key, value FROM app_settings WHERE key LIKE ?").all("erp_txn_req_%");
                 if (rows && rows.length) {
@@ -11582,9 +11640,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const unitMismatchBadge = isUnitMismatchKg
                 ? `<span class="unit-mismatch-badge" title="此品項在貨品主檔以「公斤」計價，但這張單辨識成「${escapeHtml(i.unit || "")}」。請確認後修改單位／數量。">⚠ 單位非公斤</span>`
                 : "";
+            // remark 以「⚠」開頭＝AI 標記警示（如照片辨識幾何校驗「⚠ 字跡跨列（A/B），請確認」）
+            // → 品名旁琥珀徽章（沿用 unit-mismatch-badge 樣式）＋整列淡黃底（order-item-remark-warn）
+            const remarkTrimmed = (i.remark && String(i.remark).trim()) || "";
+            const isRemarkWarn = remarkTrimmed.startsWith("⚠");
+            const remarkWarnBadge = isRemarkWarn
+                ? `<span class="unit-mismatch-badge" title="${escapeAttr(remarkTrimmed)}">⚠ ${escapeHtml(remarkTrimmed.replace(/^⚠\s*/, "").split(/[，,；;\n]/)[0].slice(0, 20) || "備註警示")}</span>`
+                : "";
             const productCell = i.need_review === 1
-                ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
-                : `<span class="order-final-product">${nameEditLink}</span>${confPill}${unitMismatchBadge} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
+                ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>${remarkWarnBadge}`
+                : `<span class="order-final-product">${nameEditLink}</span>${confPill}${unitMismatchBadge}${remarkWarnBadge} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
             const subCustomerVal = (i.sub_customer && String(i.sub_customer).trim()) ? escapeAttr(String(i.sub_customer).trim()) : "";
             const isLowConf = i.need_review !== 1 && conf != null && conf < lowConfThreshold;
@@ -11592,6 +11657,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             if (i.need_review === 1) rowClasses = "order-item-need-review";
             else if (isLowConf) rowClasses = "order-item-low-conf";
             if (isUnitMismatchKg) rowClasses = rowClasses ? (rowClasses + " order-item-unit-mismatch") : "order-item-unit-mismatch";
+            if (isRemarkWarn) rowClasses = rowClasses ? (rowClasses + " order-item-remark-warn") : "order-item-remark-warn";
             const rawCard = `${idx + 1}. 原始：${String(i.raw_name ?? "").trim() || "—"} ${String(q)}${(i.unit && i.unit.trim()) || ""}`;
             return `<tr data-item-id="${escapeAttr(i.item_id)}" data-raw-name="${escapeAttr(i.raw_name ?? "")}" data-line-unit="${escapeAttr((i.unit && i.unit.trim()) || "")}" data-raw-card="${escapeAttr(rawCard)}" class="${escapeAttr(rowClasses)}">
             <td class="order-detail-col-cb"><input type="checkbox" class="item-select-cb" name="selected_items" value="${escapeAttr(i.item_id)}"></td>
@@ -11844,88 +11910,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               <button type="button" id="btnVoidOrder" class="sf-btn danger" title="作廢整張訂單（會保留稽核紀錄、可由「已作廢訂單」清單恢復）">${SF_ICONS.x}<span>作廢此訂單</span></button>
             </form>
           </div>
-          <div id="voidOrderModal" class="notion-modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="voidOrderModalTitle">
-            <div class="notion-modal" style="max-width:460px;">
-              <h3 id="voidOrderModalTitle" style="margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px;">
-                <span style="color:#dc2626;">⊘</span>
-                <span>作廢此訂單</span>
-              </h3>
-              <p style="margin:0 0 14px;font-size:12px;color:var(--txt-3);">選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。</p>
-              <div id="voidReasonGroup" style="display:flex;flex-direction:column;gap:6px;">
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="not_order"><span class="void-reason-icon">🚫</span><span class="void-reason-text"><strong>非訂單訊息</strong><br><span style="font-size:11px;color:var(--txt-3);">匯款證明、寒喧、門市互動等</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="duplicate"><span class="void-reason-icon">🔁</span><span class="void-reason-text"><strong>重複叫貨</strong><br><span style="font-size:11px;color:var(--txt-3);">同一筆叫貨被讀進 2 次</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="customer_cancelled"><span class="void-reason-icon">❌</span><span class="void-reason-text"><strong>客戶取消</strong><br><span style="font-size:11px;color:var(--txt-3);">客戶主動說不要了</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="customer_complaint"><span class="void-reason-icon">💬</span><span class="void-reason-text"><strong>客訴問題</strong></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="ai_wrong"><span class="void-reason-icon">🤖</span><span class="void-reason-text"><strong>AI 辨識整單錯誤</strong><br><span style="font-size:11px;color:var(--txt-3);">會回饋學習庫</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="staff_error"><span class="void-reason-icon">🧑‍💼</span><span class="void-reason-text"><strong>內部錯誤</strong></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="other"><span class="void-reason-icon">📝</span><span class="void-reason-text"><strong>其他</strong></span></label>
-              </div>
-              <textarea id="voidOrderModalNote" placeholder="備註（可留白）" rows="2" style="margin-top:12px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
-              <div class="notion-modal-actions" style="justify-content:flex-end;">
-                <button type="button" class="sf-btn" id="voidOrderModalCancel">取消</button>
-                <button type="button" class="sf-btn danger" id="voidOrderModalConfirm">確定作廢</button>
-              </div>
-            </div>
-          </div>
-          <style>
-            .void-reason-row { display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--bg-1);transition:background .1s,border-color .1s;margin:0;font-size:13px; }
-            .void-reason-row:hover { background:var(--bg-2);border-color:var(--txt-3); }
-            .void-reason-row input[type=radio] { margin-top:3px; }
-            .void-reason-row.is-selected { background:#fee2e2;border-color:#dc2626; }
-            .void-reason-icon { font-size:18px;line-height:1;margin-top:1px;flex:0 0 auto; }
-            .void-reason-text { flex:1;line-height:1.4; }
-          </style>
+          ${voidReasonModalHtml({ prefix: "voidOrder", title: "作廢此訂單" })}
           <script>
           (function(){
             const btn = document.getElementById("btnVoidOrder");
-            const modal = document.getElementById("voidOrderModal");
-            const cancelBtn = document.getElementById("voidOrderModalCancel");
-            const confirmBtn = document.getElementById("voidOrderModalConfirm");
-            const noteInput = document.getElementById("voidOrderModalNote");
-            const group = document.getElementById("voidReasonGroup");
-            if (!btn || !modal || !confirmBtn || !group) return;
-            const LS_KEY = "songfu.void_order.last_reason";
-            function getLast() { try { return localStorage.getItem(LS_KEY) || "not_order"; } catch(_) { return "not_order"; } }
-            function setLast(v) { try { localStorage.setItem(LS_KEY, v); } catch(_) {} }
-            function getPicked() {
-              const r = group.querySelector('input[name="void_reason_pick"]:checked');
-              return r ? r.value : "";
-            }
-            function highlight() {
-              group.querySelectorAll(".void-reason-row").forEach(row => {
-                const r = row.querySelector('input[type=radio]');
-                row.classList.toggle("is-selected", r && r.checked);
-              });
-            }
-            function open() {
-              const last = getLast();
-              const target = group.querySelector('input[value="' + last + '"]') || group.querySelector('input[type=radio]');
-              if (target) target.checked = true;
-              noteInput.value = "";
-              highlight();
-              modal.style.display = "flex";
-              noteInput.focus();
-            }
-            function close() { modal.style.display = "none"; }
-            btn.addEventListener("click", open);
-            cancelBtn.addEventListener("click", close);
-            modal.addEventListener("click", function(e){ if (e.target === modal) close(); });
-            document.addEventListener("keydown", function(e){
-              if (modal.style.display === "none") return;
-              if (e.key === "Escape") close();
-              else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) confirmBtn.click();
-            });
-            group.addEventListener("change", highlight);
-            confirmBtn.addEventListener("click", function(){
-              const reason = getPicked();
-              if (!reason) { alert("請選擇作廢原因"); return; }
-              setLast(reason);
+            if (!btn) return;
+            btn.addEventListener("click", function(){ window.voidOrderModalOpen(); });
+            window.voidOrderModalSubmit = function(reason, note){
               document.getElementById("voidOrderReason").value = reason;
-              document.getElementById("voidOrderNote").value = noteInput.value.trim();
-              confirmBtn.disabled = true;
-              confirmBtn.textContent = "作廢中…";
+              document.getElementById("voidOrderNote").value = note;
               document.getElementById("voidOrderForm").submit();
-            });
+            };
           })();
           </script>`}
         </div>
@@ -15310,7 +15305,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const productList = await db.prepare("SELECT id, name FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all();
             const productOptions = productList.map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`).join("");
             const aliasRows = custAliases
-            .map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td><td><form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/alias/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td></tr>`)
+            .map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td><td><form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/alias/${encodeURIComponent(a.id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(a.alias))}」？')"><button type="submit">刪除</button></form></td></tr>`)
             .join("");
             let profileSection = "";
             try {
@@ -16488,7 +16483,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const rows = aliases
             .map((a) => `<tr>
             <td>${escapeHtml(a.alias)}</td>
-            <td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit">編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td>
+            <td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit">編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(a.alias))}」？')"><button type="submit">刪除</button></form></td>
           </tr>`)
             .join("");
         const specRows = specs
@@ -16496,7 +16491,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <td>${escapeHtml(s.unit)}</td>
             <td>${escapeHtml(s.note_label ?? "")}</td>
             <td>${s.conversion_kg != null ? s.conversion_kg : "—"}</td>
-            <td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete" style="display:inline;"><button type="submit" class="btn">刪除</button></form></td>
+            <td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除規格「${escapeAttr(escJsStr(s.unit))}」？')"><button type="submit" class="btn">刪除</button></form></td>
           </tr>`)
             .join("");
         const body = `
@@ -16950,11 +16945,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const specTableRows = unitSpecs.map((s) => {
             const kgDisp = s.conversion_kg != null ? `${fmtKgDisplay(s.conversion_kg)} kg` : "—";
             const hid = `<input type="hidden" name="redirect_to_edit" value="1"><input type="hidden" name="embed" value="${embed ? "1" : ""}"><input type="hidden" name="return" value="${escapeAttr(returnUrl)}">`;
-            return `<tr><td>${escapeHtml(s.unit)}</td><td>${escapeHtml(s.note_label ?? "")}</td><td>${escapeHtml(kgDisp)}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete"${formTarget} style="display:inline;margin:0;">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
+            return `<tr><td>${escapeHtml(s.unit)}</td><td>${escapeHtml(s.note_label ?? "")}</td><td>${escapeHtml(kgDisp)}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete"${formTarget} style="display:inline;margin:0;" onsubmit="return confirm('確定刪除規格「${escapeAttr(escJsStr(s.unit))}」？')">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
         }).join("");
         const packTableRows = packRatios.map((r) => {
             const hid = `<input type="hidden" name="embed" value="${embed ? "1" : ""}"><input type="hidden" name="return" value="${escapeAttr(returnUrl)}">`;
-            return `<tr><td>${escapeHtml(r.outer_unit)}</td><td style="text-align:right;">${escapeHtml(String(r.inner_count))}</td><td>${escapeHtml(r.inner_unit)}</td><td>${escapeHtml(r.note ?? "")}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/pack-ratios/${encodeURIComponent(r.id)}/delete"${formTarget} style="display:inline;margin:0;">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
+            return `<tr><td>${escapeHtml(r.outer_unit)}</td><td style="text-align:right;">${escapeHtml(String(r.inner_count))}</td><td>${escapeHtml(r.inner_unit)}</td><td>${escapeHtml(r.note ?? "")}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/pack-ratios/${encodeURIComponent(r.id)}/delete"${formTarget} style="display:inline;margin:0;" onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr("1 " + r.outer_unit + "＝" + r.inner_count + " " + r.inner_unit))}」？')">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
         }).join("");
         const derivedLines = [...derivedKgMap.entries()].sort((a, b) => a[0].localeCompare(b[0], "zh-Hant"));
         const derivedHtml = derivedLines.length === 0
@@ -16963,7 +16958,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const tag = derivedDirect.has(u) ? "直接" : "推算";
                 return `<li style="margin:4px 0;"><span class="pu-sop-badge">${escapeHtml(tag)}</span> 1 <strong>${escapeHtml(u)}</strong> ≈ <strong>${escapeHtml(fmtKgDisplay(k))}</strong> 公斤</li>`;
             }).join("")}</ul>`;
-        const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit"${linkTarget}>編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"${embed ? ' target="_parent"' : ""}><button type="submit">刪除</button></form></td></tr>`).join("");
+        const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit"${linkTarget}>編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"${embed ? ' target="_parent"' : ""} onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(a.alias))}」？')"><button type="submit">刪除</button></form></td></tr>`).join("");
         const logRows = recentLogs.map((l) => `<tr><td style="white-space:nowrap;font-size:12px;">${escapeHtml(String(l.created_at ?? ""))}</td><td>${escapeHtml(String(l.actor_username ?? "—"))}</td><td>${escapeHtml(String(l.action ?? ""))}</td><td>${escapeHtml(String(l.summary ?? "—"))}</td></tr>`).join("");
         const errMsg = req.query.err ? `<div class="notion-msg err">${escapeHtml(String(req.query.err))}</div>` : "";
         const autoLinkedCount = Math.max(0, parseInt(String(req.query.auto_linked || "0"), 10) || 0);
@@ -20065,4 +20060,112 @@ function escapeAttr(s) {
     if (s == null)
         return "";
     return escapeHtml(s).replace(/'/g, "&#39;");
+}
+// 將字串安全放進「HTML 屬性內的單引號 JS 字串」（如 onsubmit="return confirm('…')"）：
+// 先做 JS 跳脫（反斜線、單引號、換行），外層再用 escapeAttr 做 HTML 屬性跳脫。
+// 用法：onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(name))}」？')"
+function escJsStr(s) {
+    if (s == null)
+        return "";
+    return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\r?\n/g, " ");
+}
+// 作廢原因 modal（訂單明細「作廢此訂單」與訂單列表「批次作廢」共用）。
+// 產出 modal HTML＋樣式＋通用腳本；使用頁面需另外：
+//   1. 定義 window[prefix + "ModalSubmit"](reason, note) —— 按「確定作廢」後的送出行為。
+//   2. 呼叫 window[prefix + "ModalOpen"](descHtml?) 開啟 —— 可帶說明文字覆寫預設（如「將作廢 N 筆訂單」）。
+// 最近一次選的原因記在 localStorage（單筆與批次共用同一鍵）。
+function voidReasonModalHtml(opts) {
+    const prefix = opts.prefix;
+    const title = opts.title || "作廢此訂單";
+    const desc = opts.desc || "選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。";
+    const reasons = [
+        { value: "not_order", icon: "🚫", label: "非訂單訊息", hint: "匯款證明、寒喧、門市互動等" },
+        { value: "duplicate", icon: "🔁", label: "重複叫貨", hint: "同一筆叫貨被讀進 2 次" },
+        { value: "customer_cancelled", icon: "❌", label: "客戶取消", hint: "客戶主動說不要了" },
+        { value: "customer_complaint", icon: "💬", label: "客訴問題", hint: "" },
+        { value: "ai_wrong", icon: "🤖", label: "AI 辨識整單錯誤", hint: "會回饋學習庫" },
+        { value: "staff_error", icon: "🧑‍💼", label: "內部錯誤", hint: "" },
+        { value: "other", icon: "📝", label: "其他", hint: "" },
+    ];
+    const rowsHtml = reasons.map((r) => `<label class="void-reason-row"><input type="radio" name="${prefix}_reason_pick" value="${r.value}"><span class="void-reason-icon">${r.icon}</span><span class="void-reason-text"><strong>${r.label}</strong>${r.hint ? `<br><span style="font-size:11px;color:var(--txt-3);">${r.hint}</span>` : ""}</span></label>`).join("\n                ");
+    return `
+          <div id="${prefix}Modal" class="notion-modal-overlay" style="display:none;z-index:1200;" role="dialog" aria-modal="true" aria-labelledby="${prefix}ModalTitle">
+            <div class="notion-modal" style="max-width:460px;">
+              <h3 id="${prefix}ModalTitle" style="margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px;">
+                <span style="color:#dc2626;">⊘</span>
+                <span>${title}</span>
+              </h3>
+              <p id="${prefix}ModalDesc" style="margin:0 0 14px;font-size:12px;color:var(--txt-3);">${desc}</p>
+              <div id="${prefix}ReasonGroup" style="display:flex;flex-direction:column;gap:6px;">
+                ${rowsHtml}
+              </div>
+              <textarea id="${prefix}ModalNote" placeholder="備註（可留白）" rows="2" style="margin-top:12px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
+              <div class="notion-modal-actions" style="justify-content:flex-end;">
+                <button type="button" class="sf-btn" id="${prefix}ModalCancel">取消</button>
+                <button type="button" class="sf-btn danger" id="${prefix}ModalConfirm">確定作廢</button>
+              </div>
+            </div>
+          </div>
+          <style>
+            .void-reason-row { display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--bg-1);transition:background .1s,border-color .1s;margin:0;font-size:13px; }
+            .void-reason-row:hover { background:var(--bg-2);border-color:var(--txt-3); }
+            .void-reason-row input[type=radio] { margin-top:3px; }
+            .void-reason-row.is-selected { background:#fee2e2;border-color:#dc2626; }
+            .void-reason-icon { font-size:18px;line-height:1;margin-top:1px;flex:0 0 auto; }
+            .void-reason-text { flex:1;line-height:1.4; }
+          </style>
+          <script>
+          (function(){
+            const modal = document.getElementById("${prefix}Modal");
+            const cancelBtn = document.getElementById("${prefix}ModalCancel");
+            const confirmBtn = document.getElementById("${prefix}ModalConfirm");
+            const noteInput = document.getElementById("${prefix}ModalNote");
+            const descEl = document.getElementById("${prefix}ModalDesc");
+            const group = document.getElementById("${prefix}ReasonGroup");
+            if (!modal || !confirmBtn || !group || !noteInput) return;
+            const LS_KEY = "songfu.void_order.last_reason";
+            function getLast() { try { return localStorage.getItem(LS_KEY) || "not_order"; } catch(_) { return "not_order"; } }
+            function setLast(v) { try { localStorage.setItem(LS_KEY, v); } catch(_) {} }
+            function getPicked() {
+              const r = group.querySelector('input[name="${prefix}_reason_pick"]:checked');
+              return r ? r.value : "";
+            }
+            function highlight() {
+              group.querySelectorAll(".void-reason-row").forEach(row => {
+                const r = row.querySelector('input[type=radio]');
+                row.classList.toggle("is-selected", r && r.checked);
+              });
+            }
+            function close() { modal.style.display = "none"; }
+            window["${prefix}ModalOpen"] = function(descHtml){
+              if (descHtml && descEl) descEl.innerHTML = descHtml;
+              const last = getLast();
+              const target = group.querySelector('input[value="' + last + '"]') || group.querySelector('input[type=radio]');
+              if (target) target.checked = true;
+              noteInput.value = "";
+              confirmBtn.disabled = false;
+              confirmBtn.textContent = "確定作廢";
+              highlight();
+              modal.style.display = "flex";
+              noteInput.focus();
+            };
+            if (cancelBtn) cancelBtn.addEventListener("click", close);
+            modal.addEventListener("click", function(e){ if (e.target === modal) close(); });
+            document.addEventListener("keydown", function(e){
+              if (modal.style.display === "none") return;
+              if (e.key === "Escape") close();
+              else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) confirmBtn.click();
+            });
+            group.addEventListener("change", highlight);
+            confirmBtn.addEventListener("click", function(){
+              const reason = getPicked();
+              if (!reason) { alert("請選擇作廢原因"); return; }
+              setLast(reason);
+              confirmBtn.disabled = true;
+              confirmBtn.textContent = "作廢中…";
+              const fn = window["${prefix}ModalSubmit"];
+              if (typeof fn === "function") fn(reason, noteInput.value.trim());
+            });
+          })();
+          </script>`;
 }

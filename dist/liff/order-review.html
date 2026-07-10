@@ -145,7 +145,7 @@
       return;
     }
     const profile = await liff.getProfile();
-    $("#me").innerHTML = '<strong>' + (profile.displayName||"") + '</strong>';
+    $("#me").innerHTML = '<strong>' + escapeHtml(profile.displayName||"") + '</strong>';
     idToken = liff.getIDToken();
     if (!idToken) {
       setStatus("err", "無法取得 ID Token，請重新開啟此頁。");
@@ -222,8 +222,10 @@
     $("#modal-bg").classList.add("show");
     $("#modal").classList.add("show");
     const { status, body } = await api("/liff/api/order-review/detail?id=" + encodeURIComponent(orderId));
+    // 防 race：回應回來時若使用者已切到別張單（或關掉 modal），丟棄這筆舊回應
+    if (activeOrder !== orderId) return;
     if (status !== 200 || !body.ok) {
-      $("#modal-body").innerHTML = '<div class="empty" style="color:var(--bad);">' + (body.error || "載入失敗") + '</div>';
+      $("#modal-body").innerHTML = '<div class="empty" style="color:var(--bad);">' + escapeHtml(body.error || "載入失敗") + '</div>';
       return;
     }
     const o = body.order;
@@ -246,9 +248,9 @@
       '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">' +
         '<span>出貨日：</span>' +
         '<input type="date" id="edit-order-date" value="' + (o.order_date||"") + '" style="padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:14px;">' +
-        '<button type="button" class="quick-date" data-q="tomorrow" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:12px;">明天</button>' +
-        '<button type="button" class="quick-date" data-q="mon" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:12px;">下週一</button>' +
-        '<button type="button" id="btn-save-date" style="padding:6px 12px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;">儲存</button>' +
+        '<button type="button" class="quick-date" data-q="tomorrow" style="padding:10px 14px;min-height:40px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:12px;">明天</button>' +
+        '<button type="button" class="quick-date" data-q="mon" style="padding:10px 14px;min-height:40px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:12px;">下週一</button>' +
+        '<button type="button" id="btn-save-date" style="padding:10px 14px;min-height:40px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;">儲存</button>' +
       '</div>' +
       (o.need_review_count > 0 ? '<div style="color:var(--bad);margin-top:8px;">⚠ 還有 ' + o.need_review_count + ' 個品項待對應</div>' : '') +
       '</div>';

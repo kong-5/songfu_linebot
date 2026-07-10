@@ -96,12 +96,8 @@ async function getTextFromImageBuffer(buffer) {
     const text = r?.fullTextAnnotation?.text?.trim();
     return text || null;
 }
-/**
- * 回傳每個「字詞」的方框（像素座標）＋圖片尺寸，供後台在照片上疊辨識框。
- * @returns {Promise<{width:number,height:number,words:Array<{text:string,x:number,y:number,w:number,h:number}>}|null>}
- */
-async function getWordBoxesFromImageBuffer(buffer) {
-    const r = await annotateDocumentText(buffer);
+/** 從 annotateDocumentText 的回應取出字框（共用邏輯），無頁面資料時回 null。 */
+function extractWordBoxesFromResponse(r) {
     const fta = r?.fullTextAnnotation;
     const page = fta?.pages?.[0];
     if (!page)
@@ -131,4 +127,23 @@ async function getWordBoxesFromImageBuffer(buffer) {
     if (!H) H = maxY;
     return { width: W, height: H, words };
 }
+/**
+ * 回傳每個「字詞」的方框（像素座標）＋圖片尺寸，供後台在照片上疊辨識框。
+ * @returns {Promise<{width:number,height:number,words:Array<{text:string,x:number,y:number,w:number,h:number}>}|null>}
+ */
+async function getWordBoxesFromImageBuffer(buffer) {
+    const r = await annotateDocumentText(buffer);
+    return extractWordBoxesFromResponse(r);
+}
 exports.getWordBoxesFromImageBuffer = getWordBoxesFromImageBuffer;
+/**
+ * 一次 Vision API 呼叫同時取得整段文字＋字框（getTextFromImageBuffer ＋ getWordBoxesFromImageBuffer 合併版），
+ * 供圖片訂單解析流程重用同一次 OCR 結果（省一次 API 費用與延遲）。
+ * @returns {Promise<{text:string|null, boxes:{width:number,height:number,words:Array<{text:string,x:number,y:number,w:number,h:number}>}|null}>}
+ */
+async function getTextAndWordBoxesFromImageBuffer(buffer) {
+    const r = await annotateDocumentText(buffer);
+    const text = r?.fullTextAnnotation?.text?.trim() || null;
+    return { text, boxes: extractWordBoxesFromResponse(r) };
+}
+exports.getTextAndWordBoxesFromImageBuffer = getTextAndWordBoxesFromImageBuffer;

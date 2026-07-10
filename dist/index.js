@@ -20,6 +20,7 @@ try {
     console.warn("[startup] dotenv 載入略過:", e.message);
 }
 const express_1 = __importDefault(require("express"));
+const crypto_1 = __importDefault(require("crypto"));
 const fs_1 = require("fs");
 const path_1 = require("path");
 const PORT = Number(process.env.PORT) || 4000;
@@ -108,13 +109,21 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     /** Cloud Tasks Worker：同步處理單一 LINE event（需 LINE_USE_CLOUD_TASKS=1 時由佇列呼叫） */
     app.post("/api/worker/process-line-event", async (req, res) => {
         try {
-            const secret = process.env.LINE_WORKER_SECRET && String(process.env.LINE_WORKER_SECRET).trim();
-            if (secret) {
-                const got = String(req.headers["x-line-worker-secret"] || "").trim();
-                if (got !== secret) {
-                    res.status(401).type("text/plain").send("Unauthorized");
-                    return;
-                }
+            // [security] 未設定 LINE_WORKER_SECRET 一律拒收（比照 LINGYUE_WRITEBACK_KEY 的 503 做法）：
+            // 否則任何人可 POST 偽造 LINE event 繞過簽章直接建單。
+            const secret = String(process.env.LINE_WORKER_SECRET || "").trim();
+            if (!secret) {
+                console.error("[worker] LINE_WORKER_SECRET 未設定，拒絕處理（請於 Cloud Run 環境變數設定後再用 Cloud Tasks 模式）");
+                res.status(503).type("text/plain").send("LINE_WORKER_SECRET not configured");
+                return;
+            }
+            const got = String(req.headers["x-line-worker-secret"] || "").trim();
+            // 定時安全比對：長度不同先擋（timingSafeEqual 長度不一致會拋錯）
+            const a = Buffer.from(got, "utf8");
+            const b = Buffer.from(secret, "utf8");
+            if (a.length !== b.length || !crypto_1.default.timingSafeEqual(a, b)) {
+                res.status(401).type("text/plain").send("Unauthorized");
+                return;
             }
             const ev = req.body?.event;
             if (!ev || typeof ev !== "object") {

@@ -23,7 +23,8 @@
   @media (prefers-reduced-motion:reduce){.spin{animation:none;}}
   .btn-primary{border:0;border-radius:11px;background:var(--accent);color:#fff;font-size:15px;font-weight:700;padding:12px 20px;cursor:pointer;}
   /* language toggle */
-  .lang{flex:none;border:1px solid var(--line);background:var(--card);color:var(--txt-2);font-size:12px;font-weight:700;padding:6px 11px;border-radius:99px;cursor:pointer;white-space:nowrap;}
+  .lang{position:relative;flex:none;border:1px solid var(--line);background:var(--card);color:var(--txt-2);font-size:12px;font-weight:700;padding:6px 11px;border-radius:99px;cursor:pointer;white-space:nowrap;}
+  .lang::before{content:'';position:absolute;inset:-8px;} /* 擴大點擊熱區（戴手套），視覺不變 */
   .lang:active{transform:translateY(1px);}
   /* picker */
   .pk-head{padding:16px 16px 6px;}
@@ -54,7 +55,7 @@
   .prog-num b{color:var(--txt);}
   .tools{display:flex;gap:8px;padding:0 14px 9px;align-items:center;flex-wrap:wrap;}
   .search{flex:1;min-width:150px;display:flex;align-items:center;gap:7px;background:var(--field);border:1px solid var(--line);border-radius:9px;padding:8px 11px;}
-  .search input{border:0;background:transparent;color:inherit;font-size:14px;width:100%;outline:none;}
+  .search input{border:0;background:transparent;color:inherit;font-size:14px;width:100%;outline:none;-webkit-appearance:none;appearance:none;}
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--field);}
   .seg button{border:0;background:transparent;color:var(--txt-2);font-size:12.5px;padding:8px 10px;font-weight:600;cursor:pointer;}
   .seg button.on{background:var(--accent);color:#fff;}
@@ -68,11 +69,12 @@
   .row{display:flex;align-items:center;gap:10px;padding:5px 12px;min-height:42px;}
   .info{flex:1;min-width:0;}
   .nm{font-size:13.5px;font-weight:600;line-height:1.2;display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .exp-chip{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--warn-soft);color:var(--warn);flex:none;cursor:pointer;border:1px solid color-mix(in srgb,var(--warn) 28%,transparent);white-space:nowrap;}
+  .exp-chip{position:relative;font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--warn-soft);color:var(--warn);flex:none;cursor:pointer;border:1px solid color-mix(in srgb,var(--warn) 28%,transparent);white-space:nowrap;}
+  .exp-chip::before{content:'';position:absolute;inset:-8px;} /* 擴大點擊熱區（戴手套），視覺不變 */
   .exp-chip.filled{background:var(--warn);color:#fff;border-color:transparent;}
-  .meta{font-size:10.5px;color:var(--txt-3);margin-top:1px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .meta{font-size:11px;color:var(--txt-3);margin-top:1px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .sys{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
-  .sys .lab{font-size:9px;color:var(--txt-3);}
+  .sys .lab{font-size:11px;color:var(--txt-3);}
   .sys .v{font-size:13.5px;font-weight:700;line-height:1.1;}
   .sys .su{font-size:10px;font-weight:600;color:var(--txt-3);}
   .qtybox{display:flex;align-items:center;gap:6px;}
@@ -80,7 +82,7 @@
   .qty{width:66px;text-align:right;font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;border:1.5px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--field);color:var(--txt);outline:none;}
   .qty:focus{border-color:var(--accent);background:var(--card);}
   .qty::placeholder{color:var(--txt-3);font-weight:500;font-size:12px;}
-  .diff{font-size:10.5px;font-weight:700;font-variant-numeric:tabular-nums;padding:1px 6px;border-radius:6px;min-width:30px;text-align:center;}
+  .diff{font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;padding:1px 5px;border-radius:6px;min-width:30px;text-align:center;}
   .diff.todo{background:var(--warn-soft);color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 26%,transparent);}
   .diff.eq{background:var(--pos-soft);color:var(--pos);}
   .diff.sp{background:var(--accent-soft);color:var(--accent);}
@@ -90,7 +92,8 @@
   .hz-show{border:1px solid var(--line);background:var(--card);color:var(--accent);font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;cursor:pointer;}
   .batches{border-top:1px dashed var(--line);padding:9px 13px 12px;background:color-mix(in srgb,var(--warn-soft) 40%,var(--card));display:none;}
   .item.exp-open .batches{display:block;}
-  .more{width:28px;height:30px;flex:none;border:1px solid var(--line);background:var(--field);border-radius:8px;color:var(--txt-3);font-size:14px;font-weight:800;line-height:1;display:grid;place-items:center;cursor:pointer;padding:0;}
+  .more{position:relative;width:28px;height:30px;flex:none;border:1px solid var(--line);background:var(--field);border-radius:8px;color:var(--txt-3);font-size:14px;font-weight:800;line-height:1;display:grid;place-items:center;cursor:pointer;padding:0;}
+  .more::before{content:'';position:absolute;inset:-6px;} /* 點擊區擴至 40×42（戴手套），視覺不變 */
   .more.on{border-color:var(--accent);color:var(--accent);}
   .more.filled{background:var(--accent);color:#fff;border-color:transparent;font-size:12px;}
   .midbox{border-top:1px dashed var(--line);padding:10px 13px 12px;background:color-mix(in srgb,var(--accent-soft) 45%,var(--card));display:none;}
@@ -106,7 +109,7 @@
   .b-sum b{color:var(--txt);}
   .brow{display:flex;gap:8px;align-items:center;margin-bottom:7px;}
   .brow input[type="date"]{flex:1;font-size:13.5px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--txt);}
-  .brow input[type="number"]{width:74px;font-size:14px;text-align:right;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--txt);}
+  .brow input[data-k="qty"]{width:74px;font-size:14px;text-align:right;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--txt);}
   .brow .unit{font-size:12px;color:var(--txt-3);white-space:nowrap;}
   .brow .del{border:0;background:transparent;color:var(--txt-3);font-size:18px;cursor:pointer;padding:2px 4px;}
   .b-actions{display:flex;align-items:center;gap:8px;margin-top:2px;}
@@ -142,10 +145,14 @@
       addBatch:'＋ 新增效期',doneBatch:'完成收起 ▴',noMatch:'沒有符合的品項',submit:'送出盤點',submitting:'送出中…',
       sent:'盤點已送出',finish:'完成',submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',langBtn:'Tiếng Việt',resumed:'續盤（已帶回今日已盤）',
       midChip:'中',midTitle:'中價貨（品質較差）數量',midPh:'中價數量',midDone:'完成收起 ▴',
+      conflictTaken:'此倉今日盤點已被其他人送出，請重新載入',
+      conflictStale:'開頁後已有他人送出此倉盤點，請重載後續盤再送出',
       sumLine:function(g,m,tot){return '上 '+g+'  ＋  中 '+m+'  ＝  合計 '+tot;},
       showZero:'顯示庫存0',hiddenN:function(n){return '另有 '+n+' 項庫存 0 已隱藏';},
       zeroSep:function(n){return '— 帳上 0（現場有再盤）· '+n+' 項 —';},
       draftResumed:'已回復未送出',drafting:'盤點中(未送出)',
+      relogin:'登入逾時，重新登入中…（已盤資料已暫存）',
+      invalidQty:'⚠ 以下品項數量無效（僅能填 0 或正數），請修正後再送出：',
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
       progN:function(d,a){return '已盤 '+d+'/'+a;},barN:function(d,a){return '已盤 '+d+'/'+a+' · 未盤 '+(a-d);},
       confirm:function(wh,d,a){return '送出盤點？\n\n倉庫：'+wh+'\n已盤 '+d+'/'+a+' 項（未盤的會標「未盤」）';},
@@ -160,9 +167,14 @@
       addBatch:'＋ Thêm HSD',doneBatch:'Xong ▴',noMatch:'Không có sản phẩm phù hợp',submit:'Gửi kiểm kê',submitting:'Đang gửi…',
       sent:'Đã gửi kiểm kê',finish:'Xong',submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',langBtn:'中文',resumed:'Tiếp tục (đã tải dữ liệu hôm nay)',
       midChip:'Loại B',midTitle:'Số lượng hàng loại B (chất lượng kém)',midPh:'SL loại B',midDone:'Xong ▴',
+      conflictTaken:'Kiểm kê kho này hôm nay đã được người khác gửi, vui lòng tải lại',
+      conflictStale:'Sau khi bạn mở trang, đã có người khác gửi kiểm kê kho này. Vui lòng tải lại, kiểm tiếp rồi gửi lại',
       sumLine:function(g,m,tot){return 'Loại A '+g+'  +  Loại B '+m+'  =  Tổng '+tot;},
       showZero:'Hiện tồn 0',hiddenN:function(n){return 'Còn '+n+' mục tồn 0 đang ẩn';},
       zeroSep:function(n){return '— Tồn 0 (có hàng thì kiểm) · '+n+' —';},
+      draftResumed:'Đã khôi phục (chưa gửi)',drafting:'Đang kiểm (chưa gửi)',
+      relogin:'Phiên đăng nhập hết hạn, đang đăng nhập lại… (dữ liệu đã kiểm được lưu tạm)',
+      invalidQty:'⚠ Số lượng không hợp lệ (chỉ nhập 0 hoặc số dương), vui lòng sửa rồi gửi lại:',
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
       progN:function(d,a){return 'Đã kiểm '+d+'/'+a;},barN:function(d,a){return 'Đã kiểm '+d+'/'+a+' · Chưa '+(a-d);},
       confirm:function(wh,d,a){return 'Gửi kiểm kê?\n\nKho: '+wh+'\nĐã kiểm '+d+'/'+a+' (mục chưa kiểm sẽ được đánh dấu "Chưa")';},
@@ -171,14 +183,44 @@
   };
   var initLang='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') initLang='vi'; }catch(_){}
   var initHz=false; try{ if(localStorage.getItem('stk_hz')==='1') initHz=true; }catch(_){}  // 預設不隱藏，0 排最後；可切成隱藏0
-  var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:initHz,lang:initLang};
+  var S={idToken:null,name:"",wh:null,date:"",items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:initHz,lang:initLang,baseSubmittedAt:null};
   function t(k){return (I18N[S.lang]&&I18N[S.lang][k]!=null)?I18N[S.lang][k]:I18N.zh[k];}
   function toggleLang(){ S.lang=(S.lang==='zh')?'vi':'zh'; try{localStorage.setItem('stk_lang',S.lang);}catch(_){}
-    if(S.wh) renderCount(); else showPicker(); }
+    if(S.wh){ var y=window.pageYOffset||document.documentElement.scrollTop||0; renderCount(); window.scrollTo(0,y); } // 重繪後還原捲動位置
+    else showPicker(); }
 
   function esc(s){s=(s==null?'':String(s));return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function fmt(n){if(n===0||n==='0')return '0';return String(n);}
-  function api(path){return fetch(path,{headers:{'Authorization':'Bearer '+(S.idToken||'')}}).then(function(r){return r.json();});}
+  // ---------- 數字輸入正規化 ----------
+  // 越南文鍵盤小數點常是逗號（"1,5"），parseFloat 會靜默變 1；一律先把 , 換成 .，並過濾非數字字元。
+  function cleanNum(s){ return String(s==null?'':s).replace(/,/g,'.').replace(/[^0-9.\-]/g,''); }
+  function num(v){ if(v==null||v==='') return NaN; return parseFloat(cleanNum(v)); }
+  function sanitizeNumInput(el){ // input 事件即時正規化，游標位置盡量保持
+    var v=el.value, nv=cleanNum(v);
+    if(nv===v) return;
+    var pos=null; try{ pos=el.selectionStart; }catch(_){}
+    var np=(pos==null)?null:cleanNum(v.slice(0,pos)).length;
+    el.value=nv;
+    if(np!=null){ try{ el.setSelectionRange(np,np); }catch(_){} }
+  }
+  // ---------- API（每次現取 ID Token；過期自動續登）----------
+  function freshToken(){ try{ var tk=liff.getIDToken(); if(tk) S.idToken=tk; }catch(_){} return S.idToken||''; }
+  function relogin(){ // ID Token 過期：先立即存草稿再重新登入，登入後帶原網址回來、草稿自動接回
+    flushDraft();
+    showCenter('<div class="spin"></div><div>'+esc(t('relogin'))+'</div>');
+    try{ liff.login({redirectUri:location.href}); }catch(_){}
+  }
+  function api(path){
+    return fetch(path,{headers:{'Authorization':'Bearer '+freshToken()}}).then(function(r){
+      if(r.status===401){ // 同 order-review.html 的續登模式；回傳不 resolve 的 promise 停在載入畫面等跳轉
+        return r.json().catch(function(){return {};}).then(function(j){
+          if(/expired|IdToken/i.test(String(j&&j.error||''))){ relogin(); return new Promise(function(){}); }
+          return j;
+        });
+      }
+      return r.json();
+    });
+  }
   function showCenter(html){app.innerHTML='<div class="center">'+html+'</div>';}
 
   // ---------- 自動暫存（防電話中斷 / LIFF 重載遺失盤點）----------
@@ -186,22 +228,49 @@
   function draftKey(code,date){ return 'stk_draft_'+(code||'')+'_'+(date||''); }
   function draftKeyCur(){ return S.wh?draftKey(S.wh.code,S.date):''; }
   var _saveT=null;
+  function writeDraftNow(){
+    if(!S.wh) return;
+    try{
+      var d={counts:S.counts,mid:S.mid,midOpen:S.midOpen,batches:S.batches,expanded:S.expanded};
+      localStorage.setItem(draftKeyCur(),JSON.stringify(d));
+    }catch(_){}
+  }
   function saveDraft(){
     if(!S.wh) return;
     if(_saveT) clearTimeout(_saveT);
-    _saveT=setTimeout(function(){
-      try{
-        var d={counts:S.counts,mid:S.mid,midOpen:S.midOpen,batches:S.batches,expanded:S.expanded};
-        localStorage.setItem(draftKeyCur(),JSON.stringify(d));
-      }catch(_){}
-    },250);
+    _saveT=setTimeout(function(){ _saveT=null; writeDraftNow(); },250);
+  }
+  function hasAnyInput(){ // 有沒有任何已輸入內容（避免寫出空草稿誤標「盤點中」）
+    var k,i,a;
+    for(k in S.counts){ if(S.counts[k]!=null&&S.counts[k]!=='') return true; }
+    for(k in S.mid){ if(S.mid[k]!=null&&S.mid[k]!=='') return true; }
+    for(k in S.batches){ a=S.batches[k]||[]; for(i=0;i<a.length;i++){ if((a[i].date&&a[i].date!=='')||(a[i].qty&&a[i].qty!=='')) return true; } }
+    return false;
+  }
+  function flushDraft(){ // 立即寫入（跳過 debounce）：切背景/關頁/續登前呼叫，避免最後幾筆輸入遺失
+    if(!S.wh) return;
+    if(_saveT){ clearTimeout(_saveT); _saveT=null; }
+    if(!hasAnyInput()&&!hasDraft(S.wh.code,S.date)) return;
+    writeDraftNow();
   }
   function loadDraft(code,date){ try{ var s=localStorage.getItem(draftKey(code,date)); return s?JSON.parse(s):null; }catch(_){ return null; } }
   function clearDraft(){ try{ localStorage.removeItem(draftKeyCur()); }catch(_){} }
   function hasDraft(code,date){ try{ return !!localStorage.getItem(draftKey(code,date)); }catch(_){ return false; } }
+  function cleanOldDrafts(){ // 開頁時清掉非今日的舊草稿，避免 localStorage 累積
+    try{
+      var today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+      var del=[],i,k;
+      for(i=0;i<localStorage.length;i++){ k=localStorage.key(i); if(k&&k.indexOf('stk_draft_')===0&&k.slice(-10)!==today) del.push(k); }
+      for(i=0;i<del.length;i++) localStorage.removeItem(del[i]);
+    }catch(_){}
+  }
+  // 切到背景或關頁時立即保存草稿（電話插入、切 App、LIFF 被回收都算 hidden/pagehide）
+  document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='hidden') flushDraft(); });
+  window.addEventListener('pagehide',flushDraft);
 
   // ---------- 開始 ----------
   function boot(){
+    cleanOldDrafts();
     if(!LIFF_ID){ showCenter('<div>'+t('liffNotSet')+'</div>'); return; }
     liff.init({liffId:LIFF_ID}).then(function(){
       if(!liff.isLoggedIn()){ liff.login({redirectUri:location.href}); return; }
@@ -251,6 +320,8 @@
     api('/liff/api/stocktake/items?warehouse='+encodeURIComponent(code)).then(function(res){
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
       S.wh=res.warehouse; S.date=res.date; S.items=res.items||[]; S.counts={}; S.mid={}; S.midOpen={}; S.batches={}; S.expanded={};
+      // 樂觀鎖基準：開頁當下該 session 的 submitted_at（無 session 為 null），送出時帶回伺服器比對
+      S.baseSubmittedAt=(res.submittedAt==null?null:res.submittedAt);
       S.items.forEach(function(it){ if(it.exp) S.batches[it.c]=[]; });
       // 續盤：帶回今日已存的上貨/中貨/效期批號
       S.resumed=!!res.resumed;
@@ -277,13 +348,13 @@
   }
 
   // ---------- 盤點畫面 ----------
-  function goodVal(it){ return S.counts[it.c]!=null&&S.counts[it.c]!==''?parseFloat(S.counts[it.c]):null; }
-  function midVal(it){ return S.mid[it.c]!=null&&S.mid[it.c]!==''?parseFloat(S.mid[it.c]):null; }
+  function goodVal(it){ return S.counts[it.c]!=null&&S.counts[it.c]!==''?num(S.counts[it.c]):null; }
+  function midVal(it){ return S.mid[it.c]!=null&&S.mid[it.c]!==''?num(S.mid[it.c]):null; }
   function safetyDiff(it){ var cv=countedVal(it); if(cv==null||isNaN(cv)) return null; return Math.round((cv-it.sys)*100)/100; }
   // 合計 = 上貨 + 中貨（任一有值即計）
   function countedVal(it){ var g=goodVal(it),m=midVal(it); if((g==null||isNaN(g))&&(m==null||isNaN(m))) return null; return Math.round(((g||0)+(m||0))*100)/100; }
-  function isCounted(it){ return (S.counts[it.c]!=null&&S.counts[it.c]!=='')||(S.mid[it.c]!=null&&S.mid[it.c]!==''); }
-  function batchSum(c){ return (S.batches[c]||[]).reduce(function(s,b){var v=parseFloat(b.qty);return s+(isFinite(v)?v:0);},0); }
+  function isCounted(it){ var g=goodVal(it),m=midVal(it); return (g!=null&&!isNaN(g))||(m!=null&&!isNaN(m)); } // NaN 視為未盤
+  function batchSum(c){ return (S.batches[c]||[]).reduce(function(s,b){var v=num(b.qty);return s+(isFinite(v)?v:0);},0); }
   function diffPill(it){
     var d=safetyDiff(it);
     if(d==null) return '<span class="diff todo">'+esc(t('todo'))+'</span>';       // 未盤：琥珀
@@ -294,7 +365,7 @@
     var arr=S.batches[it.c]||[];
     var rows=arr.map(function(b,i){
       return '<div class="brow" data-i="'+i+'"><input type="date" value="'+esc(b.date||'')+'" data-k="date">'
-        +'<input type="number" inputmode="decimal" placeholder="0" value="'+esc(b.qty||'')+'" data-k="qty">'
+        +'<input type="text" inputmode="decimal" placeholder="0" value="'+esc(b.qty||'')+'" data-k="qty">'
         +'<span class="unit">'+esc(it.eunit||it.u)+'</span><button class="del" data-del="'+i+'">×</button></div>';
     }).join('');
     return '<div class="batches"><div class="b-head"><span class="t">'+esc(t('batchTitle'))+'</span>'
@@ -304,7 +375,7 @@
   function midPanel(it){
     var g=goodVal(it),m=midVal(it),tot=countedVal(it);
     return '<div class="midbox"><div class="mid-row"><span class="mid-lab">'+esc(t('midTitle'))+'</span>'
-      +'<input type="number" inputmode="decimal" class="midq" placeholder="'+esc(t('midPh'))+'" value="'+esc(S.mid[it.c]!=null?S.mid[it.c]:'')+'" data-midc="'+esc(it.c)+'"><span class="unit">'+esc(it.u)+'</span></div>'
+      +'<input type="text" inputmode="decimal" class="midq" placeholder="'+esc(t('midPh'))+'" value="'+esc(S.mid[it.c]!=null?S.mid[it.c]:'')+'" data-midc="'+esc(it.c)+'"><span class="unit">'+esc(it.u)+'</span></div>'
       +'<div class="mid-sum">'+esc(t('sumLine')(fmt(g||0),fmt(m||0),fmt(tot==null?0:tot)))+'</div>'
       +'<div class="b-actions"><button class="done-b" data-middone>'+esc(t('midDone'))+'</button></div></div>';
   }
@@ -358,7 +429,7 @@
         +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(t('countDay'))+' '+esc(S.date)+' · '+esc(t('totalN')(all))+(S.draftRestored?' · <b style="color:var(--pos)">'+esc(t('draftResumed'))+'</b>':(S.resumed?' · <b style="color:var(--accent)">'+esc(t('resumed'))+'</b>':''))+'</div></div>'
         +'<button class="lang" id="stLang">'+esc(t('langBtn'))+'</button></div>'
         +'<div class="prog"><div class="prog-bar"><div class="prog-fill" id="stFill"></div></div><div class="prog-num"><span id="stProgTxt"></span></div></div>'
-        +'<div class="tools"><div class="search"><input id="stQ" placeholder="'+esc(t('searchPh'))+'" autocomplete="off"></div>'
+        +'<div class="tools"><div class="search"><input id="stQ" type="search" enterkeyhint="search" placeholder="'+esc(t('searchPh'))+'" autocomplete="off" value="'+esc(S.q)+'"></div>'
           +'<div class="seg" id="stFilter"><button data-f="all" class="'+(S.f==='all'?'on':'')+'">'+esc(t('fAll'))+'</button><button data-f="todo" class="'+(S.f==='todo'?'on':'')+'">'+esc(t('fTodo'))+'</button><button data-f="exp" class="'+(S.f==='exp'?'on':'')+'">'+esc(t('fExp'))+'</button></div>'
           +'<button class="tog'+(S.hz?' on':'')+'" id="stHideZero">'+esc(t('hideZero'))+'</button></div>'
       +'</header>'
@@ -378,12 +449,15 @@
     document.getElementById('stBack').addEventListener('click',showPicker);
     document.getElementById('stLang').addEventListener('click',toggleLang);
     document.getElementById('stHideZero').addEventListener('click',function(){ S.hz=!S.hz; this.classList.toggle('on',S.hz); try{localStorage.setItem('stk_hz',S.hz?'1':'0');}catch(_){} relist(); });
-    var t2=null;
-    document.getElementById('stQ').addEventListener('input',function(e){ if(t2)clearTimeout(t2); t2=setTimeout(function(){ S.q=e.target.value.trim(); relist(); },120); });
+    var t2=null, qEl=document.getElementById('stQ');
+    qEl.addEventListener('input',function(e){ if(t2)clearTimeout(t2); t2=setTimeout(function(){ S.q=e.target.value.trim(); relist(); },120); });
+    qEl.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); e.target.blur(); } }); // Enter 收鍵盤
     document.getElementById('stFilter').addEventListener('click',function(e){ var b=e.target.closest('button'); if(!b)return; S.f=b.getAttribute('data-f'); Array.prototype.forEach.call(this.querySelectorAll('button'),function(x){x.classList.toggle('on',x===b);}); relist(); });
     var wrap=document.getElementById('stListWrap');
     wrap.addEventListener('input',function(e){
       var el=e.target;
+      // 數量類輸入即時正規化（逗號→小數點、濾掉非數字字元）
+      if(el.classList.contains('qty')||el.classList.contains('midq')||el.getAttribute('data-k')==='qty') sanitizeNumInput(el);
       if(el.classList.contains('qty')){
         var c=el.getAttribute('data-c'); S.counts[c]=el.value;
         var item=el.closest('.item'); var it=S.items.find(function(x){return x.c===c;});
@@ -421,24 +495,48 @@
 
   // ---------- 送出 ----------
   function submit(){
+    // 送出前防呆：掃出無效（NaN）或負數的輸入，列出品名（中越雙語）並中止
+    var bad=[];
+    S.items.forEach(function(it){
+      var g=goodVal(it), m=midVal(it);
+      var badBatch=(S.batches[it.c]||[]).some(function(b){ if(b.qty==null||b.qty==='') return false; var v=num(b.qty); return isNaN(v)||v<0; });
+      if((g!=null&&(isNaN(g)||g<0))||(m!=null&&(isNaN(m)||m<0))||badBatch) bad.push(it.n);
+    });
+    if(bad.length){ alert(I18N.zh.invalidQty+'\n'+I18N.vi.invalidQty+'\n\n'+bad.join('\n')); return; }
     var done=S.items.filter(isCounted).length;
     if(!confirm(t('confirm')(S.wh.name||S.wh.code,done,S.items.length))) return;
     var btn=document.getElementById('stSubmit'); btn.disabled=true; btn.textContent=t('submitting');
     var counts=[];
     S.items.forEach(function(it){
       var g=goodVal(it), m=midVal(it);
-      var bx=(S.batches[it.c]||[]).filter(function(b){return (b.date&&b.date!=='')||(b.qty&&b.qty!=='');});
+      if(g!=null&&isNaN(g)) g=null; if(m!=null&&isNaN(m)) m=null; // NaN 一律視為未盤（防呆已擋，這裡再保險）
+      var bx=(S.batches[it.c]||[]).filter(function(b){return (b.date&&b.date!=='')||(b.qty&&b.qty!=='');})
+        .map(function(b){return {date:b.date||'',qty:(b.qty==null?'':String(b.qty).replace(/,/g,'.'))};}); // 舊草稿可能殘留逗號
       if(g==null && m==null && !bx.length) return; // 未盤
       // counted 傳「上貨」，mid 傳「中貨」；後端合計存 counted_qty
       counts.push({ code:it.c, name:it.n, spec:it.s, unit:it.u, sys:it.sys, counted:(g==null?null:g), mid:(m==null?null:m), expiry:bx });
     });
-    fetch('/liff/api/stocktake/submit',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(S.idToken||'')},
-      body:JSON.stringify({warehouse:S.wh.code,date:S.date,name:S.name,counts:counts})
-    }).then(function(r){return r.json();}).then(function(res){
+    fetch('/liff/api/stocktake/submit',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+freshToken()},
+      body:JSON.stringify({warehouse:S.wh.code,date:S.date,name:S.name,counts:counts,baseSubmittedAt:(S.baseSubmittedAt==null?null:S.baseSubmittedAt)})
+    }).then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {status:r.status,res:j}; }); }).then(function(o){
+      var res=o.res||{};
+      if(o.status===401&&/expired|IdToken/i.test(String(res.error||''))){
+        relogin(); return; // ID Token 過期：草稿已保住，續登回來自動帶回再送
+      }
+      if(o.status===409){
+        // 開頁後已有他人送出此倉盤點（樂觀鎖/唯一約束擋下）：提示後重新載入資料，
+        // 本機草稿（localStorage）未清除，重載後會照舊蓋回，不會遺失已盤內容
+        btn.disabled=false; btn.textContent=t('submit');
+        alert(res.code==='conflict_taken'?t('conflictTaken'):t('conflictStale'));
+        openWarehouse(S.wh.code);
+        return;
+      }
       if(res.error){ btn.disabled=false; btn.textContent=t('submit'); alert(t('submitFail')+res.error); return; }
       clearDraft(); // 已送出，清掉本機暫存
+      var whLabel=S.wh.name||S.wh.code, dateLabel=S.date;
+      S.wh=null; // 避免之後切背景時 flushDraft 又把已送出的內容寫回草稿
       showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(t('sent'))+'</div>'
-        +'<div>'+esc(S.wh.name||S.wh.code)+' · '+esc(S.date)+'</div>'
+        +'<div>'+esc(whLabel)+' · '+esc(dateLabel)+'</div>'
         +'<div style="font-size:13px;color:var(--txt-3)">'+esc(t('recorded')(res.counted,res.total))+'</div>'
         +'<button class="btn-primary" id="stClose" style="margin-top:8px">'+esc(t('finish'))+'</button>');
       document.getElementById('stClose').addEventListener('click',function(){ try{ if(liff.isInClient()) liff.closeWindow(); else showPicker(); }catch(_){ showPicker(); } });

@@ -125,6 +125,72 @@ def save_config(cfg: dict) -> None:
 
 
 # ======================================================================
+#  回寫日誌（journal）— 防「寫入凌越成功、回報雲端失敗」→ 重複開單
+# ======================================================================
+# 情境：write_order 已在凌越開單，但 post_callback 因網路問題失敗；若結果只留在
+# 記憶體，agent 重啟（或雲端租約到期）後同一張單會被重撿重寫＝凌越重複開單。
+# 修法：每張單寫入凌越後「立刻」把結果落地到 exe/腳本同層的 ly_writeback_journal.json；
+# callback 成功才移除。啟動時與每輪 /wait 前若 journal 有殘留 → 先重送 callback，
+# 成功才繼續撿新單（雲端 callback 已做冪等：同單號重報＝成功、不同單號＝告警不覆蓋）。
+# 檔案格式：JSON 陣列，每筆 {order_id, doc_no, ok, error, written_at}（utf-8）。
+# 鎖：用獨立的 _JOURNAL_LOCK（不能沿用 erp_lock——write_orders 已持有 erp_lock 時
+# 還要 append journal，threading.Lock 不可重入會自鎖死）。
+
+JOURNAL_PATH = os.path.join(_self_dir(), "ly_writeback_journal.json")
+_JOURNAL_LOCK = threading.Lock()
+
+
+def journal_load() -> list:
+    """讀 journal（讀不到／壞檔一律回空清單，不擋主流程）。"""
+    try:
+        with open(JOURNAL_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        print(f"⚠ 讀取回寫日誌失敗（視為空）：{e}", flush=True)
+        return []
+
+
+def _journal_write(entries: list) -> None:
+    """整檔覆寫（先寫 .tmp 再原子替換，避免寫到一半斷電留下壞檔）。"""
+    tmp = JOURNAL_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, JOURNAL_PATH)
+
+
+def journal_append(result: dict) -> None:
+    """把一筆回寫結果落地（同 order_id 舊項先移除＝重寫時以最新結果為準）。"""
+    with _JOURNAL_LOCK:
+        entries = [e for e in journal_load() if e.get("order_id") != result.get("order_id")]
+        entries.append(result)
+        _journal_write(entries)
+
+
+def journal_remove(order_ids) -> None:
+    """callback 成功後移除該批。"""
+    ids = set(order_ids)
+    with _JOURNAL_LOCK:
+        entries = [e for e in journal_load() if e.get("order_id") not in ids]
+        _journal_write(entries)
+
+
+def cloud_wb_callback(base: str, key: str, results: list) -> dict:
+    """直接打 /callback 回填（journal 重送用；不經 ly_writeback_bridge，
+    這樣即使凌越模組載入失敗也能把已寫入的結果回報雲端）。"""
+    url = base.rstrip("/") + "/admin/lingyue-writeback/callback"
+    body = json.dumps({"results": results}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json", "X-Writeback-Key": key, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+
+# ======================================================================
 #  小工具：時間、雲端連線
 # ======================================================================
 
@@ -413,12 +479,21 @@ class AgentEngine:
                         pass
                     nos = wb.ly_order.write_order(icpno=icpno, rows=[row], verbose=False)
                     no = nos[0]
-                    results.append({"order_id": o.get("order_id"), "doc_no": no, "ok": True})
+                    result = {"order_id": o.get("order_id"), "doc_no": no, "ok": True,
+                              "written_at": datetime.datetime.now().isoformat(timespec="seconds")}
                     ok += 1
                     self.log(f"  ✅ {name} → 凌越單號 {no}")
                 except Exception as e:
-                    results.append({"order_id": o.get("order_id"), "ok": False, "error": _short(e)})
+                    result = {"order_id": o.get("order_id"), "ok": False, "error": _short(e),
+                              "written_at": datetime.datetime.now().isoformat(timespec="seconds")}
                     self.log(f"  ❌ {name} 寫入失敗：{_short(e)}")
+                results.append(result)
+                # 每寫完一張就把結果落地 journal（在打 callback 前）：中途斷電/當機
+                # 也不會遺失「凌越已開單」的事實，重啟後先重送、不重寫。
+                try:
+                    journal_append(result)
+                except Exception as je:
+                    self.log(f"  ⚠ 回寫日誌落地失敗（{JOURNAL_PATH}）：{_short(je)}")
             self.state["erp"] = "ok"
         if dry_run:
             self.log(f"（試跑完畢：{len(orders)} 張，未寫入任何資料）")
@@ -427,16 +502,48 @@ class AgentEngine:
             try:
                 cb = wb.post_callback(base, key, results)
                 self.log(f"▶ 回填後台：updated={cb.get('updated_count')} failed={cb.get('failed_count')}")
+                # 回填成功 → 清掉這批的 journal；失敗則保留，由啟動時/每輪 /wait 前重送。
+                try:
+                    journal_remove([r.get("order_id") for r in results])
+                except Exception as je:
+                    self.log(f"⚠ 清除回寫日誌失敗（不影響資料，重送時雲端會冪等處理）：{_short(je)}")
             except Exception as e:
-                self.log(f"⚠ 回填後台失敗（單已寫入凌越，稍後可重試回填）：{_short(e)}")
+                self.log(f"⚠ 回填後台失敗（單已寫入凌越，結果已存回寫日誌，會自動重送）：{_short(e)}")
             self.state["wb_last"] = now_full()
             self.state["wb_last_result"] = f"寫入 {ok}/{len(orders)}"
+
+    def flush_journal(self) -> bool:
+        """重送回寫日誌殘留（上次「寫入凌越成功但回報雲端失敗」的結果）。
+        回 True＝journal 已空（或本來就空、或試跑無關）；False＝仍有殘留（本輪不要撿新單，
+        否則雲端租約到期重派同單＝重複開單）。雲端 callback 已冪等，重送安全。"""
+        entries = journal_load()
+        if not entries:
+            return True
+        base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
+        if not base or not key:
+            return False
+        payload = [{k: e.get(k) for k in ("order_id", "doc_no", "ok", "error") if e.get(k) is not None}
+                   for e in entries]
+        try:
+            cb = cloud_wb_callback(base, key, payload)
+            journal_remove([e.get("order_id") for e in entries])
+            self._log_once("journal", None)
+            self.log(f"▶ 重送回寫日誌 {len(entries)} 筆成功："
+                     f"updated={cb.get('updated_count')} failed={cb.get('failed_count')}")
+            return True
+        except Exception as e:
+            self._log_once("journal", f"⚠ 重送回寫日誌失敗（{len(entries)} 筆待重送，先不撿新單）：{_short(e)}")
+            return False
 
     def check_queue(self, *, dry_run: bool = False):
         """手動：立刻查一次『上傳凌越』佇列（/wait），有排隊的就寫入（或試跑）。"""
         base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
         if not base or not key:
             self.log("⚠ 尚未設定網址/金鑰（請按⚙設定）")
+            return
+        # 先清回寫日誌殘留，避免撿到雲端因租約到期重派的「其實已寫入」的單
+        if not self.flush_journal():
+            self.log("⚠ 回寫日誌尚有殘留且重送失敗，暫停撿新單（避免重複開單）。")
             return
         try:
             orders = cloud_wait_orders(base, key, timeout_sec=3)
@@ -521,6 +628,13 @@ class AgentEngine:
     #   絕不主動撈 /pending 全部訂單（那正是先前誤寫一整天訂單的原因）。
     def _writeback_loop(self):
         self.stop_event.wait(8)  # 啟動後稍等，避開和庫存啟動推送同時打凌越
+        # 啟動檢查：上次執行若「寫入凌越成功但回報失敗」，journal 會有殘留 → 優先重送
+        try:
+            n_residue = len(journal_load())
+            if n_residue:
+                self.log(f"ℹ 偵測到回寫日誌殘留 {n_residue} 筆（上次回報雲端失敗），將優先重送再撿新單。")
+        except Exception:
+            pass
         while not self.stop_event.is_set():
             if not self.cfg.get("wb_auto"):
                 self.state["wb_running"] = False
@@ -530,6 +644,11 @@ class AgentEngine:
             base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
             if not base or not key:
                 self.stop_event.wait(5)
+                continue
+            # 每輪 /wait 前：journal 有殘留就先重送 callback，成功才繼續撿新單
+            # （否則雲端租約到期會把「其實已寫入凌越」的單重派下來＝重複開單）。
+            if not self.flush_journal():
+                self.stop_event.wait(10)
                 continue
             try:
                 orders = cloud_wait_orders(base, key, 25)

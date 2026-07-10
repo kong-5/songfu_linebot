@@ -112,6 +112,17 @@ function consumeLineWebhookMessageOnce(messageId) {
     }
     return true;
 }
+/** [fix 2026-07-10] 訊息處理「失敗」時釋放記憶體去重，讓 LINE redelivery（同 message.id）可在本實例重跑。
+ * 與持久化去重的「完成才 INSERT」反轉語意配套（見事件迴圈 finally），失敗的訊息不留任何去重標記。 */
+function releaseLineWebhookMessageOnce(messageId) {
+    const id = messageId != null ? String(messageId).trim() : "";
+    if (!id)
+        return;
+    recentLineMessageIdSet.delete(id);
+    const idx = recentLineMessageIdQueue.indexOf(id);
+    if (idx >= 0)
+        recentLineMessageIdQueue.splice(idx, 1);
+}
 function getTaipeiOrderDate() {
     // 00:00~05:59 算當天；06:00 之後算隔天
     const now = new Date();
@@ -430,14 +441,51 @@ async function appendRawLineToOrders(db, orderIds, lineText, nowSql) {
         return;
     if (isRawMessageNoise(line)) return;
     for (const oid of orderIds) {
-        const row = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
-        let newRaw = (row?.raw_message ? row.raw_message + "\n" : "") + line;
-        // B5：raw_message 累加上限；超過時前段保留 100 字標記 + 後段保留
-        if (newRaw.length > RAW_MESSAGE_MAX_CHARS) {
-            const tailKeep = Math.floor(RAW_MESSAGE_MAX_CHARS * 0.9);
-            newRaw = "[...前段已截斷以避免 token 暴增...]\n" + newRaw.slice(-tailKeep);
+        // [fix 2026-07-10] 原「SELECT raw → 串接/截斷 → UPDATE」讀改寫在併發下（多實例／Cloud Tasks
+        // 重疊投遞／同群組連續訊息）互相蓋寫：後寫者以較舊的 raw 為基底 → 先寫者附加的行遺失，
+        // 結單 rebuild 依 raw_message 重建即漏品項（斷單）。改為單句原子 UPDATE：
+        // 串接在 DB 端完成（字串串接 || 為 SQLite/PG 皆支援；換行以參數 '\n'+line 傳入避免方言差異）。
+        await db.prepare(
+            "UPDATE orders SET raw_message = CASE WHEN COALESCE(raw_message, '') = '' THEN ? ELSE raw_message || ? END, updated_at = " + nowSql + " WHERE id = ?"
+        ).run(line, "\n" + line, oid);
+        // B5：raw_message 累加上限。截斷改為「附加之後」的獨立步驟：先原子附加（絕不遺失），
+        // 超限才讀出、於 JS 端算截斷（保尾端，避免 substr 負索引的方言差異），寫回時以
+        // 「WHERE raw_message = 讀到的舊值」樂觀鎖防競態——若期間有併發附加則放棄本輪截斷
+        // （下次附加會再檢查），確保截斷絕不蓋掉併發新增的行。截斷失敗不影響已附加內容。
+        try {
+            const row = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
+            const cur = row?.raw_message != null ? String(row.raw_message) : "";
+            if (cur.length > RAW_MESSAGE_MAX_CHARS) {
+                const tailKeep = Math.floor(RAW_MESSAGE_MAX_CHARS * 0.9);
+                const truncated = "[...前段已截斷以避免 token 暴增...]\n" + cur.slice(-tailKeep);
+                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ? AND raw_message = ?").run(truncated, oid, cur);
+            }
+        } catch (e) {
+            console.warn("[LINE] raw_message 截斷檢查失敗（不影響已附加內容）orderId=%s: %s", oid, e?.message || e);
         }
-        await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, oid);
+    }
+}
+/** [fix 2026-07-10] LINE 改單/刪項成功時同步寫 order_item_edits 軌跡。
+ * 背景：結單整單重辨識（rebuild）會 DELETE 全部品項依 raw_message 重建，而改單指令被
+ * isRawMessageNoise 排除在 raw_message 外 → 無軌跡時人工修正會被 rebuild 默默還原
+ * （同日客戶再傳訊息重開 session 掛回同單，下次結單再覆寫一次）。
+ * rebuild 端（lib/rebuild-order-from-sources.js）於重建後同交易內依 created_at 升冪重放本表。
+ * match_key＝「當下該位置品項的 raw_name 快照」正規化（去空白＋小寫，與重放端共用同一實作）；
+ * 「改第N項」是位置指令，但位置會因 rebuild 漂移，品名才穩，故存品名快照而非項次。
+ * 寫入失敗僅告警不阻斷回覆：此時修改本身已生效，只是結單 rebuild 可能還原（降級而非斷單）。 */
+async function recordOrderItemEdit(db, { orderId, action, rawName, quantity, unit, editedBy }) {
+    try {
+        const editId = (0, id_js_1.newId)("oie");
+        const matchKey = (0, rebuild_order_from_sources_js_1.normalizeOrderItemMatchKey)(rawName);
+        await db.prepare(
+            "INSERT INTO order_item_edits (id, order_id, action, match_key, raw_name, quantity, unit, remark, edited_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)"
+        ).run(editId, orderId, action, matchKey, rawName != null ? String(rawName) : null,
+              quantity != null && Number.isFinite(Number(quantity)) ? Number(quantity) : null,
+              unit != null && String(unit).trim() !== "" ? String(unit).trim() : null,
+              editedBy != null && String(editedBy).trim() !== "" ? String(editedBy).trim() : null,
+              new Date().toISOString());
+    } catch (e) {
+        console.warn("[LINE] 改單軌跡寫入失敗（結單 rebuild 可能還原此人工修正）orderId=%s action=%s: %s", orderId, action, e?.message || e);
     }
 }
 async function duplicateAttachmentToOrders(db, lineMessageId, orderIds, nowSql) {
@@ -624,7 +672,7 @@ function createLineWebhook() {
                 for (const oid of survivingOrderIds) {
                     const ord = await db.prepare("SELECT order_no, remark FROM orders WHERE id = ?").get(oid);
                     const items = await db.prepare(`
-          SELECT oi.raw_name, oi.quantity, oi.unit, p.name AS product_name, p.erp_code
+          SELECT oi.raw_name, oi.quantity, oi.unit, oi.remark, p.name AS product_name, p.erp_code
           FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
           WHERE oi.order_id = ? ORDER BY oi.id
         `).all(oid);
@@ -633,7 +681,11 @@ function createLineWebhook() {
                     for (const it of items) {
                         const unit = normalizeOrderUnit(it.unit, "公斤");
                         const name = it.product_name || it.raw_name || "待確認";
-                        lines.push(`${idx}. ${name} ${formatOrderQty(it.quantity)}${unit || ""}`);
+                        // remark 以「⚠」開頭＝AI 標記的警示（如照片辨識幾何校驗的「⚠ 字跡跨列（A/B），請確認」），
+                        // 收單摘要要讓人看得到：品項行下方縮排帶出警示段（只取 ⚠ 那一段，後續換算備註不重複顯示）。
+                        const remarkStr = it.remark != null ? String(it.remark).trim() : "";
+                        const warnSuffix = remarkStr.startsWith("⚠") ? `\n　${remarkStr.split(/[；;\n]/)[0].trim()}` : "";
+                        lines.push(`${idx}. ${name} ${formatOrderQty(it.quantity)}${unit || ""}${warnSuffix}`);
                         idx += 1;
                     }
                     const hdr = ord?.remark ? `${ord.remark}\n` : "";
@@ -708,6 +760,12 @@ function createLineWebhook() {
     };
     async function processLineWebhookEvents(events) {
         for (const event of events) {
+            // [fix 2026-07-10] 本則訊息的去重狀態（供 finally 收尾）：
+            // curLineMessageId＝訊息 id；ownsLineMessage＝本次執行通過所有去重、實際「佔有」處理權；
+            // eventFailed＝外層 catch 捕捉到錯誤。宣告在 try 外，try 內的 continue／throw 都會走到 finally。
+            let curLineMessageId = null;
+            let ownsLineMessage = false;
+            let eventFailed = false;
             try {
                 if (event.type === "join" || event.type === "memberJoined") {
                     try {
@@ -790,7 +848,7 @@ function createLineWebhook() {
                     console.log("[LINE] 略過非訊息, type:", event.type);
                     continue;
                 }
-                const curLineMessageId = event.message?.id != null ? String(event.message.id).trim() : null;
+                curLineMessageId = event.message?.id != null ? String(event.message.id).trim() : null;
                 /** LINE Webhook 逾時重試會帶相同 message.id；與程序內記憶體去重並用，跨程序／重啟後仍可靠。拆單時多筆訂單可共用同一 line_message_id，故不做 UNIQUE 約束。 */
                 if (curLineMessageId) {
                     const dupByOrder = await db.prepare("SELECT id FROM orders WHERE line_message_id = ? LIMIT 1").get(curLineMessageId);
@@ -799,32 +857,35 @@ function createLineWebhook() {
                         continue;
                     }
                 }
+                // [fix 2026-07-10] 持久化去重改為「完成才 INSERT」反轉語意（原為入口先 INSERT）：
+                // 舊作法在入口就把 message_id 寫進 processed_line_messages，之後任何一步拋錯被外層
+                // catch 吞掉後，LINE redelivery 帶同 message.id 再進來會命中去重被略過 → 該訊息永久斷單。
+                // processed_line_messages 只有 message_id + processed_at 兩欄（不動 schema 的前提下無法存
+                // processing 狀態／租約時間戳做「先標記＋逾時接手」），故採反轉語意：
+                //   1) 入口 SELECT 命中＝先前已「成功」處理完 → 略過；
+                //   2) 處理成功（含 try 內各 continue 正常結束路徑）→ finally 才 INSERT 完成標記；
+                //   3) 處理失敗 → 不落完成標記＋釋放記憶體去重 → redelivery 可完整重跑。
+                // 取捨：跨實例「同時」處理同一訊息的極短併發窗口不再被 DB 擋（INSERT-first 擋得住、
+                // SELECT-first 擋不住），由既有記憶體 Set（同實例併發）＋ orders.line_message_id
+                // （建單訊息）補位；LINE redelivery 間隔以分鐘計，實務重疊機率遠低於「拋錯即永久斷單」。
+                if (curLineMessageId) {
+                    try {
+                        const doneRow = await db.prepare("SELECT message_id FROM processed_line_messages WHERE message_id = ?").get(curLineMessageId);
+                        if (doneRow) {
+                            console.log("[LINE] 持久化去重命中（processed_line_messages，已成功處理過），略過重複訊息 messageId=%s", curLineMessageId);
+                            continue;
+                        }
+                    } catch (e) {
+                        // 去重表查詢失敗不可阻斷正常收單（放行；仍有記憶體 Set + dupByOrder 兩層防護）
+                        console.warn("[LINE] 持久化去重查詢失敗（放行）messageId=%s: %s", curLineMessageId, e?.message || e);
+                    }
+                }
                 if (!consumeLineWebhookMessageOnce(event.message?.id)) {
                     console.log("[LINE] 略過重複訊息（同 message.id），避免重複建品項");
                     continue;
                 }
-                // [fix 2026-07-08] 訊息層級持久化去重：line_message_id 只在「新建訂單」時落地，
-                // 累加品項的訊息僅靠上面的記憶體 Set 去重，跨實例／重啟／Cloud Tasks at-least-once 重投遞時
-                // 記憶體 Set 遺失且 L809 的 dupByOrder 查不到 → 同訊息品項重複寫入。
-                // 這裡在訊息入口先 INSERT 一筆到 processed_line_messages（message_id 為主鍵），
-                // 衝突（DO NOTHING → changes=0）代表已處理過，直接略過，達成跨程序冪等。
-                // 放在「訊息層級」最前面（非訂單層級），故不影響拆單時多筆訂單共用同一 message_id 的既有行為。
-                if (curLineMessageId) {
-                    try {
-                        // nowSql 尚未在此定義（在 accepting 檢查後才有），此處自算時間 SQL。
-                        const nowSqlDedup = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-                        const insDedup = await db.prepare(
-                            "INSERT INTO processed_line_messages (message_id, processed_at) VALUES (?, " + nowSqlDedup + ") ON CONFLICT (message_id) DO NOTHING"
-                        ).run(curLineMessageId);
-                        if (insDedup && Number(insDedup.changes || 0) === 0) {
-                            console.log("[LINE] 持久化去重命中（processed_line_messages），略過重複訊息 messageId=%s", curLineMessageId);
-                            continue;
-                        }
-                    } catch (e) {
-                        // 去重表寫入失敗不可阻斷正常收單（放行；仍有記憶體 Set + dupByOrder 兩層防護）
-                        console.warn("[LINE] 持久化去重寫入失敗（放行）messageId=%s: %s", curLineMessageId, e?.message || e);
-                    }
-                }
+                // 通過全部去重＝本次執行佔有此訊息處理權；finally 依成敗標記完成／釋放
+                ownsLineMessage = Boolean(curLineMessageId);
                 const msgType = event.message.type;
                 if (event.source)
                     console.log("[LINE] event.source", JSON.stringify(event.source));
@@ -1460,6 +1521,15 @@ function createLineWebhook() {
                         if (num >= 1 && num <= itemsOrdered.length) {
                             const t = itemsOrdered[num - 1];
                             await db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(t.id, orderRowForEdit.id);
+                            // [fix 2026-07-10] 記錄刪項軌跡供結單 rebuild 重放；match_key 存被刪品項的 raw_name 快照（品名穩、位置會漂移）
+                            await recordOrderItemEdit(db, {
+                                orderId: orderRowForEdit.id,
+                                action: "delete",
+                                rawName: t.raw_name || t.product_name || "",
+                                quantity: null,
+                                unit: null,
+                                editedBy: senderUserId,
+                            });
                             const nm = t.product_name || t.raw_name || "品項";
                             await reply(lineClient, event.replyToken, `已刪除第${num}項：${nm}`, db);
                         }
@@ -1477,6 +1547,15 @@ function createLineWebhook() {
                             const t = itemsOrdered[num - 1];
                             const unitNew = normalizeOrderUnit(unitTail || null, fallbackUnitEdit);
                             await db.prepare("UPDATE order_items SET quantity = ?, unit = ? WHERE id = ? AND order_id = ?").run(qtyNew, unitNew, t.id, orderRowForEdit.id);
+                            // [fix 2026-07-10] 記錄改量軌跡供結單 rebuild 重放；match_key 存該位置品項的 raw_name 快照（品名穩、位置會漂移）
+                            await recordOrderItemEdit(db, {
+                                orderId: orderRowForEdit.id,
+                                action: "set",
+                                rawName: t.raw_name || t.product_name || "",
+                                quantity: qtyNew,
+                                unit: unitNew,
+                                editedBy: senderUserId,
+                            });
                             const nm = t.product_name || t.raw_name || "品項";
                             await reply(lineClient, event.replyToken, `已更新第${num}項 ${nm}：${formatOrderQty(qtyNew)}${unitNew}`, db);
                         }
@@ -1866,12 +1945,38 @@ function createLineWebhook() {
                 console.log("[LINE] 訂單已寫入", orderId);
             }
             catch (err) {
+                eventFailed = true;
                 console.error("[LINE] 處理訊息時錯誤:", err);
                 try {
                     await reply(lineClient, event.replyToken, "抱歉，處理時發生錯誤，請稍後再試。", db);
                 }
                 catch (replyErr) {
                     console.error("[LINE] 回覆失敗（可能 replyToken 逾時）:", replyErr?.message || replyErr);
+                }
+            }
+            finally {
+                // [fix 2026-07-10] 訊息處理收尾（try 內大量 continue 也會先經過這裡＝所有成功路徑都被標記）：
+                // 成功 → INSERT processed_line_messages 完成標記（此後同 message.id 的 redelivery 永久略過）；
+                // 失敗 → 釋放記憶體去重＋best-effort DELETE 完成標記（反轉語意下失敗路徑本來就沒 INSERT，
+                //         DELETE 僅防禦性清理），讓 LINE redelivery 可整則重跑，不再永久斷單。
+                if (ownsLineMessage && curLineMessageId) {
+                    if (!eventFailed) {
+                        try {
+                            const nowSqlDone = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+                            await db.prepare(
+                                "INSERT INTO processed_line_messages (message_id, processed_at) VALUES (?, " + nowSqlDone + ") ON CONFLICT (message_id) DO NOTHING"
+                            ).run(curLineMessageId);
+                        } catch (e) {
+                            // 完成標記寫失敗：跨實例重投遞可能重跑本則（有 dupByOrder/記憶體 Set 補位），不阻斷
+                            console.warn("[LINE] 完成標記寫入失敗（跨實例重送恐重跑本則）messageId=%s: %s", curLineMessageId, e?.message || e);
+                        }
+                    } else {
+                        releaseLineWebhookMessageOnce(curLineMessageId);
+                        try {
+                            await db.prepare("DELETE FROM processed_line_messages WHERE message_id = ?").run(curLineMessageId);
+                        } catch (_) { /* best-effort：失敗不影響（本來就未 INSERT） */ }
+                        console.warn("[LINE] 訊息處理失敗，已釋放去重標記供 LINE redelivery 重試 messageId=%s", curLineMessageId);
+                    }
                 }
             }
         }
