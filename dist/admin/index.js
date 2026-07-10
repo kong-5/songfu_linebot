@@ -1919,7 +1919,11 @@ const STK_STYLE = `
 .stk-rail-n{margin-left:auto;color:var(--notion-text-light,#787774);font-size:11.5px;font-variant-numeric:tabular-nums;}
 .stk-rail-item.active .stk-rail-n{color:#2383e2;}
 .stk-main .stk-tablewrap{flex:1;min-width:0;}
-@media (max-width:760px){.stk-main{flex-direction:column;}.stk-rail{flex:0 0 auto;width:100%;max-height:210px;position:static;top:auto;}.stk-rail-body{overflow:auto;}.stk-main .stk-tablewrap{width:100%;}}
+.stk-rail-item{text-decoration:none;}
+.stk-corail{flex:0 0 138px;}
+.stk-corail .stk-rail-item{padding-top:9px;padding-bottom:9px;font-size:13.5px;}
+.stk-corail .stk-rail-n{font-size:10.5px;color:var(--notion-text-light,#9b9a97);}
+@media (max-width:760px){.stk-main{flex-direction:column;}.stk-rail{flex:0 0 auto;width:100%;max-height:210px;position:static;top:auto;}.stk-corail{max-height:none;}.stk-corail .stk-rail-body{display:flex;overflow-x:auto;}.stk-corail .stk-rail-item{flex:0 0 auto;border-bottom:0;border-right:1px solid var(--notion-border,#f2f1ee);}.stk-rail-body{overflow:auto;}.stk-main .stk-tablewrap{width:100%;}}
 .stk-meta{font-size:12px;color:var(--notion-text-light,#787774);white-space:nowrap;}
 .stk-status{margin:0 0 8px;padding:8px 12px;border-radius:7px;font-size:13px;}
 .stk-status-wait{background:#eef4ff;color:#1d4ed8;}
@@ -6967,6 +6971,11 @@ function createAdminRouter() {
     router.get("/inventory/stock", async (req, res) => {
         const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
         const companies = await listStockCompanies();
+        // 各公司品項數（左欄公司選擇器顯示；沒推過的公司顯示「未推」）
+        const companyCounts = {};
+        try { (await db.prepare("SELECT COALESCE(NULLIF(TRIM(icpno),''),'00') AS ic, COUNT(*) AS n FROM erp_stock_items GROUP BY ic").all() || []).forEach((r) => { companyCounts[(0, erp_companies_js_1.normIcpno)(r.ic)] = Number(r.n || 0); }); } catch (_) { }
+        // 左欄固定列出全部四家（00 松富、01 龍港、02 松揚、03 松成），方便隨時切換
+        const allCompanies = Object.keys(erp_companies_js_1.ERP_COMPANY_NAMES).sort();
         const stockRows = await db.prepare("SELECT erp_code, name, spec, unit, qty, wh_code FROM erp_stock_items WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY erp_code").all(icpno);
         const assignRows = await db.prepare(`
       SELECT p.erp_code AS code, w.name AS wh_name, w.sort_order AS wh_sort, COALESCE(iwp.safety_stock, 0) AS safety
@@ -7043,7 +7052,6 @@ function createAdminRouter() {
         <div class="stk-toolbar no-print">
           <div class="stk-toolbar-left">
             <input type="search" id="stkSearch" class="stk-search" placeholder="搜尋料號 / 品名 / 規格…" autocomplete="off" spellcheck="false">
-            ${companies.length > 1 ? `<div class="sf-seg">${companies.map((c) => `<button type="button" class="${c === icpno ? "active" : ""}" onclick="location.href='/admin/inventory/stock?icpno=${c}'">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))}</button>`).join("")}</div>` : ""}
             <div class="sf-seg" id="stkView">
               <button type="button" data-v="list" class="active">列表</button>
               <button type="button" data-v="group">依倉庫</button>
@@ -7059,6 +7067,7 @@ function createAdminRouter() {
         </div>
         <div id="stkStatus" class="stk-status" style="display:none;"></div>
         <div class="stk-main">
+          <aside class="stk-rail stk-corail no-print"><div class="stk-rail-h">公司</div><div class="stk-rail-body">${allCompanies.map((c) => { const n = companyCounts[c] || 0; return `<a class="stk-rail-item${c === icpno ? " active" : ""}" href="/admin/inventory/stock?icpno=${c}"><span class="stk-rail-name">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))}</span><span class="stk-rail-n">${n > 0 ? n : "未推"}</span></a>`; }).join("")}</div></aside>
           <aside class="stk-rail no-print"><div class="stk-rail-h">倉庫</div><div class="stk-rail-body" id="stkRail"></div></aside>
           <div id="stkTableWrap" class="stk-tablewrap"></div>
         </div>
