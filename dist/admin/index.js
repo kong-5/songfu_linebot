@@ -6184,24 +6184,29 @@ function createAdminRouter() {
         try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, hour: "2-digit", minute: "2-digit" }); }
         catch (_) { return String(iso); }
     }
-    // 校準基準（調整單）：一倉一品項一筆已接受的真實量。回傳 Map，鍵 `${wh_code}|${erp_code}`
+    // 校準基準（調整單）：一倉一品項一筆已接受的真實量（含建立日）。回傳 Map，鍵 `${wh_code}|${erp_code}`
     async function loadBaselineMap() {
         const map = new Map();
         try {
-            const rows = (await db.prepare("SELECT wh_code, erp_code, baseline_qty FROM stocktake_baseline").all()) || [];
-            for (const r of rows) { if (r.baseline_qty != null) map.set(String(r.wh_code) + "|" + String(r.erp_code), Number(r.baseline_qty)); }
+            const rows = (await db.prepare("SELECT wh_code, erp_code, baseline_qty, source_date FROM stocktake_baseline").all()) || [];
+            for (const r of rows) { if (r.baseline_qty != null) map.set(String(r.wh_code) + "|" + String(r.erp_code), { qty: Number(r.baseline_qty), srcDate: String(r.source_date || "") }); }
         } catch (_) { /* 表可能尚未建立 */ }
         return map;
     }
-    // 每列的「系統」只顯示一個值：基準（調整單設過）→ 最新快照 → 盤點當下凍結值；盤差＝實盤−這個值
-    function stkResolveBase(whCode, code, frozenSys, latestMap, baseMap) {
+    // 每列的「系統」只顯示一個值；歷史日期不受今日操作影響：
+    //   看今天：基準（建立日 ≤ 今天）→ 最新快照 → 凍結值
+    //   看過去：基準（建立日 ≤ 該日）→ 該日盤點當下凍結值（未盤者無值＝—）
+    function stkResolveBase(whCode, code, frozenSys, latestMap, baseMap, viewDate, isToday) {
         const bl = baseMap ? baseMap.get(String(whCode) + "|" + String(code)) : undefined;
-        if (bl != null) return { base: bl, src: "baseline" };
-        const lm = latestMap || {};
-        if (Object.prototype.hasOwnProperty.call(lm, String(code))) return { base: Number(lm[String(code)]), src: "latest" };
-        return { base: Number(frozenSys || 0), src: "frozen" };
+        if (bl && bl.qty != null && (!bl.srcDate || bl.srcDate <= viewDate)) return { base: bl.qty, src: "baseline" };
+        if (isToday) {
+            const lm = latestMap || {};
+            if (Object.prototype.hasOwnProperty.call(lm, String(code))) return { base: Number(lm[String(code)]), src: "latest" };
+        }
+        return { base: frozenSys == null ? null : Number(frozenSys), src: "frozen" };
     }
     async function loadStocktakeDay(date, latestMap, baseMap) {
+        const isToday = date === stkAdminTaipeiDate();
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
         for (const s of sessions || []) {
@@ -6211,8 +6216,8 @@ function createAdminRouter() {
                 const counted = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty);
                 const mid = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
                 const code = String(r.erp_code || "");
-                const { base, src } = stkResolveBase(String(s.wh_code), code, sys, latestMap, baseMap);
-                const diff = counted == null ? null : Math.round((counted - base) * 100) / 100;
+                const { base, src } = stkResolveBase(String(s.wh_code), code, sys, latestMap, baseMap, date, isToday);
+                const diff = (counted == null || base == null) ? null : Math.round((counted - base) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
                 return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, base, baseSrc: src, diff, expiry, counted_flag: true };
@@ -6223,8 +6228,10 @@ function createAdminRouter() {
         return out;
     }
     // 取某倉「LIFF 盤點的全部品項」＝ erp_stock_items 全表 ∪ 已盤紀錄，標記已盤／未盤；
-    // 帳上 0 且未盤者沉到最後（對齊 LIFF 排法）
-    async function loadWarehouseFullItems(whCode, sessionItems, latestMap, baseMap) {
+    // 帳上 0（或無值）且未盤者沉到最後（對齊 LIFF 排法）。
+    // 看過去日期時，未盤品項沒有當日凍結值，系統欄顯示「—」。
+    async function loadWarehouseFullItems(whCode, sessionItems, latestMap, baseMap, viewDate) {
+        const isToday = viewDate === stkAdminTaipeiDate();
         let stockRows = [];
         try { stockRows = (await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE wh_code = ? ORDER BY erp_code").all(whCode)) || []; }
         catch (_) { stockRows = []; }
@@ -6237,13 +6244,14 @@ function createAdminRouter() {
             seen.add(code);
             const c = countedMap[code];
             if (c) { out.push(c); continue; }
-            const { base, src } = stkResolveBase(String(whCode), code, Number(r.qty || 0), latestMap, baseMap);
+            const frozen = isToday ? Number(r.qty || 0) : null;
+            const { base, src } = stkResolveBase(String(whCode), code, frozen, latestMap, baseMap, viewDate, isToday);
             out.push({ code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys: Number(r.qty || 0), counted: null, mid: null, base, baseSrc: src, diff: null, expiry: [], counted_flag: false });
         }
         // 已盤但已不在貨品主檔的品項（如已停用）仍列出
         for (const it of sessionItems || []) { if (!seen.has(String(it.code))) out.push(it); }
         const top = [], zeros = [];
-        for (const it of out) { ((Number(it.base) === 0 && !it.counted_flag) ? zeros : top).push(it); }
+        for (const it of out) { ((!it.counted_flag && (it.base == null || Number(it.base) === 0)) ? zeros : top).push(it); }
         return top.concat(zeros);
     }
     router.get("/inventory", async (req, res) => {
@@ -6266,7 +6274,17 @@ function createAdminRouter() {
         const pendingWh = includedWh.filter((w) => !countedWh.has(String(w.code)));
         const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
         const fmtN = (n) => (n == null ? "—" : String(n));
-        const snapTime = stkAdminTwTime(stockMeta.snapshot_at) || "—";
+        const isToday = date === stkAdminTaipeiDate();
+        // 快照時間標籤：非今日快照連日期一起標，避免把舊快照誤讀成今天的
+        const snapTime = (() => {
+            const iso = stockMeta.snapshot_at;
+            if (!iso) return "—";
+            try {
+                const d = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(iso));
+                const hm = stkAdminTwTime(iso);
+                return d === stkAdminTaipeiDate() ? hm : `${d.slice(5).replace("-", "/")} ${hm}`;
+            } catch (_) { return String(iso); }
+        })();
         const diffPct = (it) => {
             if (it.diff == null) return "—";
             if (!it.base) return it.diff === 0 ? "0%" : "—";
@@ -6288,7 +6306,7 @@ function createAdminRouter() {
         let fullItems = [];
         let selWhName = "";
         if (selWh) {
-            fullItems = await loadWarehouseFullItems(selWh, sel ? sel.items : [], latestMap, baseMap);
+            fullItems = await loadWarehouseFullItems(selWh, sel ? sel.items : [], latestMap, baseMap, date);
             const wRow = whList.find((w) => w.code === selWh);
             selWhName = wRow ? wRow.name : (sel ? String(sel.session.wh_name || "") : "");
         }
@@ -6357,10 +6375,12 @@ function createAdminRouter() {
                 ${applyBtn}
               </div>
             </div>
-            <div class="stk-note">列出此倉 LIFF 盤點的<b>全部品項</b>（含未盤）。「系統」＝最新庫存快照（欄名顯示快照時間，按「更新最新庫存」即同步）；標「<b>基準</b>」者為經理建立調整單後的校準值。盤差＝實盤−系統。</div>
+            <div class="stk-note">${isToday
+                ? `列出此倉 LIFF 盤點的<b>全部品項</b>（含未盤）。「系統」＝最新庫存快照（欄名顯示快照時間，按「更新最新庫存」即同步）；標「<b>基準</b>」者為經理建立調整單後的校準值。盤差＝實盤−系統。`
+                : `檢視<b>歷史日期</b>：「系統」為該日<b>盤點當下</b>的凍結值（不受今日快照與之後的調整單影響）；未盤品項當日無凍結值，顯示「—」。盤差＝實盤−系統。`}</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
-              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">${escapeHtml(snapTime)} 快照</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差</th><th class="stk-num">盤差%</th><th>效期</th>${isManager ? `<th class="stk-num">調整</th>` : ""}</tr></thead>
+              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">${isToday ? `${escapeHtml(snapTime)} 快照` : "盤點當下"}</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差</th><th class="stk-num">盤差%</th><th>效期</th>${isManager ? `<th class="stk-num">調整</th>` : ""}</tr></thead>
               <tbody>${rowsHtml || `<tr><td colspan="${colspan}" style="text-align:center;color:#787774;padding:14px;">此倉沒有品項</td></tr>`}</tbody>
             </table>
             </div>
@@ -6572,7 +6592,7 @@ function createAdminRouter() {
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
         const lines = ["日期,倉別,倉名,料號,品名,規格,單位,狀態,系統量,基準,實盤量(含中),其中中貨,盤差,盤差%,效期明細,盤點人,送出時間"];
         for (const { session: s, items } of day) {
-            const full = await loadWarehouseFullItems(s.wh_code, items, latestMapCsv, baseMapCsv);
+            const full = await loadWarehouseFullItems(s.wh_code, items, latestMapCsv, baseMapCsv, date);
             for (const it of full) {
                 const pending = !it.counted_flag;
                 const dp = (it.diff == null || !it.base) ? "" : ((it.diff / it.base) * 100).toFixed(1) + "%";
