@@ -113,8 +113,10 @@
     return !(Number.isFinite(stdN) && stdN >= 0);
   }
   // 組合正負號＋絕對值 → 實際存的溫度字串（空值不帶符號）
+  // [fix 2026-07-10] 絕對值部分先把逗號換小數點（越南文/歐系鍵盤），再濾掉非數字字元，
+  // 避免存入 "18a" 之類非數字；空字串維持空。既有資料 round-trip 不變（"-18.5" 載入→顯示 18.5→存回 "-18.5"）
   function combineTemp(neg, absStr){
-    const v = String(absStr == null ? "" : absStr).trim().replace(/^[-+]+/, "");
+    const v = String(absStr == null ? "" : absStr).trim().replace(/^[-+]+/, "").replace(/,/g, ".").replace(/[^0-9.]/g, "");
     return v ? ((neg ? "-" : "") + v) : "";
   }
 
