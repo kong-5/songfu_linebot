@@ -6184,8 +6184,29 @@ function createAdminRouter() {
         try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, hour: "2-digit", minute: "2-digit" }); }
         catch (_) { return String(iso); }
     }
-    async function loadStocktakeDay(date, latestMap) {
-        const lm = latestMap || {};
+    // 校準基準（調整單）：一倉一品項一筆已接受的真實量（含建立日）。回傳 Map，鍵 `${wh_code}|${erp_code}`
+    async function loadBaselineMap() {
+        const map = new Map();
+        try {
+            const rows = (await db.prepare("SELECT wh_code, erp_code, baseline_qty, source_date FROM stocktake_baseline").all()) || [];
+            for (const r of rows) { if (r.baseline_qty != null) map.set(String(r.wh_code) + "|" + String(r.erp_code), { qty: Number(r.baseline_qty), srcDate: String(r.source_date || "") }); }
+        } catch (_) { /* 表可能尚未建立 */ }
+        return map;
+    }
+    // 每列的「系統」只顯示一個值；歷史日期不受今日操作影響：
+    //   看今天：基準（建立日 ≤ 今天）→ 最新快照 → 凍結值
+    //   看過去：基準（建立日 ≤ 該日）→ 該日盤點當下凍結值（未盤者無值＝—）
+    function stkResolveBase(whCode, code, frozenSys, latestMap, baseMap, viewDate, isToday) {
+        const bl = baseMap ? baseMap.get(String(whCode) + "|" + String(code)) : undefined;
+        if (bl && bl.qty != null && (!bl.srcDate || bl.srcDate <= viewDate)) return { base: bl.qty, src: "baseline" };
+        if (isToday) {
+            const lm = latestMap || {};
+            if (Object.prototype.hasOwnProperty.call(lm, String(code))) return { base: Number(lm[String(code)]), src: "latest" };
+        }
+        return { base: frozenSys == null ? null : Number(frozenSys), src: "frozen" };
+    }
+    async function loadStocktakeDay(date, latestMap, baseMap) {
+        const isToday = date === stkAdminTaipeiDate();
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
         for (const s of sessions || []) {
@@ -6194,44 +6215,80 @@ function createAdminRouter() {
                 const sys = Number(r.sys_qty || 0);
                 const counted = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty);
                 const mid = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
-                const diff = counted == null ? null : Math.round((counted - sys) * 100) / 100;
                 const code = String(r.erp_code || "");
-                const hasLatest = Object.prototype.hasOwnProperty.call(lm, code);
-                const latest = hasLatest ? Number(lm[code]) : null;
-                const diffLatest = (counted == null || latest == null) ? null : Math.round((counted - latest) * 100) / 100;
+                const { base, src } = stkResolveBase(String(s.wh_code), code, sys, latestMap, baseMap, date, isToday);
+                const diff = (counted == null || base == null) ? null : Math.round((counted - base) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
-                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, diffLatest, expiry };
+                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, base, baseSrc: src, diff, expiry, counted_flag: true };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
             out.push({ session: s, items, diffCount });
         }
         return out;
     }
+    // 取某倉「LIFF 盤點的全部品項」＝ erp_stock_items 全表 ∪ 已盤紀錄，標記已盤／未盤；
+    // 帳上 0（或無值）且未盤者沉到最後（對齊 LIFF 排法）。
+    // 看過去日期時，未盤品項沒有當日凍結值，系統欄顯示「—」。
+    async function loadWarehouseFullItems(whCode, sessionItems, latestMap, baseMap, viewDate) {
+        const isToday = viewDate === stkAdminTaipeiDate();
+        let stockRows = [];
+        try { stockRows = (await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE wh_code = ? ORDER BY erp_code").all(whCode)) || []; }
+        catch (_) { stockRows = []; }
+        const countedMap = {};
+        (sessionItems || []).forEach((it) => { countedMap[String(it.code)] = it; });
+        const out = [];
+        const seen = new Set();
+        for (const r of stockRows) {
+            const code = String(r.erp_code || "");
+            seen.add(code);
+            const c = countedMap[code];
+            if (c) { out.push(c); continue; }
+            const frozen = isToday ? Number(r.qty || 0) : null;
+            const { base, src } = stkResolveBase(String(whCode), code, frozen, latestMap, baseMap, viewDate, isToday);
+            out.push({ code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys: Number(r.qty || 0), counted: null, mid: null, base, baseSrc: src, diff: null, expiry: [], counted_flag: false });
+        }
+        // 已盤但已不在貨品主檔的品項（如已停用）仍列出
+        for (const it of sessionItems || []) { if (!seen.has(String(it.code))) out.push(it); }
+        const top = [], zeros = [];
+        for (const it of out) { ((!it.counted_flag && (it.base == null || Number(it.base) === 0)) ? zeros : top).push(it); }
+        return top.concat(zeros);
+    }
     router.get("/inventory", async (req, res) => {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
-        // 最新庫存快照（供「對最新盤差」對照）
+        const isManager = req.adminProfile?.title === "經理";
+        // 最新庫存快照（「系統」欄直接用它，按「更新最新庫存」即同步）
         const latestMap = {};
         let stockMeta = {};
         try {
             (await db.prepare("SELECT erp_code, qty FROM erp_stock_items").all() || []).forEach((r) => { latestMap[String(r.erp_code)] = Number(r.qty || 0); });
             stockMeta = await readStockMeta();
         } catch (_) { /* 無庫存快照時照樣顯示 */ }
-        const day = await loadStocktakeDay(date, latestMap);
+        const baseMap = await loadBaselineMap();
+        const day = await loadStocktakeDay(date, latestMap, baseMap);
         let includedWh = [];
         try { includedWh = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY sort_order, code").all()) || []; } catch (_) { includedWh = []; }
-        let recentDates = [];
-        try { recentDates = (await db.prepare("SELECT count_date AS d, COUNT(*) AS n FROM stocktake_session GROUP BY count_date ORDER BY count_date DESC LIMIT 14").all()) || []; } catch (_) { recentDates = []; }
         const byWh = {}; day.forEach((x) => { byWh[String(x.session.wh_code)] = x; });
         const countedWh = new Set(day.map((x) => String(x.session.wh_code)));
         const pendingWh = includedWh.filter((w) => !countedWh.has(String(w.code)));
         const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
         const fmtN = (n) => (n == null ? "—" : String(n));
+        const isToday = date === stkAdminTaipeiDate();
+        // 快照時間標籤：非今日快照連日期一起標，避免把舊快照誤讀成今天的
+        const snapTime = (() => {
+            const iso = stockMeta.snapshot_at;
+            if (!iso) return "—";
+            try {
+                const d = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(iso));
+                const hm = stkAdminTwTime(iso);
+                return d === stkAdminTaipeiDate() ? hm : `${d.slice(5).replace("-", "/")} ${hm}`;
+            } catch (_) { return String(iso); }
+        })();
         const diffPct = (it) => {
             if (it.diff == null) return "—";
-            if (it.sys === 0) return it.diff === 0 ? "0%" : "—";
-            return ((it.diff / it.sys) * 100).toFixed(1) + "%";
+            if (!it.base) return it.diff === 0 ? "0%" : "—";
+            return ((it.diff / it.base) * 100).toFixed(1) + "%";
         };
         const diffCls = (it) => (it.diff == null ? "" : it.diff === 0 ? "stk-z" : it.diff > 0 ? "stk-p" : "stk-n");
         const expiryTxt = (arr) => (arr || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"} × ${b.qty || "?"}`).join("、");
@@ -6245,7 +6302,14 @@ function createAdminRouter() {
         const selWh = String(req.query.wh || "").trim() || firstCounted;
         const sel = byWh[selWh] || null;
         const totalDiff = day.reduce((s, x) => s + x.diffCount, 0);
-        const chips = recentDates.map((r) => `<a class="stk-chip ${String(r.d) === date ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(String(r.d))}">${escapeHtml(String(r.d))}<span>${r.n}倉</span></a>`).join("");
+        // 選定倉：LIFF 全部品項（已盤＋未盤）
+        let fullItems = [];
+        let selWhName = "";
+        if (selWh) {
+            fullItems = await loadWarehouseFullItems(selWh, sel ? sel.items : [], latestMap, baseMap, date);
+            const wRow = whList.find((w) => w.code === selWh);
+            selWhName = wRow ? wRow.name : (sel ? String(sel.session.wh_name || "") : "");
+        }
         // 左欄
         const whItemsHtml = whList.map((w) => {
             const x = byWh[w.code];
@@ -6257,48 +6321,67 @@ function createAdminRouter() {
                   <div class="wh-m"><span>已盤 ${done}/${all}</span>${x.diffCount ? `<span class="wh-diff">盤差 ${x.diffCount}</span>` : `<span class="wh-ok">✓</span>`}</div>
                 </a>`;
             }
-            return `<div class="wh-it idle">
+            return `<a class="wh-it idle ${on ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(date)}&wh=${encodeURIComponent(w.code)}">
                   <div class="wh-n">${escapeHtml(w.name || w.code)}<span class="wh-c">${escapeHtml(w.code)}</span></div>
                   <div class="wh-m"><span class="wh-pend">未盤</span></div>
-                </div>`;
+                </a>`;
         }).join("");
-        // 右欄（選定倉）
+        // 右欄（選定倉）：LIFF 全部品項（已盤＋未盤），「系統」一欄＝最新快照（有調整單者顯示基準）
         let rightHtml;
-        if (!sel) {
+        if (!selWh || !fullItems.length) {
             rightHtml = `<div class="stk-empty">${day.length ? "請從左邊選一個倉庫查看。" : "此日期沒有盤點紀錄。<br>盤點方式：在白名單群組輸入「#盤點」，點倉庫按鈕進入 LIFF 盤點並送出。"}</div>`;
         } else {
-            const s = sel.session;
-            const done = Number(s.counted_count || 0), all = Number(s.item_count || 0);
-            const dLatestCls = (d) => (d == null ? "" : d === 0 ? "stk-z" : d > 0 ? "stk-p" : "stk-n");
-            const rowsHtml = sel.items.map((it) => `
-              <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}">
+            const s = sel ? sel.session : null;
+            const all = fullItems.length;
+            const done = fullItems.filter((it) => it.counted_flag).length;
+            const diffCount = sel ? sel.diffCount : 0;
+            const colspan = isManager ? 8 : 7;
+            const rowsHtml = fullItems.map((it) => {
+                const pending = !it.counted_flag;
+                const zero = Number(it.base) === 0 && pending;
+                const adjBtn = (isManager && !pending)
+                    ? `<button type="button" class="stk-adj" data-adj="${escapeAttr(it.code)}" data-qty="${escapeAttr(String(it.counted))}" title="把此品項的基準設為今日實盤">${it.baseSrc === "baseline" ? "重設" : "調"}</button>`
+                    : "";
+                return `
+              <tr data-pending="${pending ? "1" : "0"}" data-zero="${zero ? "1" : "0"}" data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${pending ? "stk-pend" : diffCls(it)}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
                 <td>${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
-                <td class="stk-num">${fmtN(it.sys)}</td>
-                <td class="stk-num">${fmtN(it.counted)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}</td>
+                <td class="stk-num">${fmtN(it.base)}${it.baseSrc === "baseline" ? `<span class="stk-base">基準</span>` : ""}</td>
+                <td class="stk-num">${pending ? `<span class="stk-todo">未盤</span>` : fmtN(it.counted) + (it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : "")}</td>
                 <td class="stk-num stk-diff">${it.diff == null ? "—" : (it.diff > 0 ? "+" : "") + it.diff}</td>
                 <td class="stk-num">${diffPct(it)}</td>
-                <td class="stk-num stk-latest">${fmtN(it.latest)}</td>
-                <td class="stk-num ${dLatestCls(it.diffLatest)}"><b>${it.diffLatest == null ? "—" : (it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b></td>
                 <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
-              </tr>`).join("");
+                ${isManager ? `<td class="stk-num">${adjBtn}</td>` : ""}
+              </tr>`;
+            }).join("");
+            const headMeta = s
+                ? `<span>盤點人 ${escapeHtml(s.created_by_name || "—")}</span>
+                <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
+                <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
+                <span class="stk-badge ${diffCount ? "warn" : "ok"}">盤差 ${diffCount} 項</span>`
+                : `<span class="stk-badge warn">今日尚未盤點</span>
+                <span class="stk-badge">品項 ${all}</span>`;
+            const applyBtn = (isManager && sel)
+                ? `<button type="button" class="stk-togbtn sm primary" id="stkApplyBase" data-wh="${escapeAttr(selWh)}" data-date="${escapeAttr(date)}">建立調整單（實盤設為基準）</button>`
+                : "";
             rightHtml = `
           <div class="stk-card">
             <div class="stk-card-h">
-              <div class="stk-card-t"><b>${escapeHtml(s.wh_name || s.wh_code)}</b><span class="stk-code2">${escapeHtml(s.wh_code)}</span></div>
+              <div class="stk-card-t"><b>${escapeHtml(selWhName || selWh)}</b><span class="stk-code2">${escapeHtml(selWh)}</span></div>
               <div class="stk-card-m">
-                <span>盤點人 ${escapeHtml(s.created_by_name || "—")}</span>
-                <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
-                <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
-                <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
-                <button type="button" class="stk-togbtn sm" id="stkOnlyDiff">只看盤差</button>
+                ${headMeta}
+                <button type="button" class="stk-togbtn sm" id="stkHideZero">隱藏 0</button>
+                ${sel ? `<button type="button" class="stk-togbtn sm" id="stkOnlyDiff">只看盤差</button>` : ""}
+                ${applyBtn}
               </div>
             </div>
-            <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自目前庫存快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")})，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
+            <div class="stk-note">${isToday
+                ? `列出此倉 LIFF 盤點的<b>全部品項</b>（含未盤）。「系統」＝最新庫存快照（欄名顯示快照時間，按「更新最新庫存」即同步）；標「<b>基準</b>」者為經理建立調整單後的校準值。盤差＝實盤−系統。`
+                : `檢視<b>歷史日期</b>：「系統」為該日<b>盤點當下</b>的凍結值（不受今日快照與之後的調整單影響）；未盤品項當日無凍結值，顯示「—」。盤差＝實盤−系統。`}</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
-              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下</span></th><th class="stk-num">盤差%</th><th class="stk-num">最新<br><span class="stk-th2">系統</span></th><th class="stk-num">對最新<br><span class="stk-th2">盤差</span></th><th>效期</th></tr></thead>
-              <tbody>${rowsHtml || `<tr><td colspan="9" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
+              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">${isToday ? `${escapeHtml(snapTime)} 快照` : "盤點當下"}</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差</th><th class="stk-num">盤差%</th><th>效期</th>${isManager ? `<th class="stk-num">調整</th>` : ""}</tr></thead>
+              <tbody>${rowsHtml || `<tr><td colspan="${colspan}" style="text-align:center;color:#787774;padding:14px;">此倉沒有品項</td></tr>`}</tbody>
             </table>
             </div>
           </div>`;
@@ -6312,11 +6395,6 @@ function createAdminRouter() {
         .stk-pill b{color:inherit;}
         .stk-pill.warn{background:#fcf3e2;border-color:#e8d5ac;color:#8a5a10;}
         .stk-pill.ok{background:#e7f6ee;border-color:#bfe5cf;color:#1f7a46;}
-        .stk-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px;}
-        .stk-chip{font-size:12px;padding:4px 10px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);text-decoration:none;color:#5b616e;background:var(--notion-card,#fff);}
-        .stk-chip span{margin-left:5px;color:#9b9a97;}
-        .stk-chip.on{background:#2383e2;color:#fff;border-color:#2383e2;}
-        .stk-chip.on span{color:#d7e9fb;}
         .stk-grid{display:grid;grid-template-columns:246px minmax(0,1fr);gap:14px;align-items:start;}
         @media(max-width:760px){.stk-grid{grid-template-columns:1fr;}}
         .wh-panel{background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;overflow:hidden;}
@@ -6324,8 +6402,8 @@ function createAdminRouter() {
         .wh-it{display:block;padding:9px 13px;border-bottom:1px solid var(--notion-border-soft,#f0efed);text-decoration:none;color:inherit;cursor:pointer;}
         .wh-it:last-child{border-bottom:0;}
         .wh-it.on{background:#e8f1fd;box-shadow:inset 3px 0 0 #2383e2;}
-        .wh-it.idle{opacity:.62;cursor:default;}
-        .wh-it:hover:not(.idle):not(.on){background:rgba(55,53,47,.03);}
+        .wh-it.idle:not(.on){opacity:.7;}
+        .wh-it:hover:not(.on){background:rgba(55,53,47,.03);}
         .wh-n{font-size:13.5px;font-weight:600;line-height:1.2;}
         .wh-c{margin-left:7px;font-size:11px;color:#9b9a97;font-variant-numeric:tabular-nums;font-weight:400;}
         .wh-m{display:flex;gap:8px;align-items:center;margin-top:3px;font-size:11.5px;color:#787774;font-variant-numeric:tabular-nums;}
@@ -6353,7 +6431,12 @@ function createAdminRouter() {
         .stk-spec{margin-left:6px;font-size:11px;color:#9b9a97;}
         .stk-exp{font-size:11.5px;color:#8a5a10;max-width:220px;}
         .stk-mid{display:block;font-size:10.5px;color:#2383e2;font-weight:600;}
-        .stk-latest{color:#5b616e;}
+        tr.stk-pend td{color:#9b9a97;}
+        tr.stk-pend .stk-code{color:#b0afac;}
+        .stk-todo{display:inline-block;font-size:10.5px;font-weight:600;color:#8a5a10;background:#fcf3e2;padding:1px 7px;border-radius:5px;}
+        .stk-base{display:inline-block;margin-left:5px;font-size:9.5px;font-weight:600;color:#1f7a46;background:#e7f6ee;padding:0 5px;border-radius:4px;vertical-align:middle;}
+        .stk-adj{font-size:11px;padding:2px 9px;border-radius:6px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#2383e2;cursor:pointer;white-space:nowrap;}
+        .stk-adj:hover{background:#e8f1fd;}
         tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}
         tr.stk-p .stk-diff{color:#1f7a46;font-weight:700;}
         tr.stk-z .stk-diff{color:#9b9a97;}
@@ -6361,6 +6444,8 @@ function createAdminRouter() {
         .stk-togbtn{font-size:12.5px;padding:6px 12px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;}
         .stk-togbtn.sm{padding:4px 10px;font-size:11.5px;}
         .stk-togbtn.on{background:#2383e2;border-color:#2383e2;color:#fff;}
+        .stk-togbtn.primary{background:#2383e2;border-color:#2383e2;color:#fff;font-weight:600;}
+        .stk-togbtn.primary:hover{background:#1a6fc4;}
         .stk-empty{background:var(--notion-card,#fff);border:1px dashed var(--notion-border,#e3e2e0);border-radius:12px;padding:34px 16px;text-align:center;color:#787774;}
       </style>
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 每日盤點</div>
@@ -6379,7 +6464,6 @@ function createAdminRouter() {
         <span class="stk-pill ${totalDiff ? "warn" : "ok"}">盤差品項 <b>${totalDiff}</b> 項</span>
         ${pendingWh.length ? `<span class="stk-pill warn">未盤：${pendingWh.map((w) => escapeHtml(w.name || w.code)).join("、")}</span>` : (includedWh.length ? `<span class="stk-pill ok">全部倉庫已盤 ✓</span>` : "")}
       </div>
-      ${chips ? `<div class="stk-chips">${chips}</div>` : ""}
       <div class="stk-grid">
         <div class="wh-panel">
           <div class="wh-panel-h">倉庫（${date}）</div>
@@ -6389,13 +6473,48 @@ function createAdminRouter() {
       </div>
       <script>
       (function(){
-        var btn=document.getElementById('stkOnlyDiff');
-        if(btn){ var on=false; btn.addEventListener('click',function(){
-          on=!on; btn.classList.toggle('on',on);
-          var rows=document.querySelectorAll('tr[data-diff]');
-          Array.prototype.forEach.call(rows,function(tr){ tr.style.display=(on&&tr.getAttribute('data-diff')==='0')?'none':''; });
-        }); }
-        // 更新最新庫存：觸發內網代理拉一次凌越，成功後重載頁面（對最新盤差就會更新）
+        // 篩選：只看盤差／隱藏0（帳上0且未盤），可並用
+        var odBtn=document.getElementById('stkOnlyDiff');
+        var hzBtn=document.getElementById('stkHideZero');
+        var st={od:false,hz:false};
+        function applyFilter(){
+          var rows=document.querySelectorAll('tr[data-pending]');
+          Array.prototype.forEach.call(rows,function(tr){
+            var hide=false;
+            if(st.od&&tr.getAttribute('data-diff')==='0') hide=true;
+            if(st.hz&&tr.getAttribute('data-zero')==='1') hide=true;
+            tr.style.display=hide?'none':'';
+          });
+        }
+        if(odBtn) odBtn.addEventListener('click',function(){ st.od=!st.od; odBtn.classList.toggle('on',st.od); applyFilter(); });
+        if(hzBtn) hzBtn.addEventListener('click',function(){ st.hz=!st.hz; hzBtn.classList.toggle('on',st.hz); applyFilter(); });
+        // 調整單（限經理）：整倉一鍵把今日實盤設為基準；逐品項用每列「調」
+        var applyBtn=document.getElementById('stkApplyBase');
+        if(applyBtn){
+          applyBtn.addEventListener('click',function(){
+            var wh=applyBtn.getAttribute('data-wh'), d=applyBtn.getAttribute('data-date');
+            if(!confirm('確定建立調整單？\\n將把本倉今日「已盤」品項的實盤量整批設為校準基準（之後該品項盤差＝實盤−基準）。\\n此動作只記錄在後台，不會回寫凌越。')) return;
+            applyBtn.disabled=true; applyBtn.textContent='處理中…';
+            fetch('/admin/inventory/baseline/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({warehouse:wh,date:d})})
+              .then(function(r){return r.json();}).then(function(res){
+                if(res&&res.ok){ location.reload(); }
+                else { alert('失敗：'+((res&&res.error)||'未知錯誤')); applyBtn.disabled=false; applyBtn.textContent='建立調整單（實盤設為基準）'; }
+              }).catch(function(){ alert('連線失敗，請稍後再試'); applyBtn.disabled=false; applyBtn.textContent='建立調整單（實盤設為基準）'; });
+          });
+        }
+        Array.prototype.forEach.call(document.querySelectorAll('.stk-adj'),function(b){
+          b.addEventListener('click',function(){
+            var code=b.getAttribute('data-adj'), qty=b.getAttribute('data-qty');
+            var wh=(applyBtn?applyBtn.getAttribute('data-wh'):''), d=(applyBtn?applyBtn.getAttribute('data-date'):'');
+            if(!confirm('確定把 '+code+' 的基準設為今日實盤 '+qty+' ？不會回寫凌越。')) return;
+            b.disabled=true;
+            fetch('/admin/inventory/baseline/item',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({warehouse:wh,date:d,code:code})})
+              .then(function(r){return r.json();}).then(function(res){
+                if(res&&res.ok){ location.reload(); } else { alert('失敗：'+((res&&res.error)||'未知錯誤')); b.disabled=false; }
+              }).catch(function(){ alert('連線失敗'); b.disabled=false; });
+          });
+        });
+        // 更新最新庫存：觸發內網代理拉一次凌越，成功後重載頁面（「系統」欄即同步）
         var rb=document.getElementById('stkRefreshInv'), msg=document.getElementById('stkRefreshMsg');
         if(rb){ rb.addEventListener('click',function(){
           rb.disabled=true; msg.textContent='已送出更新請求，等待內網代理刷新…';
@@ -6415,19 +6534,70 @@ function createAdminRouter() {
       </script>`;
         res.type("text/html").send(notionPage("每日盤點", body, "inventory", res));
     });
+    // 校準基準 upsert（DELETE+INSERT，sqlite/pg 皆可；pg 不支援一般表 INSERT OR REPLACE）
+    async function upsertBaseline(whCode, erpCode, qty, sessionId, srcDate, by, byName) {
+        const now = new Date().toISOString();
+        await db.prepare("DELETE FROM stocktake_baseline WHERE wh_code = ? AND erp_code = ?").run(whCode, erpCode);
+        await db.prepare("INSERT INTO stocktake_baseline (wh_code, erp_code, baseline_qty, source_session_id, source_date, adjusted_by, adjusted_by_name, adjusted_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .run(whCode, erpCode, qty, sessionId, srcDate, by, byName, now, null);
+    }
+    // 建立調整單：把某倉當日「已盤」品項的實盤整批設為校準基準。限經理。
+    router.post("/inventory/baseline/apply", express_1.default.json(), requireManager, async (req, res) => {
+        try {
+            const code = String(req.body?.warehouse || "").trim();
+            const qd = String(req.body?.date || "").trim();
+            const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
+            if (!code) { res.status(400).json({ ok: false, error: "缺少倉別" }); return; }
+            const sess = await db.prepare("SELECT id, wh_name FROM stocktake_session WHERE wh_code = ? AND count_date = ?").get(code, date);
+            if (!sess) { res.status(404).json({ ok: false, error: "此倉當日沒有盤點紀錄" }); return; }
+            const rows = await db.prepare("SELECT erp_code, counted_qty FROM stocktake_count WHERE session_id = ?").all(sess.id);
+            const by = req.adminUsername || "";
+            const byName = (req.adminProfile && req.adminProfile.name) || by;
+            let n = 0;
+            for (const r of rows || []) {
+                if (r.counted_qty == null || r.counted_qty === "") continue; // 未盤不設基準
+                await upsertBaseline(code, String(r.erp_code || ""), Number(r.counted_qty), sess.id, date, by, byName);
+                n++;
+            }
+            await logDataChange(req, { entityType: "stocktake_baseline", entityId: code, action: "adjust", summary: `建立調整單：${sess.wh_name || code}（${code}）${date}，${n} 項實盤設為校準基準`, meta: { wh: code, date, count: n } });
+            res.json({ ok: true, count: n });
+        } catch (e) { console.error("[admin] baseline apply", e?.message || e); res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) }); }
+    });
+    // 逐品項調整：把單一品項當日實盤設為校準基準。限經理。
+    router.post("/inventory/baseline/item", express_1.default.json(), requireManager, async (req, res) => {
+        try {
+            const code = String(req.body?.warehouse || "").trim();
+            const erp = String(req.body?.code || "").trim();
+            const qd = String(req.body?.date || "").trim();
+            const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
+            if (!code || !erp) { res.status(400).json({ ok: false, error: "缺少倉別或料號" }); return; }
+            const sess = await db.prepare("SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ?").get(code, date);
+            if (!sess) { res.status(404).json({ ok: false, error: "此倉當日沒有盤點紀錄" }); return; }
+            const row = await db.prepare("SELECT counted_qty FROM stocktake_count WHERE session_id = ? AND erp_code = ?").get(sess.id, erp);
+            if (!row || row.counted_qty == null || row.counted_qty === "") { res.status(400).json({ ok: false, error: "該品項今日未盤，無法設基準" }); return; }
+            const by = req.adminUsername || "";
+            const byName = (req.adminProfile && req.adminProfile.name) || by;
+            await upsertBaseline(code, erp, Number(row.counted_qty), sess.id, date, by, byName);
+            await logDataChange(req, { entityType: "stocktake_baseline", entityId: `${code}/${erp}`, action: "adjust", summary: `調整單（單品）：${code}/${erp} 基準設為 ${Number(row.counted_qty)}（${date}）`, meta: { wh: code, erp, date } });
+            res.json({ ok: true });
+        } catch (e) { console.error("[admin] baseline item", e?.message || e); res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) }); }
+    });
     router.get("/inventory/stocktake.csv", async (req, res) => {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
         const latestMapCsv = {};
         try { (await db.prepare("SELECT erp_code, qty FROM erp_stock_items").all() || []).forEach((r) => { latestMapCsv[String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) {}
-        const day = await loadStocktakeDay(date, latestMapCsv);
+        const baseMapCsv = await loadBaselineMap();
+        const day = await loadStocktakeDay(date, latestMapCsv, baseMapCsv);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
-        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量,對最新盤差,效期明細,盤點人,送出時間"];
+        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,狀態,系統量,基準,實盤量(含中),其中中貨,盤差,盤差%,效期明細,盤點人,送出時間"];
         for (const { session: s, items } of day) {
-            for (const it of items) {
-                const dp = it.diff == null ? "" : (it.sys === 0 ? "" : ((it.diff / it.sys) * 100).toFixed(1) + "%");
+            const full = await loadWarehouseFullItems(s.wh_code, items, latestMapCsv, baseMapCsv, date);
+            for (const it of full) {
+                const pending = !it.counted_flag;
+                const dp = (it.diff == null || !it.base) ? "" : ((it.diff / it.base) * 100).toFixed(1) + "%";
                 const exp = (it.expiry || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"}x${b.qty || "?"}`).join(" / ");
-                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latest == null ? "" : it.latest, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
+                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, pending ? "未盤" : "已盤", it.base, it.baseSrc === "baseline" ? "是" : "", it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
             }
         }
         res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
