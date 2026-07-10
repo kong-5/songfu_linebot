@@ -609,9 +609,27 @@ function initSqlite(dbPath) {
     }
     db = makeSqliteWrapper(sqlite);
 }
+let pgTlsWarned = false; // 「未提供 CA」警告只印一次
+/** 讀取 PG TLS 的 CA 憑證：優先 DATABASE_SSL_CA（PEM 內容），其次 DATABASE_SSL_CA_FILE（檔案路徑）；都沒設回 null */
+function readPgSslCa() {
+    const inline = String(process.env.DATABASE_SSL_CA || "").trim();
+    if (inline)
+        return inline;
+    const file = String(process.env.DATABASE_SSL_CA_FILE || "").trim();
+    if (file) {
+        try {
+            return (0, fs_1.readFileSync)(file, "utf-8");
+        }
+        catch (e) {
+            // CA 檔讀不到視同未設定（退回不驗證模式），只記 log，絕不能讓現有部署因此連不上
+            console.error("[db] DATABASE_SSL_CA_FILE 讀取失敗，退回不驗證憑證模式:", e?.message || e);
+        }
+    }
+    return null;
+}
 function pgPoolOptions() {
     const raw = (DATABASE_URL || "").trim();
-    // 連線字串內的 sslmode=require 可能讓 node-pg 仍驗證憑證鏈（自簽名鏈報錯）；改由 opts.ssl 強制關閉驗證
+    // 連線字串內的 sslmode=require 可能讓 node-pg 仍驗證憑證鏈（自簽名鏈報錯）；改由 opts.ssl 統一控制
     let conn = raw.replace(/[?&]sslmode=[^&]*/gi, "");
     conn = conn.replace(/\?$/, "");
     const opts = {
@@ -619,11 +637,23 @@ function pgPoolOptions() {
         connectionTimeoutMillis: 20000,
         max: Number(process.env.PG_POOL_MAX || 8),
     };
-    const needInsecureTls = /supabase\.(co|com)/i.test(raw) ||
+    const needTls = /supabase\.(co|com)/i.test(raw) ||
         process.env.PGSSLMODE === "require" ||
         /[?&]sslmode=require/i.test(raw);
-    if (needInsecureTls) {
-        opts.ssl = { rejectUnauthorized: false };
+    if (needTls) {
+        const ca = readPgSslCa();
+        if (ca) {
+            // 有提供 CA → 啟用完整憑證驗證
+            opts.ssl = { ca, rejectUnauthorized: true };
+        }
+        else {
+            // 向下相容：未提供 CA 維持現行為（不驗證憑證），但警告一次
+            if (!pgTlsWarned) {
+                pgTlsWarned = true;
+                console.warn("[db] PG TLS 未提供 CA，連線未驗證伺服器憑證（rejectUnauthorized:false）；建議設定 DATABASE_SSL_CA（PEM 內容）或 DATABASE_SSL_CA_FILE（路徑）啟用驗證");
+            }
+            opts.ssl = { rejectUnauthorized: false };
+        }
     }
     return opts;
 }
