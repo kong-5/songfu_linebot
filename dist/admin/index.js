@@ -9241,6 +9241,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
       ORDER BY o.order_date DESC, o.id DESC
       LIMIT 300
     `).all(filterDateFrom, filterDateTo);
+            // 查詢硬上限 LIMIT 300：結果剛好滿 300 筆＝很可能被截斷，列表頂部要提示使用者縮小日期區間
+            const ordersHitLimit = Array.isArray(lineOrders) && lineOrders.length === 300;
             let deletedOrders = await db.prepare(`
       SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, c.name AS customer_name,
              o.voided_at, o.voided_by, o.void_reason, o.void_note
@@ -9650,39 +9652,26 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 </div>
               </div>
             </div>
+            <!-- 批次作廢 modal：與訂單明細「作廢此訂單」共用同一組原因選單（voidReasonModalHtml） -->
+            ${voidReasonModalHtml({ prefix: "batchVoid", title: "批次作廢訂單" })}
             <script>
             (function(){
               const btn = document.getElementById("btnBatchVoid");
               if (!btn) return;
               btn.addEventListener("click", function(){
-                const form = document.getElementById("batchOrderActionsForm");
                 const checked = document.querySelectorAll('input.order-batch-cb:checked').length;
                 if (!checked) { alert("請先勾選要作廢的訂單"); return; }
-                const r = window.prompt(
-                  "作廢 " + checked + " 筆訂單的原因？\\n\\n" +
-                  "  1 = AI 辨識整單錯誤（會回饋學習庫）\\n" +
-                  "  2 = 客訴問題\\n" +
-                  "  3 = 客戶取消\\n" +
-                  "  4 = 重複叫貨\\n" +
-                  "  5 = 內部錯誤\\n" +
-                  "  6 = 其他\\n\\n" +
-                  "按「取消」放棄作廢。",
-                  "1"
-                );
-                if (r === null) return;
-                const map = { "1":"ai_wrong", "2":"customer_complaint", "3":"customer_cancelled", "4":"duplicate", "5":"staff_error", "6":"other" };
-                const reason = map[String(r).trim()] || "other";
-                let note = "";
-                if (reason !== "ai_wrong") {
-                  note = window.prompt("備註（可留白）：", "") || "";
-                }
+                window.batchVoidModalOpen("將作廢 <strong>" + checked + "</strong> 筆訂單。選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。");
+              });
+              window.batchVoidModalSubmit = function(reason, note){
                 document.getElementById("batchVoidReason").value = reason;
                 document.getElementById("batchVoidNote").value = note;
-                form.submit();
-              });
+                document.getElementById("batchOrderActionsForm").submit();
+              };
             })();
             </script>
           </div>
+          ${ordersHitLimit ? `<p class="notion-msg" style="margin:0;background:#fef9c3;color:#854d0e;border:1px solid #fde047;">⚠ 已達 300 筆顯示上限，可能有訂單未列出——請縮小日期區間。</p>` : ""}
           <div class="sf-table-wrap">
             <table class="sf-table">
               <thead>
@@ -11921,88 +11910,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               <button type="button" id="btnVoidOrder" class="sf-btn danger" title="作廢整張訂單（會保留稽核紀錄、可由「已作廢訂單」清單恢復）">${SF_ICONS.x}<span>作廢此訂單</span></button>
             </form>
           </div>
-          <div id="voidOrderModal" class="notion-modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="voidOrderModalTitle">
-            <div class="notion-modal" style="max-width:460px;">
-              <h3 id="voidOrderModalTitle" style="margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px;">
-                <span style="color:#dc2626;">⊘</span>
-                <span>作廢此訂單</span>
-              </h3>
-              <p style="margin:0 0 14px;font-size:12px;color:var(--txt-3);">選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。</p>
-              <div id="voidReasonGroup" style="display:flex;flex-direction:column;gap:6px;">
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="not_order"><span class="void-reason-icon">🚫</span><span class="void-reason-text"><strong>非訂單訊息</strong><br><span style="font-size:11px;color:var(--txt-3);">匯款證明、寒喧、門市互動等</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="duplicate"><span class="void-reason-icon">🔁</span><span class="void-reason-text"><strong>重複叫貨</strong><br><span style="font-size:11px;color:var(--txt-3);">同一筆叫貨被讀進 2 次</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="customer_cancelled"><span class="void-reason-icon">❌</span><span class="void-reason-text"><strong>客戶取消</strong><br><span style="font-size:11px;color:var(--txt-3);">客戶主動說不要了</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="customer_complaint"><span class="void-reason-icon">💬</span><span class="void-reason-text"><strong>客訴問題</strong></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="ai_wrong"><span class="void-reason-icon">🤖</span><span class="void-reason-text"><strong>AI 辨識整單錯誤</strong><br><span style="font-size:11px;color:var(--txt-3);">會回饋學習庫</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="staff_error"><span class="void-reason-icon">🧑‍💼</span><span class="void-reason-text"><strong>內部錯誤</strong></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="other"><span class="void-reason-icon">📝</span><span class="void-reason-text"><strong>其他</strong></span></label>
-              </div>
-              <textarea id="voidOrderModalNote" placeholder="備註（可留白）" rows="2" style="margin-top:12px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
-              <div class="notion-modal-actions" style="justify-content:flex-end;">
-                <button type="button" class="sf-btn" id="voidOrderModalCancel">取消</button>
-                <button type="button" class="sf-btn danger" id="voidOrderModalConfirm">確定作廢</button>
-              </div>
-            </div>
-          </div>
-          <style>
-            .void-reason-row { display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--bg-1);transition:background .1s,border-color .1s;margin:0;font-size:13px; }
-            .void-reason-row:hover { background:var(--bg-2);border-color:var(--txt-3); }
-            .void-reason-row input[type=radio] { margin-top:3px; }
-            .void-reason-row.is-selected { background:#fee2e2;border-color:#dc2626; }
-            .void-reason-icon { font-size:18px;line-height:1;margin-top:1px;flex:0 0 auto; }
-            .void-reason-text { flex:1;line-height:1.4; }
-          </style>
+          ${voidReasonModalHtml({ prefix: "voidOrder", title: "作廢此訂單" })}
           <script>
           (function(){
             const btn = document.getElementById("btnVoidOrder");
-            const modal = document.getElementById("voidOrderModal");
-            const cancelBtn = document.getElementById("voidOrderModalCancel");
-            const confirmBtn = document.getElementById("voidOrderModalConfirm");
-            const noteInput = document.getElementById("voidOrderModalNote");
-            const group = document.getElementById("voidReasonGroup");
-            if (!btn || !modal || !confirmBtn || !group) return;
-            const LS_KEY = "songfu.void_order.last_reason";
-            function getLast() { try { return localStorage.getItem(LS_KEY) || "not_order"; } catch(_) { return "not_order"; } }
-            function setLast(v) { try { localStorage.setItem(LS_KEY, v); } catch(_) {} }
-            function getPicked() {
-              const r = group.querySelector('input[name="void_reason_pick"]:checked');
-              return r ? r.value : "";
-            }
-            function highlight() {
-              group.querySelectorAll(".void-reason-row").forEach(row => {
-                const r = row.querySelector('input[type=radio]');
-                row.classList.toggle("is-selected", r && r.checked);
-              });
-            }
-            function open() {
-              const last = getLast();
-              const target = group.querySelector('input[value="' + last + '"]') || group.querySelector('input[type=radio]');
-              if (target) target.checked = true;
-              noteInput.value = "";
-              highlight();
-              modal.style.display = "flex";
-              noteInput.focus();
-            }
-            function close() { modal.style.display = "none"; }
-            btn.addEventListener("click", open);
-            cancelBtn.addEventListener("click", close);
-            modal.addEventListener("click", function(e){ if (e.target === modal) close(); });
-            document.addEventListener("keydown", function(e){
-              if (modal.style.display === "none") return;
-              if (e.key === "Escape") close();
-              else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) confirmBtn.click();
-            });
-            group.addEventListener("change", highlight);
-            confirmBtn.addEventListener("click", function(){
-              const reason = getPicked();
-              if (!reason) { alert("請選擇作廢原因"); return; }
-              setLast(reason);
+            if (!btn) return;
+            btn.addEventListener("click", function(){ window.voidOrderModalOpen(); });
+            window.voidOrderModalSubmit = function(reason, note){
               document.getElementById("voidOrderReason").value = reason;
-              document.getElementById("voidOrderNote").value = noteInput.value.trim();
-              confirmBtn.disabled = true;
-              confirmBtn.textContent = "作廢中…";
+              document.getElementById("voidOrderNote").value = note;
               document.getElementById("voidOrderForm").submit();
-            });
+            };
           })();
           </script>`}
         </div>
@@ -15387,7 +15305,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const productList = await db.prepare("SELECT id, name FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all();
             const productOptions = productList.map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`).join("");
             const aliasRows = custAliases
-            .map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td><td><form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/alias/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td></tr>`)
+            .map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td><td><form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/alias/${encodeURIComponent(a.id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(a.alias))}」？')"><button type="submit">刪除</button></form></td></tr>`)
             .join("");
             let profileSection = "";
             try {
@@ -16565,7 +16483,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const rows = aliases
             .map((a) => `<tr>
             <td>${escapeHtml(a.alias)}</td>
-            <td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit">編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td>
+            <td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit">編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(a.alias))}」？')"><button type="submit">刪除</button></form></td>
           </tr>`)
             .join("");
         const specRows = specs
@@ -16573,7 +16491,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <td>${escapeHtml(s.unit)}</td>
             <td>${escapeHtml(s.note_label ?? "")}</td>
             <td>${s.conversion_kg != null ? s.conversion_kg : "—"}</td>
-            <td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete" style="display:inline;"><button type="submit" class="btn">刪除</button></form></td>
+            <td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除規格「${escapeAttr(escJsStr(s.unit))}」？')"><button type="submit" class="btn">刪除</button></form></td>
           </tr>`)
             .join("");
         const body = `
@@ -17027,11 +16945,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const specTableRows = unitSpecs.map((s) => {
             const kgDisp = s.conversion_kg != null ? `${fmtKgDisplay(s.conversion_kg)} kg` : "—";
             const hid = `<input type="hidden" name="redirect_to_edit" value="1"><input type="hidden" name="embed" value="${embed ? "1" : ""}"><input type="hidden" name="return" value="${escapeAttr(returnUrl)}">`;
-            return `<tr><td>${escapeHtml(s.unit)}</td><td>${escapeHtml(s.note_label ?? "")}</td><td>${escapeHtml(kgDisp)}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete"${formTarget} style="display:inline;margin:0;">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
+            return `<tr><td>${escapeHtml(s.unit)}</td><td>${escapeHtml(s.note_label ?? "")}</td><td>${escapeHtml(kgDisp)}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete"${formTarget} style="display:inline;margin:0;" onsubmit="return confirm('確定刪除規格「${escapeAttr(escJsStr(s.unit))}」？')">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
         }).join("");
         const packTableRows = packRatios.map((r) => {
             const hid = `<input type="hidden" name="embed" value="${embed ? "1" : ""}"><input type="hidden" name="return" value="${escapeAttr(returnUrl)}">`;
-            return `<tr><td>${escapeHtml(r.outer_unit)}</td><td style="text-align:right;">${escapeHtml(String(r.inner_count))}</td><td>${escapeHtml(r.inner_unit)}</td><td>${escapeHtml(r.note ?? "")}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/pack-ratios/${encodeURIComponent(r.id)}/delete"${formTarget} style="display:inline;margin:0;">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
+            return `<tr><td>${escapeHtml(r.outer_unit)}</td><td style="text-align:right;">${escapeHtml(String(r.inner_count))}</td><td>${escapeHtml(r.inner_unit)}</td><td>${escapeHtml(r.note ?? "")}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/pack-ratios/${encodeURIComponent(r.id)}/delete"${formTarget} style="display:inline;margin:0;" onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr("1 " + r.outer_unit + "＝" + r.inner_count + " " + r.inner_unit))}」？')">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
         }).join("");
         const derivedLines = [...derivedKgMap.entries()].sort((a, b) => a[0].localeCompare(b[0], "zh-Hant"));
         const derivedHtml = derivedLines.length === 0
@@ -17040,7 +16958,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const tag = derivedDirect.has(u) ? "直接" : "推算";
                 return `<li style="margin:4px 0;"><span class="pu-sop-badge">${escapeHtml(tag)}</span> 1 <strong>${escapeHtml(u)}</strong> ≈ <strong>${escapeHtml(fmtKgDisplay(k))}</strong> 公斤</li>`;
             }).join("")}</ul>`;
-        const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit"${linkTarget}>編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"${embed ? ' target="_parent"' : ""}><button type="submit">刪除</button></form></td></tr>`).join("");
+        const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit"${linkTarget}>編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"${embed ? ' target="_parent"' : ""} onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(a.alias))}」？')"><button type="submit">刪除</button></form></td></tr>`).join("");
         const logRows = recentLogs.map((l) => `<tr><td style="white-space:nowrap;font-size:12px;">${escapeHtml(String(l.created_at ?? ""))}</td><td>${escapeHtml(String(l.actor_username ?? "—"))}</td><td>${escapeHtml(String(l.action ?? ""))}</td><td>${escapeHtml(String(l.summary ?? "—"))}</td></tr>`).join("");
         const errMsg = req.query.err ? `<div class="notion-msg err">${escapeHtml(String(req.query.err))}</div>` : "";
         const autoLinkedCount = Math.max(0, parseInt(String(req.query.auto_linked || "0"), 10) || 0);
@@ -20142,4 +20060,112 @@ function escapeAttr(s) {
     if (s == null)
         return "";
     return escapeHtml(s).replace(/'/g, "&#39;");
+}
+// 將字串安全放進「HTML 屬性內的單引號 JS 字串」（如 onsubmit="return confirm('…')"）：
+// 先做 JS 跳脫（反斜線、單引號、換行），外層再用 escapeAttr 做 HTML 屬性跳脫。
+// 用法：onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(name))}」？')"
+function escJsStr(s) {
+    if (s == null)
+        return "";
+    return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\r?\n/g, " ");
+}
+// 作廢原因 modal（訂單明細「作廢此訂單」與訂單列表「批次作廢」共用）。
+// 產出 modal HTML＋樣式＋通用腳本；使用頁面需另外：
+//   1. 定義 window[prefix + "ModalSubmit"](reason, note) —— 按「確定作廢」後的送出行為。
+//   2. 呼叫 window[prefix + "ModalOpen"](descHtml?) 開啟 —— 可帶說明文字覆寫預設（如「將作廢 N 筆訂單」）。
+// 最近一次選的原因記在 localStorage（單筆與批次共用同一鍵）。
+function voidReasonModalHtml(opts) {
+    const prefix = opts.prefix;
+    const title = opts.title || "作廢此訂單";
+    const desc = opts.desc || "選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。";
+    const reasons = [
+        { value: "not_order", icon: "🚫", label: "非訂單訊息", hint: "匯款證明、寒喧、門市互動等" },
+        { value: "duplicate", icon: "🔁", label: "重複叫貨", hint: "同一筆叫貨被讀進 2 次" },
+        { value: "customer_cancelled", icon: "❌", label: "客戶取消", hint: "客戶主動說不要了" },
+        { value: "customer_complaint", icon: "💬", label: "客訴問題", hint: "" },
+        { value: "ai_wrong", icon: "🤖", label: "AI 辨識整單錯誤", hint: "會回饋學習庫" },
+        { value: "staff_error", icon: "🧑‍💼", label: "內部錯誤", hint: "" },
+        { value: "other", icon: "📝", label: "其他", hint: "" },
+    ];
+    const rowsHtml = reasons.map((r) => `<label class="void-reason-row"><input type="radio" name="${prefix}_reason_pick" value="${r.value}"><span class="void-reason-icon">${r.icon}</span><span class="void-reason-text"><strong>${r.label}</strong>${r.hint ? `<br><span style="font-size:11px;color:var(--txt-3);">${r.hint}</span>` : ""}</span></label>`).join("\n                ");
+    return `
+          <div id="${prefix}Modal" class="notion-modal-overlay" style="display:none;z-index:1200;" role="dialog" aria-modal="true" aria-labelledby="${prefix}ModalTitle">
+            <div class="notion-modal" style="max-width:460px;">
+              <h3 id="${prefix}ModalTitle" style="margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px;">
+                <span style="color:#dc2626;">⊘</span>
+                <span>${title}</span>
+              </h3>
+              <p id="${prefix}ModalDesc" style="margin:0 0 14px;font-size:12px;color:var(--txt-3);">${desc}</p>
+              <div id="${prefix}ReasonGroup" style="display:flex;flex-direction:column;gap:6px;">
+                ${rowsHtml}
+              </div>
+              <textarea id="${prefix}ModalNote" placeholder="備註（可留白）" rows="2" style="margin-top:12px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
+              <div class="notion-modal-actions" style="justify-content:flex-end;">
+                <button type="button" class="sf-btn" id="${prefix}ModalCancel">取消</button>
+                <button type="button" class="sf-btn danger" id="${prefix}ModalConfirm">確定作廢</button>
+              </div>
+            </div>
+          </div>
+          <style>
+            .void-reason-row { display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--bg-1);transition:background .1s,border-color .1s;margin:0;font-size:13px; }
+            .void-reason-row:hover { background:var(--bg-2);border-color:var(--txt-3); }
+            .void-reason-row input[type=radio] { margin-top:3px; }
+            .void-reason-row.is-selected { background:#fee2e2;border-color:#dc2626; }
+            .void-reason-icon { font-size:18px;line-height:1;margin-top:1px;flex:0 0 auto; }
+            .void-reason-text { flex:1;line-height:1.4; }
+          </style>
+          <script>
+          (function(){
+            const modal = document.getElementById("${prefix}Modal");
+            const cancelBtn = document.getElementById("${prefix}ModalCancel");
+            const confirmBtn = document.getElementById("${prefix}ModalConfirm");
+            const noteInput = document.getElementById("${prefix}ModalNote");
+            const descEl = document.getElementById("${prefix}ModalDesc");
+            const group = document.getElementById("${prefix}ReasonGroup");
+            if (!modal || !confirmBtn || !group || !noteInput) return;
+            const LS_KEY = "songfu.void_order.last_reason";
+            function getLast() { try { return localStorage.getItem(LS_KEY) || "not_order"; } catch(_) { return "not_order"; } }
+            function setLast(v) { try { localStorage.setItem(LS_KEY, v); } catch(_) {} }
+            function getPicked() {
+              const r = group.querySelector('input[name="${prefix}_reason_pick"]:checked');
+              return r ? r.value : "";
+            }
+            function highlight() {
+              group.querySelectorAll(".void-reason-row").forEach(row => {
+                const r = row.querySelector('input[type=radio]');
+                row.classList.toggle("is-selected", r && r.checked);
+              });
+            }
+            function close() { modal.style.display = "none"; }
+            window["${prefix}ModalOpen"] = function(descHtml){
+              if (descHtml && descEl) descEl.innerHTML = descHtml;
+              const last = getLast();
+              const target = group.querySelector('input[value="' + last + '"]') || group.querySelector('input[type=radio]');
+              if (target) target.checked = true;
+              noteInput.value = "";
+              confirmBtn.disabled = false;
+              confirmBtn.textContent = "確定作廢";
+              highlight();
+              modal.style.display = "flex";
+              noteInput.focus();
+            };
+            if (cancelBtn) cancelBtn.addEventListener("click", close);
+            modal.addEventListener("click", function(e){ if (e.target === modal) close(); });
+            document.addEventListener("keydown", function(e){
+              if (modal.style.display === "none") return;
+              if (e.key === "Escape") close();
+              else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) confirmBtn.click();
+            });
+            group.addEventListener("change", highlight);
+            confirmBtn.addEventListener("click", function(){
+              const reason = getPicked();
+              if (!reason) { alert("請選擇作廢原因"); return; }
+              setLast(reason);
+              confirmBtn.disabled = true;
+              confirmBtn.textContent = "作廢中…";
+              const fn = window["${prefix}ModalSubmit"];
+              if (typeof fn === "function") fn(reason, noteInput.value.trim());
+            });
+          })();
+          </script>`;
 }
