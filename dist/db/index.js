@@ -176,6 +176,10 @@ function initSqlite(dbPath) {
         // [fix 2026-07-08] 凌越寫入失敗出口：累計嘗試次數與最後錯誤；permanent 或超過上限即移出佇列並顯示原因
         "ALTER TABLE orders ADD COLUMN lingyue_write_attempts INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE orders ADD COLUMN lingyue_last_error TEXT",
+        // [fix 2026-07-10] 租約式去重：status='processing' 為原子佔位（入口 INSERT ON CONFLICT DO NOTHING），
+        // 成功改 'done'、失敗只刪自己的 processing 列；舊列 status NULL 視同 'done'（舊語意下已處理完成）
+        "ALTER TABLE processed_line_messages ADD COLUMN status TEXT",
+        "ALTER TABLE processed_line_messages ADD COLUMN claimed_at TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -637,11 +641,14 @@ function pgPoolOptions() {
         connectionTimeoutMillis: 20000,
         max: Number(process.env.PG_POOL_MAX || 8),
     };
+    // [fix 2026-07-10] 有設 DATABASE_SSL_CA(_FILE) 即視為要求 TLS——否則運維設了 CA 以為已啟用驗證，
+    // 連線字串卻沒 sslmode=require 時會被靜默忽略、走無 TLS 連線
+    const ca = readPgSslCa();
     const needTls = /supabase\.(co|com)/i.test(raw) ||
         process.env.PGSSLMODE === "require" ||
-        /[?&]sslmode=require/i.test(raw);
+        /[?&]sslmode=require/i.test(raw) ||
+        Boolean(ca);
     if (needTls) {
-        const ca = readPgSslCa();
         if (ca) {
             // 有提供 CA → 啟用完整憑證驗證
             opts.ssl = { ca, rejectUnauthorized: true };
@@ -810,6 +817,9 @@ async function initPg() {
             // [fix 2026-07-08] 訊息層級持久化去重表（PG 版，同 SQLite）：跨實例／重啟／Cloud Tasks 重投遞冪等去重。
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS processed_line_messages (message_id TEXT PRIMARY KEY, processed_at TIMESTAMPTZ NOT NULL)");
+                // [fix 2026-07-10] 租約式去重欄位（與 initSqlite alters 對應）；舊列 status NULL 視同 'done'
+                await client.query("ALTER TABLE processed_line_messages ADD COLUMN IF NOT EXISTS status TEXT");
+                await client.query("ALTER TABLE processed_line_messages ADD COLUMN IF NOT EXISTS claimed_at TEXT");
             } catch (e) { console.warn("[migration] processed_line_messages(PG) 建立失敗:", e?.message || e); }
             // [fix 2026-07-08] G16: 單位規格/客戶別名 去重＋唯一索引（PG 版，同 SQLite；保留每組最小 id＝與讀取端 ORDER BY id 一致）
             try {
