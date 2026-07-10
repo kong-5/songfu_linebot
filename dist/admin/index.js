@@ -71,6 +71,7 @@ const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
 const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
+const erp_companies_js_1 = require("../lib/erp-companies.js");
 const line_conversation_js_1 = require("../lib/line-conversation.js");
 const announcement_templates_js_1 = require("../lib/announcement-templates.js");
 const announcement_image_js_1 = require("../lib/announcement-image.js");
@@ -1654,10 +1655,11 @@ function sfSidebar(active) {
         ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
         ${item("/admin/quotes", "quotes", "list", "報價管理")}
       </details>
-      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","logistics-procurement","logistics-market","logistics-livestock"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","inv-barcodes","logistics-procurement","logistics-market","logistics-livestock"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "box", "倉庫設定")}
+        ${item("/admin/inventory/barcodes", "inv-barcodes", "box", "條碼對照")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
@@ -2130,7 +2132,7 @@ const STK_CLIENT_JS = `
     document.getElementById('stkDwTitle').textContent=(code||'')+'　'+(name||'');
     var body=document.getElementById('stkDwBody');
     body.innerHTML='<div style="color:var(--notion-text-light,#888);">查詢近期進銷交易中…（經內網小幫手，約數秒）</div>';
-    fetch('/admin/inventory/stock/txn-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})}).catch(function(){});
+    fetch('/admin/inventory/stock/txn-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,icpno:(DATA.icpno||'00')})}).catch(function(){});
     var tries=0;
     function tick(){
       tries++;
@@ -6152,6 +6154,7 @@ function createAdminRouter() {
         catch (_) { return String(iso); }
     }
     async function loadStocktakeDay(date, latestMap) {
+        // latestMap 以「icpno|料號」為鍵（多公司料號可能撞號，不能只用料號）
         const lm = latestMap || {};
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
@@ -6172,6 +6175,7 @@ function createAdminRouter() {
             return m;
         };
         for (const s of sessions || []) {
+            const sIcp = (0, erp_companies_js_1.normIcpno)(s.icpno);
             const whm = await getWhLatest(String(s.wh_code || ""));
             const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
             const items = (rows || []).map((r) => {
@@ -6180,12 +6184,14 @@ function createAdminRouter() {
                 const mid = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
                 const diff = counted == null ? null : Math.round((counted - sys) * 100) / 100;
                 const code = String(r.erp_code || "");
+                // 分倉庫存優先（該倉有 000009 資料）；否則 fallback 到公司總量快照（鍵含 icpno）
                 let latest;
                 if (whm) {
                     latest = Number(whm[code] || 0); // 分倉基準：該品項無分倉列＝0
                 } else {
-                    const hasLatest = Object.prototype.hasOwnProperty.call(lm, code);
-                    latest = hasLatest ? Number(lm[code]) : null;
+                    const lmKey = sIcp + "|" + code;
+                    const hasLatest = Object.prototype.hasOwnProperty.call(lm, lmKey);
+                    latest = hasLatest ? Number(lm[lmKey]) : null;
                 }
                 const diffLatest = (counted == null || latest == null) ? null : Math.round((counted - latest) * 100) / 100;
                 let expiry = [];
@@ -6204,17 +6210,20 @@ function createAdminRouter() {
         const latestMap = {};
         let stockMeta = {};
         try {
-            (await db.prepare("SELECT erp_code, qty FROM erp_stock_items").all() || []).forEach((r) => { latestMap[String(r.erp_code)] = Number(r.qty || 0); });
+            (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); });
             stockMeta = await readStockMeta();
         } catch (_) { /* 無庫存快照時照樣顯示 */ }
         const day = await loadStocktakeDay(date, latestMap);
         let includedWh = [];
-        try { includedWh = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY sort_order, code").all()) || []; } catch (_) { includedWh = []; }
+        try { includedWh = (await db.prepare("SELECT code, name, icpno FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY icpno, sort_order, code").all()) || []; } catch (_) { includedWh = []; }
         let recentDates = [];
         try { recentDates = (await db.prepare("SELECT count_date AS d, COUNT(*) AS n FROM stocktake_session GROUP BY count_date ORDER BY count_date DESC LIMIT 14").all()) || []; } catch (_) { recentDates = []; }
-        const byWh = {}; day.forEach((x) => { byWh[String(x.session.wh_code)] = x; });
-        const countedWh = new Set(day.map((x) => String(x.session.wh_code)));
-        const pendingWh = includedWh.filter((w) => !countedWh.has(String(w.code)));
+        // 多公司：倉庫鍵一律「icpno:倉號」（松富00 與松揚02 的倉號可能相同）
+        const whKeyOf = (icp, code) => (0, erp_companies_js_1.normIcpno)(icp) + ":" + String(code);
+        const coTag = (icp) => ((0, erp_companies_js_1.normIcpno)(icp) === "00" ? "" : (0, erp_companies_js_1.erpCompanyName)(icp));
+        const byWh = {}; day.forEach((x) => { byWh[whKeyOf(x.session.icpno, x.session.wh_code)] = x; });
+        const countedWh = new Set(day.map((x) => whKeyOf(x.session.icpno, x.session.wh_code)));
+        const pendingWh = includedWh.filter((w) => !countedWh.has(whKeyOf(w.icpno, w.code)));
         const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
         const fmtN = (n) => (n == null ? "—" : String(n));
         const diffPct = (it) => {
@@ -6224,30 +6233,33 @@ function createAdminRouter() {
         };
         const diffCls = (it) => (it.diff == null ? "" : it.diff === 0 ? "stk-z" : it.diff > 0 ? "stk-p" : "stk-n");
         const expiryTxt = (arr) => (arr || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"} × ${b.qty || "?"}`).join("、");
-        // 左欄倉庫清單 = 納入盤點的倉 ∪ 當日有盤的倉
+        // 左欄倉庫清單 = 納入盤點的倉 ∪ 當日有盤的倉（鍵含公司）
         const whList = [];
         const seen = new Set();
-        for (const w of includedWh) { whList.push({ code: String(w.code), name: String(w.name || "") }); seen.add(String(w.code)); }
-        for (const x of day) { const c = String(x.session.wh_code); if (!seen.has(c)) { whList.push({ code: c, name: String(x.session.wh_name || "") }); seen.add(c); } }
+        for (const w of includedWh) { const k = whKeyOf(w.icpno, w.code); whList.push({ key: k, code: String(w.code), name: String(w.name || ""), co: coTag(w.icpno) }); seen.add(k); }
+        for (const x of day) { const k = whKeyOf(x.session.icpno, x.session.wh_code); if (!seen.has(k)) { whList.push({ key: k, code: String(x.session.wh_code), name: String(x.session.wh_name || ""), co: coTag(x.session.icpno) }); seen.add(k); } }
         // 預設選第一個「有盤」的倉
-        const firstCounted = day[0] ? String(day[0].session.wh_code) : (whList[0] ? whList[0].code : "");
-        const selWh = String(req.query.wh || "").trim() || firstCounted;
+        const firstCounted = day[0] ? whKeyOf(day[0].session.icpno, day[0].session.wh_code) : (whList[0] ? whList[0].key : "");
+        // 相容舊網址：?wh=倉號（無公司前綴）視為松富
+        let selWh = String(req.query.wh || "").trim() || firstCounted;
+        if (selWh && selWh.indexOf(":") < 0) selWh = "00:" + selWh;
         const sel = byWh[selWh] || null;
         const totalDiff = day.reduce((s, x) => s + x.diffCount, 0);
         const chips = recentDates.map((r) => `<a class="stk-chip ${String(r.d) === date ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(String(r.d))}">${escapeHtml(String(r.d))}<span>${r.n}倉</span></a>`).join("");
         // 左欄
         const whItemsHtml = whList.map((w) => {
-            const x = byWh[w.code];
-            const on = w.code === selWh;
+            const x = byWh[w.key];
+            const on = w.key === selWh;
+            const coChip = w.co ? `<span class="wh-co">${escapeHtml(w.co)}</span>` : "";
             if (x) {
                 const done = Number(x.session.counted_count || 0), all = Number(x.session.item_count || 0);
-                return `<a class="wh-it ${on ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(date)}&wh=${encodeURIComponent(w.code)}">
-                  <div class="wh-n">${escapeHtml(w.name || w.code)}<span class="wh-c">${escapeHtml(w.code)}</span></div>
+                return `<a class="wh-it ${on ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(date)}&wh=${encodeURIComponent(w.key)}">
+                  <div class="wh-n">${escapeHtml(w.name || w.code)}${coChip}<span class="wh-c">${escapeHtml(w.code)}</span></div>
                   <div class="wh-m"><span>已盤 ${done}/${all}</span>${x.diffCount ? `<span class="wh-diff">盤差 ${x.diffCount}</span>` : `<span class="wh-ok">✓</span>`}</div>
                 </a>`;
             }
             return `<div class="wh-it idle">
-                  <div class="wh-n">${escapeHtml(w.name || w.code)}<span class="wh-c">${escapeHtml(w.code)}</span></div>
+                  <div class="wh-n">${escapeHtml(w.name || w.code)}${coChip}<span class="wh-c">${escapeHtml(w.code)}</span></div>
                   <div class="wh-m"><span class="wh-pend">未盤</span></div>
                 </div>`;
         }).join("");
@@ -6274,7 +6286,7 @@ function createAdminRouter() {
             rightHtml = `
           <div class="stk-card">
             <div class="stk-card-h">
-              <div class="stk-card-t"><b>${escapeHtml(s.wh_name || s.wh_code)}</b><span class="stk-code2">${escapeHtml(s.wh_code)}</span></div>
+              <div class="stk-card-t"><b>${escapeHtml(s.wh_name || s.wh_code)}</b>${coTag(s.icpno) ? `<span class="wh-co">${escapeHtml(coTag(s.icpno))}</span>` : ""}<span class="stk-code2">${escapeHtml(s.wh_code)}</span></div>
               <div class="stk-card-m">
                 <span>盤點人 ${escapeHtml(s.created_by_name || "—")}</span>
                 <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
@@ -6318,6 +6330,7 @@ function createAdminRouter() {
         .wh-it:hover:not(.idle):not(.on){background:rgba(55,53,47,.03);}
         .wh-n{font-size:13.5px;font-weight:600;line-height:1.2;}
         .wh-c{margin-left:7px;font-size:11px;color:#9b9a97;font-variant-numeric:tabular-nums;font-weight:400;}
+        .wh-co{margin-left:6px;font-size:10px;font-weight:700;color:#2383e2;background:#e8f1fd;padding:1px 6px;border-radius:5px;vertical-align:1px;}
         .wh-m{display:flex;gap:8px;align-items:center;margin-top:3px;font-size:11.5px;color:#787774;font-variant-numeric:tabular-nums;}
         .wh-diff{color:#b3261e;font-weight:600;}
         .wh-ok{color:#1f7a46;font-weight:700;}
@@ -6409,7 +6422,7 @@ function createAdminRouter() {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
         const latestMapCsv = {};
-        try { (await db.prepare("SELECT erp_code, qty FROM erp_stock_items").all() || []).forEach((r) => { latestMapCsv[String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) {}
+        try { (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMapCsv[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) {}
         const day = await loadStocktakeDay(date, latestMapCsv);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
         const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量,最新系統基準,對最新盤差,效期明細,盤點人,送出時間"];
@@ -6942,8 +6955,18 @@ function createAdminRouter() {
             agent_last_txn_wait_at: await get("ly_agent_last_txn_wait_at"),
         };
     }
+    // 目前庫存頁有推送資料的公司清單（松富00 一定在最前）
+    async function listStockCompanies() {
+        let rows = [];
+        try { rows = (await db.prepare("SELECT DISTINCT COALESCE(NULLIF(TRIM(icpno),''),'00') AS c FROM erp_stock_items").all()) || []; } catch (_) { rows = []; }
+        const set = new Set((rows || []).map((r) => (0, erp_companies_js_1.normIcpno)(r.c)));
+        set.add("00");
+        return Array.from(set).sort();
+    }
     router.get("/inventory/stock", async (req, res) => {
-        const stockRows = await db.prepare("SELECT erp_code, name, spec, unit, qty, wh_code FROM erp_stock_items ORDER BY erp_code").all();
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+        const companies = await listStockCompanies();
+        const stockRows = await db.prepare("SELECT erp_code, name, spec, unit, qty, wh_code FROM erp_stock_items WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY erp_code").all(icpno);
         const assignRows = await db.prepare(`
       SELECT p.erp_code AS code, w.name AS wh_name, w.sort_order AS wh_sort, COALESCE(iwp.safety_stock, 0) AS safety
       FROM inventory_warehouse_products iwp
@@ -6967,16 +6990,23 @@ function createAdminRouter() {
             w: String(r.wh_code || ""),
         }));
         // 倉別代號→中文名（倉庫設定頁維護），給前端把標籤/欄位顯示成「代號 中文名」
-        const whRows = await db.prepare("SELECT code, name FROM erp_warehouse").all();
+        const whRows = await db.prepare("SELECT code, name FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
         const whname = {};
         for (const w of whRows || []) {
             const nm = String(w.name || "").trim();
             if (nm)
                 whname[String(w.code)] = nm;
         }
-        const dataJson = JSON.stringify({ items, assign, whname }).replace(/</g, "\\u003c");
+        const dataJson = JSON.stringify({ items, assign, whname, icpno }).replace(/</g, "\\u003c");
         const meta = await readStockMeta();
-        const snapLabel = meta.snapshot_at ? fmtTaipeiYMDHM(meta.snapshot_at, "尚無資料") : "尚無資料";
+        // 快照時間按公司顯示（推送時每家各記一份；查無＝該公司還沒推過）
+        let snapAt = meta.snapshot_at;
+        try {
+            const r = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_stock_snapshot_at_" + icpno);
+            if (r && r.value) snapAt = String(r.value);
+            else if (icpno !== "00") snapAt = "";
+        } catch (_) { }
+        const snapLabel = snapAt ? fmtTaipeiYMDHM(snapAt, "尚無資料") : "尚無資料";
         // [ops 2026-07-10] 內網代理心跳顯示：代理有三條背景線（訂單回寫 /wait、庫存推送 inventory-wait、
         // 進銷存查詢 txn-wait），各自 upsert 自己的心跳鍵。GUI 可單獨關掉回寫自動處理（wb_auto），
         // 屆時 /wait 不再進來、但庫存線仍正常——所以「最後連線」取三鍵的最大值，避免庫存明明正常卻紅字；
@@ -7012,6 +7042,7 @@ function createAdminRouter() {
         <div class="stk-toolbar no-print">
           <div class="stk-toolbar-left">
             <input type="search" id="stkSearch" class="stk-search" placeholder="搜尋料號 / 品名 / 規格…" autocomplete="off" spellcheck="false">
+            ${companies.length > 1 ? `<div class="sf-seg">${companies.map((c) => `<button type="button" class="${c === icpno ? "active" : ""}" onclick="location.href='/admin/inventory/stock?icpno=${c}'">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))}</button>`).join("")}</div>` : ""}
             <div class="sf-seg" id="stkView">
               <button type="button" data-v="list" class="active">列表</button>
               <button type="button" data-v="group">依倉庫</button>
@@ -7098,10 +7129,10 @@ function createAdminRouter() {
             res.status(500).json({ error: String(e?.message || e) });
         }
     });
-    // ── 倉庫設定：凌越倉別代號 → 中文名、是否納入盤點 ─────────────────────
-    async function loadWarehouseRows() {
-        const snap = await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' GROUP BY wh_code").all();
-        const saved = await db.prepare("SELECT code, name, include_stocktake, sort_order FROM erp_warehouse").all();
+    // ── 倉庫設定：凌越倉別代號 → 中文名、是否納入盤點（按公司分開） ─────────
+    async function loadWarehouseRows(icpno) {
+        const snap = await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? GROUP BY wh_code").all(icpno);
+        const saved = await db.prepare("SELECT code, name, include_stocktake, sort_order FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
         const savedMap = {}, cntMap = {}, codes = {};
         for (const s of saved || []) { savedMap[String(s.code)] = s; codes[String(s.code)] = true; }
         for (const r of snap || []) { cntMap[String(r.code)] = Number(r.cnt || 0); codes[String(r.code)] = true; }
@@ -7119,8 +7150,11 @@ function createAdminRouter() {
         return list;
     }
     router.get("/inventory/warehouse-settings", async (req, res) => {
-        const list = await loadWarehouseRows();
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+        const companies = await listStockCompanies();
+        const list = await loadWarehouseRows(icpno);
         const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存。</div>` : "";
+        const coSeg = companies.length > 1 ? `<div class="sf-seg" style="margin:0 0 14px;display:inline-flex;">${companies.map((c) => `<button type="button" class="${c === icpno ? "active" : ""}" onclick="location.href='/admin/inventory/warehouse-settings?icpno=${c}'">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))}</button>`).join("")}</div>` : "";
         const rowsHtml = list.map((w) => `
       <tr>
         <td style="font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap;">${escapeHtml(w.code)}</td>
@@ -7131,9 +7165,11 @@ function createAdminRouter() {
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 倉庫設定</div>
       <h1 class="notion-page-title">倉庫設定</h1>
-      <p class="notion-hint" style="margin:-2px 0 18px;">倉別代號自動來自凌越（貨品主檔的入庫倉別）。填中文名、勾選要「納入盤點」的倉即可；換倉、新增倉都會自動出現，不用手動維護。</p>
+      <p class="notion-hint" style="margin:-2px 0 14px;">倉別代號自動來自凌越（貨品主檔的入庫倉別）。填中文名、勾選要「納入盤點」的倉即可；換倉、新增倉都會自動出現，不用手動維護。</p>
+      ${coSeg}
       ${ok}
       <form method="post" action="/admin/inventory/warehouse-settings">
+        <input type="hidden" name="icpno" value="${escapeAttr(icpno)}">
         <div class="notion-card" style="padding:0;overflow:hidden;">
           <table>
             <thead><tr>
@@ -7148,16 +7184,17 @@ function createAdminRouter() {
     });
     router.post("/inventory/warehouse-settings", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
+            const icpno = (0, erp_companies_js_1.normIcpno)(req.body && req.body.icpno);
             const nameMap = (req.body && typeof req.body.name === "object" && req.body.name) ? req.body.name : {};
             const incMap = (req.body && typeof req.body.inc === "object" && req.body.inc) ? req.body.inc : {};
             const codes = {};
             for (const k of Object.keys(nameMap)) codes[k] = true;
             for (const k of Object.keys(incMap)) codes[k] = true;
             const now = new Date().toISOString();
-            // [fix 2026-07-08] DELETE 全表＋迴圈 INSERT 包進交易：中途失敗整批回滾，
-            // 不再把整張倉別中文名/納入盤點設定清空只留半套。
+            // [fix 2026-07-08] DELETE＋迴圈 INSERT 包進交易：中途失敗整批回滾，
+            // 不再把整張倉別中文名/納入盤點設定清空只留半套。多公司：只覆蓋該公司的倉別。
             const doSave = async (h) => {
-                await h.prepare("DELETE FROM erp_warehouse").run();
+                await h.prepare("DELETE FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").run(icpno);
                 let sort = 0;
                 for (const code of Object.keys(codes)) {
                     const c = String(code).trim();
@@ -7165,18 +7202,110 @@ function createAdminRouter() {
                         continue;
                     const name = String(nameMap[code] != null ? nameMap[code] : "").trim();
                     const include = incMap[code] ? 1 : 0;
-                    await h.prepare("INSERT INTO erp_warehouse (code, name, include_stocktake, sort_order, updated_at) VALUES (?, ?, ?, ?, ?)").run(c, name, include, sort++, now);
+                    await h.prepare("INSERT INTO erp_warehouse (icpno, code, name, include_stocktake, sort_order, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run(icpno, c, name, include, sort++, now);
                 }
             };
             if (typeof db.transaction === "function")
                 await db.transaction(doSave);
             else
                 await doSave(db);
-            res.redirect("/admin/inventory/warehouse-settings?ok=1");
+            res.redirect("/admin/inventory/warehouse-settings?ok=1&icpno=" + encodeURIComponent(icpno));
         }
         catch (e) {
             console.error("[admin] warehouse-settings save", e?.message || e);
             res.status(500).send("儲存失敗：" + String(e?.message || e));
+        }
+    });
+    // ── 條碼對照：商品條碼 ↔ 品項（LIFF 掃碼盤點/進貨用；掃碼頁綁的也在這裡管理） ──
+    router.get("/inventory/barcodes", async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno, "02");
+        const companies = await listStockCompanies();
+        if (companies.indexOf(icpno) < 0) companies.push(icpno);
+        companies.sort();
+        let rows = [];
+        try {
+            rows = (await db.prepare(
+                "SELECT b.barcode, b.erp_code, b.qty_per_scan, b.created_by_name, b.updated_at, i.name, i.spec, i.unit " +
+                "FROM product_barcode b LEFT JOIN erp_stock_items i ON i.erp_code = b.erp_code AND COALESCE(NULLIF(TRIM(i.icpno),''),'00') = COALESCE(NULLIF(TRIM(b.icpno),''),'00') " +
+                "WHERE COALESCE(NULLIF(TRIM(b.icpno),''),'00') = ? ORDER BY b.erp_code, b.barcode").all(icpno)) || [];
+        } catch (e) { console.error("[admin] barcodes list", e?.message || e); rows = []; }
+        const coSeg = companies.length > 1 ? `<div class="sf-seg" style="margin:0 0 14px;display:inline-flex;">${companies.map((c) => `<button type="button" class="${c === icpno ? "active" : ""}" onclick="location.href='/admin/inventory/barcodes?icpno=${c}'">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))}</button>`).join("")}</div>` : "";
+        const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存。</div>` : (req.query.err ? `<div style="background:#fdecec;color:#b3261e;padding:10px 12px;border-radius:8px;margin-bottom:12px;">儲存失敗：${escapeHtml(String(req.query.err))}</div>` : "");
+        const rowsHtml = rows.map((r) => `
+      <tr>
+        <td style="font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:600;">${escapeHtml(String(r.barcode))}</td>
+        <td style="font-variant-numeric:tabular-nums;white-space:nowrap;">${escapeHtml(String(r.erp_code))}</td>
+        <td>${escapeHtml(String(r.name || "（庫存快照查無此料號）"))}${r.spec ? `<span style="margin-left:6px;font-size:11px;color:var(--notion-text-muted,#9b9a97);">${escapeHtml(String(r.spec))}</span>` : ""}</td>
+        <td style="text-align:center;">
+          <form method="post" action="/admin/inventory/barcodes" style="display:inline-flex;align-items:center;gap:6px;">
+            <input type="hidden" name="action" value="update"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}"><input type="hidden" name="barcode" value="${escapeAttr(String(r.barcode))}">
+            <input type="number" name="qty_per_scan" value="${escapeAttr(String(Number(r.qty_per_scan || 1)))}" min="0.01" step="any" class="sf-input" style="width:76px;text-align:right;">
+            <span style="font-size:11.5px;color:var(--notion-text-muted,#9b9a97);">${escapeHtml(String(r.unit || ""))}/掃</span>
+            <button type="submit" class="btn" style="font-size:12px;padding:4px 10px;">存</button>
+          </form>
+        </td>
+        <td style="font-size:12px;color:var(--notion-text-muted,#9b9a97);white-space:nowrap;">${escapeHtml(String(r.created_by_name || "—"))}</td>
+        <td style="text-align:center;">
+          <form method="post" action="/admin/inventory/barcodes" onsubmit="return confirm('刪除條碼 ${escapeAttr(String(r.barcode))} 的綁定？');" style="display:inline;">
+            <input type="hidden" name="action" value="delete"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}"><input type="hidden" name="barcode" value="${escapeAttr(String(r.barcode))}">
+            <button type="submit" class="btn" style="font-size:12px;padding:4px 10px;color:#b3261e;">刪除</button>
+          </form>
+        </td>
+      </tr>`).join("");
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 條碼對照</div>
+      <h1 class="notion-page-title">條碼對照</h1>
+      <p class="notion-hint" style="margin:-2px 0 14px;">商品條碼 ↔ 凌越料號。現場用「掃碼盤點」LIFF 頁掃到新條碼時就能綁定，這裡管理全部綁定（含整箱條碼的「每掃單位數」）。一個品項可以綁多個條碼（單支＋整箱）。</p>
+      ${coSeg}
+      ${ok}
+      <div class="notion-card" style="padding:14px 16px;margin-bottom:16px;">
+        <form method="post" action="/admin/inventory/barcodes" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+          <input type="hidden" name="action" value="add"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}">
+          <input type="text" name="barcode" placeholder="條碼（掃描槍對準這裡掃也可以）" required class="sf-input" style="width:220px;">
+          <input type="text" name="erp_code" placeholder="凌越料號" required class="sf-input" style="width:140px;">
+          <input type="number" name="qty_per_scan" value="1" min="0.01" step="any" title="掃 1 下＝幾個單位（整箱條碼填入數）" class="sf-input" style="width:90px;text-align:right;">
+          <button type="submit" class="btn-primary">新增綁定</button>
+        </form>
+      </div>
+      <div class="notion-card" style="padding:0;overflow:auto;">
+        <table>
+          <thead><tr><th>條碼</th><th>料號</th><th>品名</th><th style="text-align:center;">每掃單位數</th><th>綁定者</th><th style="text-align:center;">操作</th></tr></thead>
+          <tbody>${rowsHtml || `<tr><td colspan="6" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">還沒有任何條碼綁定。到 LIFF「掃碼盤點」頁掃第一輪，邊掃邊綁最快。</td></tr>`}</tbody>
+        </table>
+      </div>`;
+        res.type("text/html").send(notionPage("條碼對照", body, "inv-barcodes", res));
+    });
+    router.post("/inventory/barcodes", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.body && req.body.icpno, "02");
+        const back = (extra) => res.redirect("/admin/inventory/barcodes?icpno=" + encodeURIComponent(icpno) + (extra || ""));
+        try {
+            const action = String(req.body?.action || "").trim();
+            const barcode = String(req.body?.barcode || "").trim();
+            if (!barcode) { back("&err=" + encodeURIComponent("缺少條碼")); return; }
+            if (action === "delete") {
+                await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
+                back("&ok=1"); return;
+            }
+            let qps = Number(req.body?.qty_per_scan);
+            if (!Number.isFinite(qps) || qps <= 0) qps = 1;
+            const now = new Date().toISOString();
+            if (action === "update") {
+                await db.prepare("UPDATE product_barcode SET qty_per_scan = ?, updated_at = ? WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(qps, now, icpno, barcode);
+                back("&ok=1"); return;
+            }
+            // add：驗證料號存在（該公司庫存快照），可攜 upsert（先刪後插）
+            const erpCode = String(req.body?.erp_code || "").trim();
+            if (!erpCode) { back("&err=" + encodeURIComponent("缺少料號")); return; }
+            const item = await db.prepare("SELECT erp_code FROM erp_stock_items WHERE erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(erpCode, icpno);
+            if (!item) { back("&err=" + encodeURIComponent("查無料號 " + erpCode + "（該公司庫存快照裡沒有）")); return; }
+            await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
+            await db.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                .run(icpno, barcode, erpCode, qps, "admin", "後台", now, now);
+            back("&ok=1");
+        }
+        catch (e) {
+            console.error("[admin] barcodes save", e?.message || e);
+            back("&err=" + encodeURIComponent(String(e?.message || e).slice(0, 120)));
         }
     });
     // ── 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空籃」。無 group_features 列＝三項全開。 ──
@@ -11086,8 +11215,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             // [fix 2026-07-08] 全表覆蓋（DELETE + 分批 INSERT + meta 更新）包進單一交易：
             // 過去無交易，推送中途失敗（網路斷、pool 瞬斷）會留下「半空的庫存表」且快照時間未更新，
             // 使用者看到的是殘缺庫存卻無從察覺；交易失敗整批回滾＝保留上一份完整快照。
+            // 多公司：只覆蓋該次推送的公司（icpno），其他公司的快照不動。
             const doReplace = async (h) => {
-                await h.prepare("DELETE FROM erp_stock_items").run();
+                await h.prepare("DELETE FROM erp_stock_items WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").run(icpno);
                 const CHUNK = 100;
                 for (let i = 0; i < rows.length; i += CHUNK) {
                     const chunk = rows.slice(i, i + CHUNK);
@@ -11097,9 +11227,15 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         flat.push(...r);
                     await h.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
                 }
-                // 分倉快照：同交易內覆蓋（失敗整批回滾，與主表一致）；沒帶 warehouse_qty 就跳過不動
+                // 分倉快照：同交易內覆蓋（失敗整批回滾，與主表一致）；沒帶 warehouse_qty 就跳過不動。
+                // 多公司安全：只清「本批帶到的倉別」（凌越倉號屬單一公司），不整表清，否則各公司推送互相清空。
                 if (whRows) {
-                    await h.prepare("DELETE FROM erp_stock_wh_qty").run();
+                    const whDelCodes = Array.from(new Set(whRows.map((r) => r[1])));
+                    for (let i = 0; i < whDelCodes.length; i += 200) {
+                        const chunk = whDelCodes.slice(i, i + 200);
+                        const delPh = chunk.map(() => "?").join(",");
+                        await h.prepare("DELETE FROM erp_stock_wh_qty WHERE wh_code IN (" + delPh + ")").run(...chunk);
+                    }
                     const WCHUNK = 50;
                     for (let i = 0; i < whRows.length; i += WCHUNK) {
                         const chunk = whRows.slice(i, i + WCHUNK);
@@ -11113,6 +11249,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 }
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
+                // 每家公司各自的快照時間/筆數（顯示用；legacy 兩鍵維持＝最後一次推送）
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at_" + icpno, snapshotAt);
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count_" + icpno, String(rows.length));
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "done");
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", "");
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error", "");
