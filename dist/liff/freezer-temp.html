@@ -25,8 +25,13 @@
   .row{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;align-items:center;margin-bottom:8px;}
   .row label{font-size:12px;color:var(--txt2);}
   .row input[type="number"],.row input[type="text"]{padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:15px;width:100%;font-family:ui-monospace,monospace;}
+  /* 溫度輸入：正負切換鈕＋絕對值輸入框（iOS 小數鍵盤沒有負號鍵） */
+  .temp-wrap{display:flex;gap:8px;align-items:stretch;}
+  .temp-wrap .temp-input{flex:1;min-width:0;}
+  .sign-btn{min-width:44px;min-height:44px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:22px;font-weight:700;line-height:1;cursor:pointer;color:var(--warn);font-family:ui-monospace,monospace;flex-shrink:0;}
+  .sign-btn.neg{color:var(--accent);border-color:var(--accent);background:#eff6ff;}
   .seg{display:flex;gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
-  .seg button{flex:1;padding:8px 0;border:none;background:#fff;font-size:13px;cursor:pointer;color:var(--txt2);min-height:38px;}
+  .seg button{flex:1;padding:8px 0;border:none;background:#fff;font-size:13px;cursor:pointer;color:var(--txt2);min-height:44px;}
   .seg button.active{background:var(--ok);color:#fff;}
   .seg button.active.danger{background:var(--bad);}
   .filler{padding:14px 16px;background:#fff;border-bottom:1px solid var(--line);}
@@ -77,6 +82,7 @@
   let idToken = null;
   let warehouses = [];
   let entries = {};
+  let confirmedAt = null;  // 當日已填表完成時間（有值＝再儲存會覆蓋，需先確認）
 
   function setStatus(cls, text){ statusEl.className = "status " + cls; statusEl.textContent = text; }
   function toast(text, ms){
@@ -101,6 +107,16 @@
     return { status: r.status, body: j || {} };
   }
   function escapeHtml(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]); }
+  // 該倉預設正負號：合規溫度 ≥0（冷藏）預設「＋」，其餘（冷凍／未設定）預設「−」
+  function defaultNeg(w){
+    const stdN = parseFloat(String(w.compliant_temp||"").match(/-?\d+(\.\d+)?/)?.[0] || "");
+    return !(Number.isFinite(stdN) && stdN >= 0);
+  }
+  // 組合正負號＋絕對值 → 實際存的溫度字串（空值不帶符號）
+  function combineTemp(neg, absStr){
+    const v = String(absStr == null ? "" : absStr).trim().replace(/^[-+]+/, "");
+    return v ? ((neg ? "-" : "") + v) : "";
+  }
 
   if (!LIFF_ID){ setStatus("err", "尚未設定 LIFF_ID_FREEZER_TEMP"); return; }
   liff.init({liffId:LIFF_ID}).then(async ()=>{
@@ -130,6 +146,7 @@
     entries = {};
     for (const e of (r.body.entries||[])) entries[e.warehouseId] = e;
     if (r.body.filler_name) fillerInput.value = r.body.filler_name;
+    confirmedAt = r.body.confirmed_at || null;
     if (r.body.confirmed_at){
       setStatus("ok", "✓ "+date+" 已填表"+(r.body.anomaly?"（含異常）":""));
     } else if (Object.keys(entries).length){
@@ -148,7 +165,10 @@
     }
     listEl.innerHTML = warehouses.map(w => {
       const e = entries[w.id] || {temp:"",powerOk:true,lightOff:true,heatOk:true};
-      const tempVal = e.temp || "";
+      const tempVal = String(e.temp || "").trim();
+      // 正負號：已有輸入以內容為準（開頭 - 即負），否則依該倉合規溫度預設（冷凍 −／冷藏 ＋）
+      const neg = tempVal ? tempVal.startsWith("-") : defaultNeg(w);
+      const absVal = tempVal.replace(/^[-+]+/, "");
       // 異常檢測：簡單版（合規溫度若是 -18 以下開頭，且實際溫度大於合規數字 +5 度則警示）
       let alertHtml = "";
       const stdN = parseFloat(String(w.compliant_temp||"").match(/-?\d+(\.\d+)?/)?.[0] || "");
@@ -157,14 +177,17 @@
         const diff = curN - stdN;
         if (diff > 5) alertHtml = '<span class="alert-badge bad">⚠ 超標</span>';
       }
-      return `<div class="wh" data-wh="${w.id}">
+      return `<div class="wh" data-wh="${escapeHtml(w.id)}">
         <div class="head">
           <span class="name">${escapeHtml(w.name)} ${alertHtml}</span>
           <span class="standard">合規 ${escapeHtml(w.compliant_temp||"未設")}</span>
         </div>
         <div class="row">
           <label>溫度（℃）</label>
-          <input type="number" class="temp-input" inputmode="decimal" step="0.1" value="${tempVal}" placeholder="例：-18.5">
+          <div class="temp-wrap">
+            <button type="button" class="sign-btn${neg?" neg":""}" aria-label="切換正負號" title="切換正負號">${neg?"−":"＋"}</button>
+            <input type="text" class="temp-input" inputmode="decimal" value="${escapeHtml(absVal)}" placeholder="例：18.5">
+          </div>
         </div>
         <div class="row">
           <label>電源</label>
@@ -192,23 +215,39 @@
     // 綁定 seg 按鈕
     listEl.querySelectorAll(".wh").forEach(card => {
       const whId = card.dataset.wh;
-      card.querySelectorAll(".temp-input").forEach(inp => {
-        inp.addEventListener("input", () => {
-          if (!entries[whId]) entries[whId] = {warehouseId:whId,temp:"",powerOk:true,lightOff:true,heatOk:true};
-          entries[whId].temp = inp.value;
-          // 重渲染只刷新該卡 alert badge（簡化：直接整頁 render 也行）
-          const w = warehouses.find(x => x.id === whId);
-          if (w){
-            const stdN = parseFloat(String(w.compliant_temp||"").match(/-?\d+(\.\d+)?/)?.[0] || "");
-            const curN = parseFloat(inp.value);
-            const nameEl = card.querySelector(".name");
-            const existingBadge = nameEl.querySelector(".alert-badge");
-            if (existingBadge) existingBadge.remove();
-            if (Number.isFinite(stdN) && Number.isFinite(curN) && (curN - stdN) > 5){
-              nameEl.insertAdjacentHTML("beforeend", ' <span class="alert-badge bad">⚠ 超標</span>');
-            }
+      const signBtn = card.querySelector(".sign-btn");
+      const tempInp = card.querySelector(".temp-input");
+      const ensureEntry = () => {
+        if (!entries[whId]) entries[whId] = {warehouseId:whId,temp:"",powerOk:true,lightOff:true,heatOk:true};
+        return entries[whId];
+      };
+      const setNeg = (neg) => {
+        signBtn.classList.toggle("neg", neg);
+        signBtn.textContent = neg ? "−" : "＋";
+      };
+      const syncTemp = () => {
+        // 組合「正負鈕＋絕對值」回寫 entries，並刷新該卡 alert badge
+        ensureEntry().temp = combineTemp(signBtn.classList.contains("neg"), tempInp.value);
+        const w = warehouses.find(x => String(x.id) === String(whId));
+        if (w){
+          const stdN = parseFloat(String(w.compliant_temp||"").match(/-?\d+(\.\d+)?/)?.[0] || "");
+          const curN = parseFloat(entries[whId].temp);
+          const nameEl = card.querySelector(".name");
+          const existingBadge = nameEl.querySelector(".alert-badge");
+          if (existingBadge) existingBadge.remove();
+          if (Number.isFinite(stdN) && Number.isFinite(curN) && (curN - stdN) > 5){
+            nameEl.insertAdjacentHTML("beforeend", ' <span class="alert-badge bad">⚠ 超標</span>');
           }
-        });
+        }
+      };
+      signBtn.addEventListener("click", () => { setNeg(!signBtn.classList.contains("neg")); syncTemp(); });
+      tempInp.addEventListener("input", () => {
+        // Android 鍵盤有負號：使用者自己打了「-」→ 以輸入內容為準，同步切換鈕並移除字元
+        if (tempInp.value.includes("-")){
+          tempInp.value = tempInp.value.replace(/-/g, "");
+          setNeg(true);
+        }
+        syncTemp();
       });
       card.querySelectorAll(".seg-btn").forEach(btn => {
         btn.addEventListener("click", () => {
@@ -229,13 +268,17 @@
     const date = dateInput.value || todayTaipei();
     const filler = fillerInput.value.trim();
     if (!filler){ toast("請填寫填表人"); return; }
+    // 當日已填表完成 → 再儲存會覆蓋，先確認
+    if (confirmedAt && !confirm(date + " 已填表完成，重新儲存會覆蓋原紀錄，確定要覆蓋？")) return;
     // 補上所有 warehouse 的條目（沒填的也記錄空值）
+    const cards = Array.from(listEl.querySelectorAll(".wh"));
     const payload = warehouses.map(w => {
       const e = entries[w.id] || {warehouseId:w.id,temp:"",powerOk:true,lightOff:true,heatOk:true};
-      // 從 DOM 拿最新 temp（避免 input 改了沒回寫 entries）
-      const card = listEl.querySelector('.wh[data-wh="'+w.id+'"]');
+      // 從 DOM 拿最新 temp（正負鈕＋絕對值輸入框組合，避免 input 改了沒回寫 entries）
+      const card = cards.find(c => c.dataset.wh === String(w.id));
       const inp = card ? card.querySelector(".temp-input") : null;
-      const t = inp ? inp.value.trim() : (e.temp||"");
+      const signBtn = card ? card.querySelector(".sign-btn") : null;
+      const t = inp ? combineTemp(signBtn && signBtn.classList.contains("neg"), inp.value) : (e.temp||"");
       return {warehouseId:w.id, temp:t, powerOk:!!e.powerOk, lightOff:!!e.lightOff, heatOk:!!e.heatOk};
     });
     saveBtn.disabled = true;

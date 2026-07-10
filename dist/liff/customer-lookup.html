@@ -68,6 +68,7 @@
   const backBtn = $("#back-btn");
   let idToken = null;
   let searchTimer;
+  let searchSeq = 0;  // 遞增序號：丟棄慢回來的舊搜尋回應，避免結果錯亂
 
   function setStatus(text){ statusEl.textContent = text; }
   function escapeHtml(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]); }
@@ -101,6 +102,7 @@
     searchTimer = setTimeout(doSearch, 250);
   }
   async function doSearch(){
+    const mySeq = ++searchSeq;
     const q = searchInput.value.trim();
     if (!q){ resultsEl.innerHTML = ""; setStatus("請輸入客戶名稱開始查詢"); return; }
     setStatus("搜尋中…");
@@ -109,9 +111,12 @@
     try {
       r = await api("/liff/api/customer-lookup/search?q="+encodeURIComponent(q));
     } catch(e){
+      if (mySeq !== searchSeq) return;  // 舊請求的錯誤也不覆蓋新狀態
       setStatus("搜尋失敗：網路異常，請重試（"+(e?.message||e)+"）");
       return;
     }
+    // 防 race：已經有更新的搜尋在跑（或已完成），丟棄這筆舊回應
+    if (mySeq !== searchSeq) return;
     if (r.status !== 200 || !r.body.ok){
       setStatus("搜尋失敗："+(r.body.error || "HTTP "+r.status));
       return;
@@ -170,9 +175,9 @@
       </div>
       ${alertHtml}
       ${c.crm_handover_notes ? `<div class="card"><h3>📝 交接備註</h3><div class="notes-box">${escapeHtml(c.crm_handover_notes)}</div></div>` : ""}
-      ${recentItems.length ? `<div class="card"><h3>🛒 常買 Top ${recentItems.length}</h3>${recentItems.map(it => `<div class="item-row"><span>${escapeHtml(it.name)}</span><span style="color:var(--txt-3);" class="mono">${it.count} 次</span></div>`).join("")}</div>` : ""}
+      ${recentItems.length ? `<div class="card"><h3>🛒 常買 Top ${recentItems.length}</h3>${recentItems.map(it => `<div class="item-row"><span>${escapeHtml(it.name)}</span><span style="color:var(--txt3);" class="mono">${it.count} 次</span></div>`).join("")}</div>` : ""}
       ${recentComplaints.length ? `<div class="card"><h3>📨 客訴歷史</h3>${recentComplaints.map(c => `<div class="item-row"><span>${escapeHtml(c.order_date)} · ${escapeHtml((c.raw_message || "").slice(0, 30))}…</span><span style="color:${c.handle_status === 'resolved' ? 'var(--ok)' : 'var(--bad)'};font-size:11px;">${c.handle_status === 'resolved' ? '已解決' : '待處理'}</span></div>`).join("")}</div>` : ""}
-      ${d.topWeekdays?.length ? `<div class="card"><h3>📅 常下單時段</h3><div style="font-size:13px;color:var(--txt-2);">${d.topWeekdays.map(([k,v]) => escapeHtml(k)+'×'+v).join('、')}</div></div>` : ""}
+      ${d.topWeekdays?.length ? `<div class="card"><h3>📅 常下單時段</h3><div style="font-size:13px;color:var(--txt2);">${d.topWeekdays.map(([k,v]) => escapeHtml(k)+'×'+v).join('、')}</div></div>` : ""}
     `;
   }
 

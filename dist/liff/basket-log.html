@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>空籃記帳 · 松富物流</title>
 <style>
   :root { --accent:#1d4ed8; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --line:#e3e2e0; --bg:#f7f6f3; --bg2:#fafafa; --txt1:#37352f; --txt2:#787774; --txt3:#9b9a97; color-scheme:light; }
@@ -189,6 +189,7 @@
   const state = {
     customerId: "", customerName: "", date: "",
     idToken: null,
+    hasExisting: false,  // 今日已有紀錄（重新送出會覆蓋，送出前需確認）
     numbered: {},
     square: { to: 0, pk: 0 },
     round:   { to: 0, pk: 0 },
@@ -354,10 +355,14 @@
 
   // ─── 取消 / 送出 ───────────────────────────
   cancelBtn.addEventListener("click", () => {
+    // 有未送出的內容時先確認，避免誤觸取消把填好的數字丟掉
+    if (isDirty() && !confirm("尚未送出的內容將會遺失，確定要取消？")) return;
     try { liff.closeWindow(); } catch (_) { window.close(); }
   });
 
   saveBtn.addEventListener("click", async () => {
+    // 今日已有紀錄 → 重新送出會整批覆蓋，先確認
+    if (state.hasExisting && !confirm("今日已有紀錄，重新送出會覆蓋，確定？")) return;
     saveBtn.disabled = true;
     setStatus("", "送出中…");
     try {
@@ -457,9 +462,9 @@
       state.customerName = data.customerName || state.customerId;
       hdrSub.textContent = `${state.customerName}　${state.date}`;
       // 填入既有資料
-      let hasExisting = false;
+      state.hasExisting = false;
       for (const ln of (data.lines || [])) {
-        hasExisting = true;
+        state.hasExisting = true;
         if (ln.basket_kind === "numbered") state.numbered[ln.basket_no] = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
         else if (ln.basket_kind === "square") state.square = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
         else if (ln.basket_kind === "round") state.round = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
@@ -468,7 +473,7 @@
       renderAllKindFields();
       refreshSaveBtn();
       setSectionsLoading(false);
-      if (hasExisting) {
+      if (state.hasExisting) {
         setStatus("err", "⚠️ 今日已有紀錄（顯示在上方）。重新送出會覆蓋當天數字！");
       } else {
         setStatus("", "請填入今日空籃進出數，按「送出記帳」儲存。");
