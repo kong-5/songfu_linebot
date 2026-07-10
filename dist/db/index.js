@@ -270,6 +270,23 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* tables may already exist */ }
     try {
+        // [fix 2026-07-10] 盤點「一倉一日一筆」補真正的 UNIQUE 約束（原 idx_stk_session_date 只是普通索引，
+        // 併發送出可打破唯一性）。先冪等去重：同倉同日保留最後送出（submitted_at/created_at 最大者，再以 id 決勝），
+        // 落選場次的明細一併清除，再建唯一索引。
+        sqlite.exec("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session s WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = s.wh_code AND s2.count_date = s.count_date AND s2.id <> s.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(s.submitted_at, s.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(s.submitted_at, s.created_at, '') AND s2.id > s.id))))");
+        sqlite.exec("DELETE FROM stocktake_session WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = stocktake_session.wh_code AND s2.count_date = stocktake_session.count_date AND s2.id <> stocktake_session.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') AND s2.id > stocktake_session.id)))");
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_stk_session_wh_date_uniq ON stocktake_session(wh_code, count_date)");
+    }
+    catch (_) { /* 去重/唯一索引失敗不阻斷啟動 */ }
+    try {
+        // [fix 2026-07-10] 訂單品項「人工修改軌跡」：LINE 改單指令、後台/LIFF 編輯記錄於此；
+        // 結單整單重辨識（rebuild）後依時間序重放，避免 rebuild 覆寫人工修正。
+        // action: set（改數量/單位）| delete（刪品項）| add（補品項）；match_key = 正規化品名（非位置序，位置會因 rebuild 漂移）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS order_item_edits (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, action TEXT NOT NULL, match_key TEXT, raw_name TEXT, quantity REAL, unit TEXT, remark TEXT, edited_by TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_order_item_edits_order ON order_item_edits(order_id)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TEXT)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT, raw_name TEXT, quantity REAL NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (order_id) REFERENCES logistics_orders(id), FOREIGN KEY (product_id) REFERENCES products(id))");
     }
@@ -822,6 +839,20 @@ async function initPg() {
                 await client.query("INSERT INTO group_features (group_id, feat_order, feat_stocktake, feat_basket, updated_at) SELECT sg.group_id, CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.line_group_id IS NOT NULL AND c.line_group_id <> '' AND LOWER(REPLACE(c.line_group_id,' ','')) = LOWER(REPLACE(sg.group_id,' ',''))) THEN 1 ELSE 0 END, 1, 1, to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SS') FROM stocktake_group sg WHERE NOT EXISTS (SELECT 1 FROM group_features gf WHERE gf.group_id = sg.group_id)");
             }
             catch (_) { /* tables may already exist */ }
+            try {
+                // [fix 2026-07-10] 盤點「一倉一日一筆」補真正的 UNIQUE 約束（與 initSqlite 對應）：
+                // 先冪等去重（同倉同日保留最後送出者、清落選明細），再建唯一索引。
+                await client.query("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session s WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = s.wh_code AND s2.count_date = s.count_date AND s2.id <> s.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(s.submitted_at, s.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(s.submitted_at, s.created_at, '') AND s2.id > s.id))))");
+                await client.query("DELETE FROM stocktake_session WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = stocktake_session.wh_code AND s2.count_date = stocktake_session.count_date AND s2.id <> stocktake_session.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') AND s2.id > stocktake_session.id)))");
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_stk_session_wh_date_uniq ON stocktake_session(wh_code, count_date)");
+            }
+            catch (_) { /* 去重/唯一索引失敗不阻斷啟動 */ }
+            try {
+                // [fix 2026-07-10] 訂單品項「人工修改軌跡」（與 initSqlite 對應）：rebuild 後重放，防覆寫人工修正。
+                await client.query("CREATE TABLE IF NOT EXISTS order_item_edits (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, action TEXT NOT NULL, match_key TEXT, raw_name TEXT, quantity DOUBLE PRECISION, unit TEXT, remark TEXT, edited_by TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_order_item_edits_order ON order_item_edits(order_id)");
+            }
+            catch (_) { /* table may already exist */ }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TIMESTAMPTZ)");
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES logistics_orders(id), product_id TEXT REFERENCES products(id), raw_name TEXT, quantity DOUBLE PRECISION NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0)");
