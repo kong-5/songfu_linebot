@@ -121,6 +121,42 @@ function isTextResultStrongEnough(parsed) {
     return true;
 }
 /**
+ * 幾何對行校驗：用 OCR 字框座標驗證視覺模型「數量掛在哪一列」——
+ * 掛錯列（手寫字大溢出到上一列）→ 改名；刻意跨兩列的大數字 → 壓信心＋remark 加註。
+ * 只在命中預印模板（有 knownItems）且有字框時執行；任何例外都吞掉，絕不阻斷主流程。
+ */
+function applyRowAnchorGeometryCheck(parsed, boxes, template, stageLabel) {
+    try {
+        if (!Array.isArray(parsed) || parsed.length === 0)
+            return parsed;
+        if (!template || !Array.isArray(template.knownItems) || template.knownItems.length === 0)
+            return parsed;
+        if (!boxes || !Array.isArray(boxes.words) || boxes.words.length === 0)
+            return parsed;
+        const { validateParsedAgainstRowAnchors } = require("./form-row-anchor.js");
+        const res = validateParsedAgainstRowAnchors({ parsed, words: boxes.words, knownItems: template.knownItems });
+        if (!res || !Array.isArray(res.parsed))
+            return parsed;
+        if (!res.ok) {
+            console.log("[parse-order-from-image] 幾何對行校驗（%s）略過（%s）", stageLabel, res.reason || "unknown");
+            return parsed;
+        }
+        const corrections = Array.isArray(res.corrections) ? res.corrections : [];
+        if (corrections.length) {
+            const renames = corrections.filter((c) => c.type === "rename").length;
+            const flags = corrections.filter((c) => c.type === "flag").length;
+            console.log("[parse-order-from-image] 幾何對行校驗（%s）：改名 %d 筆、跨列標記 %d 筆", stageLabel, renames, flags);
+            for (const c of corrections)
+                console.log("[parse-order-from-image]   - %s", c.detail);
+        }
+        return res.parsed;
+    }
+    catch (e) {
+        console.warn("[parse-order-from-image] 幾何對行校驗失敗（%s，不阻斷）:", stageLabel, e?.message || e);
+        return parsed;
+    }
+}
+/**
  * 目前結果是否「信心偏低」，值得再請 Claude vision 出第二意見（雙模型保險）。
  *  - 0 筆 → 低（Gemini／文字都沒讀到東西）
  *  - 任一筆自評信心 < minConf → 低
@@ -210,12 +246,16 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
         catch (_) { /* 轉正失敗沿用原圖 */ }
     }
     let ocrText = null;
+    let ocrBoxes = null; // OCR 字框（幾何對行校驗用），同一次 Vision 呼叫一起拿
     if (buffer?.length && process.env.GOOGLE_CLOUD_VISION_API_KEY) {
         try {
-            ocrText = await (0, vision_ocr_js_1.getTextFromImageBuffer)(buffer);
+            const ocrRes = await (0, vision_ocr_js_1.getTextAndWordBoxesFromImageBuffer)(buffer);
+            ocrText = ocrRes?.text || null;
+            ocrBoxes = ocrRes?.boxes || null;
         }
         catch (_) {
             ocrText = null;
+            ocrBoxes = null;
         }
     }
     // 早退：偵測「不是訂單」的圖（自家廣播圖、自家銷貨單回傳等），不打 Gemini、回空 items
@@ -301,6 +341,8 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
             if (adopt.ok) {
                 console.log("[parse-order-from-image] 採用 Gemini 視覺（OCR=%s 視覺=%s，原因=%s）", parsed.length, visionParsed.length, adopt.reason);
                 parsed = visionParsed;
+                // 幾何對行校驗：預印表＋有字框才會動作，錯列改名、跨列標記（例外不阻斷）
+                parsed = applyRowAnchorGeometryCheck(parsed, ocrBoxes, template, "Gemini視覺");
             } else if (visionParsed.length > 0) {
                 console.warn("[parse-order-from-image] 視覺結果未通過合理性檢查，沿用 OCR/文字結果（OCR=%s 視覺=%s，理由=%s）", parsed.length, visionParsed.length, adopt.reason);
             }
@@ -348,6 +390,8 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
                     if (adopt.ok) {
                         console.log("[parse-order-from-image] 採用 Claude 第二意見（原=%d Claude=%d，原因=%s）", parsed.length, claudeParsed.length, adopt.reason);
                         parsed = claudeParsed;
+                        // Claude 結果同樣過一次幾何對行校驗
+                        parsed = applyRowAnchorGeometryCheck(parsed, ocrBoxes, template, "Claude第二意見");
                     }
                     else {
                         console.warn("[parse-order-from-image] Claude 第二意見未通過合理性檢查，維持原結果（原=%d Claude=%d，理由=%s）", parsed.length, claudeParsed.length, adopt.reason);
@@ -358,6 +402,12 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
         catch (e) {
             console.warn("[parse-order-from-image] Claude fallback 失敗（不阻斷）:", e?.message || e);
         }
+    }
+    // [fix 2026-07-10] 子客戶拆單閘門：客戶未設定 known_sub_customers（options.knownSubCustomers 空）
+    // 就把各引擎（Gemini 文字／視覺、Claude 第二意見）帶回的 subCustomer 一律清空。
+    // schema 強制輸出 sub_customer 會讓模型憑排版臆造子客戶名 → 下游誤拆多張單；拆單資格只認客戶主檔設定。
+    if (!knownSub && Array.isArray(parsed)) {
+        parsed = parsed.map((p) => (p && p.subCustomer != null ? { ...p, subCustomer: null } : p));
     }
     parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(parsed);
     // 訂單 raw_message 保留完整 OCR，解析仍用 parseText（版型清洗後）

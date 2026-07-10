@@ -257,6 +257,7 @@
       var res=rs[0],bc=rs[1];
       if(res.error){showCenter('<div>⚠ '+esc(res.error)+'</div>');return;}
       S.wh=res.warehouse;S.date=res.date;S.items=res.items||[];
+      S.baseSubmittedAt=(res.submittedAt!=null?res.submittedAt:null); // 樂觀鎖基準（配合後端 submit）
       S.itemIdx={};S.items.forEach(function(it){S.itemIdx[it.c]=it;});
       S.barcodes=(bc&&bc.map)||{};
       S.counts={};S.order=[];S.extra={};S.cur=null;S.kpOpen=false;
@@ -618,8 +619,12 @@
       var v=parseFloat(S.counts[c]);if(!isFinite(v))return;
       counts.push({code:it.c,name:it.n,spec:it.s,unit:it.u,sys:it.sys,counted:v,mid:null,expiry:[]});
     });
-    post('/liff/api/stocktake/submit',{warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts}).then(function(res){
-      if(res.error){btn.disabled=false;btn.textContent='送出盤點';alert('送出失敗：'+res.error);return;}
+    post('/liff/api/stocktake/submit',{warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:S.baseSubmittedAt}).then(function(res){
+      if(res.error){
+        btn.disabled=false;btn.textContent='送出盤點';
+        if(res.code==='conflict_stale'||res.code==='conflict_taken'){alert('這個倉今天已經有人送出盤點了，請退回重進、續盤後再送出。');return;}
+        alert('送出失敗：'+res.error);return;
+      }
       clearDraft();stopScan();
       showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">盤點已送出</div>'
         +'<div>'+esc(S.wh.name||S.wh.code)+'（'+esc(coName())+'）· '+esc(S.date)+'</div>'

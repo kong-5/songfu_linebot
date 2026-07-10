@@ -78,6 +78,7 @@ const announcement_image_js_1 = require("../lib/announcement-image.js");
 const calendar_holidays_js_1 = require("../lib/calendar-holidays.js");
 const route_war_room_js_1 = require("../lib/route-war-room.js");
 const quote_report_js_1 = require("../lib/quote-report.js");
+const ops_notify_js_1 = require("../lib/ops-notify.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
@@ -192,6 +193,16 @@ async function resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer) {
     }
     return targetOrderId;
 }
+/** 全站 head 共用 meta：favicon＋PWA（加到手機主畫面用公司 LOGO 圖示與正式站名，不再顯示「儀」字）。
+ * icon PNG 由 scripts/generate-app-icons.js 從 assets/logo.svg 產生；/admin/assets 為公開靜態路徑（掛在登入驗證前）。 */
+const SF_APP_HEAD_META = [
+    '<link rel="icon" type="image/svg+xml" href="/admin/assets/logo.svg">',
+    '<link rel="apple-touch-icon" sizes="180x180" href="/admin/assets/app-icon-180.png">',
+    '<link rel="manifest" href="/admin/assets/manifest.webmanifest">',
+    '<meta name="apple-mobile-web-app-title" content="松富物流">',
+    '<meta name="application-name" content="松富物流數位管理系統">',
+    '<meta name="theme-color" content="#1a6fb5">',
+].join("");
 const NOTION_STYLE = `
   :root {
     --notion-bg: #ffffff;
@@ -543,6 +554,10 @@ const NOTION_STYLE = `
   /* 單位不符＋低信心同時發生：黃底為主、紅左邊條（避免互相蓋掉） */
   table.order-detail-table tbody tr.order-item-unit-mismatch.order-item-low-conf > td { background: #fef9c3; }
   .unit-mismatch-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+  /* 訂單明細：remark 以「⚠」開頭＝AI 標記警示（如照片辨識幾何校驗「⚠ 字跡跨列」）→ 淡黃底＋琥珀左邊條 */
+  table.order-detail-table tbody tr.order-item-remark-warn > td { background: #fef9c3; }
+  table.order-detail-table tbody tr.order-item-remark-warn > td:first-child { box-shadow: inset 4px 0 0 #d97706; }
+  table.order-detail-table tbody tr.order-item-remark-warn.order-item-low-conf > td { background: #fef9c3; }
   /* 辨識信心分數小徽章（顯示在品項旁） */
   .conf-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: middle; border: 1px solid transparent; }
   .conf-pill.conf-high { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
@@ -755,6 +770,7 @@ const NOTION_STYLE = `
     table.order-detail-table tbody tr.order-item-need-review { background: #fff7ed; }
     table.order-detail-table tbody tr.order-item-low-conf { background: #fef2f2; }
     table.order-detail-table tbody tr.order-item-unit-mismatch { background: #fef9c3; border-left: 4px solid #ca8a04; }
+    table.order-detail-table tbody tr.order-item-remark-warn { background: #fef9c3; border-left: 4px solid #d97706; }
     .order-detail-layout { flex-direction: column; flex-wrap: wrap; }
     .order-detail-raw-col { flex: none; width: 100%; min-width: 0; }
     .order-detail-raw-inner { position: static; max-height: 220px; }
@@ -1065,6 +1081,9 @@ const SF_TOKENS = `
   --hairline: 1px solid var(--line);
   --shadow-kpi: 0 1px 2px rgba(20,24,34,.05), 0 1px 3px rgba(20,24,34,.06);
   --shadow-kpi-hover: 0 8px 24px rgba(20,24,34,.10), 0 3px 8px rgba(20,24,34,.06);
+  /* 卡片底色（notion-* 頁沿用；深色主題於下方覆寫） */
+  --notion-card: #ffffff;
+  --notion-border-soft: #f0efed;
 }
 [data-theme="dark"] {
   --bg-0: #0a0c10;
@@ -1106,6 +1125,8 @@ const SF_TOKENS = `
   --notion-hover: rgba(255, 255, 255, 0.07);
   --notion-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
   --notion-shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.5);
+  --notion-card: var(--bg-1);
+  --notion-border-soft: rgba(255, 255, 255, 0.06);
 }
 /* base */
 .sf-root, .sf-root * { box-sizing: border-box; }
@@ -1634,30 +1655,32 @@ function sfSidebar(active) {
         ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
         ${item("/admin/quotes", "quotes", "list", "報價管理")}
       </details>
-      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","inv-barcodes","inv-stk-groups","logistics-procurement","logistics-market","logistics-livestock"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["env","inventory","inv-stock","inv-wh-settings","inv-barcodes","logistics-procurement","logistics-market","logistics-livestock"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "box", "倉庫設定")}
         ${item("/admin/inventory/barcodes", "inv-barcodes", "box", "條碼對照")}
-        ${item("/admin/inventory/stocktake-groups", "inv-stk-groups", "box", "群組功能")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
         ${item("/admin/logistics/market", "logistics-market", "truck", "北農行情")}
         ${item("/admin/logistics/livestock", "logistics-livestock", "truck", "畜產雞蛋行情")}
       </details>
-      <details class="sf-nav-group" ${["customers","products","ai-examples"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["customers","cust-groups","products","ai-examples"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">主檔管理</div></summary>
         ${item("/admin/customers", "customers", "users", "客戶管理")}
+        ${item("/admin/customers/groups", "cust-groups", "users", "群組功能")}
         ${item("/admin/products", "products", "box", "貨品管理")}
         ${item("/admin/ai-examples", "ai-examples", "spark", "AI 學習庫")}
       </details>
-      <details class="sf-nav-group" ${["audit","analytics","recognition-stats","broadcast"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["audit","analytics","recognition-stats","broadcast","announcements","calendar"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">報表與通訊</div></summary>
         ${item("/admin/analytics", "analytics", "spark", "營運分析")}
         ${item("/admin/audit", "audit", "history", "稽核軌跡")}
         ${item("/admin/recognition-stats", "recognition-stats", "spark", "辨識成效")}
         ${item("/admin/broadcast", "broadcast", "bell", "群發訊息")}
+        ${item("/admin/announcements", "announcements", "megaphone", "公告管理")}
+        ${item("/admin/calendar", "calendar", "calendar", "行事曆")}
       </details>
       <details class="sf-nav-group" ${["line-bot","users"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">系統設定</div></summary>
@@ -1671,82 +1694,6 @@ function sfSidebar(active) {
   `;
 }
 
-const NOTION_SIDEBAR = (active) => `
-  <nav class="notion-sidebar">
-    <a href="/admin" class="notion-sidebar-home ${active === "dashboard" ? "active" : ""}">儀表板</a>
-    <details class="sidebar-group" ${active === "line-bot" || active === "line-bot-unit" || active === "ai-examples" || active === "recognition-stats" || active === "gemini-prompts" || active === "order-eval" ? "open" : ""}>
-      <summary class="sidebar-group-title">LINE 機器人</summary>
-      <div class="sidebar-links">
-        <a href="/admin/line-bot" class="${active === "line-bot" ? "active" : ""}">啟動與排程</a>
-        <a href="/admin/line-bot/unit-conversion" class="${active === "line-bot-unit" ? "active" : ""}">叫貨單位換算</a>
-        <a href="/admin/gemini-prompts" class="${active === "gemini-prompts" ? "active" : ""}">Gemini Prompt 版本</a>
-        <a href="/admin/ai-examples" class="${active === "ai-examples" ? "active" : ""}">AI 學習庫管理</a>
-        <a href="/admin/recognition-stats" class="${active === "recognition-stats" ? "active" : ""}">辨識成效儀表</a>
-        <a href="/admin/order-eval" class="${active === "order-eval" ? "active" : ""}">訂單圖 Eval 評測</a>
-      </div>
-    </details>
-    <details class="sidebar-group">
-      <summary class="sidebar-group-title">客戶管理</summary>
-      <div class="sidebar-links">
-        <a href="/admin/customers/new">新增客戶</a>
-        <a href="/admin/customers">客戶管理</a>
-        <a href="/admin/import-customers">批次匯入客戶</a>
-      </div>
-    </details>
-    <details class="sidebar-group">
-      <summary class="sidebar-group-title">貨品管理</summary>
-      <div class="sidebar-links">
-        <a href="/admin/products">品項與俗名</a>
-        <a href="/admin/import">批次匯入品項</a>
-      </div>
-    </details>
-    <details class="sidebar-group">
-      <summary class="sidebar-group-title">訂單管理</summary>
-      <div class="sidebar-links">
-        <a href="/admin/orders">訂單審核</a>
-        <a href="/admin/review">待確認品項</a>
-        <a href="/admin/export">資料匯出</a>
-        <a href="/admin/rhythm" class="${active === "rhythm" ? "active" : ""}">週期與預期清單</a>
-        <a href="/admin/backup" class="${active === "backup" ? "active" : ""}">資料備份</a>
-      </div>
-    </details>
-    <details class="sidebar-group" ${active === "inventory" ? "open" : ""}>
-      <summary class="sidebar-group-title">盤點作業</summary>
-      <div class="sidebar-links">
-        <a href="/admin/inventory" class="${active === "inventory" ? "active" : ""}">盤點作業</a>
-        <a href="/admin/inventory/warehouses" class="${active === "inv-wh" ? "active" : ""}">庫房管理</a>
-        <a href="/admin/inventory/assign" class="${active === "inv-assign" ? "active" : ""}">品項歸倉</a>
-        <a href="/admin/inventory/daily" class="${active === "inv-daily" ? "active" : ""}">每日盤點</a>
-        <a href="/admin/inventory/import-erp" class="${active === "inv-erp" ? "active" : ""}">匯入 ERP 資料</a>
-        <a href="/admin/inventory/variance-report" class="${active === "inv-report" ? "active" : ""}">盤差報表</a>
-        <a href="/admin/inventory/manager" class="${active === "inv-manager" ? "active" : ""}">管理人設定</a>
-      </div>
-    </details>
-    <details class="sidebar-group" ${active === "logistics" || active === "logistics-procurement" || active === "logistics-market" || active === "logistics-commodities" ? "open" : ""}>
-      <summary class="sidebar-group-title">物流工具</summary>
-      <div class="sidebar-links">
-        <a href="/admin/logistics/procurement" class="${active === "logistics-procurement" ? "active" : ""}">採購分析</a>
-        <a href="/admin/logistics/market" class="${active === "logistics-market" ? "active" : ""}">北農行情</a>
-        <a href="/admin/logistics/livestock" class="${active === "logistics-livestock" ? "active" : ""}">畜產雞蛋行情</a>
-        <a href="/admin/logistics/commodities" class="${active === "logistics-commodities" ? "active" : ""}">原物料行情</a>
-      </div>
-    </details>
-    <details class="sidebar-group" ${active === "env" ? "open" : ""}>
-      <summary class="sidebar-group-title">環境衛生管理</summary>
-      <div class="sidebar-links">
-        <a href="/admin/freezer-fridge" class="${active === "env" ? "active" : ""}">冷凍庫冷藏庫檢查表</a>
-      </div>
-    </details>
-    <details class="sidebar-group" ${active === "broadcast" || active === "announcements" || active === "calendar" ? "open" : ""}>
-      <summary class="sidebar-group-title">公告與訊息</summary>
-      <div class="sidebar-links">
-        <a href="/admin/announcements" class="${active === "announcements" ? "active" : ""}">公告管理</a>
-        <a href="/admin/calendar" class="${active === "calendar" ? "active" : ""}">行事曆</a>
-        <a href="/admin/broadcast" class="${active === "broadcast" ? "active" : ""}">即時群發</a>
-      </div>
-    </details>
-  </nav>
-`;
 function parseAdminCookies(header) {
     const out = {};
     if (!header)
@@ -2389,7 +2336,7 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
       })();
     })();</script>`;
     const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">`;
-    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" href="/admin/assets/logo.svg"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}${uiScript}</body></html>`;
+    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${SF_APP_HEAD_META}<title>${escapeHtml(title)} － 松富物流數位管理系統</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}${uiScript}</body></html>`;
 }
 /** 僅允許站內 /admin 路徑，供編輯頁儲存後導回（防開放重導向） */
 function safeAdminReturnPath(s) {
@@ -2474,7 +2421,7 @@ function notionEmbedPage(title, body, res) {
     const shell = headerHtml ? `<div class="notion-app">${headerHtml}${mainWrap}</div>` : `<div class="notion-app">${mainWrap}</div>`;
     const sfTheme = (res && res.locals && res.locals.sfTheme === "dark") ? "dark" : "light";
     const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">`;
-    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" href="/admin/assets/logo.svg"><title>${escapeHtml(title)} － 松富物流後台</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}</body></html>`;
+    return `<!DOCTYPE html><html lang="zh-TW" data-theme="${sfTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${SF_APP_HEAD_META}<title>${escapeHtml(title)} － 松富物流數位管理系統</title>${fonts}<style>${NOTION_STYLE}${SF_TOKENS}</style></head><body>${shell}</body></html>`;
 }
 /** 編輯距離（品名短字串模糊比對） */
 function levenshteinDistance(a, b) {
@@ -2688,7 +2635,7 @@ function createAdminRouter() {
         const disabled = _req.query.disabled === "1";
         const pendingMsg = _req.query.pending === "1";
         const nextParam = typeof _req.query.next === "string" && _req.query.next.startsWith("/admin") ? _req.query.next : "/admin";
-        res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>登入 － 松富物流後台</title><style>:root{color-scheme:light;}*{box-sizing:border-box;}body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:#f7f6f3;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:clamp(12px,4vw,24px);} .box{max-width:420px;width:100%;background:#fff;border:1px solid #e3e2e0;border-radius:12px;padding:clamp(16px,4vw,28px);box-shadow:0 4px 16px rgba(15,23,42,.06);} .box h1{font-size:clamp(20px,5vw,24px);line-height:1.3;margin:0 0 14px;color:#37352f;}form{display:flex;flex-direction:column;gap:12px;}label{display:block;font-size:14px;color:#37352f;}input{width:100%;padding:12px;border:1px solid #d7d6d4;border-radius:8px;font-size:16px;margin-top:6px;line-height:1.25;}input:focus{outline:2px solid rgba(35,131,226,.28);border-color:#2383e2;}button{margin-top:6px;width:100%;padding:12px;background:#2383e2;color:#fff;border:none;border-radius:8px;font-size:16px;line-height:1.2;cursor:pointer;font-weight:700;min-height:44px;}button:active{transform:translateY(1px);} .err,.ok,.warn{padding:10px 12px;border-radius:8px;font-size:14px;margin:0 0 10px;} .err{background:#ffebee;color:#c62828;} .ok{background:#e7f5e9;color:#2e7d32;} .warn{background:#fff8e1;color:#856404;}@media (max-width:480px){body{align-items:flex-start;padding:12px;} .box{margin-top:12px;border-radius:10px;} .box h1{margin-bottom:12px;}}</style></head><body><div class="box"><h1>松富物流 後台登入</h1>${err ? "<div class=\"err\">帳號或密碼錯誤。</div>" : ""}${disabled ? "<div class=\"err\">此帳號已停用，請聯絡管理員。</div>" : ""}${pendingMsg ? "<div class=\"warn\">若帳號尚待審核，請待負責人核准後再登入。</div>" : ""}${ok ? "<div class=\"ok\">已建立管理員，請登入。</div>" : ""}<form method="post" action="/admin/login"><input type="hidden" name="next" value="${escapeAttr(nextParam)}"><label>帳號 <input type="text" name="username" required autocomplete="username"></label><label>密碼 <input type="password" name="password" required autocomplete="current-password"></label><button type="submit">登入</button></form></div></body></html>`);
+        res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">${SF_APP_HEAD_META}<title>登入 － 松富物流數位管理系統</title><style>:root{color-scheme:light;}*{box-sizing:border-box;}body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:#f7f6f3;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:clamp(12px,4vw,24px);} .box{max-width:420px;width:100%;background:#fff;border:1px solid #e3e2e0;border-radius:12px;padding:clamp(16px,4vw,28px);box-shadow:0 4px 16px rgba(15,23,42,.06);} .box h1{font-size:clamp(20px,5vw,24px);line-height:1.3;margin:0 0 14px;color:#37352f;}form{display:flex;flex-direction:column;gap:12px;}label{display:block;font-size:14px;color:#37352f;}input{width:100%;padding:12px;border:1px solid #d7d6d4;border-radius:8px;font-size:16px;margin-top:6px;line-height:1.25;}input:focus{outline:2px solid rgba(35,131,226,.28);border-color:#2383e2;}button{margin-top:6px;width:100%;padding:12px;background:#2383e2;color:#fff;border:none;border-radius:8px;font-size:16px;line-height:1.2;cursor:pointer;font-weight:700;min-height:44px;}button:active{transform:translateY(1px);} .err,.ok,.warn{padding:10px 12px;border-radius:8px;font-size:14px;margin:0 0 10px;} .err{background:#ffebee;color:#c62828;} .ok{background:#e7f5e9;color:#2e7d32;} .warn{background:#fff8e1;color:#856404;}@media (max-width:480px){body{align-items:flex-start;padding:12px;} .box{margin-top:12px;border-radius:10px;} .box h1{margin-bottom:12px;}}</style></head><body><div class="box"><h1>松富物流數位管理系統</h1>${err ? "<div class=\"err\">帳號或密碼錯誤。</div>" : ""}${disabled ? "<div class=\"err\">此帳號已停用，請聯絡管理員。</div>" : ""}${pendingMsg ? "<div class=\"warn\">若帳號尚待審核，請待負責人核准後再登入。</div>" : ""}${ok ? "<div class=\"ok\">已建立管理員，請登入。</div>" : ""}<form method="post" action="/admin/login"><input type="hidden" name="next" value="${escapeAttr(nextParam)}"><label>帳號 <input type="text" name="username" required autocomplete="username"></label><label>密碼 <input type="password" name="password" required autocomplete="current-password"></label><button type="submit">登入</button></form></div></body></html>`);
     });
     router.get("/setup", async (_req, res) => {
         const users = await loadAdminUsers();
@@ -2698,7 +2645,7 @@ function createAdminRouter() {
         }
         const err = _req.query.err;
         const errHtml = err === "weak" ? "<div class=\"err\">帳號至少 2 字元、密碼至少 4 字元。</div>" : "";
-        res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>首次設定管理員 － 松富物流</title><style>:root{color-scheme:light;}*{box-sizing:border-box;}body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:#f7f6f3;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:clamp(12px,4vw,24px);} .box{max-width:420px;width:100%;background:#fff;border:1px solid #e3e2e0;border-radius:12px;padding:clamp(16px,4vw,28px);box-shadow:0 4px 16px rgba(15,23,42,.06);} .box h1{font-size:clamp(20px,5vw,24px);line-height:1.3;margin:0 0 8px;color:#37352f;}p{color:#787774;font-size:14px;margin:0 0 16px;line-height:1.5;}form{display:flex;flex-direction:column;gap:12px;}label{display:block;font-size:14px;color:#37352f;}input{width:100%;padding:12px;border:1px solid #d7d6d4;border-radius:8px;font-size:16px;margin-top:6px;line-height:1.25;}input:focus{outline:2px solid rgba(35,131,226,.28);border-color:#2383e2;}button{margin-top:6px;width:100%;padding:12px;background:#2383e2;color:#fff;border:none;border-radius:8px;font-size:16px;line-height:1.2;cursor:pointer;font-weight:700;min-height:44px;}button:active{transform:translateY(1px);} .err{background:#ffebee;color:#c62828;padding:10px 12px;border-radius:8px;font-size:14px;margin:0 0 10px;}@media (max-width:480px){body{align-items:flex-start;padding:12px;} .box{margin-top:12px;border-radius:10px;} .box h1{margin-bottom:10px;}}</style></head><body><div class="box"><h1>首次設定管理員</h1><p>尚無後台帳號，請建立第一組帳號密碼。</p>${errHtml}<form method="post" action="/admin/setup"><label>帳號 <input type="text" name="username" required minlength="2" autocomplete="username"></label><label>密碼 <input type="password" name="password" required minlength="4" autocomplete="new-password"></label><button type="submit">建立並前往登入</button></form></div></body></html>`);
+        res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">${SF_APP_HEAD_META}<title>首次設定管理員 － 松富物流數位管理系統</title><style>:root{color-scheme:light;}*{box-sizing:border-box;}body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;background:#f7f6f3;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:clamp(12px,4vw,24px);} .box{max-width:420px;width:100%;background:#fff;border:1px solid #e3e2e0;border-radius:12px;padding:clamp(16px,4vw,28px);box-shadow:0 4px 16px rgba(15,23,42,.06);} .box h1{font-size:clamp(20px,5vw,24px);line-height:1.3;margin:0 0 8px;color:#37352f;}p{color:#787774;font-size:14px;margin:0 0 16px;line-height:1.5;}form{display:flex;flex-direction:column;gap:12px;}label{display:block;font-size:14px;color:#37352f;}input{width:100%;padding:12px;border:1px solid #d7d6d4;border-radius:8px;font-size:16px;margin-top:6px;line-height:1.25;}input:focus{outline:2px solid rgba(35,131,226,.28);border-color:#2383e2;}button{margin-top:6px;width:100%;padding:12px;background:#2383e2;color:#fff;border:none;border-radius:8px;font-size:16px;line-height:1.2;cursor:pointer;font-weight:700;min-height:44px;}button:active{transform:translateY(1px);} .err{background:#ffebee;color:#c62828;padding:10px 12px;border-radius:8px;font-size:14px;margin:0 0 10px;}@media (max-width:480px){body{align-items:flex-start;padding:12px;} .box{margin-top:12px;border-radius:10px;} .box h1{margin-bottom:10px;}}</style></head><body><div class="box"><h1>首次設定管理員</h1><p>尚無後台帳號，請建立第一組帳號密碼。</p>${errHtml}<form method="post" action="/admin/setup"><label>帳號 <input type="text" name="username" required minlength="2" autocomplete="username"></label><label>密碼 <input type="password" name="password" required minlength="4" autocomplete="new-password"></label><button type="submit">建立並前往登入</button></form></div></body></html>`);
     });
     router.post("/setup", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const users = await loadAdminUsers();
@@ -2752,7 +2699,12 @@ function createAdminRouter() {
                 res.status(503).json({ error: "LINGYUE_WRITEBACK_KEY 未設定（請於 Cloud Run 環境變數設定後再用）" });
                 return;
             }
-            if (!provided || provided !== expected) {
+            // [fix 2026-07-10] 金鑰比對改 timingSafeEqual：避免逐字元比較的時間側信道（長度不同先擋，
+            // timingSafeEqual 要求兩邊等長，長度本身不視為秘密）。
+            const providedBuf = Buffer.from(provided, "utf8");
+            const expectedBuf = Buffer.from(expected, "utf8");
+            if (!provided || providedBuf.length !== expectedBuf.length
+                || !crypto_1.timingSafeEqual(providedBuf, expectedBuf)) {
                 res.status(401).json({ error: "unauthorized" });
                 return;
             }
@@ -2817,6 +2769,7 @@ function createAdminRouter() {
         { title: "訂單審核", href: "/admin/orders", keywords: ["orders", "訂單", "查詢"] },
         { title: "待確認品名", href: "/admin/review", keywords: ["review", "待對應"] },
         { title: "客戶管理", href: "/admin/customers", keywords: ["customers", "客戶"] },
+        { title: "群組功能", href: "/admin/customers/groups", keywords: ["groups", "群組", "白名單", "辨識訂單", "盤點群組", "空籃"] },
         { title: "貨品管理", href: "/admin/products", keywords: ["products", "品項", "俗名"] },
         { title: "AI 學習庫", href: "/admin/ai-examples", keywords: ["ai", "few-shot", "範例"] },
         { title: "稽核軌跡", href: "/admin/audit", keywords: ["audit", "稽核", "log"] },
@@ -2833,6 +2786,20 @@ function createAdminRouter() {
         { title: "資料匯出", href: "/admin/export", keywords: ["export", "csv", "匯出"] },
         { title: "LINE 綁定檢查", href: "/admin/line-binding", keywords: ["binding", "綁定"] },
         { title: "Gemini Prompt", href: "/admin/gemini-prompts", keywords: ["prompt", "gemini", "ab"] },
+        { title: "報價管理", href: "/admin/quotes", keywords: ["quotes", "報價", "報價單"] },
+        { title: "客訴處理", href: "/admin/complaints", keywords: ["complaints", "客訴", "退貨"] },
+        { title: "空籃記帳", href: "/admin/baskets", keywords: ["baskets", "空籃", "空藍", "籃子"] },
+        { title: "忘記叫貨提醒", href: "/admin/reminders", keywords: ["reminders", "提醒", "未叫貨", "漏單"] },
+        { title: "營運分析", href: "/admin/analytics", keywords: ["analytics", "營運", "分析", "報表"] },
+        { title: "群組功能", href: "/admin/inventory/stocktake-groups", keywords: ["group", "群組", "白名單", "盤點群組", "辨識訂單", "空籃"] },
+        { title: "倉庫設定", href: "/admin/inventory/warehouse-settings", keywords: ["warehouse", "倉庫", "倉別", "盤點倉"] },
+        { title: "公告管理", href: "/admin/announcements", keywords: ["announcements", "公告", "flex", "海報", "模板"] },
+        { title: "行事曆", href: "/admin/calendar", keywords: ["calendar", "行事曆", "假日", "公休", "加班", "國定假日"] },
+        { title: "客戶×品項週期分析", href: "/admin/rhythm", keywords: ["rhythm", "週期", "預期清單", "節奏"] },
+        { title: "資料備份", href: "/admin/backup", keywords: ["backup", "備份", "下載資料庫"] },
+        { title: "訂單圖 Golden Set 評測", href: "/admin/order-eval", keywords: ["eval", "golden", "評測", "harness", "訂單圖"] },
+        { title: "叫貨單位換算（LINE）", href: "/admin/line-bot/unit-conversion", keywords: ["unit", "單位", "換算", "conversion"] },
+        { title: "大宗原物料行情", href: "/admin/logistics/commodities", keywords: ["commodities", "原物料", "黃豆", "玉米", "小麥", "行情"] },
     ];
     router.get("/api/search", async (req, res) => {
         const q = String(req.query.q || "").trim();
@@ -3044,7 +3011,7 @@ function createAdminRouter() {
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
             <div>
-              <div class="sf-breadcrumb" style="margin-bottom:6px;">設定 / 人員管理</div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">系統設定 / 人員管理</div>
               <h1 style="margin:0;font-size:22px;font-weight:600;">人員管理</h1>
               <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">僅<strong>經理</strong>可進入本頁。負責人：<code class="mono" style="font-size:11px;">${escapeHtml(ADMIN_OWNER_EMAIL)}</code>。新帳號須由負責人核准後才可登入。</p>
             </div>
@@ -3529,7 +3496,7 @@ function createAdminRouter() {
         const body = `
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div>
-            <div class="sf-breadcrumb" style="margin-bottom:6px;">設定 / LINE 機器人</div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">系統設定 / LINE 機器人</div>
             <h1 style="margin:0;font-size:22px;font-weight:600;">LINE 機器人：啟動與排程</h1>
           </div>
           ${_req.query.ok === "1" ? `<div class="sf-pill ok" style="align-self:flex-start;">已儲存設定</div>` : ""}
@@ -4189,7 +4156,7 @@ function createAdminRouter() {
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:20px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
             <div>
-              <div class="sf-breadcrumb" style="margin-bottom:6px;">儀表板 / 今日營運</div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 儀表板</div>
               <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em;">松富物流 · HACCP 監控中心</h1>
               <div style="margin-top:6px;font-size:12px;color:var(--txt-3);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
                 <span class="mono">作業日 · ${today} (週${weekdayZh})</span>
@@ -4689,7 +4656,7 @@ function createAdminRouter() {
               <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:1200px;margin:0 auto;">
                 <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
                   <div>
-                    <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核與報表 / 營運分析</div>
+                    <div class="sf-breadcrumb" style="margin-bottom:6px;">報表與通訊 / 營運分析</div>
                     <h1 style="margin:0;font-size:22px;font-weight:600;">營運分析</h1>
                     <p style="margin:6px 0 0;color:var(--txt-3);font-size:12px;">期間：${escapeHtml(fromIso)} ~ ${escapeHtml(todayIso)}（${periodDays} 天）。不含已作廢／客訴訂單。</p>
                   </div>
@@ -5583,7 +5550,7 @@ function createAdminRouter() {
         const body = `
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div>
-            <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核軌跡 / DATA CHANGE LOG</div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">報表與通訊 / 稽核軌跡</div>
             <h1 style="margin:0;font-size:22px;font-weight:600;">稽核軌跡</h1>
             <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">所有資料變更皆永久保存。誰、何時、改了什麼，皆可追溯。重大事件（作廢／刪除品項）會以紅色標示。</p>
           </div>
@@ -5834,7 +5801,7 @@ function createAdminRouter() {
         const body = `
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div>
-            <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核與報表 / 辨識成效儀表</div>
+            <div class="sf-breadcrumb" style="margin-bottom:6px;">報表與通訊 / 辨識成效儀表</div>
             <h1 style="margin:0;font-size:22px;font-weight:600;">辨識成效儀表</h1>
             <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">統計區間：<strong style="color:var(--txt-1);">${escapeHtml(rangeLabel)}</strong>　訂單／待確認依 <code>order_date</code>；後台改品項依 <code>data_change_log</code> 紀錄日；Gemini 依 <code>gemini_usage_log</code>。筆跡對照／Few-Shot 為目前 DB 累積，不受區間限制。</p>
           </div>
@@ -6191,8 +6158,25 @@ function createAdminRouter() {
         const lm = latestMap || {};
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
+        // [分倉庫存 2026-07-10] 「最新系統／對最新盤差」的基準：該倉在 erp_stock_wh_qty 有任何分倉列
+        // → 用該倉分倉量（品項無列＝0）；整倉無分倉資料 → fallback 總量（erp_stock_items，latestMap）。
+        // 一倉一次查（快取），不逐品項查。latestSource 供卡片顯示「分倉／總量」基準標記。
+        // 注意：sys_qty（盤差「對當下」）是盤點送出當下寫進 stocktake_count 的凍結快照，這裡原樣讀出、
+        // 不回溯改動——只有「最新系統」欄與新建立的 session 用新基準。
+        const whLatestCache = {};
+        const getWhLatest = async (whCode) => {
+            if (Object.prototype.hasOwnProperty.call(whLatestCache, whCode)) return whLatestCache[whCode];
+            let m = null;
+            try {
+                const rows = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(whCode);
+                if ((rows || []).length) { m = {}; for (const r of rows) m[String(r.erp_code || "")] = Number(r.qty || 0); }
+            } catch (_) { m = null; /* 查詢失敗 → 沿用總量基準 */ }
+            whLatestCache[whCode] = m;
+            return m;
+        };
         for (const s of sessions || []) {
             const sIcp = (0, erp_companies_js_1.normIcpno)(s.icpno);
+            const whm = await getWhLatest(String(s.wh_code || ""));
             const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
             const items = (rows || []).map((r) => {
                 const sys = Number(r.sys_qty || 0);
@@ -6200,16 +6184,22 @@ function createAdminRouter() {
                 const mid = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
                 const diff = counted == null ? null : Math.round((counted - sys) * 100) / 100;
                 const code = String(r.erp_code || "");
-                const lmKey = sIcp + "|" + code;
-                const hasLatest = Object.prototype.hasOwnProperty.call(lm, lmKey);
-                const latest = hasLatest ? Number(lm[lmKey]) : null;
+                // 分倉庫存優先（該倉有 000009 資料）；否則 fallback 到公司總量快照（鍵含 icpno）
+                let latest;
+                if (whm) {
+                    latest = Number(whm[code] || 0); // 分倉基準：該品項無分倉列＝0
+                } else {
+                    const lmKey = sIcp + "|" + code;
+                    const hasLatest = Object.prototype.hasOwnProperty.call(lm, lmKey);
+                    latest = hasLatest ? Number(lm[lmKey]) : null;
+                }
                 const diffLatest = (counted == null || latest == null) ? null : Math.round((counted - latest) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
                 return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, diffLatest, expiry };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
-            out.push({ session: s, items, diffCount });
+            out.push({ session: s, items, diffCount, latestSource: whm ? "warehouse" : "total" });
         }
         return out;
     }
@@ -6302,10 +6292,11 @@ function createAdminRouter() {
                 <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
                 <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
                 <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
+                <span class="stk-badge" title="「最新系統」欄的資料基準：分倉＝該倉在凌越的分倉庫存量；總量＝全公司總庫存量（該倉無分倉資料時的後備）">最新基準：${sel.latestSource === "warehouse" ? "分倉" : "總量"}</span>
                 <button type="button" class="stk-togbtn sm" id="stkOnlyDiff">只看盤差</button>
               </div>
             </div>
-            <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自目前庫存快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")})，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
+            <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
               <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下</span></th><th class="stk-num">盤差%</th><th class="stk-num">最新<br><span class="stk-th2">系統</span></th><th class="stk-num">對最新<br><span class="stk-th2">盤差</span></th><th>效期</th></tr></thead>
@@ -6334,7 +6325,7 @@ function createAdminRouter() {
         .wh-panel-h{padding:9px 13px;font-size:11px;font-weight:700;color:#787774;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--notion-border,#e3e2e0);}
         .wh-it{display:block;padding:9px 13px;border-bottom:1px solid var(--notion-border-soft,#f0efed);text-decoration:none;color:inherit;cursor:pointer;}
         .wh-it:last-child{border-bottom:0;}
-        .wh-it.on{background:#e8f1fd;box-shadow:inset 3px 0 0 #2383e2;}
+        .wh-it.on{background:rgba(35,131,226,.14);box-shadow:inset 3px 0 0 #2383e2;}
         .wh-it.idle{opacity:.62;cursor:default;}
         .wh-it:hover:not(.idle):not(.on){background:rgba(55,53,47,.03);}
         .wh-n{font-size:13.5px;font-weight:600;line-height:1.2;}
@@ -6369,7 +6360,7 @@ function createAdminRouter() {
         tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}
         tr.stk-p .stk-diff{color:#1f7a46;font-weight:700;}
         tr.stk-z .stk-diff{color:#9b9a97;}
-        tr.stk-n{background:#fdf3f2;}
+        tr.stk-n{background:rgba(179,38,30,.08);}
         .stk-togbtn{font-size:12.5px;padding:6px 12px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;}
         .stk-togbtn.sm{padding:4px 10px;font-size:11.5px;}
         .stk-togbtn.on{background:#2383e2;border-color:#2383e2;color:#fff;}
@@ -6434,12 +6425,13 @@ function createAdminRouter() {
         try { (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMapCsv[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) {}
         const day = await loadStocktakeDay(date, latestMapCsv);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
-        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量,對最新盤差,效期明細,盤點人,送出時間"];
-        for (const { session: s, items } of day) {
+        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量,最新系統基準,對最新盤差,效期明細,盤點人,送出時間"];
+        for (const { session: s, items, latestSource } of day) {
+            const baseTxt = latestSource === "warehouse" ? "分倉" : "總量";
             for (const it of items) {
                 const dp = it.diff == null ? "" : (it.sys === 0 ? "" : ((it.diff / it.sys) * 100).toFixed(1) + "%");
                 const exp = (it.expiry || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"}x${b.qty || "?"}`).join(" / ");
-                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latest == null ? "" : it.latest, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
+                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latest == null ? "" : it.latest, baseTxt, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
             }
         }
         res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
@@ -6950,11 +6942,17 @@ function createAdminRouter() {
         };
         return {
             snapshot_at: await get("erp_stock_snapshot_at"),
+            // 分倉庫存（erp_stock_wh_qty）最後覆蓋時間；推送沒帶 warehouse_qty 時不會更新
+            wh_snapshot_at: await get("erp_stock_wh_snapshot_at"),
             item_count: await get("erp_stock_item_count"),
             refresh_status: await get("erp_stock_refresh_status"),
             refresh_requested_at: await get("erp_stock_refresh_requested_at"),
             refresh_error: await get("erp_stock_refresh_error"),
             refresh_error_at: await get("erp_stock_refresh_error_at"),
+            // 內網代理三條背景線各自的心跳（/wait＝訂單回寫、inventory-wait＝庫存推送、txn-wait＝進銷存查詢）
+            agent_last_wait_at: await get("ly_agent_last_wait_at"),
+            agent_last_inventory_wait_at: await get("ly_agent_last_inventory_wait_at"),
+            agent_last_txn_wait_at: await get("ly_agent_last_txn_wait_at"),
         };
     }
     // 目前庫存頁有推送資料的公司清單（松富00 一定在最前）
@@ -7009,6 +7007,34 @@ function createAdminRouter() {
             else if (icpno !== "00") snapAt = "";
         } catch (_) { }
         const snapLabel = snapAt ? fmtTaipeiYMDHM(snapAt, "尚無資料") : "尚無資料";
+        // [ops 2026-07-10] 內網代理心跳顯示：代理有三條背景線（訂單回寫 /wait、庫存推送 inventory-wait、
+        // 進銷存查詢 txn-wait），各自 upsert 自己的心跳鍵。GUI 可單獨關掉回寫自動處理（wb_auto），
+        // 屆時 /wait 不再進來、但庫存線仍正常——所以「最後連線」取三鍵的最大值，避免庫存明明正常卻紅字；
+        // 三線各自時間放進 title（滑過可看哪條線多久沒動）。超過 10 分鐘三線都沒連＝代理可能掛了，紅字提醒
+        // （偵測交由此處顯示，不做定時器）。
+        const agentBeats = [
+            ["訂單回寫", meta.agent_last_wait_at],
+            ["庫存推送", meta.agent_last_inventory_wait_at],
+            ["進銷存查詢", meta.agent_last_txn_wait_at],
+        ];
+        let agentLabel = "尚無紀錄";
+        let agentStale = false;
+        let agentLastTs = NaN;
+        for (const [, iso] of agentBeats) {
+            if (!iso)
+                continue;
+            const t = Date.parse(iso);
+            if (Number.isFinite(t) && (!Number.isFinite(agentLastTs) || t > agentLastTs))
+                agentLastTs = t;
+        }
+        if (Number.isFinite(agentLastTs)) {
+            const mins = Math.max(0, Math.floor((Date.now() - agentLastTs) / 60000));
+            agentStale = mins > 10;
+            agentLabel = mins < 1 ? "剛剛" : `${mins} 分鐘前`;
+        }
+        const agentTitle = agentBeats
+            .map(([nm, iso]) => `${nm}：${iso ? fmtTaipeiYMDHM(iso, "尚無紀錄") : "尚無紀錄"}`)
+            .join("\n");
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 目前庫存</div>
       <style>${STK_STYLE}</style>
@@ -7025,7 +7051,7 @@ function createAdminRouter() {
             <label class="sf-switch-label"><input type="checkbox" id="stkLowOnly"><span class="sf-switch"></span>只看低量/負量</label>
           </div>
           <div class="stk-toolbar-right">
-            <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項</span>
+            <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項 · 內網代理最後連線：<b title="${escapeHtml(agentTitle)}"${agentStale ? ' style="color:#b91c1c;"' : ""}>${escapeHtml(agentLabel)}</b></span>
             <button type="button" id="stkExport" class="btn">匯出</button>
             <button type="button" id="stkRefresh" class="btn btn-primary">庫存更新</button>
           </div>
@@ -7303,8 +7329,8 @@ function createAdminRouter() {
         try { const wl = await db.prepare("SELECT group_id, group_name FROM stocktake_group").all(); for (const w of wl) put(w.group_id, w.group_name, "已納入"); } catch (_) {}
         try { const pend = await db.prepare("SELECT group_id, group_name FROM pending_line_groups").all(); for (const p of pend) put(p.group_id, p.group_name, "待綁定"); } catch (_) {}
         try {
-            const cust = await db.prepare("SELECT name, line_group_id FROM customers WHERE line_group_id IS NOT NULL AND line_group_id <> ''").all();
-            for (const c of cust) { put(c.line_group_id, c.name, "客戶群"); const it = byId.get(String(c.line_group_id).trim()); if (it) { it.isCustomer = true; it.customerName = String(c.name || ""); } }
+            const cust = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE line_group_id IS NOT NULL AND line_group_id <> ''").all();
+            for (const c of cust) { put(c.line_group_id, c.name, "客戶群"); const it = byId.get(String(c.line_group_id).trim()); if (it) { it.isCustomer = true; it.customerName = String(c.name || ""); it.customerId = String(c.id || ""); } }
         } catch (_) {}
         const onTrue = (v) => (v == null ? true : !!Number(v));
         const onFalse = (v) => (v == null ? false : !!Number(v));
@@ -7315,11 +7341,13 @@ function createAdminRouter() {
             return { ...c, sources: Array.from(c.sources), isCustomer: !!c.isCustomer, feats };
         }).sort((a, b) => (Number(a.isCustomer) - Number(b.isCustomer)) || String(a.name || a.group_id).localeCompare(String(b.name || b.group_id)));
     }
-    router.get("/inventory/stocktake-groups", async (req, res) => {
+    // [change 2026-07-10] 群組功能整併進「客戶管理」：正式路徑 /admin/customers/groups
+    //（收單來源就是 LINE 群組，設定歸客戶主檔）。舊路徑 /admin/inventory/stocktake-groups 轉跳保留。
+    const renderGroupFeaturesPage = async (req, res) => {
         const list = await loadStocktakeGroupCandidates();
         const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:16px;">已儲存。</div>` : "";
         const typeTag = (g) => {
-            if (g.isCustomer) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#eef2fb;color:#3457b1;">客戶群${g.customerName ? "：" + escapeHtml(g.customerName) : ""}</span>`;
+            if (g.isCustomer) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#eef2fb;color:#3457b1;">客戶群${g.customerName ? "：" + (g.customerId ? `<a href="/admin/customers/${encodeURIComponent(g.customerId)}/edit" style="color:inherit;">${escapeHtml(g.customerName)}</a>` : escapeHtml(g.customerName)) : ""}</span>`;
             if (!g.feats.order) return `<span style="display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px;background:#e7f6ee;color:#1f7a46;">內部群</span>`;
             return `<span style="display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:6px;background:#eef0f3;color:#5b616e;">一般</span>`;
         };
@@ -7339,7 +7367,7 @@ function createAdminRouter() {
         }).join("");
         const knownIds = list.map((g) => g.group_id).join(",");
         const body = `
-      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 群組功能</div>
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / 群組功能</div>
       <h1 class="notion-page-title">群組功能</h1>
       <p class="notion-hint" style="margin:-2px 0 18px;">每個 LINE 群組可分別開關三項功能（勾＝開）：<b>辨識訂單</b>＝把一般文字送 AI 當訂單解析（<b>預設開</b>）；<b>盤點</b>＝群內打「<b>#盤點</b>」跳出倉庫盤點按鈕（<b>預設關</b>，白名單制，只有勾選的群組才回應）；<b>空籃</b>＝群內打「空籃」跳出空籃記帳 LIFF（<b>預設開</b>；也收常打錯的「空藍」）。關閉「辨識訂單」的群組＝<b>內部群</b>：機器人仍收訊息、仍回應指令，只是不把文字當訂單。客戶群的功能也可在「<a href="/admin/customers">客戶管理</a> → 編輯客戶」裡設定，兩處同步。清單自動收集機器人所在的群組；若沒出現，先在群裡對機器人傳一句話，或把群組 ID 貼到下方手動加入。</p>
       ${ok}
@@ -7347,7 +7375,7 @@ function createAdminRouter() {
         <input id="gfSearch" type="text" class="sf-input" placeholder="搜尋群組名稱 / ID / 類型…" autocomplete="off" style="max-width:360px;" oninput="gfFilter(this.value)">
         <span id="gfCount" style="color:var(--notion-text-muted);font-size:12px;"></span>
       </div>
-      <form method="post" action="/admin/inventory/stocktake-groups">
+      <form method="post" action="/admin/customers/groups">
         <input type="hidden" name="known_ids" value="${escapeAttr(knownIds)}">
         <div class="notion-card" style="padding:0;overflow:hidden;">
           <table>
@@ -7379,9 +7407,9 @@ function createAdminRouter() {
         }
         document.addEventListener('DOMContentLoaded', function(){ gfFilter(''); });
       </script>`;
-        res.type("text/html").send(notionPage("群組功能", body, "inv-stk-groups", res));
-    });
-    router.post("/inventory/stocktake-groups", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        res.type("text/html").send(notionPage("群組功能", body, "cust-groups", res));
+    };
+    const saveGroupFeatures = async (req, res) => {
         try {
             const orderMap = (req.body && typeof req.body.order === "object" && req.body.order) ? req.body.order : {};
             const stkMap = (req.body && typeof req.body.stk === "object" && req.body.stk) ? req.body.stk : {};
@@ -7401,13 +7429,18 @@ function createAdminRouter() {
             for (const [gid, feats] of universe) {
                 await group_features_js_1.setGroupFeatures(db, gid, feats);
             }
-            res.redirect("/admin/inventory/stocktake-groups?ok=1");
+            res.redirect("/admin/customers/groups?ok=1");
         }
         catch (e) {
             console.error("[admin] group-features save", e?.message || e);
             res.status(500).send("儲存失敗：" + String(e?.message || e));
         }
-    });
+    };
+    router.get("/customers/groups", renderGroupFeaturesPage);
+    router.post("/customers/groups", express_1.default.urlencoded({ extended: true }), saveGroupFeatures);
+    // 舊網址相容：頁面轉跳新位置；舊表單 POST 仍可儲存
+    router.get("/inventory/stocktake-groups", (_req, res) => res.redirect(301, "/admin/customers/groups"));
+    router.post("/inventory/stocktake-groups", express_1.default.urlencoded({ extended: true }), saveGroupFeatures);
     router.get("/inventory/variance-report", async (req, res) => {
         const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
         const dateFrom = (req.query.date_from || "").trim();
@@ -7847,7 +7880,7 @@ function createAdminRouter() {
             : snapSource === "snapshot" ? `<span class="sf-pill" style="background:#fef3c7;color:#92400e;">本地快照</span>`
             : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 北農行情</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 北農行情</div>
         <h1 class="notion-page-title">北農行情 — 台北一、台北二 批發</h1>
         <p class="notion-hint">資料來源為<a href="${wholesale_price_js_1.TAPMC_PRICE_URL}" target="_blank" rel="noopener">臺北農產運銷「單日交易行情」</a>同一批發市場（農業部開放資料）。價格單位<strong>元／公斤</strong>、交易量<strong>公斤</strong>。每日自動抓存本地快照可回查。</p>
         <div style="display:flex;align-items:center;gap:10px;margin:4px 0 10px;flex-wrap:wrap;">
@@ -7970,7 +8003,7 @@ function createAdminRouter() {
             + `<span>${escapeHtml(c.cropName)}</span>`
             + `<span style="color:var(--txt-3);font-size:11px;margin-left:auto;">${c.dayCount}天</span></label>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / <a href="/admin/logistics/market">北農行情</a> / 歷史查詢</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / <a href="/admin/logistics/market">北農行情</a> / 歷史查詢</div>
         <h1 class="notion-page-title">北農行情 — 歷史走勢查詢</h1>
         <p class="notion-hint">左側勾選品項（可搜尋、可多選對照），選日期區間後看每日中價折線走勢（台北一／二以交易量加權合併）。游標移到圖上即顯示當日各品項價格。</p>
         ${req.query.msg ? `<p class="notion-msg ok" style="padding:10px 12px;background:#e7f5e9;border:1px solid #b7e0c0;border-radius:6px;color:#047857;">${escapeHtml((req.query.msg || "").toString().slice(0, 200))}</p>` : ""}
@@ -8194,7 +8227,7 @@ function createAdminRouter() {
       </div>`;
         const body = `
       <div class="sf-root" style="padding:20px 28px;display:flex;flex-direction:column;gap:14px;">
-      <div class="sf-breadcrumb">物流工具 / 畜產雞蛋行情</div>
+      <div class="sf-breadcrumb">庫存管理 / 畜產雞蛋行情</div>
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
         <h1 style="font-size:22px;font-weight:600;margin:0;">畜產雞蛋行情</h1>
         <div style="display:flex;gap:8px;align-items:center;">
@@ -8372,7 +8405,7 @@ function createAdminRouter() {
 .cm-form input, .cm-form select, .cm-form textarea { width:100%; padding:6px 8px; border:1px solid var(--notion-border-strong); border-radius:5px; font-size:13px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
 </style>
 <div class="notion-page-content">
-<div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 原物料行情</div>
+<div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 原物料行情</div>
 <h1 class="notion-page-title" style="margin-bottom:6px;">大宗原物料行情</h1>
 <p class="notion-hint" style="margin:0 0 14px;">豬肉 / 雞肉 / 雞蛋 等。目前無穩定公開 API，先以手動每日輸入為主，留歷史紀錄供比價判斷。</p>
 ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding:8px 12px;border-radius:6px;border:1px solid #a7f3d0;font-size:13px;">✓ ${escapeHtml(okMsg)}</p>` : ""}
@@ -8812,7 +8845,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             ? "<tr><td colspan='4'>此區間無資料</td></tr>"
             : rows.map((r) => `<tr><td>${escapeHtml(r.product_name || r.raw_name || "待確認")}</td><td>${Number(r.total_qty)}</td><td>${escapeHtml(r.unit || "—")}</td><td>${escapeHtml(r.raw_name && !r.product_name ? "待對照" : "—")}</td></tr>`).join("");
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 物流工具 / 採購分析</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 採購分析</div>
         <h1 class="notion-page-title">採購分析</h1>
         <p>依日期區間彙總「訂單整理」內紙本訂單，某日某品項需採購數量（供採購人員使用）。</p>
         <div class="notion-card">
@@ -8857,7 +8890,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             calRows.push(week);
         const calHtml = "<table class=\"freezer-cal\"><thead><tr><th>日</th><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th></tr></thead><tbody>" + calRows.map((row) => "<tr>" + row.map((cell) => "<td>" + (cell || "") + "</td>").join("") + "</tr>").join("") + "</tbody></table>";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 環境衛生管理 / 冷凍庫冷藏庫檢查表</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 冷凍庫冷藏庫檢查表</div>
         <h1 class="notion-page-title">冷凍庫冷藏庫檢查表</h1>
         <p class="notion-hint" style="margin-bottom:16px;">每日填寫各庫房溫度、電源、電燈、電熱；請先至「庫房管理」新增庫房。</p>
         <p style="margin-bottom:16px;"><a href="/admin/freezer-fridge/warehouses" class="btn">庫房管理</a>（共 ${warehouses.length} 個庫房）</p>
@@ -9345,6 +9378,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
       ORDER BY o.order_date DESC, o.id DESC
       LIMIT 300
     `).all(filterDateFrom, filterDateTo);
+            // 查詢硬上限 LIMIT 300：結果剛好滿 300 筆＝很可能被截斷，列表頂部要提示使用者縮小日期區間
+            const ordersHitLimit = Array.isArray(lineOrders) && lineOrders.length === 300;
             let deletedOrders = await db.prepare(`
       SELECT o.id, o.order_no, o.order_date, o.status, o.customer_id, c.name AS customer_name,
              o.voided_at, o.voided_by, o.void_reason, o.void_note
@@ -9754,39 +9789,26 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 </div>
               </div>
             </div>
+            <!-- 批次作廢 modal：與訂單明細「作廢此訂單」共用同一組原因選單（voidReasonModalHtml） -->
+            ${voidReasonModalHtml({ prefix: "batchVoid", title: "批次作廢訂單" })}
             <script>
             (function(){
               const btn = document.getElementById("btnBatchVoid");
               if (!btn) return;
               btn.addEventListener("click", function(){
-                const form = document.getElementById("batchOrderActionsForm");
                 const checked = document.querySelectorAll('input.order-batch-cb:checked').length;
                 if (!checked) { alert("請先勾選要作廢的訂單"); return; }
-                const r = window.prompt(
-                  "作廢 " + checked + " 筆訂單的原因？\\n\\n" +
-                  "  1 = AI 辨識整單錯誤（會回饋學習庫）\\n" +
-                  "  2 = 客訴問題\\n" +
-                  "  3 = 客戶取消\\n" +
-                  "  4 = 重複叫貨\\n" +
-                  "  5 = 內部錯誤\\n" +
-                  "  6 = 其他\\n\\n" +
-                  "按「取消」放棄作廢。",
-                  "1"
-                );
-                if (r === null) return;
-                const map = { "1":"ai_wrong", "2":"customer_complaint", "3":"customer_cancelled", "4":"duplicate", "5":"staff_error", "6":"other" };
-                const reason = map[String(r).trim()] || "other";
-                let note = "";
-                if (reason !== "ai_wrong") {
-                  note = window.prompt("備註（可留白）：", "") || "";
-                }
+                window.batchVoidModalOpen("將作廢 <strong>" + checked + "</strong> 筆訂單。選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。");
+              });
+              window.batchVoidModalSubmit = function(reason, note){
                 document.getElementById("batchVoidReason").value = reason;
                 document.getElementById("batchVoidNote").value = note;
-                form.submit();
-              });
+                document.getElementById("batchOrderActionsForm").submit();
+              };
             })();
             </script>
           </div>
+          ${ordersHitLimit ? `<p class="notion-msg" style="margin:0;background:#fef9c3;color:#854d0e;border:1px solid #fde047;">⚠ 已達 300 筆顯示上限，可能有訂單未列出——請縮小日期區間。</p>` : ""}
           <div class="sf-table-wrap">
             <table class="sf-table">
               <thead>
@@ -10991,9 +11013,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         // [fix 2026-07-08] 認領租約：過去 /wait 對「已排隊未回寫」的單無條件回傳，
         // 多個 agent 或 agent 重啟同時 /wait 會拿到同一批單 → 各自寫入凌越 → 重複開單。
         // 改成每張單先用條件式 UPDATE 蓋 claimed_at 認領；只有 changes=1（本次真的搶到）才回傳。
-        // 租約 90 秒內其他 /wait 不會再撿到同一張；agent 若掛掉沒回填，租約到期後自動重新可撿（自帶重試）。
-        const LEASE_MS = 90000;
+        // 租約期間其他 /wait 不會再撿到同一張；agent 若掛掉沒回填，租約到期後自動重新可撿（自帶重試）。
+        // [fix 2026-07-10] 租約 90 秒 → 10 分鐘：一批單最壞寫入時間（凌越 SOAP 逐張寫＋逐張查倉別）
+        // 遠超 90 秒，租約先過期＝別條 /wait 重撿同單＝重複開單。10 分鐘涵蓋最壞批次＋回報時間。
+        // 同時單批上限 20 → 5（下方 SQL LIMIT）：縮短「已寫入凌越、尚未回填」的風險窗口。
+        const LEASE_MS = 600000;
         try {
+            // [ops 2026-07-10] 心跳：記錄內網代理最後一次連上 /wait 的時間（後台庫存頁顯示「內網代理最後連線」）。
+            try {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ly_agent_last_wait_at", new Date().toISOString());
+            }
+            catch (_) { /* 心跳寫入失敗不影響主流程 */ }
             while (true) {
                 const claimBefore = new Date(Date.now() - LEASE_MS).toISOString();
                 const rows = await db.prepare(`
@@ -11004,7 +11034,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
             AND (o.lingyue_claimed_at IS NULL OR o.lingyue_claimed_at < ?)
           ORDER BY o.lingyue_queued_at ASC, o.id ASC
-          LIMIT 20
+          LIMIT 5
         `).all(claimBefore);
                 if (rows && rows.length) {
                     const orders = [];
@@ -11069,14 +11099,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 }
                 if (!ok || !docNo) {
                     // [fix 2026-07-08] 失敗出口：記錄錯誤。permanent（如缺料號）或累計 >=3 次即移出佇列（清 queued/claimed），
-                    // 否則保留佇列讓租約到期後自動重試（不清 claimed_at＝維持 90 秒節流，不狂重試）。
+                    // 否則保留佇列讓租約到期後自動重試（不清 claimed_at＝維持租約節流，不狂重試）。
                     const errMsg = (r?.error ? String(r.error) : "寫入未成功或缺少 doc_no").slice(0, 500);
                     const permanent = r?.permanent === true;
                     try {
-                        const cur = await db.prepare("SELECT COALESCE(lingyue_write_attempts, 0) AS n FROM orders WHERE id = ?").get(orderId);
+                        const cur = await db.prepare("SELECT COALESCE(lingyue_write_attempts, 0) AS n, order_no FROM orders WHERE id = ?").get(orderId);
                         const n = (cur?.n || 0) + 1;
                         if (permanent || n >= 3) {
                             await db.prepare("UPDATE orders SET lingyue_write_attempts = ?, lingyue_last_error = ?, lingyue_queued_at = NULL, lingyue_claimed_at = NULL WHERE id = ?").run(n, errMsg, orderId);
+                            // [ops 2026-07-10] 三振出局（或永久失敗）＝移出佇列後不會再自動重試，推播告警提醒人工處理。
+                            ops_notify_js_1.notifyOps(db, `凌越回寫失敗已移出佇列（${permanent ? "永久錯誤" : `已重試 ${n} 次`}）：訂單 ${cur?.order_no || orderId}，錯誤：${errMsg.slice(0, 200)}`).catch(() => { });
                         }
                         else {
                             await db.prepare("UPDATE orders SET lingyue_write_attempts = ?, lingyue_last_error = ? WHERE id = ?").run(n, errMsg, orderId);
@@ -11087,6 +11119,27 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     continue;
                 }
                 try {
+                    // [fix 2026-07-10] 冪等防護：agent 可能因 callback 失敗而重送（journal 重播）。
+                    //  - 已有相同 doc_no → 視為冪等成功，不再覆寫（保留原 written_at）。
+                    //  - 已有「不同」doc_no → 衝突（可能重複開單）：不覆蓋，記 lingyue_last_error ＋推播告警，人工到凌越核對。
+                    const cur = await db.prepare("SELECT lingyue_doc_no, order_no FROM orders WHERE id = ?").get(orderId);
+                    if (!cur) {
+                        failed.push({ order_id: orderId, reason: "查無此訂單" });
+                        continue;
+                    }
+                    const existing = cur.lingyue_doc_no != null ? String(cur.lingyue_doc_no).trim() : "";
+                    if (existing && existing === docNo) {
+                        updated.push({ order_id: orderId, doc_no: docNo, idempotent: true });
+                        continue;
+                    }
+                    if (existing && existing !== docNo) {
+                        const conflictMsg = `凌越單號衝突：後台已記 ${existing}，agent 又回報 ${docNo}（未覆蓋）。可能重複開單，請到凌越核對並刪除多餘的單。`;
+                        console.error("[admin] lingyue-writeback/callback 單號衝突", orderId, "existing=", existing, "incoming=", docNo);
+                        await db.prepare("UPDATE orders SET lingyue_last_error = ? WHERE id = ?").run(conflictMsg.slice(0, 500), orderId);
+                        ops_notify_js_1.notifyOps(db, `訂單 ${cur.order_no || orderId} ${conflictMsg}`).catch(() => { });
+                        failed.push({ order_id: orderId, reason: conflictMsg, conflict: true });
+                        continue;
+                    }
                     // 成功：回填單號＋時間，並清掉失敗計數/錯誤與認領。
                     const ret = await db.prepare("UPDATE orders SET lingyue_doc_no = ?, lingyue_written_at = ?, lingyue_last_error = NULL, lingyue_write_attempts = 0, lingyue_claimed_at = NULL WHERE id = ?").run(docNo, now, orderId);
                     if (ret && (ret.changes === 0)) {
@@ -11141,7 +11194,25 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     snapshotAt,
                 ]);
             }
-            // [fix 2026-07-08] 覆蓋（DELETE + 分批 INSERT + meta 更新）包進單一交易：
+            // [分倉庫存 2026-07-10] 頂層 warehouse_qty（來自 ly_stock_push.py 查 000009）：
+            // 「欄位存在且為陣列」＝本批有分倉資料 → 同一交易內全表覆蓋 erp_stock_wh_qty；
+            // 欄位不存在（內網查 000009 失敗/無資料時保證完全不帶）→ 完全不動該表，保留上一份分倉快照。
+            // 用 Map 以 (erp_code, wh_code) 去重（後者蓋前者），避免 payload 重複列撞 PK。
+            const hasWhQty = Array.isArray(body.warehouse_qty);
+            let whRows = null;
+            if (hasWhQty) {
+                const whMap = new Map();
+                for (const w of body.warehouse_qty) {
+                    const c = String(w?.erp_code ?? "").trim();
+                    const wc = String(w?.wh_code ?? "").trim();
+                    if (!c || !wc)
+                        continue;
+                    const q = Number(w?.qty);
+                    whMap.set(c + " " + wc, [c, wc, Number.isFinite(q) ? q : 0, snapshotAt]);
+                }
+                whRows = Array.from(whMap.values());
+            }
+            // [fix 2026-07-08] 全表覆蓋（DELETE + 分批 INSERT + meta 更新）包進單一交易：
             // 過去無交易，推送中途失敗（網路斷、pool 瞬斷）會留下「半空的庫存表」且快照時間未更新，
             // 使用者看到的是殘缺庫存卻無從察覺；交易失敗整批回滾＝保留上一份完整快照。
             // 多公司：只覆蓋該次推送的公司（icpno），其他公司的快照不動。
@@ -11156,6 +11227,26 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         flat.push(...r);
                     await h.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
                 }
+                // 分倉快照：同交易內覆蓋（失敗整批回滾，與主表一致）；沒帶 warehouse_qty 就跳過不動。
+                // 多公司安全：只清「本批帶到的倉別」（凌越倉號屬單一公司），不整表清，否則各公司推送互相清空。
+                if (whRows) {
+                    const whDelCodes = Array.from(new Set(whRows.map((r) => r[1])));
+                    for (let i = 0; i < whDelCodes.length; i += 200) {
+                        const chunk = whDelCodes.slice(i, i + 200);
+                        const delPh = chunk.map(() => "?").join(",");
+                        await h.prepare("DELETE FROM erp_stock_wh_qty WHERE wh_code IN (" + delPh + ")").run(...chunk);
+                    }
+                    const WCHUNK = 50;
+                    for (let i = 0; i < whRows.length; i += WCHUNK) {
+                        const chunk = whRows.slice(i, i + WCHUNK);
+                        const ph = chunk.map(() => "(?,?,?,?)").join(",");
+                        const flat = [];
+                        for (const r of chunk)
+                            flat.push(...r);
+                        await h.prepare("INSERT INTO erp_stock_wh_qty (erp_code, wh_code, qty, updated_at) VALUES " + ph).run(...flat);
+                    }
+                    await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_wh_snapshot_at", snapshotAt);
+                }
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
                 // 每家公司各自的快照時間/筆數（顯示用；legacy 兩鍵維持＝最後一次推送）
@@ -11169,10 +11260,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 await db.transaction(doReplace);
             else
                 await doReplace(db);
-            res.json({ ok: true, count: rows.length, snapshot_at: snapshotAt });
+            console.log("[admin] inventory-push 完成：items", rows.length, "筆；warehouse_qty", whRows ? whRows.length + " 筆（分倉快照已覆蓋）" : "未帶（分倉快照保留上一份）");
+            res.json({ ok: true, count: rows.length, warehouse_qty_count: whRows ? whRows.length : null, snapshot_at: snapshotAt });
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/inventory-push", e?.message || e);
+            // [ops 2026-07-10] 庫存推送失敗＝後台庫存可能過期，推播告警（交易已回滾、保留上一份快照）。
+            ops_notify_js_1.notifyOps(db, `凌越庫存推送（inventory-push）失敗：${String(e?.message || e).slice(0, 200)}`).catch(() => { });
             res.status(500).json({ error: "inventory-push 失敗", detail: String(e?.message || e) });
         }
     });
@@ -11190,6 +11284,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             timeoutSec = 50;
         const deadline = Date.now() + timeoutSec * 1000;
         try {
+            // [ops 2026-07-10] 心跳：記錄內網代理最後一次連上 inventory-wait 的時間。
+            try {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ly_agent_last_inventory_wait_at", new Date().toISOString());
+            }
+            catch (_) { /* 心跳寫入失敗不影響主流程 */ }
             while (true) {
                 const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_stock_refresh_requested_at");
                 const reqAt = row && row.value ? String(row.value).trim() : "";
@@ -11226,6 +11325,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error", err);
                 await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error_at", now);
                 await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "error");
+                // [ops 2026-07-10] 代理回報庫存刷新失敗（如凌越連線逾時）→ 推播告警。
+                ops_notify_js_1.notifyOps(db, `凌越庫存刷新失敗（代理回報）：${err.slice(0, 200)}`).catch(() => { });
             }
             res.json({ ok: true });
         }
@@ -11246,6 +11347,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             timeoutSec = 50;
         const deadline = Date.now() + timeoutSec * 1000;
         try {
+            // [ops 2026-07-10] 心跳：記錄內網代理最後一次連上 txn-wait 的時間。
+            try {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ly_agent_last_txn_wait_at", new Date().toISOString());
+            }
+            catch (_) { /* 心跳寫入失敗不影響主流程 */ }
             while (true) {
                 const rows = await db.prepare("SELECT key, value FROM app_settings WHERE key LIKE ?").all("erp_txn_req_%");
                 if (rows && rows.length) {
@@ -11714,9 +11820,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const unitMismatchBadge = isUnitMismatchKg
                 ? `<span class="unit-mismatch-badge" title="此品項在貨品主檔以「公斤」計價，但這張單辨識成「${escapeHtml(i.unit || "")}」。請確認後修改單位／數量。">⚠ 單位非公斤</span>`
                 : "";
+            // remark 以「⚠」開頭＝AI 標記警示（如照片辨識幾何校驗「⚠ 字跡跨列（A/B），請確認」）
+            // → 品名旁琥珀徽章（沿用 unit-mismatch-badge 樣式）＋整列淡黃底（order-item-remark-warn）
+            const remarkTrimmed = (i.remark && String(i.remark).trim()) || "";
+            const isRemarkWarn = remarkTrimmed.startsWith("⚠");
+            const remarkWarnBadge = isRemarkWarn
+                ? `<span class="unit-mismatch-badge" title="${escapeAttr(remarkTrimmed)}">⚠ ${escapeHtml(remarkTrimmed.replace(/^⚠\s*/, "").split(/[，,；;\n]/)[0].slice(0, 20) || "備註警示")}</span>`
+                : "";
             const productCell = i.need_review === 1
-                ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>`
-                : `<span class="order-final-product">${nameEditLink}</span>${confPill}${unitMismatchBadge} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
+                ? `<a href="#" class="product-pick need-review" data-item-id="${escapeAttr(i.item_id)}" data-raw="${escapeAttr(i.raw_name || "")}">待確認</a>${remarkWarnBadge}`
+                : `<span class="order-final-product">${nameEditLink}</span>${confPill}${unitMismatchBadge}${remarkWarnBadge} <a href="#" class="product-pick product-change" data-item-id="${escapeAttr(i.item_id)}">改品項</a>`;
             const remarkVal = (i.remark && i.remark.trim()) ? escapeAttr(i.remark.trim()) : "";
             const subCustomerVal = (i.sub_customer && String(i.sub_customer).trim()) ? escapeAttr(String(i.sub_customer).trim()) : "";
             const isLowConf = i.need_review !== 1 && conf != null && conf < lowConfThreshold;
@@ -11724,6 +11837,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             if (i.need_review === 1) rowClasses = "order-item-need-review";
             else if (isLowConf) rowClasses = "order-item-low-conf";
             if (isUnitMismatchKg) rowClasses = rowClasses ? (rowClasses + " order-item-unit-mismatch") : "order-item-unit-mismatch";
+            if (isRemarkWarn) rowClasses = rowClasses ? (rowClasses + " order-item-remark-warn") : "order-item-remark-warn";
             const rawCard = `${idx + 1}. 原始：${String(i.raw_name ?? "").trim() || "—"} ${String(q)}${(i.unit && i.unit.trim()) || ""}`;
             return `<tr data-item-id="${escapeAttr(i.item_id)}" data-raw-name="${escapeAttr(i.raw_name ?? "")}" data-line-unit="${escapeAttr((i.unit && i.unit.trim()) || "")}" data-raw-card="${escapeAttr(rawCard)}" class="${escapeAttr(rowClasses)}">
             <td class="order-detail-col-cb"><input type="checkbox" class="item-select-cb" name="selected_items" value="${escapeAttr(i.item_id)}"></td>
@@ -11976,88 +12090,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               <button type="button" id="btnVoidOrder" class="sf-btn danger" title="作廢整張訂單（會保留稽核紀錄、可由「已作廢訂單」清單恢復）">${SF_ICONS.x}<span>作廢此訂單</span></button>
             </form>
           </div>
-          <div id="voidOrderModal" class="notion-modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="voidOrderModalTitle">
-            <div class="notion-modal" style="max-width:460px;">
-              <h3 id="voidOrderModalTitle" style="margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px;">
-                <span style="color:#dc2626;">⊘</span>
-                <span>作廢此訂單</span>
-              </h3>
-              <p style="margin:0 0 14px;font-size:12px;color:var(--txt-3);">選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。</p>
-              <div id="voidReasonGroup" style="display:flex;flex-direction:column;gap:6px;">
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="not_order"><span class="void-reason-icon">🚫</span><span class="void-reason-text"><strong>非訂單訊息</strong><br><span style="font-size:11px;color:var(--txt-3);">匯款證明、寒喧、門市互動等</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="duplicate"><span class="void-reason-icon">🔁</span><span class="void-reason-text"><strong>重複叫貨</strong><br><span style="font-size:11px;color:var(--txt-3);">同一筆叫貨被讀進 2 次</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="customer_cancelled"><span class="void-reason-icon">❌</span><span class="void-reason-text"><strong>客戶取消</strong><br><span style="font-size:11px;color:var(--txt-3);">客戶主動說不要了</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="customer_complaint"><span class="void-reason-icon">💬</span><span class="void-reason-text"><strong>客訴問題</strong></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="ai_wrong"><span class="void-reason-icon">🤖</span><span class="void-reason-text"><strong>AI 辨識整單錯誤</strong><br><span style="font-size:11px;color:var(--txt-3);">會回饋學習庫</span></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="staff_error"><span class="void-reason-icon">🧑‍💼</span><span class="void-reason-text"><strong>內部錯誤</strong></span></label>
-                <label class="void-reason-row"><input type="radio" name="void_reason_pick" value="other"><span class="void-reason-icon">📝</span><span class="void-reason-text"><strong>其他</strong></span></label>
-              </div>
-              <textarea id="voidOrderModalNote" placeholder="備註（可留白）" rows="2" style="margin-top:12px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
-              <div class="notion-modal-actions" style="justify-content:flex-end;">
-                <button type="button" class="sf-btn" id="voidOrderModalCancel">取消</button>
-                <button type="button" class="sf-btn danger" id="voidOrderModalConfirm">確定作廢</button>
-              </div>
-            </div>
-          </div>
-          <style>
-            .void-reason-row { display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--bg-1);transition:background .1s,border-color .1s;margin:0;font-size:13px; }
-            .void-reason-row:hover { background:var(--bg-2);border-color:var(--txt-3); }
-            .void-reason-row input[type=radio] { margin-top:3px; }
-            .void-reason-row.is-selected { background:#fee2e2;border-color:#dc2626; }
-            .void-reason-icon { font-size:18px;line-height:1;margin-top:1px;flex:0 0 auto; }
-            .void-reason-text { flex:1;line-height:1.4; }
-          </style>
+          ${voidReasonModalHtml({ prefix: "voidOrder", title: "作廢此訂單" })}
           <script>
           (function(){
             const btn = document.getElementById("btnVoidOrder");
-            const modal = document.getElementById("voidOrderModal");
-            const cancelBtn = document.getElementById("voidOrderModalCancel");
-            const confirmBtn = document.getElementById("voidOrderModalConfirm");
-            const noteInput = document.getElementById("voidOrderModalNote");
-            const group = document.getElementById("voidReasonGroup");
-            if (!btn || !modal || !confirmBtn || !group) return;
-            const LS_KEY = "songfu.void_order.last_reason";
-            function getLast() { try { return localStorage.getItem(LS_KEY) || "not_order"; } catch(_) { return "not_order"; } }
-            function setLast(v) { try { localStorage.setItem(LS_KEY, v); } catch(_) {} }
-            function getPicked() {
-              const r = group.querySelector('input[name="void_reason_pick"]:checked');
-              return r ? r.value : "";
-            }
-            function highlight() {
-              group.querySelectorAll(".void-reason-row").forEach(row => {
-                const r = row.querySelector('input[type=radio]');
-                row.classList.toggle("is-selected", r && r.checked);
-              });
-            }
-            function open() {
-              const last = getLast();
-              const target = group.querySelector('input[value="' + last + '"]') || group.querySelector('input[type=radio]');
-              if (target) target.checked = true;
-              noteInput.value = "";
-              highlight();
-              modal.style.display = "flex";
-              noteInput.focus();
-            }
-            function close() { modal.style.display = "none"; }
-            btn.addEventListener("click", open);
-            cancelBtn.addEventListener("click", close);
-            modal.addEventListener("click", function(e){ if (e.target === modal) close(); });
-            document.addEventListener("keydown", function(e){
-              if (modal.style.display === "none") return;
-              if (e.key === "Escape") close();
-              else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) confirmBtn.click();
-            });
-            group.addEventListener("change", highlight);
-            confirmBtn.addEventListener("click", function(){
-              const reason = getPicked();
-              if (!reason) { alert("請選擇作廢原因"); return; }
-              setLast(reason);
+            if (!btn) return;
+            btn.addEventListener("click", function(){ window.voidOrderModalOpen(); });
+            window.voidOrderModalSubmit = function(reason, note){
               document.getElementById("voidOrderReason").value = reason;
-              document.getElementById("voidOrderNote").value = noteInput.value.trim();
-              confirmBtn.disabled = true;
-              confirmBtn.textContent = "作廢中…";
+              document.getElementById("voidOrderNote").value = note;
               document.getElementById("voidOrderForm").submit();
-            });
+            };
           })();
           </script>`}
         </div>
@@ -15442,7 +15485,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const productList = await db.prepare("SELECT id, name FROM products WHERE (active IS NULL OR active = 1) ORDER BY name").all();
             const productOptions = productList.map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`).join("");
             const aliasRows = custAliases
-            .map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td><td><form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/alias/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td></tr>`)
+            .map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td><td><form method="post" action="/admin/customers/${encodeURIComponent(customer.id)}/alias/${encodeURIComponent(a.id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(a.alias))}」？')"><button type="submit">刪除</button></form></td></tr>`)
             .join("");
             let profileSection = "";
             try {
@@ -15883,10 +15926,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
             <div>
-              <div class="sf-breadcrumb" style="margin-bottom:6px;">管理 / 客戶</div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">主檔管理 / 客戶管理</div>
               <h1 style="margin:0;font-size:22px;font-weight:600;">客戶管理</h1>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+              <a class="sf-btn" href="/admin/customers/groups">${SF_ICONS.users}<span>群組功能</span></a>
               <a class="sf-btn" href="/admin/import-customers">${SF_ICONS.dl}<span>匯入 CSV</span></a>
               <a class="sf-btn" href="/admin/customers/export.csv">${SF_ICONS.dl}<span>匯出客戶 CSV</span></a>
               <a class="sf-btn" href="/admin/groups/export.xlsx">${SF_ICONS.dl}<span>下載群組 Excel</span></a>
@@ -16620,7 +16664,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const rows = aliases
             .map((a) => `<tr>
             <td>${escapeHtml(a.alias)}</td>
-            <td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit">編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"><button type="submit">刪除</button></form></td>
+            <td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit">編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(a.alias))}」？')"><button type="submit">刪除</button></form></td>
           </tr>`)
             .join("");
         const specRows = specs
@@ -16628,7 +16672,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <td>${escapeHtml(s.unit)}</td>
             <td>${escapeHtml(s.note_label ?? "")}</td>
             <td>${s.conversion_kg != null ? s.conversion_kg : "—"}</td>
-            <td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete" style="display:inline;"><button type="submit" class="btn">刪除</button></form></td>
+            <td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete" style="display:inline;" onsubmit="return confirm('確定刪除規格「${escapeAttr(escJsStr(s.unit))}」？')"><button type="submit" class="btn">刪除</button></form></td>
           </tr>`)
             .join("");
         const body = `
@@ -17082,11 +17126,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const specTableRows = unitSpecs.map((s) => {
             const kgDisp = s.conversion_kg != null ? `${fmtKgDisplay(s.conversion_kg)} kg` : "—";
             const hid = `<input type="hidden" name="redirect_to_edit" value="1"><input type="hidden" name="embed" value="${embed ? "1" : ""}"><input type="hidden" name="return" value="${escapeAttr(returnUrl)}">`;
-            return `<tr><td>${escapeHtml(s.unit)}</td><td>${escapeHtml(s.note_label ?? "")}</td><td>${escapeHtml(kgDisp)}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete"${formTarget} style="display:inline;margin:0;">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
+            return `<tr><td>${escapeHtml(s.unit)}</td><td>${escapeHtml(s.note_label ?? "")}</td><td>${escapeHtml(kgDisp)}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/specs/${encodeURIComponent(s.id)}/delete"${formTarget} style="display:inline;margin:0;" onsubmit="return confirm('確定刪除規格「${escapeAttr(escJsStr(s.unit))}」？')">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
         }).join("");
         const packTableRows = packRatios.map((r) => {
             const hid = `<input type="hidden" name="embed" value="${embed ? "1" : ""}"><input type="hidden" name="return" value="${escapeAttr(returnUrl)}">`;
-            return `<tr><td>${escapeHtml(r.outer_unit)}</td><td style="text-align:right;">${escapeHtml(String(r.inner_count))}</td><td>${escapeHtml(r.inner_unit)}</td><td>${escapeHtml(r.note ?? "")}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/pack-ratios/${encodeURIComponent(r.id)}/delete"${formTarget} style="display:inline;margin:0;">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
+            return `<tr><td>${escapeHtml(r.outer_unit)}</td><td style="text-align:right;">${escapeHtml(String(r.inner_count))}</td><td>${escapeHtml(r.inner_unit)}</td><td>${escapeHtml(r.note ?? "")}</td><td><form method="post" action="/admin/products/${encodeURIComponent(productId)}/pack-ratios/${encodeURIComponent(r.id)}/delete"${formTarget} style="display:inline;margin:0;" onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr("1 " + r.outer_unit + "＝" + r.inner_count + " " + r.inner_unit))}」？')">${hid}<button type="submit" class="btn">刪除</button></form></td></tr>`;
         }).join("");
         const derivedLines = [...derivedKgMap.entries()].sort((a, b) => a[0].localeCompare(b[0], "zh-Hant"));
         const derivedHtml = derivedLines.length === 0
@@ -17095,7 +17139,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const tag = derivedDirect.has(u) ? "直接" : "推算";
                 return `<li style="margin:4px 0;"><span class="pu-sop-badge">${escapeHtml(tag)}</span> 1 <strong>${escapeHtml(u)}</strong> ≈ <strong>${escapeHtml(fmtKgDisplay(k))}</strong> 公斤</li>`;
             }).join("")}</ul>`;
-        const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit"${linkTarget}>編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"${embed ? ' target="_parent"' : ""}><button type="submit">刪除</button></form></td></tr>`).join("");
+        const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td><a href="/admin/aliases/${encodeURIComponent(a.id)}/edit"${linkTarget}>編輯</a> | <form method="post" action="/admin/aliases/${encodeURIComponent(a.id)}/delete" style="display:inline;"${embed ? ' target="_parent"' : ""} onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(a.alias))}」？')"><button type="submit">刪除</button></form></td></tr>`).join("");
         const logRows = recentLogs.map((l) => `<tr><td style="white-space:nowrap;font-size:12px;">${escapeHtml(String(l.created_at ?? ""))}</td><td>${escapeHtml(String(l.actor_username ?? "—"))}</td><td>${escapeHtml(String(l.action ?? ""))}</td><td>${escapeHtml(String(l.summary ?? "—"))}</td></tr>`).join("");
         const errMsg = req.query.err ? `<div class="notion-msg err">${escapeHtml(String(req.query.err))}</div>` : "";
         const autoLinkedCount = Math.max(0, parseInt(String(req.query.auto_linked || "0"), 10) || 0);
@@ -17706,7 +17750,7 @@ YY小吃, C5678...,</pre>
         <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
           <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
             <div>
-              <div class="sf-breadcrumb" style="margin-bottom:6px;">稽核與報表 / 群發訊息</div>
+              <div class="sf-breadcrumb" style="margin-bottom:6px;">報表與通訊 / 群發訊息</div>
               <h1 style="margin:0;font-size:22px;font-weight:600;">群發訊息</h1>
               <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">先選擇要發送的內容類型（限時優惠／公告／行事曆／圖片），編輯後送出，或先存成草稿之後再用。</p>
             </div>
@@ -18646,16 +18690,16 @@ YY小吃, C5678...,</pre>
     // ============================================================
     const ANN_CSS = `<style>
 .ann-tpl-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:14px; margin-top:14px; }
-.ann-tpl-card { display:block; padding:18px 20px; background:#fff; border:1px solid var(--notion-border); border-radius:10px; text-decoration:none; color:var(--notion-text); transition:border-color .15s,transform .15s,box-shadow .15s; }
+.ann-tpl-card { display:block; padding:18px 20px; background:var(--notion-card); border:1px solid var(--notion-border); border-radius:10px; text-decoration:none; color:var(--notion-text); transition:border-color .15s,transform .15s,box-shadow .15s; }
 .ann-tpl-card:hover { border-color:#3b82c4; transform:translateY(-2px); box-shadow:0 4px 16px rgba(59,130,196,0.12); text-decoration:none; }
 .ann-tpl-icon { font-size:32px; line-height:1; margin-bottom:8px; }
 .ann-tpl-name { font-size:16px; font-weight:600; margin-bottom:4px; }
 .ann-tpl-desc { font-size:12px; color:var(--notion-text-muted); line-height:1.45; }
 .ann-form { max-width:760px; }
 .ann-form .field { margin-bottom:18px; }
-.ann-form label.fl { display:block; font-size:13px; font-weight:500; color:#444; margin-bottom:5px; }
+.ann-form label.fl { display:block; font-size:13px; font-weight:500; color:var(--notion-text); margin-bottom:5px; }
 .ann-form .hint { font-size:12px; color:var(--notion-text-muted); margin-top:3px; }
-.ann-form input[type=text], .ann-form input[type=date], .ann-form textarea { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
+.ann-form input[type=text], .ann-form input[type=date], .ann-form textarea { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:var(--notion-canvas); color:var(--notion-text); font-family:inherit; }
 .ann-form textarea { min-height:96px; resize:vertical; }
 .ann-item-rows .row { display:flex; gap:6px; margin-bottom:6px; }
 .ann-item-rows .row input { flex:1; padding:6px 8px; border:1px solid var(--notion-border-strong); border-radius:5px; font-size:13px; }
@@ -18668,7 +18712,7 @@ YY小吃, C5678...,</pre>
 .ann-list-table { width:100%; border-collapse:collapse; }
 .ann-list-table th { text-align:left; padding:10px 12px; font-size:12px; color:#666; border-bottom:1px solid var(--notion-border); font-weight:500; }
 .ann-list-table td { padding:12px; border-bottom:1px solid var(--notion-border); font-size:13px; }
-.ann-list-table tr:hover td { background:#fafafa; }
+.ann-list-table tr:hover td { background:var(--notion-hover); }
 .ann-status { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
 .ann-status.draft { background:#f4f4f0; color:#666; }
 .ann-status.sent { background:#ecfdf5; color:#047857; }
@@ -18997,7 +19041,7 @@ ${sentInfo}
   <form method="post" action="/admin/announcements/${encodeURIComponent(id)}/send" onsubmit="if(this.dataset.submitting)return false;if(!confirm('確定傳送至選定的 LINE 群組？'))return false;this.dataset.submitting='1';return true;">
     <div class="field" style="margin-bottom:14px;">
       <label class="fl">傳送對象</label>
-      <select name="recipients" style="width:100%;max-width:340px;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:6px;background:#fafafa;">
+      <select name="recipients" style="width:100%;max-width:340px;padding:8px 10px;border:1px solid var(--notion-border-strong);border-radius:6px;background:var(--notion-canvas);color:var(--notion-text);">
         <option value="all">全部客戶（${customers.length} 個 LINE 群組）</option>
         ${customers.map((c) => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join("")}
       </select>
@@ -19134,13 +19178,13 @@ ${quickAnnLink}
             }).join("")}</tr>`).join("");
 
         const body = `<style>
-.cal-table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--notion-border); border-radius:8px; overflow:hidden; }
-.cal-table th { padding:8px; font-size:12px; font-weight:500; color:#666; background:#f7f6f3; border-bottom:1px solid var(--notion-border); }
+.cal-table { width:100%; border-collapse:collapse; background:var(--notion-card); border:1px solid var(--notion-border); border-radius:8px; overflow:hidden; }
+.cal-table th { padding:8px; font-size:12px; font-weight:500; color:var(--notion-text-muted); background:var(--notion-sidebar); border-bottom:1px solid var(--notion-border); }
 .cal-cell { vertical-align:top; padding:6px 6px 28px; height:96px; width:14.28%; border:1px solid var(--notion-border); position:relative; }
-.cal-cell.cal-filler { background:#fbfbfa; }
-.cal-cell.cal-today { background:#eff6ff; }
+.cal-cell.cal-filler { background:var(--notion-canvas); }
+.cal-cell.cal-today { background:rgba(35,131,226,0.12); }
 .cal-cell.cal-weekend .cal-day { color:#c0392b; }
-.cal-day { font-size:14px; font-weight:600; color:#37352f; margin-bottom:4px; }
+.cal-day { font-size:14px; font-weight:600; color:var(--notion-text); margin-bottom:4px; }
 .cal-event { display:flex; align-items:center; gap:4px; font-size:11px; padding:2px 6px; border-radius:4px; margin-bottom:3px; line-height:1.4; }
 .cal-event > span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cal-event-del { color:inherit; opacity:0.5; text-decoration:none; padding:0 2px; cursor:pointer; }
@@ -19156,11 +19200,11 @@ ${quickAnnLink}
 .cal-legend span { padding:2px 8px; border-radius:10px; }
 .cal-modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.4); z-index:1000; align-items:center; justify-content:center; padding:20px; }
 .cal-modal-overlay.is-open { display:flex; }
-.cal-modal { background:#fff; border-radius:10px; padding:24px; max-width:440px; width:100%; box-shadow:0 8px 32px rgba(0,0,0,0.2); }
+.cal-modal { background:var(--notion-card); border-radius:10px; padding:24px; max-width:440px; width:100%; box-shadow:0 8px 32px rgba(0,0,0,0.2); }
 .cal-modal h2 { margin:0 0 6px; font-size:18px; }
 .cal-modal .cal-modal-date { color:var(--notion-text-muted); font-size:13px; margin-bottom:14px; }
-.cal-modal label { display:block; font-size:13px; color:#444; margin:10px 0 4px; }
-.cal-modal input, .cal-modal select { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:#fafafa; font-family:inherit; }
+.cal-modal label { display:block; font-size:13px; color:var(--notion-text-muted); margin:10px 0 4px; }
+.cal-modal input, .cal-modal select { width:100%; padding:8px 10px; border:1px solid var(--notion-border-strong); border-radius:6px; font-size:14px; box-sizing:border-box; background:var(--notion-canvas); color:var(--notion-text); font-family:inherit; }
 .cal-modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:18px; }
 </style>
 <div class="notion-page-content">
@@ -20197,4 +20241,112 @@ function escapeAttr(s) {
     if (s == null)
         return "";
     return escapeHtml(s).replace(/'/g, "&#39;");
+}
+// 將字串安全放進「HTML 屬性內的單引號 JS 字串」（如 onsubmit="return confirm('…')"）：
+// 先做 JS 跳脫（反斜線、單引號、換行），外層再用 escapeAttr 做 HTML 屬性跳脫。
+// 用法：onsubmit="return confirm('確定刪除「${escapeAttr(escJsStr(name))}」？')"
+function escJsStr(s) {
+    if (s == null)
+        return "";
+    return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\r?\n/g, " ");
+}
+// 作廢原因 modal（訂單明細「作廢此訂單」與訂單列表「批次作廢」共用）。
+// 產出 modal HTML＋樣式＋通用腳本；使用頁面需另外：
+//   1. 定義 window[prefix + "ModalSubmit"](reason, note) —— 按「確定作廢」後的送出行為。
+//   2. 呼叫 window[prefix + "ModalOpen"](descHtml?) 開啟 —— 可帶說明文字覆寫預設（如「將作廢 N 筆訂單」）。
+// 最近一次選的原因記在 localStorage（單筆與批次共用同一鍵）。
+function voidReasonModalHtml(opts) {
+    const prefix = opts.prefix;
+    const title = opts.title || "作廢此訂單";
+    const desc = opts.desc || "選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。";
+    const reasons = [
+        { value: "not_order", icon: "🚫", label: "非訂單訊息", hint: "匯款證明、寒喧、門市互動等" },
+        { value: "duplicate", icon: "🔁", label: "重複叫貨", hint: "同一筆叫貨被讀進 2 次" },
+        { value: "customer_cancelled", icon: "❌", label: "客戶取消", hint: "客戶主動說不要了" },
+        { value: "customer_complaint", icon: "💬", label: "客訴問題", hint: "" },
+        { value: "ai_wrong", icon: "🤖", label: "AI 辨識整單錯誤", hint: "會回饋學習庫" },
+        { value: "staff_error", icon: "🧑‍💼", label: "內部錯誤", hint: "" },
+        { value: "other", icon: "📝", label: "其他", hint: "" },
+    ];
+    const rowsHtml = reasons.map((r) => `<label class="void-reason-row"><input type="radio" name="${prefix}_reason_pick" value="${r.value}"><span class="void-reason-icon">${r.icon}</span><span class="void-reason-text"><strong>${r.label}</strong>${r.hint ? `<br><span style="font-size:11px;color:var(--txt-3);">${r.hint}</span>` : ""}</span></label>`).join("\n                ");
+    return `
+          <div id="${prefix}Modal" class="notion-modal-overlay" style="display:none;z-index:1200;" role="dialog" aria-modal="true" aria-labelledby="${prefix}ModalTitle">
+            <div class="notion-modal" style="max-width:460px;">
+              <h3 id="${prefix}ModalTitle" style="margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px;">
+                <span style="color:#dc2626;">⊘</span>
+                <span>${title}</span>
+              </h3>
+              <p id="${prefix}ModalDesc" style="margin:0 0 14px;font-size:12px;color:var(--txt-3);">${desc}</p>
+              <div id="${prefix}ReasonGroup" style="display:flex;flex-direction:column;gap:6px;">
+                ${rowsHtml}
+              </div>
+              <textarea id="${prefix}ModalNote" placeholder="備註（可留白）" rows="2" style="margin-top:12px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
+              <div class="notion-modal-actions" style="justify-content:flex-end;">
+                <button type="button" class="sf-btn" id="${prefix}ModalCancel">取消</button>
+                <button type="button" class="sf-btn danger" id="${prefix}ModalConfirm">確定作廢</button>
+              </div>
+            </div>
+          </div>
+          <style>
+            .void-reason-row { display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--bg-1);transition:background .1s,border-color .1s;margin:0;font-size:13px; }
+            .void-reason-row:hover { background:var(--bg-2);border-color:var(--txt-3); }
+            .void-reason-row input[type=radio] { margin-top:3px; }
+            .void-reason-row.is-selected { background:#fee2e2;border-color:#dc2626; }
+            .void-reason-icon { font-size:18px;line-height:1;margin-top:1px;flex:0 0 auto; }
+            .void-reason-text { flex:1;line-height:1.4; }
+          </style>
+          <script>
+          (function(){
+            const modal = document.getElementById("${prefix}Modal");
+            const cancelBtn = document.getElementById("${prefix}ModalCancel");
+            const confirmBtn = document.getElementById("${prefix}ModalConfirm");
+            const noteInput = document.getElementById("${prefix}ModalNote");
+            const descEl = document.getElementById("${prefix}ModalDesc");
+            const group = document.getElementById("${prefix}ReasonGroup");
+            if (!modal || !confirmBtn || !group || !noteInput) return;
+            const LS_KEY = "songfu.void_order.last_reason";
+            function getLast() { try { return localStorage.getItem(LS_KEY) || "not_order"; } catch(_) { return "not_order"; } }
+            function setLast(v) { try { localStorage.setItem(LS_KEY, v); } catch(_) {} }
+            function getPicked() {
+              const r = group.querySelector('input[name="${prefix}_reason_pick"]:checked');
+              return r ? r.value : "";
+            }
+            function highlight() {
+              group.querySelectorAll(".void-reason-row").forEach(row => {
+                const r = row.querySelector('input[type=radio]');
+                row.classList.toggle("is-selected", r && r.checked);
+              });
+            }
+            function close() { modal.style.display = "none"; }
+            window["${prefix}ModalOpen"] = function(descHtml){
+              if (descHtml && descEl) descEl.innerHTML = descHtml;
+              const last = getLast();
+              const target = group.querySelector('input[value="' + last + '"]') || group.querySelector('input[type=radio]');
+              if (target) target.checked = true;
+              noteInput.value = "";
+              confirmBtn.disabled = false;
+              confirmBtn.textContent = "確定作廢";
+              highlight();
+              modal.style.display = "flex";
+              noteInput.focus();
+            };
+            if (cancelBtn) cancelBtn.addEventListener("click", close);
+            modal.addEventListener("click", function(e){ if (e.target === modal) close(); });
+            document.addEventListener("keydown", function(e){
+              if (modal.style.display === "none") return;
+              if (e.key === "Escape") close();
+              else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) confirmBtn.click();
+            });
+            group.addEventListener("change", highlight);
+            confirmBtn.addEventListener("click", function(){
+              const reason = getPicked();
+              if (!reason) { alert("請選擇作廢原因"); return; }
+              setLast(reason);
+              confirmBtn.disabled = true;
+              confirmBtn.textContent = "作廢中…";
+              const fn = window["${prefix}ModalSubmit"];
+              if (typeof fn === "function") fn(reason, noteInput.value.trim());
+            });
+          })();
+          </script>`;
 }

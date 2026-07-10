@@ -2,7 +2,7 @@
 /**
  * LINE Webhook → Cloud Tasks：將單一 LINE event 推入佇列，由 Worker HTTP 端點同步處理。
  * 需環境變數：GCP_PROJECT_ID（或 GOOGLE_CLOUD_PROJECT）、GCP_LOCATION、GCP_QUEUE_NAME、WORKER_URL
- * 選填：LINE_WORKER_SECRET（會以 X-Line-Worker-Secret 傳給 Worker）
+ * 必要：LINE_WORKER_SECRET（會以 X-Line-Worker-Secret 傳給 Worker；未設定時 Worker 端一律回 503 拒收）
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.enqueueLineEventTask = enqueueLineEventTask;
@@ -33,8 +33,13 @@ async function enqueueLineEventTask(event) {
     const body = Buffer.from(JSON.stringify({ event }), "utf8").toString("base64");
     const headers = { "Content-Type": "application/json" };
     const secret = String(process.env.LINE_WORKER_SECRET || "").trim();
-    if (secret)
+    if (secret) {
         headers["X-Line-Worker-Secret"] = secret;
+    }
+    else {
+        // [security] Worker 端未帶 secret 一律回 503 拒收；這裡明確警告，避免佇列任務靜默全數失敗
+        console.error("[cloud-tasks] LINE_WORKER_SECRET 未設定：任務仍會入佇列，但 Worker 將拒收（503）並重試到失敗。請設定 LINE_WORKER_SECRET 後重新部署。");
+    }
     const task = {
         httpRequest: {
             httpMethod: "POST",

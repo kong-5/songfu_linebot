@@ -97,6 +97,8 @@ const orderConfirmReplyTimers = new Map();
 const recentLineMessageIdQueue = [];
 const recentLineMessageIdSet = new Set();
 const LINE_MSG_ID_CAP = 8000;
+/** [fix 2026-07-10] 持久化去重「processing 佔位」租約時長：逾時視為前一實例當機／卡死，可被接手重跑 */
+const PROCESSED_LINE_MSG_LEASE_MS = 10 * 60 * 1000;
 function consumeLineWebhookMessageOnce(messageId) {
     const id = messageId != null ? String(messageId).trim() : "";
     if (!id)
@@ -111,6 +113,18 @@ function consumeLineWebhookMessageOnce(messageId) {
             recentLineMessageIdSet.delete(old);
     }
     return true;
+}
+/** [fix 2026-07-10] 訊息處理「失敗」時釋放記憶體去重，讓 LINE redelivery（同 message.id）可在本實例重跑。
+ * 與持久化去重的「租約式原子佔位」配套（見事件迴圈入口／finally）：失敗時 finally 同步刪除
+ * 自己的 processing 佔位列，失敗的訊息不留任何去重標記。 */
+function releaseLineWebhookMessageOnce(messageId) {
+    const id = messageId != null ? String(messageId).trim() : "";
+    if (!id)
+        return;
+    recentLineMessageIdSet.delete(id);
+    const idx = recentLineMessageIdQueue.indexOf(id);
+    if (idx >= 0)
+        recentLineMessageIdQueue.splice(idx, 1);
 }
 function getTaipeiOrderDate() {
     // 00:00~05:59 算當天；06:00 之後算隔天
@@ -141,7 +155,13 @@ function mustSplitOrdersBySubCustomer(parsed) {
     if (!parsed?.length)
         return false;
     const keys = new Set(parsed.map(subCustomerGroupKeyFromParsedItem));
-    return keys.size > 1;
+    // [fix 2026-07-10] 只要出現任一「非空」子客戶就分流。舊條件 keys.size > 1 會漏掉
+    // 「整則訊息都是同一家子客戶」的情況（共用群組單獨幫某分店叫貨，如養鍋），
+    // 品項全掉進主客戶單。subCustomer 只有客戶主檔設定 known_sub_customers 時才會有值
+    // （解析入口已把未設定客戶的 subCustomer 清空），不會影響未設定的客戶。
+    if (keys.size > 1)
+        return true;
+    return keys.size === 1 && !keys.has("");
 }
 function groupParsedItemsBySubCustomer(parsed) {
     const map = new Map();
@@ -371,6 +391,49 @@ async function insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, { orderDa
     }
     throw lastErr || new Error("insertOrderRowWithSplitMeta: 重試 3 次仍失敗");
 }
+/** [fix 2026-07-10] 拆單時把同客戶同日的「未拆單」主訂單（order_sub_split_key IS NULL）標成主客戶桶（''）。
+ * rebuild 的過濾語意是 NULL＝全部品項、''＝只留 subCustomer 空的品項；一旦當日出現子客戶拆單，
+ * 若主訂單仍為 NULL，結單整單重辨識會把子客戶品項也重建進主訂單 → 與子單重複出貨。 */
+async function markSameDayMainOrdersAsSplitBase(db, customerId, orderDate, nowSql) {
+    await db.prepare(
+        "UPDATE orders SET order_sub_split_key = '', updated_at = " + nowSql +
+        " WHERE customer_id = ? AND order_date = ? AND order_sub_split_key IS NULL" +
+        " AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')"
+    ).run(customerId, orderDate);
+}
+/** [fix 2026-07-10] 依子客戶分流時「找到或建立」目標訂單（比照後台 resolveSplitTargetOrder）。
+ * 舊行為是每次拆單都無條件新建訂單：同一群組上午、下午各傳一次同一子客戶的叫貨，
+ * 或多則訊息各自拆單，會冒出多張同子客戶的當日訂單。改為同客戶＋同日＋同 split key 重用。
+ * subKey ''＝主客戶桶（連同 NULL 舊主訂單一併視為同桶）。回傳 { orderId, created }。 */
+async function findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, { customerId, orderDate, groupId, subKey, rawMessage, lineMessageId }) {
+    let row;
+    if (subKey === "") {
+        row = await db.prepare(
+            "SELECT id FROM orders WHERE customer_id = ? AND order_date = ?" +
+            " AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key,'')) = '')" +
+            " AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no LIMIT 1"
+        ).get(customerId, orderDate);
+    }
+    else {
+        row = await db.prepare(
+            "SELECT id FROM orders WHERE customer_id = ? AND order_date = ?" +
+            " AND TRIM(COALESCE(order_sub_split_key,'')) = ?" +
+            " AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no LIMIT 1"
+        ).get(customerId, orderDate, subKey);
+    }
+    if (row?.id)
+        return { orderId: row.id, created: false };
+    const orderId = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+        orderDate,
+        customerId,
+        groupId,
+        rawMessage: rawMessage ?? "",
+        remark: subKey === "" ? null : `[子單拆分: ${subKey}]`,
+        orderSubSplitKey: subKey,
+        lineMessageId,
+    });
+    return { orderId, created: true };
+}
 async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fallbackUnit) {
     const rows = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(Array.isArray(parsedRows) ? parsedRows : []);
     const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
@@ -401,6 +464,30 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
             : null;
         await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, sub_customer, confidence_score)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, needReviewFlag, itemRemark, subC, confidence);
+        // [fix 2026-07-10] 刪項軌跡的時間邊界：客戶「刪第N項」後同日又叫同品項時，結單 rebuild
+        // 依 created_at 重放 delete 會把「重叫」的品項也刪掉（漏出貨）。故新品項成功寫入後，
+        // 查該單 order_item_edits 是否已有同 match_key 的「delete」軌跡：
+        //   含 delete → 追加一筆 action='add'（帶新品項名/量/單位，created_at=now）抵銷——重放時
+        //               delete 先刪、後到的 add 會把品項補回（消耗式匹配：更新對應那筆重建品項）。
+        // [fix 2026-07-10 #63回歸] 原「只有 set（無 delete）→ 追加新 set 軌跡」規則整段移除：
+        // 第二次叫同品項是「加購」語意（raw_message 會多一行、rebuild 會多一筆品項），
+        // 追加 set 會讓重放把管理員改過的第一筆數量蓋成新叫的數量（5+2 變 2+2），必然出錯；
+        // set 軌跡只該由「改第N項」等明確修改指令產生。
+        // 查詢／寫入失敗一律吞錯不阻斷收單（降級＝結單 rebuild 可能還原，不影響本次寫入）。
+        try {
+            const mk = (0, rebuild_order_from_sources_js_1.normalizeOrderItemMatchKey)(item.rawName);
+            if (mk) {
+                const priorEdits = await db.prepare("SELECT action FROM order_item_edits WHERE order_id = ? AND match_key = ?").all(orderId, mk);
+                if (priorEdits && priorEdits.length) {
+                    const priorActs = priorEdits.map((r) => String(r.action || "").trim().toLowerCase());
+                    if (priorActs.includes("delete")) {
+                        await recordOrderItemEdit(db, { orderId, action: "add", rawName: item.rawName, quantity: qty, unit, editedBy: "system:reorder_after_delete" });
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn("[LINE] 改單軌跡抵銷檢查失敗（結單 rebuild 可能還原此品項）orderId=%s item=%s: %s", orderId, item.rawName, e?.message || e);
+        }
     }
 }
 /** raw_message 上限（字元數）：超過時前段截斷，避免整單重辨識送 Gemini 時 token 暴增 */
@@ -424,26 +511,91 @@ function isRawMessageNoise(line) {
         return true;
     return false;
 }
-async function appendRawLineToOrders(db, orderIds, lineText, nowSql) {
+async function appendRawLineToOrders(db, orderIds, lineText, nowSql, opts) {
     const line = String(lineText ?? "").trim();
     if (!line || !orderIds?.length)
         return;
     if (isRawMessageNoise(line)) return;
+    // [fix 2026-07-10] skipIfPresent：僅「接手逾時租約的重跑」（isRetry）路徑啟用——前次執行可能已把
+    // 同一行附加進 raw_message，重跑再附加會使結單 rebuild 品項雙倍。
+    // 正常路徑不啟用：客戶連傳兩則相同文字仍應是兩行（行為不變）。
+    // [fix 2026-07-10 #63回歸] 附加內容可能是「多行」（圖片 OCR 文字整段附加）：比對改為
+    // 「整段＋行邊界」——把既有 raw 與待附加內容都用換行包起來做子字串比對，
+    // 單行時等價於舊的逐行完全比對（split('\n').includes），多行時要求整段連續出現才算已附加
+    // （逐行比對會把「部分行已存在」誤判為已附加而漏掉整段，故採整段比對）。
+    const skipIfPresent = Boolean(opts && opts.skipIfPresent);
     for (const oid of orderIds) {
-        const row = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
-        let newRaw = (row?.raw_message ? row.raw_message + "\n" : "") + line;
-        // B5：raw_message 累加上限；超過時前段保留 100 字標記 + 後段保留
-        if (newRaw.length > RAW_MESSAGE_MAX_CHARS) {
-            const tailKeep = Math.floor(RAW_MESSAGE_MAX_CHARS * 0.9);
-            newRaw = "[...前段已截斷以避免 token 暴增...]\n" + newRaw.slice(-tailKeep);
+        if (skipIfPresent) {
+            try {
+                const prevRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
+                const prevRaw = String(prevRow?.raw_message ?? "");
+                if (("\n" + prevRaw + "\n").includes("\n" + line + "\n")) {
+                    console.log("[LINE] raw_message 已含完全相同內容段（重跑冪等略過）orderId=%s", oid);
+                    continue;
+                }
+            } catch (_) { /* 查詢失敗照舊附加（寧可重複不可斷單） */ }
         }
-        await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, oid);
+        // [fix 2026-07-10] 原「SELECT raw → 串接/截斷 → UPDATE」讀改寫在併發下（多實例／Cloud Tasks
+        // 重疊投遞／同群組連續訊息）互相蓋寫：後寫者以較舊的 raw 為基底 → 先寫者附加的行遺失，
+        // 結單 rebuild 依 raw_message 重建即漏品項（斷單）。改為單句原子 UPDATE：
+        // 串接在 DB 端完成（字串串接 || 為 SQLite/PG 皆支援；換行以參數 '\n'+line 傳入避免方言差異）。
+        await db.prepare(
+            "UPDATE orders SET raw_message = CASE WHEN COALESCE(raw_message, '') = '' THEN ? ELSE raw_message || ? END, updated_at = " + nowSql + " WHERE id = ?"
+        ).run(line, "\n" + line, oid);
+        // B5：raw_message 累加上限。截斷改為「附加之後」的獨立步驟：先原子附加（絕不遺失），
+        // 超限才讀出、於 JS 端算截斷（保尾端，避免 substr 負索引的方言差異），寫回時以
+        // 「WHERE raw_message = 讀到的舊值」樂觀鎖防競態——若期間有併發附加則放棄本輪截斷
+        // （下次附加會再檢查），確保截斷絕不蓋掉併發新增的行。截斷失敗不影響已附加內容。
+        try {
+            const row = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
+            const cur = row?.raw_message != null ? String(row.raw_message) : "";
+            if (cur.length > RAW_MESSAGE_MAX_CHARS) {
+                const tailKeep = Math.floor(RAW_MESSAGE_MAX_CHARS * 0.9);
+                const truncated = "[...前段已截斷以避免 token 暴增...]\n" + cur.slice(-tailKeep);
+                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ? AND raw_message = ?").run(truncated, oid, cur);
+            }
+        } catch (e) {
+            console.warn("[LINE] raw_message 截斷檢查失敗（不影響已附加內容）orderId=%s: %s", oid, e?.message || e);
+        }
+    }
+}
+/** [fix 2026-07-10] LINE 改單/刪項成功時同步寫 order_item_edits 軌跡。
+ * 背景：結單整單重辨識（rebuild）會 DELETE 全部品項依 raw_message 重建，而改單指令被
+ * isRawMessageNoise 排除在 raw_message 外 → 無軌跡時人工修正會被 rebuild 默默還原
+ * （同日客戶再傳訊息重開 session 掛回同單，下次結單再覆寫一次）。
+ * rebuild 端（lib/rebuild-order-from-sources.js）於重建後同交易內依 created_at 升冪重放本表。
+ * match_key＝「當下該位置品項的 raw_name 快照」正規化（去空白＋小寫，與重放端共用同一實作）；
+ * 「改第N項」是位置指令，但位置會因 rebuild 漂移，品名才穩，故存品名快照而非項次。
+ * 寫入失敗僅告警不阻斷回覆：此時修改本身已生效，只是結單 rebuild 可能還原（降級而非斷單）。 */
+async function recordOrderItemEdit(db, { orderId, action, rawName, quantity, unit, editedBy }) {
+    try {
+        const editId = (0, id_js_1.newId)("oie");
+        const matchKey = (0, rebuild_order_from_sources_js_1.normalizeOrderItemMatchKey)(rawName);
+        await db.prepare(
+            "INSERT INTO order_item_edits (id, order_id, action, match_key, raw_name, quantity, unit, remark, edited_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)"
+        ).run(editId, orderId, action, matchKey, rawName != null ? String(rawName) : null,
+              quantity != null && Number.isFinite(Number(quantity)) ? Number(quantity) : null,
+              unit != null && String(unit).trim() !== "" ? String(unit).trim() : null,
+              editedBy != null && String(editedBy).trim() !== "" ? String(editedBy).trim() : null,
+              new Date().toISOString());
+    } catch (e) {
+        console.warn("[LINE] 改單軌跡寫入失敗（結單 rebuild 可能還原此人工修正）orderId=%s action=%s: %s", orderId, action, e?.message || e);
     }
 }
 async function duplicateAttachmentToOrders(db, lineMessageId, orderIds, nowSql) {
     if (!lineMessageId || !orderIds?.length)
         return;
     for (const oid of orderIds) {
+        // [fix 2026-07-10] 冪等：同 (order_id, line_message_id) 已存在就略過（接手逾時租約重跑、
+        // 跨程序重疊等重試路徑不重複掛同一張圖，否則結單 rebuild 逐附件解析會品項雙倍）。
+        // 查重失敗照插（寧可重複附件不可漏圖）。
+        try {
+            const dup = await db.prepare("SELECT id FROM order_attachments WHERE order_id = ? AND line_message_id = ? LIMIT 1").get(oid, lineMessageId);
+            if (dup) {
+                console.log("[LINE] 附件已存在（冪等略過）orderId=%s lineMessageId=%s", oid, lineMessageId);
+                continue;
+            }
+        } catch (_) { /* 查重失敗照插 */ }
         const attId = (0, id_js_1.newId)("att");
         await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, oid, lineMessageId);
     }
@@ -624,7 +776,7 @@ function createLineWebhook() {
                 for (const oid of survivingOrderIds) {
                     const ord = await db.prepare("SELECT order_no, remark FROM orders WHERE id = ?").get(oid);
                     const items = await db.prepare(`
-          SELECT oi.raw_name, oi.quantity, oi.unit, p.name AS product_name, p.erp_code
+          SELECT oi.raw_name, oi.quantity, oi.unit, oi.remark, p.name AS product_name, p.erp_code
           FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
           WHERE oi.order_id = ? ORDER BY oi.id
         `).all(oid);
@@ -633,7 +785,11 @@ function createLineWebhook() {
                     for (const it of items) {
                         const unit = normalizeOrderUnit(it.unit, "公斤");
                         const name = it.product_name || it.raw_name || "待確認";
-                        lines.push(`${idx}. ${name} ${formatOrderQty(it.quantity)}${unit || ""}`);
+                        // remark 以「⚠」開頭＝AI 標記的警示（如照片辨識幾何校驗的「⚠ 字跡跨列（A/B），請確認」），
+                        // 收單摘要要讓人看得到：品項行下方縮排帶出警示段（只取 ⚠ 那一段，後續換算備註不重複顯示）。
+                        const remarkStr = it.remark != null ? String(it.remark).trim() : "";
+                        const warnSuffix = remarkStr.startsWith("⚠") ? `\n　${remarkStr.split(/[；;\n]/)[0].trim()}` : "";
+                        lines.push(`${idx}. ${name} ${formatOrderQty(it.quantity)}${unit || ""}${warnSuffix}`);
                         idx += 1;
                     }
                     const hdr = ord?.remark ? `${ord.remark}\n` : "";
@@ -708,6 +864,21 @@ function createLineWebhook() {
     };
     async function processLineWebhookEvents(events) {
         for (const event of events) {
+            // [fix 2026-07-10] 本則訊息的去重狀態（供 finally 收尾）：
+            // curLineMessageId＝訊息 id；ownsLineMessage＝本次執行通過所有去重、實際「佔有」處理權；
+            // eventFailed＝外層 catch 捕捉到錯誤；lineMessageIsRetry＝接手「逾時 processing 租約」的重跑
+            // （前次執行可能已寫入部分資料，下游 raw_message／附件附加改走冪等判斷）。
+            // 宣告在 try 外，try 內的 continue／throw 都會走到 finally。
+            let curLineMessageId = null;
+            let ownsLineMessage = false;
+            let eventFailed = false;
+            let lineMessageIsRetry = false;
+            // [fix 2026-07-10 #63回歸] claimNowIso＝本次執行寫入佔位列的 claimed_at 值（INSERT 佔位或
+            // 接手逾時租約時設定；佔位流程因例外「放行」時維持 null）。finally 收尾與提前釋放都帶此值
+            // 當條件，只動「自己的」佔位列，絕不覆蓋／誤刪已被他實例接手的列。
+            // claimedByInsert＝本次佔位列是「自己 INSERT 成功」（changes=1）建立的（非接手他人逾時列）。
+            let claimNowIso = null;
+            let claimedByInsert = false;
             try {
                 if (event.type === "join" || event.type === "memberJoined") {
                     try {
@@ -790,7 +961,7 @@ function createLineWebhook() {
                     console.log("[LINE] 略過非訊息, type:", event.type);
                     continue;
                 }
-                const curLineMessageId = event.message?.id != null ? String(event.message.id).trim() : null;
+                curLineMessageId = event.message?.id != null ? String(event.message.id).trim() : null;
                 /** LINE Webhook 逾時重試會帶相同 message.id；與程序內記憶體去重並用，跨程序／重啟後仍可靠。拆單時多筆訂單可共用同一 line_message_id，故不做 UNIQUE 約束。 */
                 if (curLineMessageId) {
                     const dupByOrder = await db.prepare("SELECT id FROM orders WHERE line_message_id = ? LIMIT 1").get(curLineMessageId);
@@ -799,32 +970,75 @@ function createLineWebhook() {
                         continue;
                     }
                 }
+                // [fix 2026-07-10] 持久化去重＝「租約式原子佔位」（processed_line_messages 新增 status/claimed_at）：
+                // 前一版「完成才 INSERT」的 SELECT-first 語意在跨程序秒級重疊（Cloud Tasks worker 與
+                // enqueue 失敗 fallback 幾乎同時處理同一則）時，兩邊都查不到完成標記 → 品項雙寫。
+                // 現改為入口原子佔位，同時保留「失敗可重跑」：
+                //   1) INSERT status='processing' ON CONFLICT DO NOTHING：changes=1＝佔位成功，獨佔處理權；
+                //   2) changes=0＝已有列：status='done' 或 NULL（舊語意完成列）→ 已成功處理過，略過；
+                //      status='processing' 且租約（claimed_at）未逾時 → 他實例處理中，略過；
+                //      租約逾時（前一實例當機／卡死）→ 條件式 UPDATE claimed_at（樂觀鎖，WHERE 帶舊值，
+                //      同時搶只有一個 changes=1）搶到才接手重跑（lineMessageIsRetry=true → 下游冪等路徑）；
+                //   3) 處理成功 → finally 改標 status='done'；失敗 → finally 只刪自己的 processing 佔位列，
+                //      LINE redelivery 可整則重跑，不會永久斷單。
+                // 佔位查詢／INSERT 失敗一律放行（寧可重複不可斷單；仍有記憶體 Set + dupByOrder 兩層防護）。
+                if (curLineMessageId) {
+                    try {
+                        const nowSqlClaim = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+                        const nowIso = new Date().toISOString();
+                        const ins = await db.prepare(
+                            "INSERT INTO processed_line_messages (message_id, processed_at, status, claimed_at) VALUES (?, " + nowSqlClaim + ", 'processing', ?) ON CONFLICT (message_id) DO NOTHING"
+                        ).run(curLineMessageId, nowIso);
+                        if ((ins?.changes ?? 0) === 1) {
+                            // 自己 INSERT 佔位成功：記下 claimed_at 供 finally／提前釋放辨識「自己的列」
+                            claimNowIso = nowIso;
+                            claimedByInsert = true;
+                        }
+                        if ((ins?.changes ?? 0) === 0) {
+                            const claimRow = await db.prepare("SELECT status, claimed_at FROM processed_line_messages WHERE message_id = ?").get(curLineMessageId);
+                            // 舊列 status=NULL＝舊語意的完成標記；列消失（極端競態：他實例失敗剛刪除）也保守略過，等 redelivery
+                            const claimSt = claimRow && claimRow.status != null ? String(claimRow.status).trim().toLowerCase() : "done";
+                            if (claimSt !== "processing") {
+                                console.log("[LINE] 持久化去重命中（processed_line_messages，已成功處理過），略過重複訊息 messageId=%s", curLineMessageId);
+                                continue;
+                            }
+                            const claimedMs = claimRow.claimed_at != null ? Date.parse(String(claimRow.claimed_at)) : NaN;
+                            const leaseExpired = !Number.isFinite(claimedMs) || (Date.now() - claimedMs) > PROCESSED_LINE_MSG_LEASE_MS;
+                            if (!leaseExpired) {
+                                console.log("[LINE] 他實例處理中（processing 租約未逾時），略過 messageId=%s claimed_at=%s", curLineMessageId, claimRow.claimed_at);
+                                continue;
+                            }
+                            const takeover = claimRow.claimed_at != null
+                                ? await db.prepare("UPDATE processed_line_messages SET claimed_at = ? WHERE message_id = ? AND status = 'processing' AND claimed_at = ?").run(nowIso, curLineMessageId, claimRow.claimed_at)
+                                : await db.prepare("UPDATE processed_line_messages SET claimed_at = ? WHERE message_id = ? AND status = 'processing' AND claimed_at IS NULL").run(nowIso, curLineMessageId);
+                            if ((takeover?.changes ?? 0) !== 1) {
+                                console.log("[LINE] 逾時租約已被他實例接手（或已完成），略過 messageId=%s", curLineMessageId);
+                                continue;
+                            }
+                            claimNowIso = nowIso; // 接手成功：佔位列 claimed_at 已改為本次的 nowIso
+                            lineMessageIsRetry = true;
+                            console.warn("[LINE] 接手逾時 processing 租約重跑 messageId=%s（原 claimed_at=%s，前次可能已寫入部分資料，下游改走冪等路徑）", curLineMessageId, claimRow.claimed_at);
+                        }
+                    } catch (e) {
+                        // 佔位失敗不可阻斷正常收單（放行；仍有記憶體 Set + dupByOrder 兩層防護）
+                        console.warn("[LINE] 持久化去重佔位失敗（放行）messageId=%s: %s", curLineMessageId, e?.message || e);
+                    }
+                }
                 if (!consumeLineWebhookMessageOnce(event.message?.id)) {
+                    // [fix 2026-07-10 #63回歸] 罕見時序：DB 佔位 INSERT 成功（前次失敗列已被刪、記憶體 Set 仍記得）
+                    // 但記憶體去重擋下 → 剛插入的 processing 列會殘留到租約逾時（10 分鐘）才可被接手。
+                    // 這裡本次不會處理訊息，先刪掉「自己剛插入的」佔位列（帶 claimed_at 條件只刪自己的），
+                    // 讓他實例／redelivery 不被無謂卡住。接手（takeover）情境不刪：同程序 Set 命中＝先前執行仍在途。
+                    if (claimedByInsert && curLineMessageId && claimNowIso != null) {
+                        try {
+                            await db.prepare("DELETE FROM processed_line_messages WHERE message_id = ? AND status = 'processing' AND claimed_at = ?").run(curLineMessageId, claimNowIso);
+                        } catch (_) { /* best-effort：刪不掉頂多等租約逾時被接手 */ }
+                    }
                     console.log("[LINE] 略過重複訊息（同 message.id），避免重複建品項");
                     continue;
                 }
-                // [fix 2026-07-08] 訊息層級持久化去重：line_message_id 只在「新建訂單」時落地，
-                // 累加品項的訊息僅靠上面的記憶體 Set 去重，跨實例／重啟／Cloud Tasks at-least-once 重投遞時
-                // 記憶體 Set 遺失且 L809 的 dupByOrder 查不到 → 同訊息品項重複寫入。
-                // 這裡在訊息入口先 INSERT 一筆到 processed_line_messages（message_id 為主鍵），
-                // 衝突（DO NOTHING → changes=0）代表已處理過，直接略過，達成跨程序冪等。
-                // 放在「訊息層級」最前面（非訂單層級），故不影響拆單時多筆訂單共用同一 message_id 的既有行為。
-                if (curLineMessageId) {
-                    try {
-                        // nowSql 尚未在此定義（在 accepting 檢查後才有），此處自算時間 SQL。
-                        const nowSqlDedup = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-                        const insDedup = await db.prepare(
-                            "INSERT INTO processed_line_messages (message_id, processed_at) VALUES (?, " + nowSqlDedup + ") ON CONFLICT (message_id) DO NOTHING"
-                        ).run(curLineMessageId);
-                        if (insDedup && Number(insDedup.changes || 0) === 0) {
-                            console.log("[LINE] 持久化去重命中（processed_line_messages），略過重複訊息 messageId=%s", curLineMessageId);
-                            continue;
-                        }
-                    } catch (e) {
-                        // 去重表寫入失敗不可阻斷正常收單（放行；仍有記憶體 Set + dupByOrder 兩層防護）
-                        console.warn("[LINE] 持久化去重寫入失敗（放行）messageId=%s: %s", curLineMessageId, e?.message || e);
-                    }
-                }
+                // 通過全部去重＝本次執行佔有此訊息處理權；finally 依成敗標記完成／釋放
+                ownsLineMessage = Boolean(curLineMessageId);
                 const msgType = event.message.type;
                 if (event.source)
                     console.log("[LINE] event.source", JSON.stringify(event.source));
@@ -1176,46 +1390,47 @@ function createLineWebhook() {
                         scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         const ocrLine = ocrText || "[圖片]";
                         const orderDateVal = (await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId))?.order_date || getTaipeiOrderDate();
-                        const baseRawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(session.orderId);
-                        const newRawAppend = (baseRawRow?.raw_message ? baseRawRow.raw_message + "\n" : "") + ocrLine;
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
-                            const newOrderIds = [];
+                            // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶（rebuild 過濾語意見 helper 註解），
+                            // 並改為「找到或建立」同日同子客戶訂單：同子客戶多則訊息不再各開一張新單。
+                            await markSameDayMainOrdersAsSplitBase(db, session.customerId, orderDateVal, nowSql);
+                            const touchedOrderIds = [];
                             for (const [subKey, items] of map) {
-                                const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
-                                const splitKey = subKey === "" ? "" : subKey;
-                                const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
-                                    orderDate: orderDateVal,
+                                // [fix 2026-07-08] 新建子單 raw_message 只放本次 OCR，不繼承主訂單既有 raw，
+                                // 否則結單 rebuild 時主訂單既有品項會落入拆單主客戶桶造成跨單重複。
+                                const { orderId: oid, created } = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
                                     customerId: session.customerId,
+                                    orderDate: orderDateVal,
                                     groupId,
-                                    rawMessage: "",
-                                    remark,
-                                    orderSubSplitKey: splitKey,
+                                    subKey,
+                                    rawMessage: ocrLine,
                                     lineMessageId: curLineMessageId,
                                 });
-                                newOrderIds.push(oid);
-                                // [fix 2026-07-08] 收單中圖片拆單的新訂單 raw_message 只放本次 OCR，
-                                // 不繼承 session 主訂單的既有 raw（newRawAppend），否則結單 rebuild 時
-                                // 主訂單既有品項會落入拆單主客戶桶造成跨單重複（同未收單拆單修法）。
-                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(ocrLine, oid);
+                                if (!created)
+                                    await appendRawLineToOrders(db, [oid], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
+                                touchedOrderIds.push(oid);
                                 await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
                                 await insertParsedItemsForOrder(db, oid, session.customerId, items, fallbackUnitImg);
                             }
-                            mergeSessionOrderIds(session, newOrderIds);
-                            if (lineClient && newOrderIds.length > 1) {
-                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                            mergeSessionOrderIds(session, touchedOrderIds);
+                            if (lineClient && map.size > 1) {
+                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
                             }
                         }
                         else if (parsedFromImg.length > 0) {
-                            const attId = (0, id_js_1.newId)("att");
-                            await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, session.orderId, messageId);
+                            // [fix 2026-07-10] 改走 duplicateAttachmentToOrders（含 (order_id, line_message_id) 冪等查重），重試路徑不重複掛圖
+                            await duplicateAttachmentToOrders(db, messageId, [session.orderId], nowSql);
                             await insertParsedItemsForOrder(db, session.orderId, session.customerId, parsedFromImg, fallbackUnitImg);
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, session.orderId);
+                            // [fix 2026-07-10 #63回歸] OCR 文字附加改走 appendRawLineToOrders 原子 UPDATE
+                            //（原「SELECT raw → 串接 → UPDATE」讀改寫在併發下互相蓋寫），
+                            // 接手逾時租約重跑時啟用 skipIfPresent（整段比對）避免同段 OCR 重複附加。
+                            await appendRawLineToOrders(db, [session.orderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         }
                         else {
-                            const attId = (0, id_js_1.newId)("att");
-                            await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, session.orderId, messageId);
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, session.orderId);
+                            // [fix 2026-07-10] 同上：冪等掛附件；OCR 附加同上改原子 UPDATE＋重跑冪等
+                            await duplicateAttachmentToOrders(db, messageId, [session.orderId], nowSql);
+                            await appendRawLineToOrders(db, [session.orderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         }
                     }
                     else {
@@ -1225,36 +1440,40 @@ function createLineWebhook() {
                         const ocrLine = ocrText || "[圖片]";
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
-                            const newOrderIds = [];
+                            // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶，並改為「找到或建立」
+                            // 同日同子客戶訂單：同子客戶多則訊息不再各開一張新單。
+                            await markSameDayMainOrdersAsSplitBase(db, customer.id, orderDate, nowSql);
+                            const touchedOrderIds = [];
+                            let mainBucketOrderId = null;
                             for (const [subKey, items] of map) {
-                                const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
-                                const splitKey = subKey === "" ? "" : subKey;
-                                const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
-                                    orderDate,
+                                // [fix 2026-07-08] 新建子單 raw_message 只放本次 OCR 內容，不要繼承既有同日訂單的 raw。
+                                // 原本併入 orderRow.raw_message → 結單 rebuild 時舊訂單品項（subCustomer 空）會落入新拆單的主客戶桶，造成跨單重複出貨。
+                                const { orderId: oid, created } = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
                                     customerId: customer.id,
+                                    orderDate,
                                     groupId,
-                                    rawMessage: "",
-                                    remark,
-                                    orderSubSplitKey: splitKey,
+                                    subKey,
+                                    rawMessage: ocrLine,
                                     lineMessageId: curLineMessageId,
                                 });
-                                newOrderIds.push(oid);
-                                // [fix 2026-07-08] 拆單的新訂單 raw_message 只放本次 OCR 內容，不要繼承既有同日訂單的 raw。
-                                // 原本併入 orderRow.raw_message → 結單 rebuild 時舊訂單品項（subCustomer 空）會落入新拆單的主客戶桶，造成跨單重複出貨。
-                                const rawFull = ocrLine;
-                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(rawFull, oid);
+                                if (!created)
+                                    await appendRawLineToOrders(db, [oid], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
+                                if (subKey === "")
+                                    mainBucketOrderId = oid;
+                                touchedOrderIds.push(oid);
                                 await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
                                 await insertParsedItemsForOrder(db, oid, customer.id, items, fallbackUnitImg);
                             }
                             if (groupId) {
-                                const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId: customer.id, lastActivity: Date.now() };
+                                // session.orderId 優先掛主客戶桶：後續無子客戶標記的訊息會累加到這張
+                                const session = { orderId: mainBucketOrderId || touchedOrderIds[0], allOrderIds: touchedOrderIds.slice(), customerId: customer.id, lastActivity: Date.now() };
                                 collectingByGroup.set(groupId, session);
                                 persistCollectSession(db, groupId, session).catch(()=>{});
                                 scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                             }
-                            if (lineClient && newOrderIds.length > 1) {
-                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                            if (lineClient && map.size > 1) {
+                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
                             }
                         }
                         else {
@@ -1281,11 +1500,13 @@ function createLineWebhook() {
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                             }
                             await duplicateAttachmentToOrders(db, messageId, [orderId], nowSql);
-                            const newRawImg = (orderRow?.raw_message ? orderRow.raw_message + "\n" : "") + ocrLine;
                             if (parsedFromImg.length > 0) {
                                 await insertParsedItemsForOrder(db, orderId, customer.id, parsedFromImg, fallbackUnitImg);
                             }
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawImg, orderId);
+                            // [fix 2026-07-10 #63回歸] 原以稍早 SELECT 的 orderRow.raw_message 串接後整欄 UPDATE
+                            //（讀改寫，併發下蓋掉期間他人附加的行），改走 appendRawLineToOrders 原子 UPDATE；
+                            // 接手逾時租約重跑時啟用 skipIfPresent（整段比對）避免同段 OCR 重複附加。
+                            await appendRawLineToOrders(db, [orderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         }
                     }
                     continue;
@@ -1349,9 +1570,9 @@ function createLineWebhook() {
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         }
                         if (lineForRaw) {
-                            const orderRowRaw = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
-                            const newRaw = (orderRowRaw?.raw_message ? orderRowRaw.raw_message + "\n" : "") + lineForRaw;
-                            await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, orderId);
+                            // [fix 2026-07-10 #63回歸] 讀改寫（SELECT raw → 串接 → UPDATE）改走 appendRawLineToOrders
+                            // 原子 UPDATE；接手逾時租約重跑時啟用 skipIfPresent 避免重複附加同一行。
+                            await appendRawLineToOrders(db, [orderId], lineForRaw, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         }
                         continue;
                     }
@@ -1366,31 +1587,37 @@ function createLineWebhook() {
                     const parsed = await (0, parse_order_message_js_1.parseOrderMessage)(rest, fallbackUnit, parseOpts);
                     if (mustSplitOrdersBySubCustomer(parsed)) {
                         const map = groupParsedItemsBySubCustomer(parsed);
-                        const newOrderIds = [];
+                        // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶，並改為「找到或建立」
+                        // 同日同子客戶訂單：同子客戶多則訊息不再各開一張新單。
+                        await markSameDayMainOrdersAsSplitBase(db, customerId, orderDate, nowSql);
+                        const touchedOrderIds = [];
+                        let mainBucketOrderId = null;
                         for (const [subKey, items] of map) {
-                            const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
-                            const splitKey = subKey === "" ? "" : subKey;
-                            const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
-                                orderDate,
+                            const { orderId: oid, created } = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
                                 customerId,
+                                orderDate,
                                 groupId,
+                                subKey,
                                 rawMessage: lineForRaw,
-                                remark,
-                                orderSubSplitKey: splitKey,
                                 lineMessageId: curLineMessageId,
                             });
-                            newOrderIds.push(oid);
+                            if (!created && lineForRaw)
+                                await appendRawLineToOrders(db, [oid], lineForRaw, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
+                            if (subKey === "")
+                                mainBucketOrderId = oid;
+                            touchedOrderIds.push(oid);
                             await insertParsedItemsForOrder(db, oid, customerId, items, fallbackUnit);
                         }
                         if (groupId) {
-                            const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId, lastActivity: Date.now() };
+                            // session.orderId 優先掛主客戶桶：後續無子客戶標記的訊息會累加到這張
+                            const session = { orderId: mainBucketOrderId || touchedOrderIds[0], allOrderIds: touchedOrderIds.slice(), customerId, lastActivity: Date.now() };
                             collectingByGroup.set(groupId, session);
                             persistCollectSession(db, groupId, session).catch(()=>{}); // [fix 2026-07-08] 補持久化，Cloud Run 重啟後可恢復 session
                             scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         }
-                        if (lineClient && newOrderIds.length > 1) {
-                            await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                        if (lineClient && map.size > 1) {
+                            await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
                         }
                         continue;
                     }
@@ -1419,10 +1646,10 @@ function createLineWebhook() {
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                     }
                     await insertParsedItemsForOrder(db, orderId, customerId, parsed, fallbackUnit);
-                    const orderRowRaw = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
                     if (lineForRaw) {
-                        const newRaw = (orderRowRaw?.raw_message ? orderRowRaw.raw_message + "\n" : "") + lineForRaw;
-                        await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRaw, orderId);
+                        // [fix 2026-07-10 #63回歸] 讀改寫（SELECT raw → 串接 → UPDATE）改走 appendRawLineToOrders
+                        // 原子 UPDATE；接手逾時租約重跑時啟用 skipIfPresent 避免重複附加同一行。
+                        await appendRawLineToOrders(db, [orderId], lineForRaw, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                     }
                     continue;
                 }
@@ -1460,6 +1687,15 @@ function createLineWebhook() {
                         if (num >= 1 && num <= itemsOrdered.length) {
                             const t = itemsOrdered[num - 1];
                             await db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(t.id, orderRowForEdit.id);
+                            // [fix 2026-07-10] 記錄刪項軌跡供結單 rebuild 重放；match_key 存被刪品項的 raw_name 快照（品名穩、位置會漂移）
+                            await recordOrderItemEdit(db, {
+                                orderId: orderRowForEdit.id,
+                                action: "delete",
+                                rawName: t.raw_name || t.product_name || "",
+                                quantity: null,
+                                unit: null,
+                                editedBy: senderUserId,
+                            });
                             const nm = t.product_name || t.raw_name || "品項";
                             await reply(lineClient, event.replyToken, `已刪除第${num}項：${nm}`, db);
                         }
@@ -1477,6 +1713,15 @@ function createLineWebhook() {
                             const t = itemsOrdered[num - 1];
                             const unitNew = normalizeOrderUnit(unitTail || null, fallbackUnitEdit);
                             await db.prepare("UPDATE order_items SET quantity = ?, unit = ? WHERE id = ? AND order_id = ?").run(qtyNew, unitNew, t.id, orderRowForEdit.id);
+                            // [fix 2026-07-10] 記錄改量軌跡供結單 rebuild 重放；match_key 存該位置品項的 raw_name 快照（品名穩、位置會漂移）
+                            await recordOrderItemEdit(db, {
+                                orderId: orderRowForEdit.id,
+                                action: "set",
+                                rawName: t.raw_name || t.product_name || "",
+                                quantity: qtyNew,
+                                unit: unitNew,
+                                editedBy: senderUserId,
+                            });
                             const nm = t.product_name || t.raw_name || "品項";
                             await reply(lineClient, event.replyToken, `已更新第${num}項 ${nm}：${formatOrderQty(qtyNew)}${unitNew}`, db);
                         }
@@ -1730,7 +1975,8 @@ function createLineWebhook() {
                 const session = collectingByGroup.get(groupId);
                 const { orderId, customerId: cid } = session;
                 const idsForRaw = (session.allOrderIds && session.allOrderIds.length) ? [...new Set(session.allOrderIds)] : [orderId];
-                await appendRawLineToOrders(db, idsForRaw, text, nowSql);
+                // [fix 2026-07-10] 接手逾時租約重跑（lineMessageIsRetry）時啟用冪等：前次可能已附加同一行
+                await appendRawLineToOrders(db, idsForRaw, text, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                 // 對話紀錄：客戶訊息（含 LINE 顯示名稱，供審核頁顯示發話者）
                 try {
                     const spkName = senderUserId ? await (0, line_conversation_js_1.upsertGroupSpeaker)(db, lineClient, groupId, senderUserId, null) : null;
@@ -1835,43 +2081,114 @@ function createLineWebhook() {
                     console.log("[LINE] 解析完成時 session 已結單（rebuild 已涵蓋此批），略過重複 insert orderId=%s", orderId);
                     continue;
                 }
-                const rawSnap = (await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId))?.raw_message ?? "";
+                const sessionOrderMeta = await db.prepare("SELECT order_date, order_sub_split_key FROM orders WHERE id = ?").get(orderId);
+                const orderDateVal = sessionOrderMeta?.order_date || getTaipeiOrderDate();
                 if (parsed.length > 0 && mustSplitOrdersBySubCustomer(parsed)) {
                     const map = groupParsedItemsBySubCustomer(parsed);
-                    const orderDateVal = (await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(orderId))?.order_date || getTaipeiOrderDate();
-                    const newOrderIds = [];
+                    // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶，並改為「找到或建立」
+                    // 同日同子客戶訂單；主客戶桶會重用 session 既有主訂單，不再另開新單。
+                    // 新建子單 raw_message 只放本則文字（不繼承主訂單累積的 rawSnap），
+                    // 否則結單 rebuild 時舊訊息品項會落入子單重複重建（同圖片拆單修法）。
+                    await markSameDayMainOrdersAsSplitBase(db, cid, orderDateVal, nowSql);
+                    const touchedOrderIds = [];
                     for (const [subKey, items] of map) {
-                        const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
-                        const splitKey = subKey === "" ? "" : subKey;
-                        const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
-                            orderDate: orderDateVal,
+                        const { orderId: oid, created } = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
                             customerId: cid,
+                            orderDate: orderDateVal,
                             groupId,
-                            rawMessage: rawSnap,
-                            remark,
-                            orderSubSplitKey: splitKey,
+                            subKey,
+                            rawMessage: text,
                             lineMessageId: curLineMessageId,
                         });
-                        newOrderIds.push(oid);
+                        // 本則文字稍早已 append 進 session 既有訂單（idsForRaw）；重用「session 外」的既有單才需補寫
+                        if (!created && !idsForRaw.includes(oid))
+                            await appendRawLineToOrders(db, [oid], text, nowSql);
+                        touchedOrderIds.push(oid);
                         await insertParsedItemsForOrder(db, oid, cid, items, fallbackUnit);
                     }
-                    mergeSessionOrderIds(session, newOrderIds);
-                    if (lineClient && newOrderIds.length > 1) {
-                        await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                    mergeSessionOrderIds(session, touchedOrderIds);
+                    if (lineClient && map.size > 1) {
+                        await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
                     }
                 }
                 else if (parsed.length > 0) {
-                    await insertParsedItemsForOrder(db, orderId, cid, parsed, fallbackUnit);
+                    // [fix 2026-07-10] session.orderId 可能是子客戶拆單訂單（本 session 由拆單建立時）。
+                    // 無子客戶標記的品項必須進主客戶桶，否則結單 rebuild 依 split key 過濾會把這批品項整批丟掉。
+                    let targetOrderId = orderId;
+                    const curKey = sessionOrderMeta?.order_sub_split_key != null ? String(sessionOrderMeta.order_sub_split_key).trim() : "";
+                    if (curKey !== "") {
+                        const t = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
+                            customerId: cid,
+                            orderDate: orderDateVal,
+                            groupId,
+                            subKey: "",
+                            rawMessage: text,
+                            lineMessageId: curLineMessageId,
+                        });
+                        targetOrderId = t.orderId;
+                        if (!t.created && !idsForRaw.includes(targetOrderId))
+                            await appendRawLineToOrders(db, [targetOrderId], text, nowSql);
+                        mergeSessionOrderIds(session, [targetOrderId]);
+                    }
+                    await insertParsedItemsForOrder(db, targetOrderId, cid, parsed, fallbackUnit);
                 }
                 console.log("[LINE] 訂單已寫入", orderId);
             }
             catch (err) {
+                eventFailed = true;
                 console.error("[LINE] 處理訊息時錯誤:", err);
                 try {
                     await reply(lineClient, event.replyToken, "抱歉，處理時發生錯誤，請稍後再試。", db);
                 }
                 catch (replyErr) {
                     console.error("[LINE] 回覆失敗（可能 replyToken 逾時）:", replyErr?.message || replyErr);
+                }
+            }
+            finally {
+                // [fix 2026-07-10] 訊息處理收尾（try 內大量 continue 也會先經過這裡＝所有成功路徑都被標記）：
+                // 成功 → 把入口的 processing 佔位列改標 status='done'（此後同 message.id 的 redelivery 永久略過）；
+                //         若佔位列不存在（入口佔位曾因查詢例外「放行」）→ 補 INSERT 一筆 done 完成標記。
+                // 失敗 → 釋放記憶體去重＋只 DELETE「自己的 processing 佔位列」（帶 status='processing' 條件，
+                //         不會誤刪他實例已寫入的 done 完成標記），讓 LINE redelivery 可整則重跑，不再永久斷單。
+                if (ownsLineMessage && curLineMessageId) {
+                    const nowSqlDone = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+                    if (!eventFailed) {
+                        try {
+                            // [fix 2026-07-10 #63回歸] done UPDATE 加 claimed_at 條件：本次處理若超過租約時長，
+                            // 佔位列可能已被他實例接手（claimed_at 被改掉）——舊寫法無條件改 done 會把「接手者
+                            // 處理中」的狀態蓋掉。帶 claimed_at 只標「自己的」列；claimNowIso 為 null（入口佔位
+                            // 曾因例外放行、本次沒有自己的列）則跳過 UPDATE 直接走補 INSERT。
+                            let doneChanges = 0;
+                            if (claimNowIso != null) {
+                                const done = await db.prepare(
+                                    "UPDATE processed_line_messages SET status = 'done', processed_at = " + nowSqlDone + " WHERE message_id = ? AND claimed_at = ?"
+                                ).run(curLineMessageId, claimNowIso);
+                                doneChanges = done?.changes ?? 0;
+                            }
+                            if (doneChanges === 0) {
+                                // changes=0 的兩種情況：①列不存在（放行路徑）→ 補 INSERT 完成標記；
+                                // ②列存在但 claimed_at 不同＝已被他實例接手 → 不可覆蓋接手者狀態，
+                                // ON CONFLICT DO NOTHING 天然安全（列存在時整句無作用），毋須另判斷。
+                                await db.prepare(
+                                    "INSERT INTO processed_line_messages (message_id, processed_at, status, claimed_at) VALUES (?, " + nowSqlDone + ", 'done', NULL) ON CONFLICT (message_id) DO NOTHING"
+                                ).run(curLineMessageId);
+                            }
+                        } catch (e) {
+                            // 完成標記寫失敗：租約逾時後可能被接手重跑本則（有 dupByOrder/記憶體 Set 補位），不阻斷
+                            console.warn("[LINE] 完成標記寫入失敗（跨實例重送恐重跑本則）messageId=%s: %s", curLineMessageId, e?.message || e);
+                        }
+                    } else {
+                        releaseLineWebhookMessageOnce(curLineMessageId);
+                        // [fix 2026-07-10 #63回歸] 失敗釋放同樣帶 claimed_at 條件只刪「自己的」processing 列：
+                        // 被他實例接手後不可誤刪接手者的佔位；claimNowIso 為 null（放行路徑、沒有自己的列）
+                        // 則完全不刪——舊寫法會把「他實例正在處理」的 processing 列刪掉造成雙跑。
+                        if (claimNowIso != null) {
+                            try {
+                                await db.prepare("DELETE FROM processed_line_messages WHERE message_id = ? AND status = 'processing' AND claimed_at = ?").run(curLineMessageId, claimNowIso);
+                            } catch (_) { /* best-effort：刪不掉時租約 10 分鐘後逾時仍可被接手，不阻斷 */ }
+                        }
+                        console.warn("[LINE] 訊息處理失敗，已釋放去重佔位供 LINE redelivery 重試 messageId=%s", curLineMessageId);
+                    }
                 }
             }
         }
@@ -1909,8 +2226,10 @@ function createLineWebhook() {
             (async () => {
                 // [fix 2026-07-08] 原本任一 event enqueue 失敗就 fallback 重跑「全部」events，
                 // 已成功入列的會被 Cloud Tasks 執行一次 + fallback 再處理一次 → 重複處理。
-                // 改為逐則捕捉，只把「入列失敗」的 events 收集起來 fallback 直接處理；
-                // 加上新的持久化去重（processed_line_messages）作為最後一道保險，即使仍有重疊也不會重複寫入品項。
+                // 改為逐則捕捉，只把「入列失敗」的 events 收集起來 fallback 直接處理。
+                // [fix 2026-07-10] 若 fallback 與 worker 仍秒級重疊處理同一則，由 processed_line_messages
+                // 的「租約式原子佔位」（入口 INSERT processing ON CONFLICT DO NOTHING）保證只有一方佔位成功，
+                // 另一方在入口即略過，不會雙寫品項。
                 const failedEvents = [];
                 for (const ev of events) {
                     try {
@@ -1922,7 +2241,8 @@ function createLineWebhook() {
                     }
                 }
                 if (failedEvents.length) {
-                    // 回退直接處理：dedup 三層（記憶體 Set + DB line_message_id + processed_line_messages）防止重複下單
+                    // 回退直接處理：dedup 三層防止重複下單——記憶體 Set（同實例）＋ orders.line_message_id
+                    // （建單訊息）＋ processed_line_messages 租約式原子佔位（跨程序，與 worker 重疊也只有一方成功佔位）
                     processLineWebhookEvents(failedEvents).catch((e2) => console.error("[LINE] Cloud Tasks fallback 直接處理失敗:", e2?.message || e2));
                 }
             })();
@@ -1966,3 +2286,11 @@ async function reply(client, token, text, dbOptional, options) {
         console.error("[LINE] 回覆失敗（可能 replyToken 逾時或網路問題）:", e);
     }
 }
+// 測試掛鉤：拆單純函式與 DB helper（勿在正式流程 require 這個物件）
+exports._testables = {
+    mustSplitOrdersBySubCustomer,
+    groupParsedItemsBySubCustomer,
+    markSameDayMainOrdersAsSplitBase,
+    findOrCreateSplitTargetOrder,
+    getNextOrderNo,
+};

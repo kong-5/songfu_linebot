@@ -178,6 +178,10 @@ function initSqlite(dbPath) {
         "ALTER TABLE orders ADD COLUMN lingyue_last_error TEXT",
         // 多公司盤點（松富00＋松揚02…）：場次記公司代碼，NULL 視為 '00'
         "ALTER TABLE stocktake_session ADD COLUMN icpno TEXT",
+        // [fix 2026-07-10] 租約式去重：status='processing' 為原子佔位（入口 INSERT ON CONFLICT DO NOTHING），
+        // 成功改 'done'、失敗只刪自己的 processing 列；舊列 status NULL 視同 'done'（舊語意下已處理完成）
+        "ALTER TABLE processed_line_messages ADD COLUMN status TEXT",
+        "ALTER TABLE processed_line_messages ADD COLUMN claimed_at TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -266,6 +270,15 @@ function initSqlite(dbPath) {
     }
     catch (e) { try { sqlite.exec("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_stock_items 多公司主鍵遷移失敗:", e?.message || e); }
     try {
+        // 凌越分倉庫存（資料種類 000009「目前庫存-廠內倉」）快照：每「品項×倉別」一筆。
+        // 由 inventory-push 的頂層 warehouse_qty 全表覆蓋（DELETE+INSERT；接收端下一階段實作）；
+        // payload 沒帶 warehouse_qty＝該批推送無分倉資料，此表不動。用途：盤點按倉別進行時的分倉帳面基準
+        //（取代單一公司總量 SK_NOWQTY 造成的多倉共用品項盤差失真）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (erp_code, wh_code))");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
         // 凌越倉別設定：代號→中文名、是否納入盤點。代號來源＝erp_stock_items.wh_code。
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_warehouse (code TEXT PRIMARY KEY, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
     }
@@ -306,6 +319,23 @@ function initSqlite(dbPath) {
         sqlite.exec("INSERT INTO group_features (group_id, feat_order, feat_stocktake, feat_basket, updated_at) SELECT sg.group_id, CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.line_group_id IS NOT NULL AND c.line_group_id <> '' AND LOWER(REPLACE(c.line_group_id,' ','')) = LOWER(REPLACE(sg.group_id,' ',''))) THEN 1 ELSE 0 END, 1, 1, datetime('now') FROM stocktake_group sg WHERE NOT EXISTS (SELECT 1 FROM group_features gf WHERE gf.group_id = sg.group_id)");
     }
     catch (_) { /* tables may already exist */ }
+    try {
+        // [fix 2026-07-10] 盤點「一倉一日一筆」補真正的 UNIQUE 約束（原 idx_stk_session_date 只是普通索引，
+        // 併發送出可打破唯一性）。先冪等去重：同倉同日保留最後送出（submitted_at/created_at 最大者，再以 id 決勝），
+        // 落選場次的明細一併清除，再建唯一索引。
+        sqlite.exec("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session s WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = s.wh_code AND s2.count_date = s.count_date AND s2.id <> s.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(s.submitted_at, s.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(s.submitted_at, s.created_at, '') AND s2.id > s.id))))");
+        sqlite.exec("DELETE FROM stocktake_session WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = stocktake_session.wh_code AND s2.count_date = stocktake_session.count_date AND s2.id <> stocktake_session.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') AND s2.id > stocktake_session.id)))");
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_stk_session_wh_date_uniq ON stocktake_session(wh_code, count_date)");
+    }
+    catch (_) { /* 去重/唯一索引失敗不阻斷啟動 */ }
+    try {
+        // [fix 2026-07-10] 訂單品項「人工修改軌跡」：LINE 改單指令、後台/LIFF 編輯記錄於此；
+        // 結單整單重辨識（rebuild）後依時間序重放，避免 rebuild 覆寫人工修正。
+        // action: set（改數量/單位）| delete（刪品項）| add（補品項）；match_key = 正規化品名（非位置序，位置會因 rebuild 漂移）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS order_item_edits (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, action TEXT NOT NULL, match_key TEXT, raw_name TEXT, quantity REAL, unit TEXT, remark TEXT, edited_by TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_order_item_edits_order ON order_item_edits(order_id)");
+    }
+    catch (_) { /* table may already exist */ }
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TEXT)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT, raw_name TEXT, quantity REAL NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (order_id) REFERENCES logistics_orders(id), FOREIGN KEY (product_id) REFERENCES products(id))");
@@ -629,9 +659,27 @@ function initSqlite(dbPath) {
     }
     db = makeSqliteWrapper(sqlite);
 }
+let pgTlsWarned = false; // 「未提供 CA」警告只印一次
+/** 讀取 PG TLS 的 CA 憑證：優先 DATABASE_SSL_CA（PEM 內容），其次 DATABASE_SSL_CA_FILE（檔案路徑）；都沒設回 null */
+function readPgSslCa() {
+    const inline = String(process.env.DATABASE_SSL_CA || "").trim();
+    if (inline)
+        return inline;
+    const file = String(process.env.DATABASE_SSL_CA_FILE || "").trim();
+    if (file) {
+        try {
+            return (0, fs_1.readFileSync)(file, "utf-8");
+        }
+        catch (e) {
+            // CA 檔讀不到視同未設定（退回不驗證模式），只記 log，絕不能讓現有部署因此連不上
+            console.error("[db] DATABASE_SSL_CA_FILE 讀取失敗，退回不驗證憑證模式:", e?.message || e);
+        }
+    }
+    return null;
+}
 function pgPoolOptions() {
     const raw = (DATABASE_URL || "").trim();
-    // 連線字串內的 sslmode=require 可能讓 node-pg 仍驗證憑證鏈（自簽名鏈報錯）；改由 opts.ssl 強制關閉驗證
+    // 連線字串內的 sslmode=require 可能讓 node-pg 仍驗證憑證鏈（自簽名鏈報錯）；改由 opts.ssl 統一控制
     let conn = raw.replace(/[?&]sslmode=[^&]*/gi, "");
     conn = conn.replace(/\?$/, "");
     const opts = {
@@ -639,11 +687,26 @@ function pgPoolOptions() {
         connectionTimeoutMillis: 20000,
         max: Number(process.env.PG_POOL_MAX || 8),
     };
-    const needInsecureTls = /supabase\.(co|com)/i.test(raw) ||
+    // [fix 2026-07-10] 有設 DATABASE_SSL_CA(_FILE) 即視為要求 TLS——否則運維設了 CA 以為已啟用驗證，
+    // 連線字串卻沒 sslmode=require 時會被靜默忽略、走無 TLS 連線
+    const ca = readPgSslCa();
+    const needTls = /supabase\.(co|com)/i.test(raw) ||
         process.env.PGSSLMODE === "require" ||
-        /[?&]sslmode=require/i.test(raw);
-    if (needInsecureTls) {
-        opts.ssl = { rejectUnauthorized: false };
+        /[?&]sslmode=require/i.test(raw) ||
+        Boolean(ca);
+    if (needTls) {
+        if (ca) {
+            // 有提供 CA → 啟用完整憑證驗證
+            opts.ssl = { ca, rejectUnauthorized: true };
+        }
+        else {
+            // 向下相容：未提供 CA 維持現行為（不驗證憑證），但警告一次
+            if (!pgTlsWarned) {
+                pgTlsWarned = true;
+                console.warn("[db] PG TLS 未提供 CA，連線未驗證伺服器憑證（rejectUnauthorized:false）；建議設定 DATABASE_SSL_CA（PEM 內容）或 DATABASE_SSL_CA_FILE（路徑）啟用驗證");
+            }
+            opts.ssl = { rejectUnauthorized: false };
+        }
     }
     return opts;
 }
@@ -800,6 +863,9 @@ async function initPg() {
             // [fix 2026-07-08] 訊息層級持久化去重表（PG 版，同 SQLite）：跨實例／重啟／Cloud Tasks 重投遞冪等去重。
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS processed_line_messages (message_id TEXT PRIMARY KEY, processed_at TIMESTAMPTZ NOT NULL)");
+                // [fix 2026-07-10] 租約式去重欄位（與 initSqlite alters 對應）；舊列 status NULL 視同 'done'
+                await client.query("ALTER TABLE processed_line_messages ADD COLUMN IF NOT EXISTS status TEXT");
+                await client.query("ALTER TABLE processed_line_messages ADD COLUMN IF NOT EXISTS claimed_at TEXT");
             } catch (e) { console.warn("[migration] processed_line_messages(PG) 建立失敗:", e?.message || e); }
             // [fix 2026-07-08] G16: 單位規格/客戶別名 去重＋唯一索引（PG 版，同 SQLite；保留每組最小 id＝與讀取端 ORDER BY id 一致）
             try {
@@ -853,6 +919,15 @@ async function initPg() {
             }
             catch (e) { console.warn("[migration] erp_stock_items 多公司主鍵遷移失敗:", e?.message || e); }
             try {
+                // 凌越分倉庫存（資料種類 000009「目前庫存-廠內倉」）快照：每「品項×倉別」一筆。
+                // 由 inventory-push 的頂層 warehouse_qty 全表覆蓋（DELETE+INSERT；接收端下一階段實作）；
+                // payload 沒帶 warehouse_qty＝該批推送無分倉資料，此表不動。用途：盤點按倉別進行時的分倉帳面基準
+                //（取代單一公司總量 SK_NOWQTY 造成的多倉共用品項盤差失真）。
+                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (erp_code, wh_code))");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
                 // 凌越倉別設定：代號→中文名、是否納入盤點。
                 await client.query("CREATE TABLE IF NOT EXISTS erp_warehouse (code TEXT PRIMARY KEY, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
             }
@@ -896,6 +971,20 @@ async function initPg() {
                 await client.query("INSERT INTO group_features (group_id, feat_order, feat_stocktake, feat_basket, updated_at) SELECT sg.group_id, CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.line_group_id IS NOT NULL AND c.line_group_id <> '' AND LOWER(REPLACE(c.line_group_id,' ','')) = LOWER(REPLACE(sg.group_id,' ',''))) THEN 1 ELSE 0 END, 1, 1, to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SS') FROM stocktake_group sg WHERE NOT EXISTS (SELECT 1 FROM group_features gf WHERE gf.group_id = sg.group_id)");
             }
             catch (_) { /* tables may already exist */ }
+            try {
+                // [fix 2026-07-10] 盤點「一倉一日一筆」補真正的 UNIQUE 約束（與 initSqlite 對應）：
+                // 先冪等去重（同倉同日保留最後送出者、清落選明細），再建唯一索引。
+                await client.query("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session s WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = s.wh_code AND s2.count_date = s.count_date AND s2.id <> s.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(s.submitted_at, s.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(s.submitted_at, s.created_at, '') AND s2.id > s.id))))");
+                await client.query("DELETE FROM stocktake_session WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = stocktake_session.wh_code AND s2.count_date = stocktake_session.count_date AND s2.id <> stocktake_session.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') AND s2.id > stocktake_session.id)))");
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_stk_session_wh_date_uniq ON stocktake_session(wh_code, count_date)");
+            }
+            catch (_) { /* 去重/唯一索引失敗不阻斷啟動 */ }
+            try {
+                // [fix 2026-07-10] 訂單品項「人工修改軌跡」（與 initSqlite 對應）：rebuild 後重放，防覆寫人工修正。
+                await client.query("CREATE TABLE IF NOT EXISTS order_item_edits (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, action TEXT NOT NULL, match_key TEXT, raw_name TEXT, quantity DOUBLE PRECISION, unit TEXT, remark TEXT, edited_by TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_order_item_edits_order ON order_item_edits(order_id)");
+            }
+            catch (_) { /* table may already exist */ }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TIMESTAMPTZ)");
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES logistics_orders(id), product_id TEXT REFERENCES products(id), raw_name TEXT, quantity DOUBLE PRECISION NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0)");

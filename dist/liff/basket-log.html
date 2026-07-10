@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>空籃記帳 · 松富物流</title>
 <style>
   :root { --accent:#1d4ed8; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --line:#e3e2e0; --bg:#f7f6f3; --bg2:#fafafa; --txt1:#37352f; --txt2:#787774; --txt3:#9b9a97; color-scheme:light; }
@@ -189,10 +189,18 @@
   const state = {
     customerId: "", customerName: "", date: "",
     idToken: null,
+    ctxGroupId: "",      // LIFF context 的群組 ID（真實大小寫），load/save 一併帶給後端做成員驗證
+    hasExisting: false,  // 今日已有紀錄（重新送出會覆蓋，送出前需確認）
     numbered: {},
     square: { to: 0, pk: 0 },
     round:   { to: 0, pk: 0 },
   };
+  // [fix 2026-07-10] 載入完成後的基準快照：isDirty 改為「與載入當下比對」，
+  // 只開來看今日既有紀錄（沒改任何數字）按取消時不再誤跳「內容將遺失」確認
+  function snapshot(){
+    return JSON.stringify({ numbered: state.numbered, square: state.square, round: state.round });
+  }
+  let baseline = snapshot();
 
   function setStatus(cls, text){ statusEl.className = "status " + cls; statusEl.textContent = text; }
   function toast(text, ms){
@@ -209,6 +217,13 @@
   }
   function clamp(n){ n = Math.max(0, Math.min(9999, n|0)); return n; }
   function isDirty(){
+    // 與載入基準快照比對：只有真的改過數字才算 dirty（避免載入既有紀錄後恆為 dirty）。
+    // 只用於「取消」的遺失確認，不用於送出鈕啟用（見 hasAnyData）。
+    return snapshot() !== baseline;
+  }
+  // [fix 2026-07-10 #63回歸] 送出鈕啟用還原為「有任何數字就可送」：司機「數字沒變、
+  // 想重發群組記帳訊息」是正當路徑，不可因「與載入基準相同」而 disabled。
+  function hasAnyData(){
     if (state.square.to || state.square.pk) return true;
     if (state.round.to || state.round.pk) return true;
     for (const k of Object.keys(state.numbered)) {
@@ -218,7 +233,7 @@
     return false;
   }
   function refreshSaveBtn(){
-    saveBtn.disabled = !isDirty();
+    saveBtn.disabled = !hasAnyData();
   }
 
   // ─── 號碼籃網格 ────────────────────────────
@@ -354,10 +369,14 @@
 
   // ─── 取消 / 送出 ───────────────────────────
   cancelBtn.addEventListener("click", () => {
+    // 有未送出的內容時先確認，避免誤觸取消把填好的數字丟掉
+    if (isDirty() && !confirm("尚未送出的內容將會遺失，確定要取消？")) return;
     try { liff.closeWindow(); } catch (_) { window.close(); }
   });
 
   saveBtn.addEventListener("click", async () => {
+    // 今日已有紀錄 → 重新送出會整批覆蓋，先確認
+    if (state.hasExisting && !confirm("今日已有紀錄，重新送出會覆蓋，確定？")) return;
     saveBtn.disabled = true;
     setStatus("", "送出中…");
     try {
@@ -368,13 +387,21 @@
       }
       if (state.square.to || state.square.pk) lines.push({ kind: "square", no: 0, takenTo: state.square.to||0, pickedUp: state.square.pk||0 });
       if (state.round.to || state.round.pk) lines.push({ kind: "round", no: 0, takenTo: state.round.to||0, pickedUp: state.round.pk||0 });
+      // [fix 2026-07-10] idToken 改走 Authorization header，body 不再帶 token；
+      // ctxGroupId（非敏感）一併帶上，後端用真實群組 ID 做成員驗證
       const resp = await fetch("/liff/api/basket-log/save", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idToken: state.idToken, customerId: state.customerId, date: state.date, lines }),
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + state.idToken },
+        body: JSON.stringify({ customerId: state.customerId, date: state.date, lines, ctxGroupId: state.ctxGroupId || "" }),
       });
       const data = await resp.json();
       if (!data?.ok) throw new Error(data?.error || "儲存失敗");
+      // [fix 2026-07-10 #63回歸] 送出成功＝伺服器狀態已與畫面一致 → 更新基準快照並恢復送出鈕：
+      // closeWindow 失敗（外部瀏覽器等）留在頁面時，「取消」不再誤報「內容將遺失」，也可再次送出。
+      // 今日已有紀錄改為 true：留在頁面再送會先跳「覆蓋確認」。
+      baseline = snapshot();
+      state.hasExisting = true;
+      refreshSaveBtn();
       setStatus("ok", "✅ 已記帳，準備送回群組…");
       // 用 liff.sendMessages 以司機身份發到群組（免費）
       try {
@@ -425,17 +452,34 @@
         setSectionsLoading(false); // [fix 2026-07-08] 早退也要關遮罩，否則錯誤訊息與「載入中…」遮罩並存、輸入被鎖
         return;
       }
+      // 先取 LIFF context 的群組 ID（真實大小寫）：lookup 反查用，load/save 也一併帶給後端
+      // [fix 2026-07-10] 後端成員驗證改用這個「真實群組 ID」呼叫 LINE API，
+      // 避免 DB 存的 line_group_id 大小寫/空白有誤時 404 → 誤判 403
+      try {
+        const ctx = liff.getContext();
+        state.ctxGroupId = ctx?.groupId || ctx?.roomId || "";
+      } catch (_) { state.ctxGroupId = ""; }
       // 若 URL 沒帶 customer，嘗試從 LIFF context 拿 groupId 反查（給 Rich Menu 進入時用）
       if (!state.customerId) {
         try {
-          const ctx = liff.getContext();
-          const gid = ctx?.groupId || ctx?.roomId || "";
+          const gid = state.ctxGroupId;
           if (gid) {
-            const r0 = await fetch(`/liff/api/basket-log/lookup-by-group?groupId=${encodeURIComponent(gid)}&idToken=${encodeURIComponent(state.idToken)}`);
+            // [fix 2026-07-10] idToken 改走 Authorization header（與 order-review 模式一致），URL 不再帶 token
+            const r0 = await fetch(`/liff/api/basket-log/lookup-by-group?groupId=${encodeURIComponent(gid)}`, {
+              headers: { "Authorization": "Bearer " + state.idToken },
+            });
             const d0 = await r0.json();
-            if (d0?.ok && d0.customerId) state.customerId = d0.customerId;
+            if (d0?.ok && d0.customerId) {
+              state.customerId = d0.customerId;
+            } else if (d0 && d0.ok === false) {
+              // [fix 2026-07-10] 403/503 等有明確錯誤訊息時直接顯示本文，
+              // 不要落到下面誤導的「此群組未綁定客戶」
+              setStatus("err", d0.error || ("反查客戶失敗（HTTP " + r0.status + "）"));
+              setSectionsLoading(false);
+              return;
+            }
           }
-        } catch (_) { /* lookup 失敗就走原本流程 */ }
+        } catch (_) { /* lookup 網路失敗就走原本流程 */ }
       }
       if (!state.customerId) {
         setStatus("err", "缺少 customer 參數，且此群組未綁定客戶。請從群組「空籃」訊息點連結進入。");
@@ -444,24 +488,30 @@
       }
       // 載入今日已存在的紀錄
       setStatus("", "載入今日資料…");
-      const r = await fetch(`/liff/api/basket-log/load?customer=${encodeURIComponent(state.customerId)}&date=${encodeURIComponent(state.date)}&idToken=${encodeURIComponent(state.idToken)}`);
+      // [fix 2026-07-10] idToken 改走 Authorization header，URL 不再帶 token；
+      // ctxGroupId（非敏感）一併帶上，後端用真實群組 ID 做成員驗證
+      const r = await fetch(`/liff/api/basket-log/load?customer=${encodeURIComponent(state.customerId)}&date=${encodeURIComponent(state.date)}&ctxGroupId=${encodeURIComponent(state.ctxGroupId || "")}`, {
+        headers: { "Authorization": "Bearer " + state.idToken },
+      });
       const data = await r.json();
       if (!data?.ok) throw new Error(data?.error || "載入失敗");
       state.customerName = data.customerName || state.customerId;
       hdrSub.textContent = `${state.customerName}　${state.date}`;
       // 填入既有資料
-      let hasExisting = false;
+      state.hasExisting = false;
       for (const ln of (data.lines || [])) {
-        hasExisting = true;
+        state.hasExisting = true;
         if (ln.basket_kind === "numbered") state.numbered[ln.basket_no] = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
         else if (ln.basket_kind === "square") state.square = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
         else if (ln.basket_kind === "round") state.round = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
       }
+      // [fix 2026-07-10] 載入完成 → 記基準快照；之後 isDirty 只看「有沒有改過載入內容」
+      baseline = snapshot();
       renderNumberedGrid();
       renderAllKindFields();
       refreshSaveBtn();
       setSectionsLoading(false);
-      if (hasExisting) {
+      if (state.hasExisting) {
         setStatus("err", "⚠️ 今日已有紀錄（顯示在上方）。重新送出會覆蓋當天數字！");
       } else {
         setStatus("", "請填入今日空籃進出數，按「送出記帳」儲存。");
