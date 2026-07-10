@@ -50,12 +50,23 @@
   - **辨識訂單 off** ＝內部群：機器人仍收訊息、仍回應 `#盤點`／空籃／取得群組ID 等指令，只是**不把一般文字送 AI 當訂單**（也不回「無法收單」）。此開關對**已綁客戶的群組同樣生效**（舊的「綁客戶就強制收單」安全防呆已移除）。
   - **盤點 off** ＝群內打 `#盤點` 靜默略過。
   - **空籃 off** ＝「空籃／空藍」不攔截（視為一般文字）。
-  - 設定入口：**客戶管理 → 編輯客戶**（該客戶綁定群組的三開關）＋**庫存管理 → 群組功能**（所有群組總表，含非客戶內部群），兩處同步寫 `group_features`。
+  - 設定入口：**客戶管理 → 編輯客戶**（該客戶綁定群組的三開關）＋**客戶管理 → 群組功能**（`/admin/customers/groups`，所有群組總表，含非客戶內部群；原「庫存管理 → 群組功能」已整併過來，舊網址轉跳），兩處同步寫 `group_features`。
   - 遷移：舊 `stocktake_group` 於 DB init 一次性帶入 `group_features`（非客戶群→訂單 off；已綁客戶群→訂單 on 保留收單），冪等。`stocktake_group` 保留為群組探索來源，行為已不再依賴它。
 - **後台每日盤點** `/admin/inventory`：選日期一次列出當日各倉盤點卡片（盤點人、比例、
   **盤差/盤差%**、含中貨、效期），可「只看盤差」、CSV 匯出。舊自建庫房盤點在 `/admin/inventory/legacy`。
 - 資料表：`stocktake_session`（一倉一日一筆）、`stocktake_count`（逐品項，含 `mid_qty`）、
   `erp_warehouse`（倉號→中文名＋納入盤點）、`group_features`（群組三功能開關）、`stocktake_group`（舊白名單／探索來源）、`stocktake_expiry_item`。
+
+## 子客戶拆單（LINE 收單，2026-07-10 定案）
+- **拆單資格只認客戶主檔 `known_sub_customers`**：未設定的客戶（如娜路灣、南豐）一律不拆——
+  Gemini schema 強制輸出 `sub_customer` 會臆造子客戶名，解析入口（`parse-order-message.js` /
+  `parse-order-from-image.js`）在未傳 `knownSubCustomers` 時把 `subCustomer` 一律清空。
+- **任一非空子客戶即分流**：整則訊息都是同一家子客戶（共用群組單獨幫某分店叫貨，如養鍋）也會
+  分到該子客戶的訂單，不再掉進主客戶單（舊條件要 ≥2 個不同鍵才拆）。
+- **同日同 split key 重用訂單**（`line.js` `findOrCreateSplitTargetOrder`，比照後台 `resolveSplitTargetOrder`）：
+  同子客戶多則訊息累加到同一張子單，不再每則各開新單。
+- **拆單發生時當日 NULL 主訂單標成 `''` 桶**（`markSameDayMainOrdersAsSplitBase`）：rebuild 過濾語意
+  NULL＝全部品項、`''`＝只留 subCustomer 空的品項；不標會在結單整單重辨識時把子客戶品項重建進主訂單→重複出貨。
 
 ## 資料庫可攜性（務必雙寫）
 - `dist/db/index.js` 同時支援 **SQLite（本機）與 Postgres/Cloud SQL（雲端）**。

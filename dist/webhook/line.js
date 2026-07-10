@@ -152,7 +152,13 @@ function mustSplitOrdersBySubCustomer(parsed) {
     if (!parsed?.length)
         return false;
     const keys = new Set(parsed.map(subCustomerGroupKeyFromParsedItem));
-    return keys.size > 1;
+    // [fix 2026-07-10] 只要出現任一「非空」子客戶就分流。舊條件 keys.size > 1 會漏掉
+    // 「整則訊息都是同一家子客戶」的情況（共用群組單獨幫某分店叫貨，如養鍋），
+    // 品項全掉進主客戶單。subCustomer 只有客戶主檔設定 known_sub_customers 時才會有值
+    // （解析入口已把未設定客戶的 subCustomer 清空），不會影響未設定的客戶。
+    if (keys.size > 1)
+        return true;
+    return keys.size === 1 && !keys.has("");
 }
 function groupParsedItemsBySubCustomer(parsed) {
     const map = new Map();
@@ -381,6 +387,49 @@ async function insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, { orderDa
         }
     }
     throw lastErr || new Error("insertOrderRowWithSplitMeta: 重試 3 次仍失敗");
+}
+/** [fix 2026-07-10] 拆單時把同客戶同日的「未拆單」主訂單（order_sub_split_key IS NULL）標成主客戶桶（''）。
+ * rebuild 的過濾語意是 NULL＝全部品項、''＝只留 subCustomer 空的品項；一旦當日出現子客戶拆單，
+ * 若主訂單仍為 NULL，結單整單重辨識會把子客戶品項也重建進主訂單 → 與子單重複出貨。 */
+async function markSameDayMainOrdersAsSplitBase(db, customerId, orderDate, nowSql) {
+    await db.prepare(
+        "UPDATE orders SET order_sub_split_key = '', updated_at = " + nowSql +
+        " WHERE customer_id = ? AND order_date = ? AND order_sub_split_key IS NULL" +
+        " AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')"
+    ).run(customerId, orderDate);
+}
+/** [fix 2026-07-10] 依子客戶分流時「找到或建立」目標訂單（比照後台 resolveSplitTargetOrder）。
+ * 舊行為是每次拆單都無條件新建訂單：同一群組上午、下午各傳一次同一子客戶的叫貨，
+ * 或多則訊息各自拆單，會冒出多張同子客戶的當日訂單。改為同客戶＋同日＋同 split key 重用。
+ * subKey ''＝主客戶桶（連同 NULL 舊主訂單一併視為同桶）。回傳 { orderId, created }。 */
+async function findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, { customerId, orderDate, groupId, subKey, rawMessage, lineMessageId }) {
+    let row;
+    if (subKey === "") {
+        row = await db.prepare(
+            "SELECT id FROM orders WHERE customer_id = ? AND order_date = ?" +
+            " AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key,'')) = '')" +
+            " AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no LIMIT 1"
+        ).get(customerId, orderDate);
+    }
+    else {
+        row = await db.prepare(
+            "SELECT id FROM orders WHERE customer_id = ? AND order_date = ?" +
+            " AND TRIM(COALESCE(order_sub_split_key,'')) = ?" +
+            " AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no LIMIT 1"
+        ).get(customerId, orderDate, subKey);
+    }
+    if (row?.id)
+        return { orderId: row.id, created: false };
+    const orderId = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+        orderDate,
+        customerId,
+        groupId,
+        rawMessage: rawMessage ?? "",
+        remark: subKey === "" ? null : `[子單拆分: ${subKey}]`,
+        orderSubSplitKey: subKey,
+        lineMessageId,
+    });
+    return { orderId, created: true };
 }
 async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fallbackUnit) {
     const rows = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(Array.isArray(parsedRows) ? parsedRows : []);
@@ -1241,30 +1290,30 @@ function createLineWebhook() {
                         const newRawAppend = (baseRawRow?.raw_message ? baseRawRow.raw_message + "\n" : "") + ocrLine;
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
-                            const newOrderIds = [];
+                            // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶（rebuild 過濾語意見 helper 註解），
+                            // 並改為「找到或建立」同日同子客戶訂單：同子客戶多則訊息不再各開一張新單。
+                            await markSameDayMainOrdersAsSplitBase(db, session.customerId, orderDateVal, nowSql);
+                            const touchedOrderIds = [];
                             for (const [subKey, items] of map) {
-                                const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
-                                const splitKey = subKey === "" ? "" : subKey;
-                                const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
-                                    orderDate: orderDateVal,
+                                // [fix 2026-07-08] 新建子單 raw_message 只放本次 OCR，不繼承主訂單既有 raw，
+                                // 否則結單 rebuild 時主訂單既有品項會落入拆單主客戶桶造成跨單重複。
+                                const { orderId: oid, created } = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
                                     customerId: session.customerId,
+                                    orderDate: orderDateVal,
                                     groupId,
-                                    rawMessage: "",
-                                    remark,
-                                    orderSubSplitKey: splitKey,
+                                    subKey,
+                                    rawMessage: ocrLine,
                                     lineMessageId: curLineMessageId,
                                 });
-                                newOrderIds.push(oid);
-                                // [fix 2026-07-08] 收單中圖片拆單的新訂單 raw_message 只放本次 OCR，
-                                // 不繼承 session 主訂單的既有 raw（newRawAppend），否則結單 rebuild 時
-                                // 主訂單既有品項會落入拆單主客戶桶造成跨單重複（同未收單拆單修法）。
-                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(ocrLine, oid);
+                                if (!created)
+                                    await appendRawLineToOrders(db, [oid], ocrLine, nowSql);
+                                touchedOrderIds.push(oid);
                                 await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
                                 await insertParsedItemsForOrder(db, oid, session.customerId, items, fallbackUnitImg);
                             }
-                            mergeSessionOrderIds(session, newOrderIds);
-                            if (lineClient && newOrderIds.length > 1) {
-                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                            mergeSessionOrderIds(session, touchedOrderIds);
+                            if (lineClient && map.size > 1) {
+                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
                             }
                         }
                         else if (parsedFromImg.length > 0) {
@@ -1286,36 +1335,40 @@ function createLineWebhook() {
                         const ocrLine = ocrText || "[圖片]";
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
-                            const newOrderIds = [];
+                            // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶，並改為「找到或建立」
+                            // 同日同子客戶訂單：同子客戶多則訊息不再各開一張新單。
+                            await markSameDayMainOrdersAsSplitBase(db, customer.id, orderDate, nowSql);
+                            const touchedOrderIds = [];
+                            let mainBucketOrderId = null;
                             for (const [subKey, items] of map) {
-                                const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
-                                const splitKey = subKey === "" ? "" : subKey;
-                                const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
-                                    orderDate,
+                                // [fix 2026-07-08] 新建子單 raw_message 只放本次 OCR 內容，不要繼承既有同日訂單的 raw。
+                                // 原本併入 orderRow.raw_message → 結單 rebuild 時舊訂單品項（subCustomer 空）會落入新拆單的主客戶桶，造成跨單重複出貨。
+                                const { orderId: oid, created } = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
                                     customerId: customer.id,
+                                    orderDate,
                                     groupId,
-                                    rawMessage: "",
-                                    remark,
-                                    orderSubSplitKey: splitKey,
+                                    subKey,
+                                    rawMessage: ocrLine,
                                     lineMessageId: curLineMessageId,
                                 });
-                                newOrderIds.push(oid);
-                                // [fix 2026-07-08] 拆單的新訂單 raw_message 只放本次 OCR 內容，不要繼承既有同日訂單的 raw。
-                                // 原本併入 orderRow.raw_message → 結單 rebuild 時舊訂單品項（subCustomer 空）會落入新拆單的主客戶桶，造成跨單重複出貨。
-                                const rawFull = ocrLine;
-                                await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(rawFull, oid);
+                                if (!created)
+                                    await appendRawLineToOrders(db, [oid], ocrLine, nowSql);
+                                if (subKey === "")
+                                    mainBucketOrderId = oid;
+                                touchedOrderIds.push(oid);
                                 await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
                                 await insertParsedItemsForOrder(db, oid, customer.id, items, fallbackUnitImg);
                             }
                             if (groupId) {
-                                const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId: customer.id, lastActivity: Date.now() };
+                                // session.orderId 優先掛主客戶桶：後續無子客戶標記的訊息會累加到這張
+                                const session = { orderId: mainBucketOrderId || touchedOrderIds[0], allOrderIds: touchedOrderIds.slice(), customerId: customer.id, lastActivity: Date.now() };
                                 collectingByGroup.set(groupId, session);
                                 persistCollectSession(db, groupId, session).catch(()=>{});
                                 scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                             }
-                            if (lineClient && newOrderIds.length > 1) {
-                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                            if (lineClient && map.size > 1) {
+                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
                             }
                         }
                         else {
@@ -1427,31 +1480,37 @@ function createLineWebhook() {
                     const parsed = await (0, parse_order_message_js_1.parseOrderMessage)(rest, fallbackUnit, parseOpts);
                     if (mustSplitOrdersBySubCustomer(parsed)) {
                         const map = groupParsedItemsBySubCustomer(parsed);
-                        const newOrderIds = [];
+                        // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶，並改為「找到或建立」
+                        // 同日同子客戶訂單：同子客戶多則訊息不再各開一張新單。
+                        await markSameDayMainOrdersAsSplitBase(db, customerId, orderDate, nowSql);
+                        const touchedOrderIds = [];
+                        let mainBucketOrderId = null;
                         for (const [subKey, items] of map) {
-                            const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
-                            const splitKey = subKey === "" ? "" : subKey;
-                            const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
-                                orderDate,
+                            const { orderId: oid, created } = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
                                 customerId,
+                                orderDate,
                                 groupId,
+                                subKey,
                                 rawMessage: lineForRaw,
-                                remark,
-                                orderSubSplitKey: splitKey,
                                 lineMessageId: curLineMessageId,
                             });
-                            newOrderIds.push(oid);
+                            if (!created && lineForRaw)
+                                await appendRawLineToOrders(db, [oid], lineForRaw, nowSql);
+                            if (subKey === "")
+                                mainBucketOrderId = oid;
+                            touchedOrderIds.push(oid);
                             await insertParsedItemsForOrder(db, oid, customerId, items, fallbackUnit);
                         }
                         if (groupId) {
-                            const session = { orderId: newOrderIds[0], allOrderIds: newOrderIds.slice(), customerId, lastActivity: Date.now() };
+                            // session.orderId 優先掛主客戶桶：後續無子客戶標記的訊息會累加到這張
+                            const session = { orderId: mainBucketOrderId || touchedOrderIds[0], allOrderIds: touchedOrderIds.slice(), customerId, lastActivity: Date.now() };
                             collectingByGroup.set(groupId, session);
                             persistCollectSession(db, groupId, session).catch(()=>{}); // [fix 2026-07-08] 補持久化，Cloud Run 重啟後可恢復 session
                             scheduleAutoFinalize(groupId, session);
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         }
-                        if (lineClient && newOrderIds.length > 1) {
-                            await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                        if (lineClient && map.size > 1) {
+                            await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
                         }
                         continue;
                     }
@@ -1914,33 +1973,56 @@ function createLineWebhook() {
                     console.log("[LINE] 解析完成時 session 已結單（rebuild 已涵蓋此批），略過重複 insert orderId=%s", orderId);
                     continue;
                 }
-                const rawSnap = (await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId))?.raw_message ?? "";
+                const sessionOrderMeta = await db.prepare("SELECT order_date, order_sub_split_key FROM orders WHERE id = ?").get(orderId);
+                const orderDateVal = sessionOrderMeta?.order_date || getTaipeiOrderDate();
                 if (parsed.length > 0 && mustSplitOrdersBySubCustomer(parsed)) {
                     const map = groupParsedItemsBySubCustomer(parsed);
-                    const orderDateVal = (await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(orderId))?.order_date || getTaipeiOrderDate();
-                    const newOrderIds = [];
+                    // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶，並改為「找到或建立」
+                    // 同日同子客戶訂單；主客戶桶會重用 session 既有主訂單，不再另開新單。
+                    // 新建子單 raw_message 只放本則文字（不繼承主訂單累積的 rawSnap），
+                    // 否則結單 rebuild 時舊訊息品項會落入子單重複重建（同圖片拆單修法）。
+                    await markSameDayMainOrdersAsSplitBase(db, cid, orderDateVal, nowSql);
+                    const touchedOrderIds = [];
                     for (const [subKey, items] of map) {
-                        const remark = subKey === "" ? null : `[子單拆分: ${subKey}]`;
-                        const splitKey = subKey === "" ? "" : subKey;
-                        const oid = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
-                            orderDate: orderDateVal,
+                        const { orderId: oid, created } = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
                             customerId: cid,
+                            orderDate: orderDateVal,
                             groupId,
-                            rawMessage: rawSnap,
-                            remark,
-                            orderSubSplitKey: splitKey,
+                            subKey,
+                            rawMessage: text,
                             lineMessageId: curLineMessageId,
                         });
-                        newOrderIds.push(oid);
+                        // 本則文字稍早已 append 進 session 既有訂單（idsForRaw）；重用「session 外」的既有單才需補寫
+                        if (!created && !idsForRaw.includes(oid))
+                            await appendRawLineToOrders(db, [oid], text, nowSql);
+                        touchedOrderIds.push(oid);
                         await insertParsedItemsForOrder(db, oid, cid, items, fallbackUnit);
                     }
-                    mergeSessionOrderIds(session, newOrderIds);
-                    if (lineClient && newOrderIds.length > 1) {
-                        await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${newOrderIds.length} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                    mergeSessionOrderIds(session, touchedOrderIds);
+                    if (lineClient && map.size > 1) {
+                        await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
                     }
                 }
                 else if (parsed.length > 0) {
-                    await insertParsedItemsForOrder(db, orderId, cid, parsed, fallbackUnit);
+                    // [fix 2026-07-10] session.orderId 可能是子客戶拆單訂單（本 session 由拆單建立時）。
+                    // 無子客戶標記的品項必須進主客戶桶，否則結單 rebuild 依 split key 過濾會把這批品項整批丟掉。
+                    let targetOrderId = orderId;
+                    const curKey = sessionOrderMeta?.order_sub_split_key != null ? String(sessionOrderMeta.order_sub_split_key).trim() : "";
+                    if (curKey !== "") {
+                        const t = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
+                            customerId: cid,
+                            orderDate: orderDateVal,
+                            groupId,
+                            subKey: "",
+                            rawMessage: text,
+                            lineMessageId: curLineMessageId,
+                        });
+                        targetOrderId = t.orderId;
+                        if (!t.created && !idsForRaw.includes(targetOrderId))
+                            await appendRawLineToOrders(db, [targetOrderId], text, nowSql);
+                        mergeSessionOrderIds(session, [targetOrderId]);
+                    }
+                    await insertParsedItemsForOrder(db, targetOrderId, cid, parsed, fallbackUnit);
                 }
                 console.log("[LINE] 訂單已寫入", orderId);
             }
@@ -2071,3 +2153,11 @@ async function reply(client, token, text, dbOptional, options) {
         console.error("[LINE] 回覆失敗（可能 replyToken 逾時或網路問題）:", e);
     }
 }
+// 測試掛鉤：拆單純函式與 DB helper（勿在正式流程 require 這個物件）
+exports._testables = {
+    mustSplitOrdersBySubCustomer,
+    groupParsedItemsBySubCustomer,
+    markSameDayMainOrdersAsSplitBase,
+    findOrCreateSplitTargetOrder,
+    getNextOrderNo,
+};

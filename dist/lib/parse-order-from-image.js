@@ -403,6 +403,12 @@ async function parseOrderItemsFromImageBuffer(buffer, fallbackUnit, options) {
             console.warn("[parse-order-from-image] Claude fallback 失敗（不阻斷）:", e?.message || e);
         }
     }
+    // [fix 2026-07-10] 子客戶拆單閘門：客戶未設定 known_sub_customers（options.knownSubCustomers 空）
+    // 就把各引擎（Gemini 文字／視覺、Claude 第二意見）帶回的 subCustomer 一律清空。
+    // schema 強制輸出 sub_customer 會讓模型憑排版臆造子客戶名 → 下游誤拆多張單；拆單資格只認客戶主檔設定。
+    if (!knownSub && Array.isArray(parsed)) {
+        parsed = parsed.map((p) => (p && p.subCustomer != null ? { ...p, subCustomer: null } : p));
+    }
     parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(parsed);
     // 訂單 raw_message 保留完整 OCR，解析仍用 parseText（版型清洗後）
     const result = { parsed, ocrText: ocrText || parseText || null };
