@@ -682,9 +682,29 @@ function createLiffRouter() {
         }
         clearTimeout(timer);
         if (resp.status === 200) { bkMemberCache.set(key, { ok: true, exp: nowMs + BK_MEMBER_TTL_MS }); return { ok: true }; }
-        if (resp.status === 404) { bkMemberCache.set(key, { ok: false, exp: nowMs + BK_MEMBER_TTL_MS }); return { ok: false, status: 403 }; }
-        console.warn("[liff basket-log] LINE 群組成員查詢非預期狀態:", resp.status);
+        if (resp.status === 404) {
+            // 404＝非成員「或 groupId 本身不存在」（例如 DB 存的 line_group_id 大小寫/空白有誤）；
+            // log 帶上查詢用的 gid 方便排查是哪種情況
+            console.warn("[liff basket-log] LINE 群組成員查詢 404（非成員或群組ID無效）: gid=" + groupId);
+            bkMemberCache.set(key, { ok: false, exp: nowMs + BK_MEMBER_TTL_MS });
+            return { ok: false, status: 403 };
+        }
+        console.warn("[liff basket-log] LINE 群組成員查詢非預期狀態:", resp.status, "gid=" + groupId);
         return { ok: false, status: 503, error: "驗證暫時無法完成，請稍後再試" };
+    }
+    // 群組 ID 正規化（去空白＋小寫），與 webhook / lookup-by-group 的比對方式一致
+    function bkNormGid(s) { return (s || "").replace(/\s/g, "").toLowerCase(); }
+    /**
+     * 挑選要拿去打 LINE API 的群組 ID：
+     * [fix 2026-07-10] DB 存的 line_group_id 若大小寫/空白與真實群組 ID 不符，直接拿去查
+     * 成員會 404 → 誤判 403（且快取 10 分鐘）。若前端帶了 LIFF context 的真實 groupId
+     * 且正規化後與 DB 存值相同 → 改用真實 ID 呼叫；否則 fallback 用 DB 存值
+     * （相容外部瀏覽器開啟、無 LIFF context 的情況）。
+     */
+    function bkPickGroupId(storedGid, ctxGid) {
+        const ctx = String(ctxGid || "").trim();
+        if (ctx && bkNormGid(ctx) === bkNormGid(storedGid)) return ctx;
+        return storedGid;
     }
     /** 空籃記帳授權：員工放行；否則須為 groupId 群組成員。回 { ok } 或 { ok:false, status, error }。 */
     async function bkAuthorize(db, verified, groupId) {
@@ -722,11 +742,10 @@ function createLiffRouter() {
                 res.status(authz.status || 403).json({ ok: false, error: authz.error });
                 return;
             }
-            // 大小寫不敏感比對（跟 webhook 一致）
+            // 大小寫不敏感比對（跟 webhook 一致；沿用共用的 bkNormGid）
             const all = await db.prepare("SELECT id, name, line_group_id FROM customers WHERE (active IS NULL OR active = 1)").all();
-            const norm = (s) => (s || "").replace(/\s/g, "").toLowerCase();
-            const needle = norm(groupId);
-            const found = (all || []).find(r => norm(r.line_group_id) === needle);
+            const needle = bkNormGid(groupId);
+            const found = (all || []).find(r => bkNormGid(r.line_group_id) === needle);
             if (!found) {
                 res.status(404).json({ ok: false, error: "此群組尚未綁定客戶" });
                 return;
@@ -760,7 +779,9 @@ function createLiffRouter() {
                 return;
             }
             // 授權：員工或該客戶綁定群組的成員才可讀
-            const authz = await bkAuthorize(db, verified, customer.line_group_id);
+            // [fix 2026-07-10] 若前端帶了 LIFF context 的真實 groupId（ctxGroupId）且與 DB 存值
+            // 正規化後相同 → 用真實 ID 打 LINE API，避免存值大小寫/空白有誤時 404 → 誤 403
+            const authz = await bkAuthorize(db, verified, bkPickGroupId(customer.line_group_id, req.query?.ctxGroupId));
             if (!authz.ok) {
                 res.status(authz.status || 403).json({ ok: false, error: authz.error });
                 return;
@@ -804,7 +825,8 @@ function createLiffRouter() {
                 return;
             }
             // 授權：員工或該客戶綁定群組的成員才可寫
-            const authz = await bkAuthorize(db, verified, customer.line_group_id);
+            // [fix 2026-07-10] 同 load：ctxGroupId 與 DB 存值正規化相同時改用真實 ID 打 LINE API
+            const authz = await bkAuthorize(db, verified, bkPickGroupId(customer.line_group_id, req.body?.ctxGroupId));
             if (!authz.ok) {
                 res.status(authz.status || 403).json({ ok: false, error: authz.error });
                 return;

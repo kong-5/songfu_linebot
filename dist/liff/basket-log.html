@@ -189,11 +189,18 @@
   const state = {
     customerId: "", customerName: "", date: "",
     idToken: null,
+    ctxGroupId: "",      // LIFF context 的群組 ID（真實大小寫），load/save 一併帶給後端做成員驗證
     hasExisting: false,  // 今日已有紀錄（重新送出會覆蓋，送出前需確認）
     numbered: {},
     square: { to: 0, pk: 0 },
     round:   { to: 0, pk: 0 },
   };
+  // [fix 2026-07-10] 載入完成後的基準快照：isDirty 改為「與載入當下比對」，
+  // 只開來看今日既有紀錄（沒改任何數字）按取消時不再誤跳「內容將遺失」確認
+  function snapshot(){
+    return JSON.stringify({ numbered: state.numbered, square: state.square, round: state.round });
+  }
+  let baseline = snapshot();
 
   function setStatus(cls, text){ statusEl.className = "status " + cls; statusEl.textContent = text; }
   function toast(text, ms){
@@ -210,13 +217,8 @@
   }
   function clamp(n){ n = Math.max(0, Math.min(9999, n|0)); return n; }
   function isDirty(){
-    if (state.square.to || state.square.pk) return true;
-    if (state.round.to || state.round.pk) return true;
-    for (const k of Object.keys(state.numbered)) {
-      const x = state.numbered[k];
-      if (x && (x.to || x.pk)) return true;
-    }
-    return false;
+    // 與載入基準快照比對：只有真的改過數字才算 dirty（避免載入既有紀錄後恆為 dirty）
+    return snapshot() !== baseline;
   }
   function refreshSaveBtn(){
     saveBtn.disabled = !isDirty();
@@ -373,11 +375,12 @@
       }
       if (state.square.to || state.square.pk) lines.push({ kind: "square", no: 0, takenTo: state.square.to||0, pickedUp: state.square.pk||0 });
       if (state.round.to || state.round.pk) lines.push({ kind: "round", no: 0, takenTo: state.round.to||0, pickedUp: state.round.pk||0 });
-      // [fix 2026-07-10] idToken 改走 Authorization header，body 不再帶 token
+      // [fix 2026-07-10] idToken 改走 Authorization header，body 不再帶 token；
+      // ctxGroupId（非敏感）一併帶上，後端用真實群組 ID 做成員驗證
       const resp = await fetch("/liff/api/basket-log/save", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": "Bearer " + state.idToken },
-        body: JSON.stringify({ customerId: state.customerId, date: state.date, lines }),
+        body: JSON.stringify({ customerId: state.customerId, date: state.date, lines, ctxGroupId: state.ctxGroupId || "" }),
       });
       const data = await resp.json();
       if (!data?.ok) throw new Error(data?.error || "儲存失敗");
@@ -431,20 +434,34 @@
         setSectionsLoading(false); // [fix 2026-07-08] 早退也要關遮罩，否則錯誤訊息與「載入中…」遮罩並存、輸入被鎖
         return;
       }
+      // 先取 LIFF context 的群組 ID（真實大小寫）：lookup 反查用，load/save 也一併帶給後端
+      // [fix 2026-07-10] 後端成員驗證改用這個「真實群組 ID」呼叫 LINE API，
+      // 避免 DB 存的 line_group_id 大小寫/空白有誤時 404 → 誤判 403
+      try {
+        const ctx = liff.getContext();
+        state.ctxGroupId = ctx?.groupId || ctx?.roomId || "";
+      } catch (_) { state.ctxGroupId = ""; }
       // 若 URL 沒帶 customer，嘗試從 LIFF context 拿 groupId 反查（給 Rich Menu 進入時用）
       if (!state.customerId) {
         try {
-          const ctx = liff.getContext();
-          const gid = ctx?.groupId || ctx?.roomId || "";
+          const gid = state.ctxGroupId;
           if (gid) {
             // [fix 2026-07-10] idToken 改走 Authorization header（與 order-review 模式一致），URL 不再帶 token
             const r0 = await fetch(`/liff/api/basket-log/lookup-by-group?groupId=${encodeURIComponent(gid)}`, {
               headers: { "Authorization": "Bearer " + state.idToken },
             });
             const d0 = await r0.json();
-            if (d0?.ok && d0.customerId) state.customerId = d0.customerId;
+            if (d0?.ok && d0.customerId) {
+              state.customerId = d0.customerId;
+            } else if (d0 && d0.ok === false) {
+              // [fix 2026-07-10] 403/503 等有明確錯誤訊息時直接顯示本文，
+              // 不要落到下面誤導的「此群組未綁定客戶」
+              setStatus("err", d0.error || ("反查客戶失敗（HTTP " + r0.status + "）"));
+              setSectionsLoading(false);
+              return;
+            }
           }
-        } catch (_) { /* lookup 失敗就走原本流程 */ }
+        } catch (_) { /* lookup 網路失敗就走原本流程 */ }
       }
       if (!state.customerId) {
         setStatus("err", "缺少 customer 參數，且此群組未綁定客戶。請從群組「空籃」訊息點連結進入。");
@@ -453,8 +470,9 @@
       }
       // 載入今日已存在的紀錄
       setStatus("", "載入今日資料…");
-      // [fix 2026-07-10] idToken 改走 Authorization header，URL 不再帶 token
-      const r = await fetch(`/liff/api/basket-log/load?customer=${encodeURIComponent(state.customerId)}&date=${encodeURIComponent(state.date)}`, {
+      // [fix 2026-07-10] idToken 改走 Authorization header，URL 不再帶 token；
+      // ctxGroupId（非敏感）一併帶上，後端用真實群組 ID 做成員驗證
+      const r = await fetch(`/liff/api/basket-log/load?customer=${encodeURIComponent(state.customerId)}&date=${encodeURIComponent(state.date)}&ctxGroupId=${encodeURIComponent(state.ctxGroupId || "")}`, {
         headers: { "Authorization": "Bearer " + state.idToken },
       });
       const data = await r.json();
@@ -469,6 +487,8 @@
         else if (ln.basket_kind === "square") state.square = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
         else if (ln.basket_kind === "round") state.round = { to: Number(ln.taken_to||0), pk: Number(ln.picked_up||0) };
       }
+      // [fix 2026-07-10] 載入完成 → 記基準快照；之後 isDirty 只看「有沒有改過載入內容」
+      baseline = snapshot();
       renderNumberedGrid();
       renderAllKindFields();
       refreshSaveBtn();

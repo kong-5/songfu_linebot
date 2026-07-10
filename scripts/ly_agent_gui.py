@@ -129,10 +129,17 @@ def save_config(cfg: dict) -> None:
 # ======================================================================
 # 情境：write_order 已在凌越開單，但 post_callback 因網路問題失敗；若結果只留在
 # 記憶體，agent 重啟（或雲端租約到期）後同一張單會被重撿重寫＝凌越重複開單。
-# 修法：每張單寫入凌越後「立刻」把結果落地到 exe/腳本同層的 ly_writeback_journal.json；
+# 修法：每張單「寫入凌越成功」後立刻把結果落地到 exe/腳本同層的 ly_writeback_journal.json；
 # callback 成功才移除。啟動時與每輪 /wait 前若 journal 有殘留 → 先重送 callback，
 # 成功才繼續撿新單（雲端 callback 已做冪等：同單號重報＝成功、不同單號＝告警不覆蓋）。
-# 檔案格式：JSON 陣列，每筆 {order_id, doc_no, ok, error, written_at}（utf-8）。
+# ★ journal「只記 ok:true 的成功結果」：失敗單本來就還留在雲端佇列，租約到期會自然
+#   重派重試，不需要 journal 保護；若失敗也落地，flush 重送時雲端每收一次失敗就
+#   lingyue_write_attempts+1，callback 回應丟失＝同一次失敗被計兩次 → 提前三振＋誤告警。
+#   （write_orders 的即時 post_callback 仍送「完整批次結果」含失敗項，行為不變。）
+# 檔案格式：JSON 陣列，每筆 {order_id, doc_no, ok: true, written_at}（utf-8）。
+# 壞檔保護：journal 解析失敗「不可」靜默視為空（journal 是「凌越已開單但未回報雲端」
+# 的唯一憑據，視為空＝保護失效）→ 改名備份為 ly_writeback_journal.corrupt.<時間>.json
+# 保留現場並回 None，讓 flush_journal 當輪暫停撿新單（詳見 journal_load）。
 # 鎖：用獨立的 _JOURNAL_LOCK（不能沿用 erp_lock——write_orders 已持有 erp_lock 時
 # 還要 append journal，threading.Lock 不可重入會自鎖死）。
 
@@ -140,17 +147,45 @@ JOURNAL_PATH = os.path.join(_self_dir(), "ly_writeback_journal.json")
 _JOURNAL_LOCK = threading.Lock()
 
 
-def journal_load() -> list:
-    """讀 journal（讀不到／壞檔一律回空清單，不擋主流程）。"""
+def _journal_quarantine(reason: str, log=None):
+    """壞檔處置：把主 journal 改名備份（保留現場給人工核對），回傳備份路徑（失敗回 None）。
+    訊息用 log（GUI 記錄框）優先；沒有 log 時退回 print（pythonw/exe 下可能看不到，
+    所以引擎呼叫端都要把 self.log 傳進來）。"""
+    say = log or (lambda m: print(m, flush=True))
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = os.path.join(_self_dir(), f"ly_writeback_journal.corrupt.{ts}.json")
+    try:
+        os.replace(JOURNAL_PATH, backup)
+    except Exception as e2:
+        say(f"❌ 回寫日誌損毀（{reason}），且備份改名失敗：{_short(e2)}。"
+            f"請人工處理 {JOURNAL_PATH}。")
+        return None
+    say(f"❌ 回寫日誌損毀（{reason}），已備份為 {os.path.basename(backup)} 保留現場；"
+        "主日誌自下一輪起視為空、自動恢復撿單。請儘速人工核對凌越是否有未回報單據，"
+        "確認後刪除備份檔。")
+    return backup
+
+
+def journal_load(log=None):
+    """讀 journal。回傳：
+    - list：正常內容（檔案不存在＝正常空，回 []）。
+    - None：壞檔（JSON 解析失敗或內容不是陣列）——「不可」靜默視為空，否則
+      「凌越已開單但未回報雲端」的保護就失效了。壞檔會先改名備份
+      （ly_writeback_journal.corrupt.<時間>.json）保留現場；呼叫端（flush_journal）
+      據 None 暫停當輪撿新單。改名後主 journal 不存在＝下一輪回 []，自動恢復。"""
     try:
         with open(JOURNAL_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
     except FileNotFoundError:
         return []
     except Exception as e:
-        print(f"⚠ 讀取回寫日誌失敗（視為空）：{e}", flush=True)
-        return []
+        _journal_quarantine(f"JSON 解析失敗：{_short(e)}", log)
+        return None
+    if isinstance(data, list):
+        return data
+    # 內容不是陣列＝一樣視為壞檔（可能被外部程式覆寫），同樣備份保留現場
+    _journal_quarantine("內容不是 JSON 陣列", log)
+    return None
 
 
 def _journal_write(entries: list) -> None:
@@ -161,19 +196,24 @@ def _journal_write(entries: list) -> None:
     os.replace(tmp, JOURNAL_PATH)
 
 
-def journal_append(result: dict) -> None:
-    """把一筆回寫結果落地（同 order_id 舊項先移除＝重寫時以最新結果為準）。"""
+def journal_append(result: dict, log=None) -> None:
+    """把一筆「寫入凌越成功」的結果落地（同 order_id 舊項先移除＝重寫時以最新結果為準）。
+    只有 ok:true 的結果才該進來（見檔頭說明；失敗單靠雲端佇列租約重試，不落地）。"""
     with _JOURNAL_LOCK:
-        entries = [e for e in journal_load() if e.get("order_id") != result.get("order_id")]
+        loaded = journal_load(log)
+        # 壞檔（None）：journal_load 已把壞檔改名備份，這裡以空清單重建主日誌
+        entries = [e for e in (loaded or []) if e.get("order_id") != result.get("order_id")]
         entries.append(result)
         _journal_write(entries)
 
 
-def journal_remove(order_ids) -> None:
+def journal_remove(order_ids, log=None) -> None:
     """callback 成功後移除該批。"""
     ids = set(order_ids)
     with _JOURNAL_LOCK:
-        entries = [e for e in journal_load() if e.get("order_id") not in ids]
+        loaded = journal_load(log)
+        # 壞檔（None）：已改名備份，主日誌以空清單重建即可
+        entries = [e for e in (loaded or []) if e.get("order_id") not in ids]
         _journal_write(entries)
 
 
@@ -488,35 +528,49 @@ class AgentEngine:
                               "written_at": datetime.datetime.now().isoformat(timespec="seconds")}
                     self.log(f"  ❌ {name} 寫入失敗：{_short(e)}")
                 results.append(result)
-                # 每寫完一張就把結果落地 journal（在打 callback 前）：中途斷電/當機
-                # 也不會遺失「凌越已開單」的事實，重啟後先重送、不重寫。
-                try:
-                    journal_append(result)
-                except Exception as je:
-                    self.log(f"  ⚠ 回寫日誌落地失敗（{JOURNAL_PATH}）：{_short(je)}")
+                # 每寫完一張「成功單」就把結果落地 journal（在打 callback 前）：中途斷電/
+                # 當機也不會遺失「凌越已開單」的事實，重啟後先重送、不重寫。
+                # 失敗單「不」落地：本來就還留在雲端佇列、租約到期自然重派重試；若也落地，
+                # flush 重送時雲端每收一次失敗就 attempts+1，callback 回應丟失＝同一次失敗
+                # 被計兩次 → 提前三振＋誤告警（即時 post_callback 仍送完整批次結果，見下方）。
+                if result.get("ok"):
+                    try:
+                        journal_append(result, log=self.log)
+                    except Exception as je:
+                        self.log(f"  ⚠ 回寫日誌落地失敗（{JOURNAL_PATH}）：{_short(je)}")
             self.state["erp"] = "ok"
         if dry_run:
             self.log(f"（試跑完畢：{len(orders)} 張，未寫入任何資料）")
             return
         if results:
             try:
+                # 即時回填一律送「完整批次結果」（含失敗項，雲端才會累計 attempts／告警）
                 cb = wb.post_callback(base, key, results)
                 self.log(f"▶ 回填後台：updated={cb.get('updated_count')} failed={cb.get('failed_count')}")
-                # 回填成功 → 清掉這批的 journal；失敗則保留，由啟動時/每輪 /wait 前重送。
+                # 回填成功 → 清掉這批的 journal（journal 只有成功項；失敗項本來就不在裡面）；
+                # 失敗則保留，由啟動時/每輪 /wait 前重送。
                 try:
-                    journal_remove([r.get("order_id") for r in results])
+                    journal_remove([r.get("order_id") for r in results], log=self.log)
                 except Exception as je:
                     self.log(f"⚠ 清除回寫日誌失敗（不影響資料，重送時雲端會冪等處理）：{_short(je)}")
             except Exception as e:
-                self.log(f"⚠ 回填後台失敗（單已寫入凌越，結果已存回寫日誌，會自動重送）：{_short(e)}")
+                self.log(f"⚠ 回填後台失敗（成功單已存回寫日誌、會自動重送；"
+                         f"失敗單留在雲端佇列待重試）：{_short(e)}")
             self.state["wb_last"] = now_full()
             self.state["wb_last_result"] = f"寫入 {ok}/{len(orders)}"
 
     def flush_journal(self) -> bool:
-        """重送回寫日誌殘留（上次「寫入凌越成功但回報雲端失敗」的結果）。
-        回 True＝journal 已空（或本來就空、或試跑無關）；False＝仍有殘留（本輪不要撿新單，
-        否則雲端租約到期重派同單＝重複開單）。雲端 callback 已冪等，重送安全。"""
-        entries = journal_load()
+        """重送回寫日誌殘留（上次「寫入凌越成功但回報雲端失敗」的結果；journal 只存成功項）。
+        回 True＝journal 已空（或本來就空、或試跑無關）；False＝仍有殘留或日誌損毀
+        （本輪不要撿新單，否則雲端租約到期重派同單＝重複開單）。雲端 callback 已冪等，重送安全。"""
+        entries = journal_load(self.log)
+        if entries is None:
+            # 壞檔：journal_load 已把壞檔改名備份（.corrupt.<時間>.json）並記錄詳細指引。
+            # 本輪回 False 暫停撿新單；改名後主 journal 不存在＝下一輪 journal_load 回 []、
+            # 自動恢復撿單（「暫停」只發生在損毀當輪）。
+            self.log("⚠ 回寫日誌損毀，本輪暫停撿新單；備份已保留、系統下一輪起自動恢復撿單，"
+                     "請儘速依上面訊息人工核對後刪除 .corrupt 備份檔。")
+            return False
         if not entries:
             return True
         base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
@@ -526,7 +580,7 @@ class AgentEngine:
                    for e in entries]
         try:
             cb = cloud_wb_callback(base, key, payload)
-            journal_remove([e.get("order_id") for e in entries])
+            journal_remove([e.get("order_id") for e in entries], log=self.log)
             self._log_once("journal", None)
             self.log(f"▶ 重送回寫日誌 {len(entries)} 筆成功："
                      f"updated={cb.get('updated_count')} failed={cb.get('failed_count')}")
@@ -628,11 +682,13 @@ class AgentEngine:
     #   絕不主動撈 /pending 全部訂單（那正是先前誤寫一整天訂單的原因）。
     def _writeback_loop(self):
         self.stop_event.wait(8)  # 啟動後稍等，避開和庫存啟動推送同時打凌越
-        # 啟動檢查：上次執行若「寫入凌越成功但回報失敗」，journal 會有殘留 → 優先重送
+        # 啟動檢查：上次執行若「寫入凌越成功但回報失敗」，journal 會有殘留 → 優先重送。
+        # journal_load 回 None＝壞檔（已改名備份並記錄指引），這裡不另做事——
+        # 備份後主 journal 為空，迴圈會正常撿單。
         try:
-            n_residue = len(journal_load())
-            if n_residue:
-                self.log(f"ℹ 偵測到回寫日誌殘留 {n_residue} 筆（上次回報雲端失敗），將優先重送再撿新單。")
+            residue = journal_load(self.log)
+            if residue:
+                self.log(f"ℹ 偵測到回寫日誌殘留 {len(residue)} 筆（上次回報雲端失敗），將優先重送再撿新單。")
         except Exception:
             pass
         while not self.stop_event.is_set():

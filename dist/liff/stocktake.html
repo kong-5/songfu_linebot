@@ -194,7 +194,10 @@
   // ---------- 數字輸入正規化 ----------
   // 越南文鍵盤小數點常是逗號（"1,5"），parseFloat 會靜默變 1；一律先把 , 換成 .，並過濾非數字字元。
   function cleanNum(s){ return String(s==null?'':s).replace(/,/g,'.').replace(/[^0-9.\-]/g,''); }
-  function num(v){ if(v==null||v==='') return NaN; return parseFloat(cleanNum(v)); }
+  // 清完後仍須是「合法數字形」（負號只能在開頭、最多一個小數點）才給 parseFloat；
+  // 否則回 NaN 讓送出前防呆攔下要求修正——像「1-2」若移除中間的 - 會靜默變 12（值被改掉），
+  // 比起錯誤數字入帳，判 NaN 擋下來安全得多。（"1,5"→"1.5" 仍照常通過）
+  function num(v){ if(v==null||v==='') return NaN; var s=cleanNum(v); if(!/^-?\d*\.?\d*$/.test(s)) return NaN; return parseFloat(s); }
   function sanitizeNumInput(el){ // input 事件即時正規化，游標位置盡量保持
     var v=el.value, nv=cleanNum(v);
     if(nv===v) return;
@@ -333,14 +336,19 @@
         if(s.expiry&&s.expiry.length){ S.batches[it.c]=s.expiry.map(function(b){return {date:b.date||'',qty:(b.qty==null?'':String(b.qty))};}); }
       });
       // 本機暫存（未送出的盤點）優先：電話中斷/重載後接回，不用重盤
+      // ⚠ 必須「逐鍵合併、草稿蓋在 saved 之上」而不是整物件取代：
+      //   409 兩人同盤情境——A 送出被擋（他人 B 已先送出）後重載，saved 會帶回 B 剛送出的品項；
+      //   若整包用 A 的草稿取代，B 的資料會被清掉，A 再送出就把 B 盤好的品項全數蓋空。
+      //   合併後：B 已存的鍵保留、A 草稿有的鍵以 A 為準（counts/mid/midOpen/expanded 都是
+      //   「品項代碼→值」的物件；batches 是「品項代碼→批號陣列」的物件，同鍵整組以草稿為準）。
       S.draftRestored=false;
       var dr=loadDraft(S.wh.code,S.date);
       if(dr){
-        if(dr.counts) S.counts=dr.counts;
-        if(dr.mid) S.mid=dr.mid;
-        if(dr.midOpen) S.midOpen=dr.midOpen;
-        if(dr.batches) S.batches=dr.batches;
-        if(dr.expanded) S.expanded=dr.expanded;
+        if(dr.counts) S.counts=Object.assign({},S.counts,dr.counts);
+        if(dr.mid) S.mid=Object.assign({},S.mid,dr.mid);
+        if(dr.midOpen) S.midOpen=Object.assign({},S.midOpen,dr.midOpen);
+        if(dr.batches) S.batches=Object.assign({},S.batches,dr.batches);
+        if(dr.expanded) S.expanded=Object.assign({},S.expanded,dr.expanded);
         S.draftRestored=true;
       }
       renderCount();
