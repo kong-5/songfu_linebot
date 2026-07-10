@@ -33,17 +33,12 @@ function normalizeOrderItemMatchKey(s) {
  *   - delete → 刪除第一筆匹配品項；對不到＝重建本來就沒有該品項，視為已生效。
  *   - add    → 以軌跡的 raw_name/quantity/unit 補插一筆，display_order 排最後、need_review=1。
  * 注意：h 為交易 handle（或無交易時的 db 本體），全程沿用呼叫端交易，失敗會整批 ROLLBACK。
+ * [fix 2026-07-10] edits 由呼叫端在「交易外」讀好傳入（見 replaceOrderItemsFromParsedRows）：
+ * 原本在此函式開頭 SELECT order_item_edits 並吞錯繼續，但 PG 交易內任一句失敗即毒化整個交易
+ * （後續語句全報 25P02、COMMIT 實為 ROLLBACK）→ 整個 rebuild 靜默回滾卻回報成功。
+ * 交易內不得再有「吞例外後繼續」的語句；此處僅剩 order_items 的讀寫（該表必存在，失敗即整批 ROLLBACK 上拋）。
  */
-async function replayOrderItemEditsInTx(h, orderId) {
-    let edits = [];
-    try {
-        edits = await h.prepare("SELECT id, action, match_key, raw_name, quantity, unit, remark, created_at FROM order_item_edits WHERE order_id = ? ORDER BY created_at ASC, id ASC").all(orderId);
-    }
-    catch (e) {
-        // 表不存在（舊庫尚未 init）等情況：略過重放，不阻斷 rebuild 本體
-        console.warn("[rebuild-order] 讀取人工改單軌跡失敗（略過重放）orderId=%s: %s", orderId, e?.message || e);
-        return;
-    }
+async function replayOrderItemEditsInTx(h, orderId, edits) {
     if (!edits || !edits.length)
         return;
     // 重建後的品項快照（newId 帶時間前綴，ORDER BY id ≒ 插入順序＝顯示順序）；「取第一筆」以此序為準
@@ -72,16 +67,19 @@ async function replayOrderItemEditsInTx(h, orderId) {
         if (action === "set" || action === "add") {
             const qty = Number.isFinite(Number(ed.quantity)) ? Number(ed.quantity) : 0;
             const unitVal = ed.unit != null && String(ed.unit).trim() !== "" ? String(ed.unit).trim() : null;
-            if (action === "set" && hit) {
+            // [fix 2026-07-10] set 與 add 一致：已有「存活」同 key 品項 → 更新其 quantity/unit，不補插。
+            // add 原本無條件補插，但「刪後重叫」的抵銷 add 對應品項通常已由 raw_message 重建插入，
+            // 再補插＝同品項雙倍出貨；改為更新既存品項也順帶緩解品名飄移造成的重複品項。
+            if (hit) {
                 if (unitVal != null)
                     await h.prepare("UPDATE order_items SET quantity = ?, unit = ? WHERE id = ? AND order_id = ?").run(qty, unitVal, hit.id, orderId);
                 else
                     await h.prepare("UPDATE order_items SET quantity = ? WHERE id = ? AND order_id = ?").run(qty, hit.id, orderId);
                 setCnt += 1;
-                console.log("[rebuild-order] 重放改單軌跡 set：%s → %s%s（itemId=%s editId=%s）", ed.raw_name || key, qty, unitVal || "", hit.id, ed.id);
+                console.log("[rebuild-order] 重放改單軌跡 %s（更新既存品項）：%s → %s%s（itemId=%s editId=%s）", action, ed.raw_name || key, qty, unitVal || "", hit.id, ed.id);
                 continue;
             }
-            // set 對不到品項（rebuild 解析結果沒有該品名）→ 視為 add 補插；need_review=1 供後台複核
+            // 對不到存活品項才補插（set：人工確認過的內容不可默默消失；add：刪後重叫但 rebuild 未解析出該品名）；need_review=1 供後台複核
             const itemId = (0, id_js_1.newId)("item");
             await h.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, include_export, display_order) VALUES (?, ?, NULL, ?, ?, ?, 1, ?, 1, ?)")
                 .run(itemId, orderId, ed.raw_name || key || "", qty, unitVal, ed.remark != null && String(ed.remark).trim() !== "" ? String(ed.remark).trim() : null, nextDisplayOrder);
@@ -136,6 +134,21 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
             : null;
         rows.push([itemId, orderId, resolved?.productId ?? null, p.rawName || "", qty, unit, needReview, itemRemark, subCust, confidence]);
     }
+    // [fix 2026-07-10] 人工改單軌跡（order_item_edits）的讀取移到「交易外」的準備階段：
+    // 原本在 replayOrderItemEditsInTx 開頭 SELECT 並吞錯繼續，但 PG 交易內任一句失敗會毒化交易
+    // （後續語句全報 25P02、最後 COMMIT 實為 ROLLBACK）→ 整個 rebuild 靜默回滾卻回報成功＝品項憑空遺失。
+    // 交易外讀取失敗（如舊庫尚未建表）＝略過重放、rebuild 本體照常；交易內不再有任何吞例外語句。
+    // （order_items 的品項快照與 MAX(display_order) 仍須在交易內讀：要讀到本交易剛 DELETE+INSERT 的結果，
+    // 且該表必定存在、失敗即整批 ROLLBACK 上拋，無靜默風險。）
+    let editsForReplay = [];
+    try {
+        editsForReplay = await db.prepare("SELECT id, action, match_key, raw_name, quantity, unit, remark, created_at FROM order_item_edits WHERE order_id = ? ORDER BY created_at ASC, id ASC").all(orderId);
+    }
+    catch (e) {
+        // 表不存在（舊庫尚未 init）等情況：略過重放，不阻斷 rebuild 本體
+        console.warn("[rebuild-order] 讀取人工改單軌跡失敗（略過重放）orderId=%s: %s", orderId, e?.message || e);
+        editsForReplay = [];
+    }
     const doWrite = async (h) => {
         await h.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
         for (const r of rows) {
@@ -143,7 +156,7 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
         }
         // [fix 2026-07-10] 重建完成後、同一交易內重放人工改單軌跡（order_item_edits），
         // 避免 LINE「改第N項／刪第N項」等人工修正被 rebuild 默默還原（同日重開 session 再結單也會再覆寫一次）。
-        await replayOrderItemEditsInTx(h, orderId);
+        await replayOrderItemEditsInTx(h, orderId, editsForReplay);
     };
     if (typeof db.transaction === "function") {
         await db.transaction(doWrite);

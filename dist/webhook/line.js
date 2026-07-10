@@ -97,6 +97,8 @@ const orderConfirmReplyTimers = new Map();
 const recentLineMessageIdQueue = [];
 const recentLineMessageIdSet = new Set();
 const LINE_MSG_ID_CAP = 8000;
+/** [fix 2026-07-10] 持久化去重「processing 佔位」租約時長：逾時視為前一實例當機／卡死，可被接手重跑 */
+const PROCESSED_LINE_MSG_LEASE_MS = 10 * 60 * 1000;
 function consumeLineWebhookMessageOnce(messageId) {
     const id = messageId != null ? String(messageId).trim() : "";
     if (!id)
@@ -113,7 +115,8 @@ function consumeLineWebhookMessageOnce(messageId) {
     return true;
 }
 /** [fix 2026-07-10] 訊息處理「失敗」時釋放記憶體去重，讓 LINE redelivery（同 message.id）可在本實例重跑。
- * 與持久化去重的「完成才 INSERT」反轉語意配套（見事件迴圈 finally），失敗的訊息不留任何去重標記。 */
+ * 與持久化去重的「租約式原子佔位」配套（見事件迴圈入口／finally）：失敗時 finally 同步刪除
+ * 自己的 processing 佔位列，失敗的訊息不留任何去重標記。 */
 function releaseLineWebhookMessageOnce(messageId) {
     const id = messageId != null ? String(messageId).trim() : "";
     if (!id)
@@ -412,6 +415,30 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
             : null;
         await db.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, sub_customer, confidence_score)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(itemId, orderId, productId, item.rawName, qty, unit, needReviewFlag, itemRemark, subC, confidence);
+        // [fix 2026-07-10] 刪項軌跡的時間邊界：客戶「刪第N項」後同日又叫同品項時，結單 rebuild
+        // 依 created_at 重放 delete 會把「重叫」的品項也刪掉（漏出貨）。故新品項成功寫入後，
+        // 查該單 order_item_edits 是否已有同 match_key 的軌跡：
+        //   含 delete → 追加一筆 action='add'（帶新品項名/量/單位，created_at=now）抵銷——重放時
+        //               delete 先刪、後到的 add 會把品項補回（或更新既存品項數量）；
+        //   只有 set（無 delete）→ 追加新 set 軌跡（新數量），時間序重放以最新數量為準。
+        // 查詢／寫入失敗一律吞錯不阻斷收單（降級＝結單 rebuild 可能還原，不影響本次寫入）。
+        try {
+            const mk = (0, rebuild_order_from_sources_js_1.normalizeOrderItemMatchKey)(item.rawName);
+            if (mk) {
+                const priorEdits = await db.prepare("SELECT action FROM order_item_edits WHERE order_id = ? AND match_key = ?").all(orderId, mk);
+                if (priorEdits && priorEdits.length) {
+                    const priorActs = priorEdits.map((r) => String(r.action || "").trim().toLowerCase());
+                    if (priorActs.includes("delete")) {
+                        await recordOrderItemEdit(db, { orderId, action: "add", rawName: item.rawName, quantity: qty, unit, editedBy: "system:reorder_after_delete" });
+                    }
+                    else if (priorActs.includes("set")) {
+                        await recordOrderItemEdit(db, { orderId, action: "set", rawName: item.rawName, quantity: qty, unit, editedBy: "system:reorder_after_set" });
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn("[LINE] 改單軌跡抵銷檢查失敗（結單 rebuild 可能還原此品項）orderId=%s item=%s: %s", orderId, item.rawName, e?.message || e);
+        }
     }
 }
 /** raw_message 上限（字元數）：超過時前段截斷，避免整單重辨識送 Gemini 時 token 暴增 */
@@ -435,12 +462,26 @@ function isRawMessageNoise(line) {
         return true;
     return false;
 }
-async function appendRawLineToOrders(db, orderIds, lineText, nowSql) {
+async function appendRawLineToOrders(db, orderIds, lineText, nowSql, opts) {
     const line = String(lineText ?? "").trim();
     if (!line || !orderIds?.length)
         return;
     if (isRawMessageNoise(line)) return;
+    // [fix 2026-07-10] skipIfPresent：僅「接手逾時租約的重跑」（isRetry）路徑啟用——前次執行可能已把
+    // 同一行附加進 raw_message，重跑再附加會使結單 rebuild 品項雙倍。整行比對（split('\n')）已含即略過。
+    // 正常路徑不啟用：客戶連傳兩則相同文字仍應是兩行（行為不變）。
+    const skipIfPresent = Boolean(opts && opts.skipIfPresent);
     for (const oid of orderIds) {
+        if (skipIfPresent) {
+            try {
+                const prevRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
+                const prevLines = String(prevRow?.raw_message ?? "").split("\n");
+                if (prevLines.includes(line)) {
+                    console.log("[LINE] raw_message 已含完全相同一行（重跑冪等略過）orderId=%s", oid);
+                    continue;
+                }
+            } catch (_) { /* 查詢失敗照舊附加（寧可重複不可斷單） */ }
+        }
         // [fix 2026-07-10] 原「SELECT raw → 串接/截斷 → UPDATE」讀改寫在併發下（多實例／Cloud Tasks
         // 重疊投遞／同群組連續訊息）互相蓋寫：後寫者以較舊的 raw 為基底 → 先寫者附加的行遺失，
         // 結單 rebuild 依 raw_message 重建即漏品項（斷單）。改為單句原子 UPDATE：
@@ -492,6 +533,16 @@ async function duplicateAttachmentToOrders(db, lineMessageId, orderIds, nowSql) 
     if (!lineMessageId || !orderIds?.length)
         return;
     for (const oid of orderIds) {
+        // [fix 2026-07-10] 冪等：同 (order_id, line_message_id) 已存在就略過（接手逾時租約重跑、
+        // 跨程序重疊等重試路徑不重複掛同一張圖，否則結單 rebuild 逐附件解析會品項雙倍）。
+        // 查重失敗照插（寧可重複附件不可漏圖）。
+        try {
+            const dup = await db.prepare("SELECT id FROM order_attachments WHERE order_id = ? AND line_message_id = ? LIMIT 1").get(oid, lineMessageId);
+            if (dup) {
+                console.log("[LINE] 附件已存在（冪等略過）orderId=%s lineMessageId=%s", oid, lineMessageId);
+                continue;
+            }
+        } catch (_) { /* 查重失敗照插 */ }
         const attId = (0, id_js_1.newId)("att");
         await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, oid, lineMessageId);
     }
@@ -762,10 +813,13 @@ function createLineWebhook() {
         for (const event of events) {
             // [fix 2026-07-10] 本則訊息的去重狀態（供 finally 收尾）：
             // curLineMessageId＝訊息 id；ownsLineMessage＝本次執行通過所有去重、實際「佔有」處理權；
-            // eventFailed＝外層 catch 捕捉到錯誤。宣告在 try 外，try 內的 continue／throw 都會走到 finally。
+            // eventFailed＝外層 catch 捕捉到錯誤；lineMessageIsRetry＝接手「逾時 processing 租約」的重跑
+            // （前次執行可能已寫入部分資料，下游 raw_message／附件附加改走冪等判斷）。
+            // 宣告在 try 外，try 內的 continue／throw 都會走到 finally。
             let curLineMessageId = null;
             let ownsLineMessage = false;
             let eventFailed = false;
+            let lineMessageIsRetry = false;
             try {
                 if (event.type === "join" || event.type === "memberJoined") {
                     try {
@@ -857,27 +911,52 @@ function createLineWebhook() {
                         continue;
                     }
                 }
-                // [fix 2026-07-10] 持久化去重改為「完成才 INSERT」反轉語意（原為入口先 INSERT）：
-                // 舊作法在入口就把 message_id 寫進 processed_line_messages，之後任何一步拋錯被外層
-                // catch 吞掉後，LINE redelivery 帶同 message.id 再進來會命中去重被略過 → 該訊息永久斷單。
-                // processed_line_messages 只有 message_id + processed_at 兩欄（不動 schema 的前提下無法存
-                // processing 狀態／租約時間戳做「先標記＋逾時接手」），故採反轉語意：
-                //   1) 入口 SELECT 命中＝先前已「成功」處理完 → 略過；
-                //   2) 處理成功（含 try 內各 continue 正常結束路徑）→ finally 才 INSERT 完成標記；
-                //   3) 處理失敗 → 不落完成標記＋釋放記憶體去重 → redelivery 可完整重跑。
-                // 取捨：跨實例「同時」處理同一訊息的極短併發窗口不再被 DB 擋（INSERT-first 擋得住、
-                // SELECT-first 擋不住），由既有記憶體 Set（同實例併發）＋ orders.line_message_id
-                // （建單訊息）補位；LINE redelivery 間隔以分鐘計，實務重疊機率遠低於「拋錯即永久斷單」。
+                // [fix 2026-07-10] 持久化去重＝「租約式原子佔位」（processed_line_messages 新增 status/claimed_at）：
+                // 前一版「完成才 INSERT」的 SELECT-first 語意在跨程序秒級重疊（Cloud Tasks worker 與
+                // enqueue 失敗 fallback 幾乎同時處理同一則）時，兩邊都查不到完成標記 → 品項雙寫。
+                // 現改為入口原子佔位，同時保留「失敗可重跑」：
+                //   1) INSERT status='processing' ON CONFLICT DO NOTHING：changes=1＝佔位成功，獨佔處理權；
+                //   2) changes=0＝已有列：status='done' 或 NULL（舊語意完成列）→ 已成功處理過，略過；
+                //      status='processing' 且租約（claimed_at）未逾時 → 他實例處理中，略過；
+                //      租約逾時（前一實例當機／卡死）→ 條件式 UPDATE claimed_at（樂觀鎖，WHERE 帶舊值，
+                //      同時搶只有一個 changes=1）搶到才接手重跑（lineMessageIsRetry=true → 下游冪等路徑）；
+                //   3) 處理成功 → finally 改標 status='done'；失敗 → finally 只刪自己的 processing 佔位列，
+                //      LINE redelivery 可整則重跑，不會永久斷單。
+                // 佔位查詢／INSERT 失敗一律放行（寧可重複不可斷單；仍有記憶體 Set + dupByOrder 兩層防護）。
                 if (curLineMessageId) {
                     try {
-                        const doneRow = await db.prepare("SELECT message_id FROM processed_line_messages WHERE message_id = ?").get(curLineMessageId);
-                        if (doneRow) {
-                            console.log("[LINE] 持久化去重命中（processed_line_messages，已成功處理過），略過重複訊息 messageId=%s", curLineMessageId);
-                            continue;
+                        const nowSqlClaim = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
+                        const nowIso = new Date().toISOString();
+                        const ins = await db.prepare(
+                            "INSERT INTO processed_line_messages (message_id, processed_at, status, claimed_at) VALUES (?, " + nowSqlClaim + ", 'processing', ?) ON CONFLICT (message_id) DO NOTHING"
+                        ).run(curLineMessageId, nowIso);
+                        if ((ins?.changes ?? 0) === 0) {
+                            const claimRow = await db.prepare("SELECT status, claimed_at FROM processed_line_messages WHERE message_id = ?").get(curLineMessageId);
+                            // 舊列 status=NULL＝舊語意的完成標記；列消失（極端競態：他實例失敗剛刪除）也保守略過，等 redelivery
+                            const claimSt = claimRow && claimRow.status != null ? String(claimRow.status).trim().toLowerCase() : "done";
+                            if (claimSt !== "processing") {
+                                console.log("[LINE] 持久化去重命中（processed_line_messages，已成功處理過），略過重複訊息 messageId=%s", curLineMessageId);
+                                continue;
+                            }
+                            const claimedMs = claimRow.claimed_at != null ? Date.parse(String(claimRow.claimed_at)) : NaN;
+                            const leaseExpired = !Number.isFinite(claimedMs) || (Date.now() - claimedMs) > PROCESSED_LINE_MSG_LEASE_MS;
+                            if (!leaseExpired) {
+                                console.log("[LINE] 他實例處理中（processing 租約未逾時），略過 messageId=%s claimed_at=%s", curLineMessageId, claimRow.claimed_at);
+                                continue;
+                            }
+                            const takeover = claimRow.claimed_at != null
+                                ? await db.prepare("UPDATE processed_line_messages SET claimed_at = ? WHERE message_id = ? AND status = 'processing' AND claimed_at = ?").run(nowIso, curLineMessageId, claimRow.claimed_at)
+                                : await db.prepare("UPDATE processed_line_messages SET claimed_at = ? WHERE message_id = ? AND status = 'processing' AND claimed_at IS NULL").run(nowIso, curLineMessageId);
+                            if ((takeover?.changes ?? 0) !== 1) {
+                                console.log("[LINE] 逾時租約已被他實例接手（或已完成），略過 messageId=%s", curLineMessageId);
+                                continue;
+                            }
+                            lineMessageIsRetry = true;
+                            console.warn("[LINE] 接手逾時 processing 租約重跑 messageId=%s（原 claimed_at=%s，前次可能已寫入部分資料，下游改走冪等路徑）", curLineMessageId, claimRow.claimed_at);
                         }
                     } catch (e) {
-                        // 去重表查詢失敗不可阻斷正常收單（放行；仍有記憶體 Set + dupByOrder 兩層防護）
-                        console.warn("[LINE] 持久化去重查詢失敗（放行）messageId=%s: %s", curLineMessageId, e?.message || e);
+                        // 佔位失敗不可阻斷正常收單（放行；仍有記憶體 Set + dupByOrder 兩層防護）
+                        console.warn("[LINE] 持久化去重佔位失敗（放行）messageId=%s: %s", curLineMessageId, e?.message || e);
                     }
                 }
                 if (!consumeLineWebhookMessageOnce(event.message?.id)) {
@@ -1268,14 +1347,14 @@ function createLineWebhook() {
                             }
                         }
                         else if (parsedFromImg.length > 0) {
-                            const attId = (0, id_js_1.newId)("att");
-                            await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, session.orderId, messageId);
+                            // [fix 2026-07-10] 改走 duplicateAttachmentToOrders（含 (order_id, line_message_id) 冪等查重），重試路徑不重複掛圖
+                            await duplicateAttachmentToOrders(db, messageId, [session.orderId], nowSql);
                             await insertParsedItemsForOrder(db, session.orderId, session.customerId, parsedFromImg, fallbackUnitImg);
                             await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, session.orderId);
                         }
                         else {
-                            const attId = (0, id_js_1.newId)("att");
-                            await db.prepare("INSERT INTO order_attachments (id, order_id, line_message_id, created_at) VALUES (?, ?, ?, " + nowSql + ")").run(attId, session.orderId, messageId);
+                            // [fix 2026-07-10] 同上：冪等掛附件
+                            await duplicateAttachmentToOrders(db, messageId, [session.orderId], nowSql);
                             await db.prepare("UPDATE orders SET raw_message = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRawAppend, session.orderId);
                         }
                     }
@@ -1809,7 +1888,8 @@ function createLineWebhook() {
                 const session = collectingByGroup.get(groupId);
                 const { orderId, customerId: cid } = session;
                 const idsForRaw = (session.allOrderIds && session.allOrderIds.length) ? [...new Set(session.allOrderIds)] : [orderId];
-                await appendRawLineToOrders(db, idsForRaw, text, nowSql);
+                // [fix 2026-07-10] 接手逾時租約重跑（lineMessageIsRetry）時啟用冪等：前次可能已附加同一行
+                await appendRawLineToOrders(db, idsForRaw, text, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                 // 對話紀錄：客戶訊息（含 LINE 顯示名稱，供審核頁顯示發話者）
                 try {
                     const spkName = senderUserId ? await (0, line_conversation_js_1.upsertGroupSpeaker)(db, lineClient, groupId, senderUserId, null) : null;
@@ -1956,26 +2036,32 @@ function createLineWebhook() {
             }
             finally {
                 // [fix 2026-07-10] 訊息處理收尾（try 內大量 continue 也會先經過這裡＝所有成功路徑都被標記）：
-                // 成功 → INSERT processed_line_messages 完成標記（此後同 message.id 的 redelivery 永久略過）；
-                // 失敗 → 釋放記憶體去重＋best-effort DELETE 完成標記（反轉語意下失敗路徑本來就沒 INSERT，
-                //         DELETE 僅防禦性清理），讓 LINE redelivery 可整則重跑，不再永久斷單。
+                // 成功 → 把入口的 processing 佔位列改標 status='done'（此後同 message.id 的 redelivery 永久略過）；
+                //         若佔位列不存在（入口佔位曾因查詢例外「放行」）→ 補 INSERT 一筆 done 完成標記。
+                // 失敗 → 釋放記憶體去重＋只 DELETE「自己的 processing 佔位列」（帶 status='processing' 條件，
+                //         不會誤刪他實例已寫入的 done 完成標記），讓 LINE redelivery 可整則重跑，不再永久斷單。
                 if (ownsLineMessage && curLineMessageId) {
+                    const nowSqlDone = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
                     if (!eventFailed) {
                         try {
-                            const nowSqlDone = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-                            await db.prepare(
-                                "INSERT INTO processed_line_messages (message_id, processed_at) VALUES (?, " + nowSqlDone + ") ON CONFLICT (message_id) DO NOTHING"
+                            const done = await db.prepare(
+                                "UPDATE processed_line_messages SET status = 'done', processed_at = " + nowSqlDone + " WHERE message_id = ?"
                             ).run(curLineMessageId);
+                            if ((done?.changes ?? 0) === 0) {
+                                await db.prepare(
+                                    "INSERT INTO processed_line_messages (message_id, processed_at, status, claimed_at) VALUES (?, " + nowSqlDone + ", 'done', NULL) ON CONFLICT (message_id) DO NOTHING"
+                                ).run(curLineMessageId);
+                            }
                         } catch (e) {
-                            // 完成標記寫失敗：跨實例重投遞可能重跑本則（有 dupByOrder/記憶體 Set 補位），不阻斷
+                            // 完成標記寫失敗：租約逾時後可能被接手重跑本則（有 dupByOrder/記憶體 Set 補位），不阻斷
                             console.warn("[LINE] 完成標記寫入失敗（跨實例重送恐重跑本則）messageId=%s: %s", curLineMessageId, e?.message || e);
                         }
                     } else {
                         releaseLineWebhookMessageOnce(curLineMessageId);
                         try {
-                            await db.prepare("DELETE FROM processed_line_messages WHERE message_id = ?").run(curLineMessageId);
-                        } catch (_) { /* best-effort：失敗不影響（本來就未 INSERT） */ }
-                        console.warn("[LINE] 訊息處理失敗，已釋放去重標記供 LINE redelivery 重試 messageId=%s", curLineMessageId);
+                            await db.prepare("DELETE FROM processed_line_messages WHERE message_id = ? AND status = 'processing'").run(curLineMessageId);
+                        } catch (_) { /* best-effort：刪不掉時租約 10 分鐘後逾時仍可被接手，不阻斷 */ }
+                        console.warn("[LINE] 訊息處理失敗，已釋放去重佔位供 LINE redelivery 重試 messageId=%s", curLineMessageId);
                     }
                 }
             }
@@ -2014,8 +2100,10 @@ function createLineWebhook() {
             (async () => {
                 // [fix 2026-07-08] 原本任一 event enqueue 失敗就 fallback 重跑「全部」events，
                 // 已成功入列的會被 Cloud Tasks 執行一次 + fallback 再處理一次 → 重複處理。
-                // 改為逐則捕捉，只把「入列失敗」的 events 收集起來 fallback 直接處理；
-                // 加上新的持久化去重（processed_line_messages）作為最後一道保險，即使仍有重疊也不會重複寫入品項。
+                // 改為逐則捕捉，只把「入列失敗」的 events 收集起來 fallback 直接處理。
+                // [fix 2026-07-10] 若 fallback 與 worker 仍秒級重疊處理同一則，由 processed_line_messages
+                // 的「租約式原子佔位」（入口 INSERT processing ON CONFLICT DO NOTHING）保證只有一方佔位成功，
+                // 另一方在入口即略過，不會雙寫品項。
                 const failedEvents = [];
                 for (const ev of events) {
                     try {
@@ -2027,7 +2115,8 @@ function createLineWebhook() {
                     }
                 }
                 if (failedEvents.length) {
-                    // 回退直接處理：dedup 三層（記憶體 Set + DB line_message_id + processed_line_messages）防止重複下單
+                    // 回退直接處理：dedup 三層防止重複下單——記憶體 Set（同實例）＋ orders.line_message_id
+                    // （建單訊息）＋ processed_line_messages 租約式原子佔位（跨程序，與 worker 重疊也只有一方成功佔位）
                     processLineWebhookEvents(failedEvents).catch((e2) => console.error("[LINE] Cloud Tasks fallback 直接處理失敗:", e2?.message || e2));
                 }
             })();
