@@ -36,7 +36,19 @@
 | 目前庫存 | `SK_NOWQTY` | 現有量（即時、可為負，正常） |
 | 預設入庫倉別 | `SK_RKWHNO` | 後台倉別**只認凌越倉號**（如 FN005/Y99），不是自建倉 |
 | **停用碼** | **`SK_STOP`** | **`1`=停用；推送時一律過濾掉不推**（`ly_stock_push.py`） |
-- 庫存快照存 `erp_stock_items`（全表覆蓋）；後台「庫存管理 → 目前庫存」顯示。
+- 庫存快照存 `erp_stock_items`（**按公司 icpno 覆蓋**）；後台「庫存管理 → 目前庫存」顯示（公司分段切換）。
+
+## 松揚掃碼盤點（多公司，2026-07-10 新）
+- **松揚＝同一套凌越的公司代碼 `02`**（00 松富、01 龍港、03 松成）。`erp_stock_items`/`erp_warehouse`
+  主鍵已改 **(icpno, 料號/倉號)**、`stocktake_session` 加 `icpno`（NULL＝'00'）；DB init 有冪等遷移。
+  公司名權威 helper：`dist/lib/erp-companies.js`（`normIcpno`/`erpCompanyName`）。
+- 內網代理 `LY_ICPNO` 可逗號多家（如 `00,02`）＝庫存推送逐家推；**訂單回寫/單品查詢只用第一家**
+  （`ly_agent_gui.py` 的 `first_icpno()`，防把 "00,02" 傳進凌越）。
+- **LIFF 掃碼頁 `/liff/scan`**（env `LIFF_ID_SCAN`，預設 icpno=02）：手機當 PDA 連續掃碼盤點，
+  寫入**同一套盤點表**（後台每日盤點直接看到，倉庫卡片帶「松揚」標）。凌越沒維護條碼→
+  條碼對照存 `product_barcode`（`(icpno,barcode)`→料號＋`qty_per_scan` 箱碼倍數），**邊掃邊綁**建檔；
+  後台總管理在「庫存管理 → 條碼對照」。⚠ iPhone 的 LINE 瀏覽器不支援 BarcodeDetector（自動退回手動輸入）。
+  細節與上線步驟（要開新 LIFF app）見 `docs/松揚-掃碼盤點.md`。
 
 ## LINE 盤點系統（已上線）
 - **LIFF 盤點頁** `dist/liff/stocktake.html`（LIFF `2010106501-VocNwkbA`，端點 `/liff/stocktake`）：

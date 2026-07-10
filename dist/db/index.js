@@ -176,6 +176,8 @@ function initSqlite(dbPath) {
         // [fix 2026-07-08] 凌越寫入失敗出口：累計嘗試次數與最後錯誤；permanent 或超過上限即移出佇列並顯示原因
         "ALTER TABLE orders ADD COLUMN lingyue_write_attempts INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE orders ADD COLUMN lingyue_last_error TEXT",
+        // 多公司盤點（松富00＋松揚02…）：場次記公司代碼，NULL 視為 '00'
+        "ALTER TABLE stocktake_session ADD COLUMN icpno TEXT",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -243,14 +245,49 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
-        // 凌越貨品主檔目前庫存（SK_NOWQTY）快照。內網 agent 每次推送整批 → 全表覆蓋（DELETE+INSERT）。
+        // 凌越貨品主檔目前庫存（SK_NOWQTY）快照。內網 agent 每次推送整批 → 按公司(icpno)覆蓋（DELETE WHERE icpno + INSERT）。
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_items (erp_code TEXT PRIMARY KEY, name TEXT, spec TEXT, unit TEXT, qty REAL NOT NULL DEFAULT 0, wh_code TEXT, icpno TEXT, updated_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh ON erp_stock_items(wh_code)");
     }
     catch (_) { /* table may already exist */ }
+    // [migration 2026-07-10] 多公司（松富00＋松揚02…）：料號各公司獨立，主鍵改 (icpno, erp_code)；舊資料補 icpno='00'。
+    try {
+        const pkCols = sqlite.prepare("SELECT name FROM pragma_table_info('erp_stock_items') WHERE pk > 0 ORDER BY pk").all().map((r) => String(r.name));
+        if (pkCols.length === 1 && pkCols[0] === "erp_code") {
+            sqlite.exec("BEGIN");
+            sqlite.exec("CREATE TABLE erp_stock_items_v2 (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, name TEXT, spec TEXT, unit TEXT, qty REAL NOT NULL DEFAULT 0, wh_code TEXT, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
+            sqlite.exec("INSERT INTO erp_stock_items_v2 (icpno, erp_code, name, spec, unit, qty, wh_code, updated_at) SELECT COALESCE(NULLIF(TRIM(icpno),''),'00'), erp_code, name, spec, unit, qty, wh_code, updated_at FROM erp_stock_items");
+            sqlite.exec("DROP TABLE erp_stock_items");
+            sqlite.exec("ALTER TABLE erp_stock_items_v2 RENAME TO erp_stock_items");
+            sqlite.exec("COMMIT");
+            sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh ON erp_stock_items(wh_code)");
+            console.log("[migration] erp_stock_items 主鍵改為 (icpno, erp_code)");
+        }
+    }
+    catch (e) { try { sqlite.exec("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_stock_items 多公司主鍵遷移失敗:", e?.message || e); }
     try {
         // 凌越倉別設定：代號→中文名、是否納入盤點。代號來源＝erp_stock_items.wh_code。
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_warehouse (code TEXT PRIMARY KEY, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
+    }
+    catch (_) { /* table may already exist */ }
+    // [migration 2026-07-10] 倉別也按公司：主鍵改 (icpno, code)；舊資料補 icpno='00'。
+    try {
+        const whPk = sqlite.prepare("SELECT name FROM pragma_table_info('erp_warehouse') WHERE pk > 0 ORDER BY pk").all().map((r) => String(r.name));
+        if (whPk.length === 1 && whPk[0] === "code") {
+            sqlite.exec("BEGIN");
+            sqlite.exec("CREATE TABLE erp_warehouse_v2 (icpno TEXT NOT NULL DEFAULT '00', code TEXT NOT NULL, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, code))");
+            sqlite.exec("INSERT INTO erp_warehouse_v2 (icpno, code, name, include_stocktake, sort_order, updated_at) SELECT '00', code, name, include_stocktake, sort_order, updated_at FROM erp_warehouse");
+            sqlite.exec("DROP TABLE erp_warehouse");
+            sqlite.exec("ALTER TABLE erp_warehouse_v2 RENAME TO erp_warehouse");
+            sqlite.exec("COMMIT");
+            console.log("[migration] erp_warehouse 主鍵改為 (icpno, code)");
+        }
+    }
+    catch (e) { try { sqlite.exec("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_warehouse 多公司主鍵遷移失敗:", e?.message || e); }
+    try {
+        // 商品條碼對照（掃碼盤點/進貨用）：一個品項可多條碼；qty_per_scan=掃一下代表幾個單位（箱碼>1）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS product_barcode (icpno TEXT NOT NULL DEFAULT '00', barcode TEXT NOT NULL, erp_code TEXT NOT NULL, qty_per_scan REAL NOT NULL DEFAULT 1, note TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, barcode))");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_product_barcode_item ON product_barcode(icpno, erp_code)");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -796,14 +833,49 @@ async function initPg() {
             }
             catch (_) { /* table may already exist */ }
             try {
-                // 凌越貨品主檔目前庫存（SK_NOWQTY）快照。內網 agent 每次推送整批 → 全表覆蓋（DELETE+INSERT）。
+                // 凌越貨品主檔目前庫存（SK_NOWQTY）快照。內網 agent 每次推送整批 → 按公司(icpno)覆蓋（DELETE WHERE icpno + INSERT）。
                 await client.query("CREATE TABLE IF NOT EXISTS erp_stock_items (erp_code TEXT PRIMARY KEY, name TEXT, spec TEXT, unit TEXT, qty DOUBLE PRECISION NOT NULL DEFAULT 0, wh_code TEXT, icpno TEXT, updated_at TEXT)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh ON erp_stock_items(wh_code)");
             }
             catch (_) { /* table may already exist */ }
+            // [migration 2026-07-10] 多公司（松富00＋松揚02…）：主鍵改 (icpno, erp_code)；舊資料補 icpno='00'。
+            try {
+                const pkRes = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'erp_stock_items'::regclass AND i.indisprimary");
+                const pkCols = (pkRes.rows || []).map((r) => String(r.attname));
+                if (pkCols.length === 1 && pkCols[0] === "erp_code") {
+                    await client.query("UPDATE erp_stock_items SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
+                    await client.query("ALTER TABLE erp_stock_items DROP CONSTRAINT erp_stock_items_pkey");
+                    await client.query("ALTER TABLE erp_stock_items ALTER COLUMN icpno SET NOT NULL");
+                    await client.query("ALTER TABLE erp_stock_items ALTER COLUMN icpno SET DEFAULT '00'");
+                    await client.query("ALTER TABLE erp_stock_items ADD PRIMARY KEY (icpno, erp_code)");
+                    console.log("[migration] erp_stock_items 主鍵改為 (icpno, erp_code)");
+                }
+            }
+            catch (e) { console.warn("[migration] erp_stock_items 多公司主鍵遷移失敗:", e?.message || e); }
             try {
                 // 凌越倉別設定：代號→中文名、是否納入盤點。
                 await client.query("CREATE TABLE IF NOT EXISTS erp_warehouse (code TEXT PRIMARY KEY, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
+            }
+            catch (_) { /* table may already exist */ }
+            // [migration 2026-07-10] 倉別也按公司：主鍵改 (icpno, code)；舊資料補 icpno='00'。
+            try {
+                await client.query("ALTER TABLE erp_warehouse ADD COLUMN IF NOT EXISTS icpno TEXT");
+                const whPkRes = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'erp_warehouse'::regclass AND i.indisprimary");
+                const whPk = (whPkRes.rows || []).map((r) => String(r.attname));
+                if (whPk.length === 1 && whPk[0] === "code") {
+                    await client.query("UPDATE erp_warehouse SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
+                    await client.query("ALTER TABLE erp_warehouse DROP CONSTRAINT erp_warehouse_pkey");
+                    await client.query("ALTER TABLE erp_warehouse ALTER COLUMN icpno SET NOT NULL");
+                    await client.query("ALTER TABLE erp_warehouse ALTER COLUMN icpno SET DEFAULT '00'");
+                    await client.query("ALTER TABLE erp_warehouse ADD PRIMARY KEY (icpno, code)");
+                    console.log("[migration] erp_warehouse 主鍵改為 (icpno, code)");
+                }
+            }
+            catch (e) { console.warn("[migration] erp_warehouse 多公司主鍵遷移失敗:", e?.message || e); }
+            try {
+                // 商品條碼對照（掃碼盤點/進貨用）：一個品項可多條碼；qty_per_scan=掃一下代表幾個單位（箱碼>1）。
+                await client.query("CREATE TABLE IF NOT EXISTS product_barcode (icpno TEXT NOT NULL DEFAULT '00', barcode TEXT NOT NULL, erp_code TEXT NOT NULL, qty_per_scan DOUBLE PRECISION NOT NULL DEFAULT 1, note TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, barcode))");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_product_barcode_item ON product_barcode(icpno, erp_code)");
             }
             catch (_) { /* table may already exist */ }
             try {
@@ -814,6 +886,8 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (erp_code TEXT PRIMARY KEY, expiry_unit TEXT, created_at TEXT)");
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS mid_qty DOUBLE PRECISION");
+                // 多公司盤點（松富00＋松揚02…）：場次記公司代碼，NULL 視為 '00'
+                await client.query("ALTER TABLE stocktake_session ADD COLUMN IF NOT EXISTS icpno TEXT");
                 // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
                 await client.query("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
                 // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。

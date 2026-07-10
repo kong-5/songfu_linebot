@@ -134,6 +134,15 @@ def _short(e, n: int = 160) -> str:
     return s if len(s) <= n else s[:n] + " …"
 
 
+def first_icpno(s) -> str:
+    """公司代碼設定可逗號多家（庫存推送用，如 "00,02"）；訂單回寫/單品查詢只能單一公司→取第一家。"""
+    for p in str(s or "").split(","):
+        p = p.strip()
+        if p:
+            return p
+    return "00"
+
+
 def now_hms() -> str:
     return datetime.datetime.now().strftime("%H:%M:%S")
 
@@ -375,7 +384,8 @@ class AgentEngine:
         """只寫「傳入的這批訂單」（來自 /wait 佇列＝使用者在網站按過『上傳凌越』的單）。
         絕不主動去撈 /pending 全部訂單。dry_run=只印不寫。
         欄位對映一律用 ly_writeback_bridge.map_order（唯一權威，含拋轉必備欄位）。"""
-        base, key, icpno = self.cfg["cloud_base"], self.cfg["writeback_key"], self.cfg["icpno"]
+        base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
+        icpno = first_icpno(self.cfg["icpno"])  # 回寫只寫第一家（多家設定僅庫存推送使用）
         try:
             wb = local_import("ly_writeback_bridge")  # 用隨附版本；提供 map_order/post_callback/ly_order
         except Exception as e:
@@ -560,7 +570,8 @@ class AgentEngine:
     def _txn_loop(self):
         self.stop_event.wait(10)
         while not self.stop_event.is_set():
-            base, key, icpno = self.cfg["cloud_base"], self.cfg["writeback_key"], self.cfg["icpno"]
+            base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
+            icpno = first_icpno(self.cfg["icpno"])  # 單品查詢預設用第一家（雲端請求本身可帶 icpno）
             if not base or not key:
                 self.stop_event.wait(5)
                 continue
@@ -908,7 +919,7 @@ class SettingsDialog(tk.Toplevel):
                        selectcolor=PANEL, activebackground=BG, activeforeground=FG,
                        command=lambda: key_entry.config(show="" if show_var.get() else "*"),
                        font=("Microsoft JhengHei UI", 8)).pack(anchor="w", padx=16)
-        row("公司代碼 (LY_ICPNO)", "icpno", "松富=00、龍港=01、桂田=03")
+        row("公司代碼 (LY_ICPNO)", "icpno", "松富=00、龍港=01、松揚=02、桂田=03；庫存推送可逗號多家如 00,02（回寫只用第一家）")
 
         tk.Label(self, text="庫存代理", fg=BLUE, bg=BG, anchor="w",
                  font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(12, 2))
