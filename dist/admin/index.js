@@ -77,6 +77,7 @@ const announcement_image_js_1 = require("../lib/announcement-image.js");
 const calendar_holidays_js_1 = require("../lib/calendar-holidays.js");
 const route_war_room_js_1 = require("../lib/route-war-room.js");
 const quote_report_js_1 = require("../lib/quote-report.js");
+const ops_notify_js_1 = require("../lib/ops-notify.js");
 const crypto_1 = require("crypto");
 const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 /** 訂單明細／客戶預設單位等下拉選單（常見台灣生鮮單位） */
@@ -2755,7 +2756,12 @@ function createAdminRouter() {
                 res.status(503).json({ error: "LINGYUE_WRITEBACK_KEY 未設定（請於 Cloud Run 環境變數設定後再用）" });
                 return;
             }
-            if (!provided || provided !== expected) {
+            // [fix 2026-07-10] 金鑰比對改 timingSafeEqual：避免逐字元比較的時間側信道（長度不同先擋，
+            // timingSafeEqual 要求兩邊等長，長度本身不視為秘密）。
+            const providedBuf = Buffer.from(provided, "utf8");
+            const expectedBuf = Buffer.from(expected, "utf8");
+            if (!provided || providedBuf.length !== expectedBuf.length
+                || !crypto_1.timingSafeEqual(providedBuf, expectedBuf)) {
                 res.status(401).json({ error: "unauthorized" });
                 return;
             }
@@ -6948,6 +6954,7 @@ function createAdminRouter() {
             refresh_requested_at: await get("erp_stock_refresh_requested_at"),
             refresh_error: await get("erp_stock_refresh_error"),
             refresh_error_at: await get("erp_stock_refresh_error_at"),
+            agent_last_wait_at: await get("ly_agent_last_wait_at"), // 內網代理最後連上 /wait 的心跳
         };
     }
     router.get("/inventory/stock", async (req, res) => {
@@ -6985,6 +6992,18 @@ function createAdminRouter() {
         const dataJson = JSON.stringify({ items, assign, whname }).replace(/</g, "\\u003c");
         const meta = await readStockMeta();
         const snapLabel = meta.snapshot_at ? fmtTaipeiYMDHM(meta.snapshot_at, "尚無資料") : "尚無資料";
+        // [ops 2026-07-10] 內網代理心跳顯示：讀 ly_agent_last_wait_at（/wait 每次進來都會 upsert），
+        // 超過 10 分鐘沒連線＝代理可能掛了，顯示紅字提醒（偵測交由此處顯示，不做定時器）。
+        let agentLabel = "尚無紀錄";
+        let agentStale = false;
+        if (meta.agent_last_wait_at) {
+            const t = Date.parse(meta.agent_last_wait_at);
+            if (Number.isFinite(t)) {
+                const mins = Math.max(0, Math.floor((Date.now() - t) / 60000));
+                agentStale = mins > 10;
+                agentLabel = mins < 1 ? "剛剛" : `${mins} 分鐘前`;
+            }
+        }
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 目前庫存</div>
       <style>${STK_STYLE}</style>
@@ -7000,7 +7019,7 @@ function createAdminRouter() {
             <label class="sf-switch-label"><input type="checkbox" id="stkLowOnly"><span class="sf-switch"></span>只看低量/負量</label>
           </div>
           <div class="stk-toolbar-right">
-            <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項</span>
+            <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項 · 內網代理最後連線：<b${agentStale ? ' style="color:#b91c1c;"' : ""}>${escapeHtml(agentLabel)}</b></span>
             <button type="button" id="stkExport" class="btn">匯出</button>
             <button type="button" id="stkRefresh" class="btn btn-primary">庫存更新</button>
           </div>
@@ -10868,9 +10887,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         // [fix 2026-07-08] 認領租約：過去 /wait 對「已排隊未回寫」的單無條件回傳，
         // 多個 agent 或 agent 重啟同時 /wait 會拿到同一批單 → 各自寫入凌越 → 重複開單。
         // 改成每張單先用條件式 UPDATE 蓋 claimed_at 認領；只有 changes=1（本次真的搶到）才回傳。
-        // 租約 90 秒內其他 /wait 不會再撿到同一張；agent 若掛掉沒回填，租約到期後自動重新可撿（自帶重試）。
-        const LEASE_MS = 90000;
+        // 租約期間其他 /wait 不會再撿到同一張；agent 若掛掉沒回填，租約到期後自動重新可撿（自帶重試）。
+        // [fix 2026-07-10] 租約 90 秒 → 10 分鐘：一批單最壞寫入時間（凌越 SOAP 逐張寫＋逐張查倉別）
+        // 遠超 90 秒，租約先過期＝別條 /wait 重撿同單＝重複開單。10 分鐘涵蓋最壞批次＋回報時間。
+        // 同時單批上限 20 → 5（下方 SQL LIMIT）：縮短「已寫入凌越、尚未回填」的風險窗口。
+        const LEASE_MS = 600000;
         try {
+            // [ops 2026-07-10] 心跳：記錄內網代理最後一次連上 /wait 的時間（後台庫存頁顯示「內網代理最後連線」）。
+            try {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ly_agent_last_wait_at", new Date().toISOString());
+            }
+            catch (_) { /* 心跳寫入失敗不影響主流程 */ }
             while (true) {
                 const claimBefore = new Date(Date.now() - LEASE_MS).toISOString();
                 const rows = await db.prepare(`
@@ -10881,7 +10908,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
             AND (o.lingyue_claimed_at IS NULL OR o.lingyue_claimed_at < ?)
           ORDER BY o.lingyue_queued_at ASC, o.id ASC
-          LIMIT 20
+          LIMIT 5
         `).all(claimBefore);
                 if (rows && rows.length) {
                     const orders = [];
@@ -10946,14 +10973,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 }
                 if (!ok || !docNo) {
                     // [fix 2026-07-08] 失敗出口：記錄錯誤。permanent（如缺料號）或累計 >=3 次即移出佇列（清 queued/claimed），
-                    // 否則保留佇列讓租約到期後自動重試（不清 claimed_at＝維持 90 秒節流，不狂重試）。
+                    // 否則保留佇列讓租約到期後自動重試（不清 claimed_at＝維持租約節流，不狂重試）。
                     const errMsg = (r?.error ? String(r.error) : "寫入未成功或缺少 doc_no").slice(0, 500);
                     const permanent = r?.permanent === true;
                     try {
-                        const cur = await db.prepare("SELECT COALESCE(lingyue_write_attempts, 0) AS n FROM orders WHERE id = ?").get(orderId);
+                        const cur = await db.prepare("SELECT COALESCE(lingyue_write_attempts, 0) AS n, order_no FROM orders WHERE id = ?").get(orderId);
                         const n = (cur?.n || 0) + 1;
                         if (permanent || n >= 3) {
                             await db.prepare("UPDATE orders SET lingyue_write_attempts = ?, lingyue_last_error = ?, lingyue_queued_at = NULL, lingyue_claimed_at = NULL WHERE id = ?").run(n, errMsg, orderId);
+                            // [ops 2026-07-10] 三振出局（或永久失敗）＝移出佇列後不會再自動重試，推播告警提醒人工處理。
+                            ops_notify_js_1.notifyOps(db, `凌越回寫失敗已移出佇列（${permanent ? "永久錯誤" : `已重試 ${n} 次`}）：訂單 ${cur?.order_no || orderId}，錯誤：${errMsg.slice(0, 200)}`).catch(() => { });
                         }
                         else {
                             await db.prepare("UPDATE orders SET lingyue_write_attempts = ?, lingyue_last_error = ? WHERE id = ?").run(n, errMsg, orderId);
@@ -10964,6 +10993,27 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     continue;
                 }
                 try {
+                    // [fix 2026-07-10] 冪等防護：agent 可能因 callback 失敗而重送（journal 重播）。
+                    //  - 已有相同 doc_no → 視為冪等成功，不再覆寫（保留原 written_at）。
+                    //  - 已有「不同」doc_no → 衝突（可能重複開單）：不覆蓋，記 lingyue_last_error ＋推播告警，人工到凌越核對。
+                    const cur = await db.prepare("SELECT lingyue_doc_no, order_no FROM orders WHERE id = ?").get(orderId);
+                    if (!cur) {
+                        failed.push({ order_id: orderId, reason: "查無此訂單" });
+                        continue;
+                    }
+                    const existing = cur.lingyue_doc_no != null ? String(cur.lingyue_doc_no).trim() : "";
+                    if (existing && existing === docNo) {
+                        updated.push({ order_id: orderId, doc_no: docNo, idempotent: true });
+                        continue;
+                    }
+                    if (existing && existing !== docNo) {
+                        const conflictMsg = `凌越單號衝突：後台已記 ${existing}，agent 又回報 ${docNo}（未覆蓋）。可能重複開單，請到凌越核對並刪除多餘的單。`;
+                        console.error("[admin] lingyue-writeback/callback 單號衝突", orderId, "existing=", existing, "incoming=", docNo);
+                        await db.prepare("UPDATE orders SET lingyue_last_error = ? WHERE id = ?").run(conflictMsg.slice(0, 500), orderId);
+                        ops_notify_js_1.notifyOps(db, `訂單 ${cur.order_no || orderId} ${conflictMsg}`).catch(() => { });
+                        failed.push({ order_id: orderId, reason: conflictMsg, conflict: true });
+                        continue;
+                    }
                     // 成功：回填單號＋時間，並清掉失敗計數/錯誤與認領。
                     const ret = await db.prepare("UPDATE orders SET lingyue_doc_no = ?, lingyue_written_at = ?, lingyue_last_error = NULL, lingyue_write_attempts = 0, lingyue_claimed_at = NULL WHERE id = ?").run(docNo, now, orderId);
                     if (ret && (ret.changes === 0)) {
@@ -11046,6 +11096,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/inventory-push", e?.message || e);
+            // [ops 2026-07-10] 庫存推送失敗＝後台庫存可能過期，推播告警（交易已回滾、保留上一份快照）。
+            ops_notify_js_1.notifyOps(db, `凌越庫存推送（inventory-push）失敗：${String(e?.message || e).slice(0, 200)}`).catch(() => { });
             res.status(500).json({ error: "inventory-push 失敗", detail: String(e?.message || e) });
         }
     });
@@ -11063,6 +11115,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             timeoutSec = 50;
         const deadline = Date.now() + timeoutSec * 1000;
         try {
+            // [ops 2026-07-10] 心跳：記錄內網代理最後一次連上 inventory-wait 的時間。
+            try {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ly_agent_last_inventory_wait_at", new Date().toISOString());
+            }
+            catch (_) { /* 心跳寫入失敗不影響主流程 */ }
             while (true) {
                 const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_stock_refresh_requested_at");
                 const reqAt = row && row.value ? String(row.value).trim() : "";
@@ -11099,6 +11156,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error", err);
                 await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_error_at", now);
                 await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "error");
+                // [ops 2026-07-10] 代理回報庫存刷新失敗（如凌越連線逾時）→ 推播告警。
+                ops_notify_js_1.notifyOps(db, `凌越庫存刷新失敗（代理回報）：${err.slice(0, 200)}`).catch(() => { });
             }
             res.json({ ok: true });
         }
@@ -11119,6 +11178,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             timeoutSec = 50;
         const deadline = Date.now() + timeoutSec * 1000;
         try {
+            // [ops 2026-07-10] 心跳：記錄內網代理最後一次連上 txn-wait 的時間。
+            try {
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ly_agent_last_txn_wait_at", new Date().toISOString());
+            }
+            catch (_) { /* 心跳寫入失敗不影響主流程 */ }
             while (true) {
                 const rows = await db.prepare("SELECT key, value FROM app_settings WHERE key LIKE ?").all("erp_txn_req_%");
                 if (rows && rows.length) {
