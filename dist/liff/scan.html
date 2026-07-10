@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <title>掃碼盤點</title>
 <style>
   :root{
@@ -13,7 +13,7 @@
     --warn:#b9791b;--warn-soft:#fcf3e2;--chip:#eef0f3;--field:#f7f8fa;
     --shadow:0 1px 2px rgba(20,30,50,.06),0 3px 12px rgba(20,30,50,.05);
   }
-  *{box-sizing:border-box;}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
   html{background:#fff;}
   body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","PingFang TC",sans-serif;-webkit-text-size-adjust:100%;}
   .wrap{max-width:600px;margin:0 auto;}
@@ -26,6 +26,9 @@
   .pk-head{padding:16px 16px 6px;}
   .pk-head h1{margin:0;font-size:18px;font-weight:800;letter-spacing:-.01em;}
   .pk-head .sub{font-size:12.5px;color:var(--txt-3);margin-top:2px;}
+  .co-seg{display:flex;gap:6px;padding:10px 16px 0;flex-wrap:wrap;}
+  .co-seg button{border:1px solid var(--line);background:var(--field);color:var(--txt-2);font-size:13px;font-weight:700;padding:7px 14px;border-radius:99px;cursor:pointer;}
+  .co-seg button.on{background:var(--accent);border-color:var(--accent);color:#fff;}
   .pk-list{padding:10px 12px;display:flex;flex-direction:column;gap:8px;}
   .pk{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:14px 15px;cursor:pointer;text-align:left;width:100%;}
   .pk:active{transform:translateY(1px);}
@@ -35,7 +38,7 @@
   .pk-i .m{font-size:12px;color:var(--txt-3);margin-top:2px;font-variant-numeric:tabular-nums;}
   .pk-done{font-size:11px;font-weight:700;color:var(--pos);background:var(--pos-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
   .pk-arrow{color:var(--txt-3);font-size:20px;flex:none;}
-  .empty{text-align:center;color:var(--txt-3);padding:36px 0;}
+  .empty{text-align:center;color:var(--txt-3);padding:36px 16px;line-height:1.6;}
   /* header */
   header{position:sticky;top:0;z-index:20;background:var(--card);border-bottom:1px solid var(--line);}
   .head-main{display:flex;align-items:center;gap:10px;padding:10px 14px 8px;}
@@ -45,22 +48,25 @@
   .head-t .sub{font-size:11.5px;color:var(--txt-3);margin-top:1px;}
   /* camera */
   .cam{position:relative;margin:10px 12px 0;border-radius:14px;overflow:hidden;background:#10131a;box-shadow:var(--shadow);}
-  .cam video{display:block;width:100%;height:34vh;object-fit:cover;}
+  .cam video{display:block;width:100%;height:30vh;object-fit:cover;}
   .cam.paused video{opacity:.35;}
   .cam-line{position:absolute;left:10%;right:10%;top:50%;height:2px;background:rgba(255,80,80,.85);border-radius:2px;box-shadow:0 0 8px rgba(255,80,80,.7);}
   .cam-hint{position:absolute;left:0;right:0;bottom:0;padding:7px 10px;font-size:11.5px;color:#fff;background:linear-gradient(transparent,rgba(0,0,0,.55));text-align:center;}
   .cam-tools{position:absolute;top:8px;right:8px;display:flex;gap:6px;}
   .cam-btn{border:0;border-radius:9px;background:rgba(0,0,0,.45);color:#fff;font-size:12px;font-weight:700;padding:7px 11px;cursor:pointer;}
-  .cam-off{padding:22px 14px;text-align:center;color:#c7ccd6;font-size:13px;}
-  .cam-off button{margin-top:10px;}
+  .cam-off{padding:22px 14px;text-align:center;color:#c7ccd6;font-size:13px;line-height:1.6;}
+  .scanv2{display:flex;flex-direction:column;align-items:center;gap:8px;padding:20px 14px;}
+  .scanv2 button{border:0;border-radius:14px;background:var(--accent);color:#fff;font-size:18px;font-weight:800;padding:18px 40px;cursor:pointer;box-shadow:0 4px 14px rgba(35,131,226,.4);}
+  .scanv2 .d{font-size:12px;color:#c7ccd6;}
   /* manual input */
   .manual{display:flex;gap:8px;margin:10px 12px 0;}
   .manual input{flex:1;font-size:15px;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;background:var(--field);color:var(--txt);outline:none;font-variant-numeric:tabular-nums;}
   .manual input:focus{border-color:var(--accent);background:var(--card);}
   .manual button{border:0;border-radius:10px;background:var(--accent);color:#fff;font-size:14px;font-weight:700;padding:0 16px;cursor:pointer;white-space:nowrap;}
   /* current item card */
-  .cur{margin:10px 12px 0;background:var(--card);border:1.5px solid var(--accent);border-radius:14px;box-shadow:var(--shadow);padding:12px 14px;}
-  .cur .nm{font-size:16px;font-weight:800;line-height:1.25;}
+  .cur{margin:10px 12px 0;background:var(--card);border:1.5px solid var(--accent);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;}
+  .cur-in{padding:12px 14px 10px;}
+  .cur .nm{font-size:16.5px;font-weight:800;line-height:1.25;}
   .cur .meta{font-size:12px;color:var(--txt-3);margin-top:2px;font-variant-numeric:tabular-nums;}
   .cur .tags{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;}
   .tag{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--chip);color:var(--txt-2);}
@@ -68,11 +74,18 @@
   .cur-qty{display:flex;align-items:center;gap:10px;margin-top:10px;}
   .cur-qty .sysbox{flex:1;font-size:12px;color:var(--txt-2);}
   .cur-qty .sysbox b{font-size:15px;color:var(--txt);font-variant-numeric:tabular-nums;}
-  .stepper{display:flex;align-items:center;gap:6px;}
-  .stepper button{width:42px;height:42px;border:1px solid var(--line);border-radius:10px;background:var(--field);color:var(--txt);font-size:20px;font-weight:800;cursor:pointer;}
-  .stepper input{width:84px;text-align:center;font-size:19px;font-weight:800;font-variant-numeric:tabular-nums;border:1.5px solid var(--line);border-radius:10px;padding:8px 6px;background:var(--card);color:var(--txt);outline:none;}
-  .stepper input:focus{border-color:var(--accent);}
-  .stepper .qu{font-size:12px;font-weight:700;color:var(--txt-3);min-width:22px;}
+  .qdisp{min-width:120px;display:flex;align-items:baseline;justify-content:flex-end;gap:6px;border:1.5px solid var(--accent);background:var(--accent-soft);border-radius:12px;padding:8px 14px;cursor:pointer;}
+  .qdisp .v{font-size:26px;font-weight:900;font-variant-numeric:tabular-nums;color:var(--txt);line-height:1;}
+  .qdisp .u{font-size:12px;font-weight:700;color:var(--txt-3);}
+  .qdisp.editing{background:#fff;box-shadow:0 0 0 3px rgba(35,131,226,.18);}
+  /* PDA keypad */
+  .pad9{border-top:1px solid var(--line-soft);background:var(--field);padding:8px;display:grid;grid-template-columns:repeat(4,1fr);gap:7px;}
+  .pad9 button{border:1px solid var(--line);background:var(--card);border-radius:12px;font-size:22px;font-weight:800;padding:13px 0;cursor:pointer;color:var(--txt);box-shadow:0 1px 2px rgba(20,30,50,.05);}
+  .pad9 button:active{transform:translateY(1px);background:var(--field);}
+  .pad9 .fn{font-size:15px;font-weight:800;color:var(--txt-2);}
+  .pad9 .ok{grid-row:span 2;background:var(--accent);border-color:var(--accent);color:#fff;font-size:17px;}
+  .pad9 .minus{color:var(--neg);}
+  .pad9 .plus{color:var(--pos);}
   /* counted list */
   .sec-t{margin:14px 16px 6px;font-size:12px;font-weight:800;color:var(--txt-3);letter-spacing:.03em;}
   .list{margin:0 12px;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow);}
@@ -138,9 +151,11 @@
   var LIFF_ID=window.__LIFF_ID__||"";
   var app=document.getElementById('app');
   var COMPANY={'00':'松富','01':'龍港','02':'松揚','03':'松成'};
+  var CO_ORDER=['02','00','01','03']; // 掃碼主要給松揚用，排最前
 
   var S={idToken:null,name:'',icpno:'02',wh:null,date:'',items:[],itemIdx:{},counts:{},order:[],
-         barcodes:{},cur:null,scanning:false,stream:null,detector:null,extra:{}};
+         barcodes:{},cur:null,scanning:false,stream:null,detector:null,zreader:null,engine:'',extra:{},
+         kpOpen:false,kpFresh:false};
 
   function esc(s){s=(s==null?'':String(s));return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function fmt(n){var v=Number(n);if(!isFinite(v))return '0';return String(Math.round(v*100)/100);}
@@ -157,6 +172,7 @@
   function beep(ok){
     try{
       _ac=_ac||new (window.AudioContext||window.webkitAudioContext)();
+      if(_ac.state==='suspended')_ac.resume();
       var o=_ac.createOscillator(),g=_ac.createGain();
       o.connect(g);g.connect(_ac.destination);
       o.frequency.value=ok?1320:340;g.gain.value=.12;
@@ -185,6 +201,7 @@
   function boot(){
     if(!LIFF_ID){showCenter('<div>⚠ 尚未設定 LIFF ID（LIFF_ID_SCAN）</div>');return;}
     var p=getParam('icpno');if(p&&/^\d{2}$/.test(p))S.icpno=p;
+    else{try{var last=localStorage.getItem('scan_icpno');if(last&&/^\d{2}$/.test(last))S.icpno=last;}catch(_){}}
     liff.init({liffId:LIFF_ID}).then(function(){
       if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}
       S.idToken=liff.getIDToken();
@@ -193,16 +210,22 @@
     .catch(function(e){showCenter('<div>⚠ LIFF 初始化失敗</div><div style="font-size:12px;color:var(--txt-3)">'+esc(e&&e.message||e)+'</div>');});
   }
 
-  // ---------- 倉庫選擇 ----------
+  // ---------- 公司＋倉庫選擇 ----------
+  function coSegHtml(){
+    return '<div class="co-seg">'+CO_ORDER.map(function(c){
+      return '<button data-co="'+c+'" class="'+(c===S.icpno?'on':'')+'">'+esc(COMPANY[c]||c)+'</button>';
+    }).join('')+'</div>';
+  }
   function showPicker(){
-    stopCam();
+    stopScan();
     showCenter('<div class="spin"></div><div>載入倉庫…</div>');
     api('/liff/api/stocktake/warehouses?icpno='+encodeURIComponent(S.icpno)).then(function(res){
       if(res.error){showCenter('<div>⚠ '+esc(res.error)+'</div>');return;}
       var whs=res.warehouses||[];
-      var html='<div class="pk-head"><h1>'+esc(coName())+'掃碼盤點</h1>'
-        +'<div class="sub">選擇倉庫 · 盤點日 '+esc(res.date||'')+(S.name?' · '+esc(S.name):'')+'</div></div>';
-      if(!whs.length){html+='<div class="empty">'+esc(coName())+'還沒有「納入盤點」的倉庫。<br>請先讓內網代理推送'+esc(coName())+'庫存（icpno='+esc(S.icpno)+'），<br>再到後台 → 倉庫設定 勾選。</div>';}
+      var html='<div class="pk-head"><h1>掃碼盤點</h1>'
+        +'<div class="sub">選擇公司與倉庫 · 盤點日 '+esc(res.date||'')+(S.name?' · '+esc(S.name):'')+'</div></div>'
+        +coSegHtml();
+      if(!whs.length){html+='<div class="empty">'+esc(coName())+'還沒有「納入盤點」的倉庫。<br>請先讓內網代理推送庫存（公司代碼設 00,01,02,03），<br>再到後台 → 倉庫設定（切到'+esc(coName())+'）勾選要盤的倉。</div>';}
       else{
         html+='<div class="pk-list">'+whs.map(function(w){
           return '<button class="pk" data-w="'+esc(w.code)+'">'
@@ -213,6 +236,13 @@
         }).join('')+'</div>';
       }
       app.innerHTML='<div>'+html+'</div>';
+      Array.prototype.forEach.call(app.querySelectorAll('.co-seg button'),function(b){
+        b.addEventListener('click',function(){
+          S.icpno=b.getAttribute('data-co');
+          try{localStorage.setItem('scan_icpno',S.icpno);}catch(_){}
+          showPicker();
+        });
+      });
       Array.prototype.forEach.call(app.querySelectorAll('.pk'),function(b){b.addEventListener('click',function(){openWarehouse(b.getAttribute('data-w'));});});
     }).catch(function(){showCenter('<div>⚠ 載入倉庫失敗，請稍後再試</div>');});
   }
@@ -229,7 +259,7 @@
       S.wh=res.warehouse;S.date=res.date;S.items=res.items||[];
       S.itemIdx={};S.items.forEach(function(it){S.itemIdx[it.c]=it;});
       S.barcodes=(bc&&bc.map)||{};
-      S.counts={};S.order=[];S.extra={};S.cur=null;
+      S.counts={};S.order=[];S.extra={};S.cur=null;S.kpOpen=false;
       // 續盤：帶回今日已送出的數
       var sv=res.saved||{};
       Object.keys(sv).forEach(function(c){
@@ -240,7 +270,7 @@
       var dr=loadDraft();
       if(dr){if(dr.counts)S.counts=dr.counts;if(dr.order)S.order=dr.order;if(dr.extra)S.extra=dr.extra;}
       renderScan();
-      startCam();
+      startScan();
     }).catch(function(){showCenter('<div>⚠ 載入失敗，請稍後再試</div>');});
   }
 
@@ -249,21 +279,21 @@
 
   // ---------- 掃描畫面 ----------
   function renderScan(){
-    stopCam();
+    stopScan();
     app.innerHTML=''
       +'<header><div class="head-main"><button class="back" id="scBack">‹ 倉庫</button>'
         +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(coName())+' · '+esc(S.date)+' · 掃碼盤點</div></div>'
       +'</div></header>'
       +'<div class="pad">'
-        +'<div class="cam" id="scCam"><video id="scVideo" playsinline muted></video><div class="cam-line"></div>'
+        +'<div class="cam" id="scCam"><video id="scVideo" playsinline muted autoplay></video><div class="cam-line"></div>'
           +'<div class="cam-tools"><button class="cam-btn" id="scTorch" style="display:none;">手電筒</button><button class="cam-btn" id="scPause">暫停</button></div>'
           +'<div class="cam-hint" id="scHint">對準條碼即可（自動連續掃描）</div></div>'
-        +'<div class="manual"><input id="scManual" inputmode="numeric" placeholder="相機掃不到？手動輸入條碼或料號" autocomplete="off"><button id="scManualGo">帶入</button></div>'
+        +'<div class="manual"><input id="scManual" inputmode="numeric" placeholder="掃不到？手動輸入條碼或料號" autocomplete="off"><button id="scManualGo">帶入</button></div>'
         +'<div id="scCur"></div>'
         +'<div class="sec-t" id="scListT"></div><div id="scList"></div>'
       +'</div>'
       +'<div class="bar"><div class="bar-in"><div class="s" id="scBarTxt"></div><button class="submit" id="scSubmit">送出盤點</button></div></div>';
-    document.getElementById('scBack').addEventListener('click',function(){stopCam();showPicker();});
+    document.getElementById('scBack').addEventListener('click',function(){stopScan();showPicker();});
     document.getElementById('scPause').addEventListener('click',function(){
       if(S.scanning){pauseScan();this.textContent='繼續';}else{resumeScan();this.textContent='暫停';}
     });
@@ -278,30 +308,39 @@
     onBarcode(v,true);
   }
 
-  // ---------- 相機與條碼偵測 ----------
-  function stopCam(){
+  // ---------- 掃描引擎鏈：BarcodeDetector → zxing(純JS, iPhone可用) → liff.scanCodeV2 → 手動 ----------
+  var FORMATS=['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code'];
+  function stopScan(){
     S.scanning=false;
+    try{if(S.zreader){S.zreader.reset();S.zreader=null;}}catch(_){}
     try{if(S.stream){S.stream.getTracks().forEach(function(t){t.stop();});S.stream=null;}}catch(_){}
   }
   function pauseScan(){S.scanning=false;var c=document.getElementById('scCam');if(c)c.classList.add('paused');}
-  function resumeScan(){if(S.stream){S.scanning=true;var c=document.getElementById('scCam');if(c)c.classList.remove('paused');scanLoop();}}
-  function startCam(){
+  function resumeScan(){
+    var c=document.getElementById('scCam');if(c)c.classList.remove('paused');
+    if(S.engine==='native'&&S.stream){S.scanning=true;nativeLoop();}
+    else if(S.engine==='zxing'){S.scanning=true;}
+    else if(S.engine==='scanv2'){S.scanning=true;}
+  }
+  function startScan(){
     var video=document.getElementById('scVideo');
-    var hint=document.getElementById('scHint');
     if(!video)return;
-    if(!('BarcodeDetector' in window)){
-      camOff('這支手機的瀏覽器不支援相機掃碼，請用下方欄位手動輸入條碼（或改用外接掃描槍對準欄位掃）。');
-      return;
+    if('BarcodeDetector' in window){
+      try{S.detector=new BarcodeDetector({formats:FORMATS});}catch(_){S.detector=null;}
+      if(S.detector){startNative(video);return;}
     }
-    try{S.detector=new BarcodeDetector({formats:['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code']});}
-    catch(_){S.detector=null;}
-    if(!S.detector){camOff('條碼偵測初始化失敗，請手動輸入條碼。');return;}
+    // iPhone LINE 瀏覽器等：載本地 zxing（純 JS 解碼）
+    loadZxing(function(ok){
+      if(ok){startZxing(video);}
+      else{startScanV2OrManual();}
+    });
+  }
+  function startNative(video){
     navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}},audio:false})
     .then(function(stream){
-      S.stream=stream;video.srcObject=stream;
+      S.stream=stream;S.engine='native';video.srcObject=stream;
       return video.play().then(function(){
-        S.scanning=true;scanLoop();
-        // 手電筒（支援才顯示）
+        S.scanning=true;nativeLoop();
         try{
           var track=stream.getVideoTracks()[0];
           var caps=track.getCapabilities?track.getCapabilities():{};
@@ -313,24 +352,68 @@
         }catch(_){}
       });
     })
-    .catch(function(){camOff('無法開啟相機（可能未授權）。請點 LINE 詢問視窗的「允許」，或手動輸入條碼。');});
+    .catch(function(){startScanV2OrManual('無法開啟相機（可能未授權）。');});
   }
-  function camOff(msg){
-    var cam=document.getElementById('scCam');
-    if(cam)cam.innerHTML='<div class="cam-off">'+esc(msg)+'</div>';
-  }
-  var _lastCode='',_lastAt=0;
-  function scanLoop(){
-    if(!S.scanning)return;
+  function nativeLoop(){
+    if(!S.scanning||S.engine!=='native')return;
     var video=document.getElementById('scVideo');
-    if(!video||video.readyState<2){setTimeout(scanLoop,180);return;}
+    if(!video||video.readyState<2){setTimeout(nativeLoop,180);return;}
     S.detector.detect(video).then(function(codes){
       if(S.scanning&&codes&&codes.length){
         var raw=String(codes[0].rawValue||'').trim();
-        var now=Date.now();
-        if(raw&&(raw!==_lastCode||now-_lastAt>1500)){_lastCode=raw;_lastAt=now;onBarcode(raw,false);}
+        if(raw)hitBarcode(raw);
       }
-    }).catch(function(){}).then(function(){ if(S.scanning)setTimeout(scanLoop,220); });
+    }).catch(function(){}).then(function(){if(S.scanning)setTimeout(nativeLoop,220);});
+  }
+  function loadZxing(cb){
+    if(window.ZXing){cb(true);return;}
+    var s=document.createElement('script');
+    s.src='/liff/vendor/zxing.min.js';
+    s.onload=function(){cb(!!window.ZXing);};
+    s.onerror=function(){cb(false);};
+    document.head.appendChild(s);
+  }
+  function startZxing(video){
+    try{
+      if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){startScanV2OrManual();return;}
+      var Z=window.ZXing;
+      var hints=new Map();
+      hints.set(Z.DecodeHintType.POSSIBLE_FORMATS,[Z.BarcodeFormat.EAN_13,Z.BarcodeFormat.EAN_8,Z.BarcodeFormat.UPC_A,Z.BarcodeFormat.UPC_E,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.ITF,Z.BarcodeFormat.QR_CODE]);
+      hints.set(Z.DecodeHintType.TRY_HARDER,true);
+      S.zreader=new Z.BrowserMultiFormatReader(hints,300);
+      S.engine='zxing';S.scanning=true;
+      S.zreader.decodeFromConstraints({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}},audio:false},video,function(result){
+        if(result&&S.scanning){
+          var raw=String(result.getText()||'').trim();
+          if(raw)hitBarcode(raw);
+        }
+      }).catch(function(){startScanV2OrManual('無法開啟相機（可能未授權）。');});
+    }catch(_){startScanV2OrManual();}
+  }
+  function startScanV2OrManual(prefix){
+    var cam=document.getElementById('scCam');if(!cam)return;
+    var canV2=false;
+    try{canV2=liff.isInClient()&&liff.isApiAvailable&&liff.isApiAvailable('scanCodeV2');}catch(_){}
+    if(canV2){
+      S.engine='scanv2';S.scanning=true;
+      cam.innerHTML='<div class="scanv2"><button id="scV2">📷 掃描條碼</button><div class="d">'+esc((prefix||'')+'此手機用 LINE 內建掃碼：按一下掃一個')+'</div></div>';
+      document.getElementById('scV2').addEventListener('click',function(){
+        liff.scanCodeV2().then(function(r){
+          var raw=String((r&&r.value)||'').trim();
+          if(raw)onBarcode(raw,false);
+        }).catch(function(){});
+      });
+    }else{
+      S.engine='manual';
+      cam.innerHTML='<div class="cam-off">'+esc((prefix||'')+'這支手機無法用相機連續掃描，請用下方欄位手動輸入條碼／料號（外接藍牙掃描槍對準欄位掃也可以）。')+'</div>';
+    }
+  }
+  var _lastCode='',_lastAt=0;
+  function hitBarcode(raw){
+    var now=Date.now();
+    if(raw===_lastCode&&now-_lastAt<=1500)return; // 同碼 1.5 秒內不重複觸發
+    _lastCode=raw;_lastAt=now;
+    onBarcode(raw,false);
   }
 
   // ---------- 掃到條碼 ----------
@@ -342,7 +425,6 @@
       addScan(it,hit.q||1);
       return;
     }
-    // 手動輸入也可能直接打料號
     if(isManual&&S.itemIdx[raw]){addScan(S.itemIdx[raw],1);return;}
     beep(false);
     openBind(raw);
@@ -361,34 +443,68 @@
     S.counts[it.c]=fmt(v);
     if(S.order.indexOf(it.c)<0)S.order.push(it.c);
     S.cur=it.c;
+    S.kpOpen=true;S.kpFresh=true; // PDA 手感：掃到就開鍵盤，直接打數字＝覆蓋
     toast(it.n+'  '+(inc>1?'＋'+fmt(inc):'＋1')+' → '+fmt(v)+(it.u||''));
     renderCur();renderList();updateBar();saveDraft();
   }
 
-  // ---------- 目前品項卡 ----------
+  // ---------- 目前品項卡＋PDA 大鍵盤 ----------
+  function kpHtml(){
+    var rows=[['7','8','9','⌫'],['4','5','6','−1'],['1','2','3','＋1'],['.','0','C','OK']];
+    return '<div class="pad9">'+rows.map(function(r){return r.map(function(k){
+      var cls='',lab=k;
+      if(k==='⌫')cls='fn';
+      if(k==='C'){cls='fn';lab='清';}
+      if(k==='−1')cls='fn minus';
+      if(k==='＋1')cls='fn plus';
+      if(k==='OK'){cls='fn ok';lab='完成';}
+      return '<button data-k="'+esc(k)+'" class="'+cls+'">'+esc(lab)+'</button>';
+    }).join('');}).join('')+'</div>';
+  }
   function renderCur(){
     var box=document.getElementById('scCur');if(!box)return;
-    if(!S.cur){box.innerHTML='<div class="hint" style="margin:12px 16px 0;">掃到的品項會出現在這裡；同一條碼連掃會累加。</div>';return;}
+    if(!S.cur){box.innerHTML='<div class="hint" style="margin:12px 16px 0;">掃到的品項會出現在這裡；同一條碼連掃會累加，或用大鍵盤直接輸入數量。</div>';return;}
     var it=itemOf(S.cur);if(!it){box.innerHTML='';return;}
     var notInWh=!S.itemIdx[it.c];
-    box.innerHTML='<div class="cur"><div class="nm">'+esc(it.n)+'</div>'
+    box.innerHTML='<div class="cur"><div class="cur-in"><div class="nm">'+esc(it.n)+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div>'
       +(notInWh?'<div class="tags"><span class="tag warn">非本倉品項（'+esc(it.w||'?')+'）</span></div>':'')
       +'<div class="cur-qty"><div class="sysbox">帳上 <b>'+fmt(it.sys)+'</b> '+esc(it.u||'')+'</div>'
-        +'<div class="stepper"><button id="scDec">−</button><input id="scQty" inputmode="decimal" value="'+esc(S.counts[it.c]!=null?S.counts[it.c]:'')+'">'
-        +'<span class="qu">'+esc(it.u||'')+'</span><button id="scInc">＋</button></div></div></div>';
-    var qty=document.getElementById('scQty');
-    document.getElementById('scInc').addEventListener('click',function(){bump(it,1);});
-    document.getElementById('scDec').addEventListener('click',function(){bump(it,-1);});
-    qty.addEventListener('input',function(){S.counts[it.c]=qty.value;renderList();updateBar();saveDraft();});
+        +'<div class="qdisp'+(S.kpOpen?' editing':'')+'" id="scQd"><span class="v" id="scQv">'+esc(S.counts[it.c]!=null&&S.counts[it.c]!==''?S.counts[it.c]:'0')+'</span><span class="u">'+esc(it.u||'')+'</span></div></div>'
+      +'</div>'+(S.kpOpen?kpHtml():'')+'</div>';
+    document.getElementById('scQd').addEventListener('click',function(){S.kpOpen=!S.kpOpen;S.kpFresh=true;renderCur();});
+    var pad=box.querySelector('.pad9');
+    if(pad)pad.addEventListener('click',function(e){
+      var b=e.target.closest('button');if(!b)return;
+      keyPress(it,b.getAttribute('data-k'));
+    });
   }
-  function bump(it,d){
-    var cur=parseFloat(S.counts[it.c]);var v=(isFinite(cur)?cur:0)+d;
-    if(v<0)v=0;
-    S.counts[it.c]=fmt(v);
+  function setQty(it,v){
+    S.counts[it.c]=v;
     if(S.order.indexOf(it.c)<0)S.order.push(it.c);
-    var qty=document.getElementById('scQty');if(qty)qty.value=S.counts[it.c];
+    var qv=document.getElementById('scQv');if(qv)qv.textContent=(v===''?'0':v);
     renderList();updateBar();saveDraft();
+  }
+  function keyPress(it,k){
+    var cur=String(S.counts[it.c]!=null?S.counts[it.c]:'');
+    if(k==='OK'){S.kpOpen=false;renderCur();return;}
+    if(k==='C'){S.kpFresh=false;setQty(it,'');return;}
+    if(k==='⌫'){S.kpFresh=false;setQty(it,cur.slice(0,-1));return;}
+    if(k==='＋1'||k==='−1'){
+      S.kpFresh=false;
+      var n=parseFloat(cur);n=(isFinite(n)?n:0)+(k==='＋1'?1:-1);if(n<0)n=0;
+      setQty(it,fmt(n));return;
+    }
+    if(k==='.'){
+      if(S.kpFresh){S.kpFresh=false;setQty(it,'0.');return;}
+      if(cur.indexOf('.')>=0)return;
+      setQty(it,(cur===''?'0':cur)+'.');return;
+    }
+    // 數字：掃完直接打＝覆蓋（PDA 手感），之後續打＝接在後面
+    if(S.kpFresh){S.kpFresh=false;setQty(it,k);return;}
+    if(cur==='0')cur='';
+    if(cur.replace('.','').length>=7)return;
+    setQty(it,cur+k);
   }
 
   // ---------- 已盤清單 ----------
@@ -412,7 +528,7 @@
         +'<div class="v">'+esc(S.counts[c])+' <span class="su">'+esc(it.u||'')+'</span></div></div>';
     }).join('')+'</div>';
     Array.prototype.forEach.call(box.querySelectorAll('.item'),function(el){
-      el.addEventListener('click',function(){S.cur=el.getAttribute('data-c');renderCur();window.scrollTo({top:0,behavior:'smooth'});});
+      el.addEventListener('click',function(){S.cur=el.getAttribute('data-c');S.kpOpen=true;S.kpFresh=true;renderCur();window.scrollTo({top:0,behavior:'smooth'});});
     });
   }
   function updateBar(){
@@ -423,7 +539,9 @@
   // ---------- 綁定新條碼 ----------
   var B={barcode:'',sel:null};
   function openBind(raw){
-    pauseScan();var pb=document.getElementById('scPause');if(pb)pb.textContent='繼續';
+    if(S.engine==='native')pauseScan();
+    if(S.engine==='zxing')S.scanning=false;
+    var pb=document.getElementById('scPause');if(pb)pb.textContent='繼續';
     B={barcode:raw,sel:null};
     var mask=document.createElement('div');mask.className='sheet-mask';mask.id='bindMask';
     mask.innerHTML='<div class="sheet" style="position:relative;">'
@@ -438,7 +556,11 @@
         +'<div class="bind-act"><button class="cancel" id="bindCancel">取消</button><button class="go" id="bindGo" disabled>綁定並帶入</button></div>'
       +'</div></div>';
     document.body.appendChild(mask);
-    var close=function(){var m=document.getElementById('bindMask');if(m)m.remove();};
+    var close=function(){
+      var m=document.getElementById('bindMask');if(m)m.remove();
+      // 關掉綁定面板就自動恢復連續掃描（PDA 手感，不用再按「繼續」）
+      resumeScan();var pb2=document.getElementById('scPause');if(pb2)pb2.textContent='暫停';
+    };
     document.getElementById('bindX').addEventListener('click',close);
     document.getElementById('bindCancel').addEventListener('click',close);
     var t2=null;
@@ -491,7 +613,6 @@
     if(!confirm('送出盤點？\n\n倉庫：'+(S.wh.name||S.wh.code)+'（'+coName()+'）\n已盤 '+codes.length+' 項'))return;
     var btn=document.getElementById('scSubmit');btn.disabled=true;btn.textContent='送出中…';
     var counts=[];
-    // 先帶倉內全品項的已盤數（含 0 的未盤不送），再補「非本倉」但有掃到的
     codes.forEach(function(c){
       var it=itemOf(c);if(!it)return;
       var v=parseFloat(S.counts[c]);if(!isFinite(v))return;
@@ -499,7 +620,7 @@
     });
     post('/liff/api/stocktake/submit',{warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts}).then(function(res){
       if(res.error){btn.disabled=false;btn.textContent='送出盤點';alert('送出失敗：'+res.error);return;}
-      clearDraft();stopCam();
+      clearDraft();stopScan();
       showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">盤點已送出</div>'
         +'<div>'+esc(S.wh.name||S.wh.code)+'（'+esc(coName())+'）· '+esc(S.date)+'</div>'
         +'<div style="font-size:13px;color:var(--txt-3)">已記錄 '+esc(String(res.counted))+' 項</div>'

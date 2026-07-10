@@ -194,6 +194,14 @@ function createLiffRouter() {
     // 條碼從零建置：掃到未知條碼 → 搜品名綁定（product_barcode），第一輪盤點＝條碼建檔。
     const SCAN_LIFF_ID = (process.env.LIFF_ID_SCAN || process.env.LIFF_ID_STOCKTAKE || "2010106501-VocNwkbA").trim();
     router.get("/scan", (_req, res) => { serveLiffPage(res, "scan.html", SCAN_LIFF_ID); });
+    // 本地 vendor（zxing 掃碼 fallback）：iPhone 的 LINE 瀏覽器沒有 BarcodeDetector，改用這顆純 JS 解碼
+    router.get("/vendor/zxing.min.js", (_req, res) => {
+        try {
+            const buf = (0, fs_1.readFileSync)((0, path_1.join)(__dirname, "vendor", "zxing.min.js"));
+            res.setHeader("Cache-Control", "public, max-age=86400");
+            res.type("application/javascript").send(buf);
+        } catch (_) { res.status(404).type("text/plain").send("vendor 檔缺失：zxing.min.js"); }
+    });
     // 整家公司的條碼對照一次載入 → 掃描時本機即時比對，不用每掃打一次 API
     router.get("/api/scan/barcodes", async (req, res) => {
         try {

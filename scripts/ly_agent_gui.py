@@ -93,7 +93,7 @@ CONFIG_PATH = os.path.join(_self_dir(), "ly_agent_config.json")
 DEFAULT_CONFIG = {
     "cloud_base": os.environ.get("LY_CLOUD_BASE", ""),
     "writeback_key": os.environ.get("LY_WRITEBACK_KEY", ""),
-    "icpno": os.environ.get("LY_ICPNO", "00"),
+    "icpno": os.environ.get("LY_ICPNO", "all"),  # 庫存推送預設全公司（00,01,02,03）；回寫仍固定第一家=00
     "stock_times": os.environ.get("LY_STOCK_TIMES", "06:00,12:00"),
     "wb_auto": True,            # 是否掛著自動處理『上傳凌越』佇列（只寫使用者按過上傳的單）
     # 倉別規則固定為：每品項帶凌越貨品主檔預設倉(SK_RKWHNO)、查不到用固定倉別補（bridge 內建）
@@ -135,10 +135,11 @@ def _short(e, n: int = 160) -> str:
 
 
 def first_icpno(s) -> str:
-    """公司代碼設定可逗號多家（庫存推送用，如 "00,02"）；訂單回寫/單品查詢只能單一公司→取第一家。"""
+    """公司代碼設定可逗號多家或 "all"（庫存推送用）；訂單回寫/單品查詢只能單一公司→取第一家，
+    "all"／留空一律視為 00（松富）。"""
     for p in str(s or "").split(","):
         p = p.strip()
-        if p:
+        if p and p.lower() != "all":
             return p
     return "00"
 
@@ -919,7 +920,7 @@ class SettingsDialog(tk.Toplevel):
                        selectcolor=PANEL, activebackground=BG, activeforeground=FG,
                        command=lambda: key_entry.config(show="" if show_var.get() else "*"),
                        font=("Microsoft JhengHei UI", 8)).pack(anchor="w", padx=16)
-        row("公司代碼 (LY_ICPNO)", "icpno", "松富=00、龍港=01、松揚=02、桂田=03；庫存推送可逗號多家如 00,02（回寫只用第一家）")
+        row("公司代碼 (LY_ICPNO)", "icpno", "00松富/01龍港/02松揚/03松成；庫存推送填 all＝全推（各公司分開存），回寫固定用第一家(00)")
 
         tk.Label(self, text="庫存代理", fg=BLUE, bg=BG, anchor="w",
                  font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(12, 2))

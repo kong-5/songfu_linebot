@@ -42,13 +42,15 @@
 - **松揚＝同一套凌越的公司代碼 `02`**（00 松富、01 龍港、03 松成）。`erp_stock_items`/`erp_warehouse`
   主鍵已改 **(icpno, 料號/倉號)**、`stocktake_session` 加 `icpno`（NULL＝'00'）；DB init 有冪等遷移。
   公司名權威 helper：`dist/lib/erp-companies.js`（`normIcpno`/`erpCompanyName`）。
-- 內網代理 `LY_ICPNO` 可逗號多家（如 `00,02`）＝庫存推送逐家推；**訂單回寫/單品查詢只用第一家**
-  （`ly_agent_gui.py` 的 `first_icpno()`，防把 "00,02" 傳進凌越）。
-- **LIFF 掃碼頁 `/liff/scan`**（env `LIFF_ID_SCAN`，預設 icpno=02）：手機當 PDA 連續掃碼盤點，
-  寫入**同一套盤點表**（後台每日盤點直接看到，倉庫卡片帶「松揚」標）。凌越沒維護條碼→
-  條碼對照存 `product_barcode`（`(icpno,barcode)`→料號＋`qty_per_scan` 箱碼倍數），**邊掃邊綁**建檔；
-  後台總管理在「庫存管理 → 條碼對照」。⚠ iPhone 的 LINE 瀏覽器不支援 BarcodeDetector（自動退回手動輸入）。
-  細節與上線步驟（要開新 LIFF app）見 `docs/松揚-掃碼盤點.md`。
+- 內網代理 `LY_ICPNO` 填 **`all`**＝庫存推送**全公司 00,01,02,03 逐家推**（也可逗號指定）；
+  **訂單回寫/單品查詢只用第一家非 all 代碼（all＝00）**（`ly_agent_gui.py` 的 `first_icpno()`，
+  防把 "all"/"00,02" 傳進凌越）。
+- **LIFF 掃碼頁 `/liff/scan`**（env `LIFF_ID_SCAN`，頁內可切公司、預設 icpno=02）：手機當 PDA——
+  連續掃碼＋**大數字鍵盤**（掃完直接打數字覆蓋，不彈系統鍵盤），寫入**同一套盤點表**
+  （後台每日盤點直接看到，倉庫卡片帶公司標）。凌越沒維護條碼→條碼對照存 `product_barcode`
+  （`(icpno,barcode)`→料號＋`qty_per_scan` 箱碼倍數），**邊掃邊綁**建檔；後台總管理在「庫存管理 → 條碼對照」。
+  掃描引擎鏈：BarcodeDetector → **zxing 純 JS（本地 vendor，iPhone LINE 瀏覽器用這條）** →
+  liff.scanCodeV2 → 手動輸入。細節與上線步驟（要開新 LIFF app、開 scanQR）見 `docs/松揚-掃碼盤點.md`。
 
 ## LINE 盤點系統（已上線）
 - **LIFF 盤點頁** `dist/liff/stocktake.html`（LIFF `2010106501-VocNwkbA`，端點 `/liff/stocktake`）：
