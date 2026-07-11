@@ -4015,20 +4015,46 @@ function createAdminRouter() {
         // ── 月底：提醒製作下月客戶報價 ─────────────────────────────
         let quoteReminderCard = "";
         try {
-            const qr = await quote_report_js_1.monthEndReminder(db, today, 7);
-            if (qr.show) {
+            // 狀態流：未建立→建立；已建立未完成→確認完成；已完成待發送→發送（最後一日最醒目）。
+            const sendR = await quote_report_js_1.monthEndSendReminder(db, today, { withinDays: 3 });
+            if (sendR.show) {
+                const emph = sendR.isLastDay;
+                const accent = emph ? "#dc2626" : "#16a34a";
+                const editHref = `/admin/quotes/${encodeURIComponent(sendR.report.id)}`;
                 quoteReminderCard = `
-                <div class="sf-card" style="border-left:4px solid #f59e0b;">
+                <div class="sf-card" style="border-left:4px solid ${accent};">
                   <div class="sf-card-head">
-                    <a href="/admin/quotes" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
-                      <div class="sf-card-title" style="display:flex;align-items:center;gap:6px;"><span style="display:inline-flex;color:#f59e0b;">${QI.calendar}</span>月底提醒：製作 ${escapeHtml(qr.rocLabel)} 月報報價</div>
+                    <a href="${editHref}" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
+                      <div class="sf-card-title" style="display:flex;align-items:center;gap:6px;"><span style="display:inline-flex;color:${accent};">${QI.calendar}</span>${emph ? "今天請發送" : "待發送"}：${escapeHtml(sendR.rocLabel)} 報價給客戶</div>
                     </a>
-                    <a href="/admin/quotes" class="sf-card-sub">前往製作 →</a>
+                    <a href="${editHref}/sheet" target="_blank" class="sf-card-sub">預覽 / PDF →</a>
                   </div>
-                  <div style="padding:12px 16px;font-size:13px;color:var(--txt-2);">
-                    本月僅剩 <strong>${qr.daysLeft}</strong> 天。${qr.report ? "下月報價單已建立草稿，請確認價格後設為完成。" : "下月報價單尚未建立，點「前往製作」會自動帶入上月價格當底稿。"}
+                  <div style="padding:12px 16px;font-size:13px;color:var(--txt-2);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span style="flex:1;min-width:220px;">${emph
+                        ? `<strong>今天是本月最後一日</strong>，報價單已完成，請務必發送給客戶。`
+                        : `報價單已完成，本月剩 <strong>${sendR.daysLeft}</strong> 天，記得月底前發送給客戶。`}</span>
+                    <form method="post" action="/admin/quotes/mark-sent" style="margin:0;">
+                      <input type="hidden" name="ym" value="${escapeHtml(sendR.targetYm)}">
+                      <button class="sf-btn primary" type="submit">${QI.checkc}<span>標記已發送</span></button>
+                    </form>
                   </div>
                 </div>`;
+            } else {
+                const qr = await quote_report_js_1.monthEndReminder(db, today, 7);
+                if (qr.show) {
+                    quoteReminderCard = `
+                    <div class="sf-card" style="border-left:4px solid #f59e0b;">
+                      <div class="sf-card-head">
+                        <a href="/admin/quotes" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;">
+                          <div class="sf-card-title" style="display:flex;align-items:center;gap:6px;"><span style="display:inline-flex;color:#f59e0b;">${QI.calendar}</span>月底提醒：${qr.report ? "確認" : "製作"} ${escapeHtml(qr.rocLabel)} 月報報價</div>
+                        </a>
+                        <a href="${qr.report ? `/admin/quotes/${encodeURIComponent(qr.report.id)}` : "/admin/quotes"}" class="sf-card-sub">${qr.report ? "前往確認" : "前往製作"} →</a>
+                      </div>
+                      <div style="padding:12px 16px;font-size:13px;color:var(--txt-2);">
+                        本月僅剩 <strong>${qr.daysLeft}</strong> 天。${qr.report ? "下月報價單已建立草稿，請確認價格後設為完成。" : "下月報價單尚未建立，點「前往製作」會自動帶入上月價格當底稿。"}
+                      </div>
+                    </div>`;
+                }
             }
         } catch (e) { console.error("[admin] 月報提醒計算失敗", e); }
         // ── KPI 資料 ──────────────────────────────────────────────
@@ -19928,7 +19954,15 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
       .qe-cat .n{ color:var(--txt-3); font-weight:400; font-size:11px; }
       .qe-row{ display:grid; align-items:center; gap:8px; padding:2px 10px; border-bottom:var(--hairline); }
       .qe-row:hover{ background:var(--bg-1); }
-      .qe-price-mode .qe-row{ grid-template-columns:30px 1fr 92px 76px; padding:1px 10px; }
+      /* 價格模式＝緊湊表格：序｜名稱｜單位｜前月｜價格｜不報價，收窄總寬置左 */
+      .qe-price-mode{ max-width:800px; }
+      .qe-price-mode .qe-thead,
+      .qe-price-mode .qe-row{ display:grid; align-items:center; gap:8px; min-width:560px;
+        grid-template-columns:32px minmax(92px,1fr) 78px 92px 78px 54px; }
+      .qe-price-mode .qe-row{ padding:1px 10px; }
+      .qe-thead{ padding:5px 10px; font-size:11px; font-weight:600; color:var(--txt-3); border-bottom:var(--hairline); }
+      .qe-thead .qe-th-price, .qe-thead .qe-th-prev{ text-align:right; }
+      .qe-thead .qe-th-noq{ text-align:center; }
       .qe-price-mode .qe-name{ flex-direction:row; align-items:baseline; gap:8px; }
       .qe-price-mode .qe-in{ padding:3px 8px; }
       .qe-manage-mode .qe-row{ grid-template-columns:34px 1.5fr 1.2fr 1fr 88px 76px 40px; }
@@ -19936,9 +19970,18 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
       .qe-name{ display:flex; flex-direction:column; min-width:0; }
       .qe-nm{ font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .qe-spec{ font-size:12px; color:var(--txt-3); white-space:nowrap; }
+      .qe-unit{ font-size:12px; color:var(--txt-3); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .qe-prev{ font-size:12px; color:var(--txt-3); text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .qe-prev .qe-up{ color:#d92d20; font-weight:600; }   /* 漲＝紅（台灣習慣）*/
+      .qe-prev .qe-down{ color:#12805c; font-weight:600; } /* 跌＝綠 */
       .qe-in{ width:100%; font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; box-sizing:border-box; }
       .qe-price{ text-align:right; }
       .qe-noq{ font-size:12px; color:var(--txt-3); display:flex; align-items:center; gap:4px; white-space:nowrap; justify-content:center; }
+      /* 不報價 → 整列變暗（初始 is_quoted=0 也帶此 class） */
+      .qe-row.qe-noq-on{ opacity:.5; }
+      .qe-row.qe-noq-on .qe-nm,
+      .qe-row.qe-noq-on .qe-unit,
+      .qe-row.qe-noq-on .qe-prev{ color:var(--txt-3); }
       .qe-del{ color:#b91c1c; }
       @media (max-width:640px){
         .sf-qwrap{ padding:16px; }
@@ -19970,38 +20013,74 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
             ? `<span class="sf-pill ok" style="vertical-align:middle;">已完成</span>`
             : `<span class="sf-pill warn" style="vertical-align:middle;">草稿</span>`;
 
+        // 前月價格 map（僅價格模式、僅內部編輯頁使用；列印頁不受影響）。
+        const prevMap = opts.prevMap instanceof Map ? opts.prevMap : null;
+        const normName = (s) => String(s == null ? "" : s).replace(/\s+/g, "").toLowerCase();
+        // 產生「前月」欄內容：顯示前月價，並依本月已填價 vs 前月標漲跌（漲紅↑／跌綠↓）。
+        function prevCellHtml(it, quoted) {
+            if (!prevMap || prevMap.size === 0) return "—";
+            const prev = prevMap.get(normName(it.name));
+            if (!prev || !prev.is_quoted || prev.price == null || String(prev.price).trim() === "") return "—";
+            const prevStr = String(prev.price).trim();
+            const prevNum = Number(prevStr);
+            const curNum = quoted && it.price != null && String(it.price).trim() !== "" ? Number(String(it.price).trim()) : NaN;
+            let arrow = "";
+            if (Number.isFinite(prevNum) && Number.isFinite(curNum) && curNum !== prevNum) {
+                const up = curNum > prevNum;
+                const diff = Math.abs(curNum - prevNum);
+                const diffStr = Number.isInteger(diff) ? String(diff) : String(Math.round(diff * 100) / 100);
+                arrow = up
+                    ? ` <span class="qe-up" title="較前月漲 ${escapeAttr(diffStr)}">↑${escapeHtml(diffStr)}</span>`
+                    : ` <span class="qe-down" title="較前月跌 ${escapeAttr(diffStr)}">↓${escapeHtml(diffStr)}</span>`;
+            }
+            return `${escapeHtml(prevStr)}${arrow}`;
+        }
+
         let groupsHtml = "";
         let seq = 0;
+        // 價格模式表頭列（緊湊表格）
+        const priceThead = manage ? "" : `<div class="qe-thead">
+            <span style="text-align:center;">序</span>
+            <span>名稱</span>
+            <span>單位</span>
+            <span class="qe-th-prev">前月</span>
+            <span class="qe-th-price">價格</span>
+            <span class="qe-th-noq">不報價</span>
+          </div>`;
         for (const g of groups) {
             let rows = "";
             for (const it of g.items) {
                 seq++;
                 const quoted = !!it.is_quoted;
+                const noqCls = quoted ? "" : " qe-noq-on";
                 const priceVal = escapeAttr(quoted ? (it.price == null ? "" : it.price) : "");
                 const hidden = `<input type="hidden" name="row__${escapeAttr(it.id)}" value="1">`;
                 if (manage) {
-                    rows += `<div class="qe-row">
+                    rows += `<div class="qe-row${noqCls}">
                         <span class="qe-seq">${seq}</span>
                         <input class="qe-in" name="name__${escapeAttr(it.id)}" value="${escapeAttr(it.name)}">
                         <input class="qe-in" name="spec__${escapeAttr(it.id)}" value="${escapeAttr(it.spec || "")}">
                         <select class="qe-in" name="cat__${escapeAttr(it.id)}">${catOptions(it.category)}</select>
                         <input class="qe-in qe-price" name="price__${escapeAttr(it.id)}" value="${priceVal}" inputmode="decimal" placeholder="${quoted ? "價格" : "—"}">
-                        <label class="qe-noq"><input type="checkbox" name="noq__${escapeAttr(it.id)}"${quoted ? "" : " checked"}> 不報價</label>
+                        <label class="qe-noq"><input type="checkbox" name="noq__${escapeAttr(it.id)}" onchange="this.closest('.qe-row').classList.toggle('qe-noq-on',this.checked);"${quoted ? "" : " checked"}> 不報價</label>
                         <button type="submit" formaction="/admin/quotes/${enc}/item/${encodeURIComponent(it.id)}/delete" formnovalidate class="sf-btn sm qe-del" onclick="return confirm('刪除此品項？')">刪</button>
                         ${hidden}
                       </div>`;
                 } else {
-                    rows += `<div class="qe-row">
+                    rows += `<div class="qe-row${noqCls}">
                         <span class="qe-seq">${seq}</span>
-                        <div class="qe-name"><span class="qe-nm">${escapeHtml(it.name)}</span>${it.spec ? `<span class="qe-spec">${escapeHtml(it.spec)}</span>` : ""}</div>
+                        <div class="qe-name"><span class="qe-nm">${escapeHtml(it.name)}</span></div>
+                        <span class="qe-unit">${escapeHtml(it.spec || "")}</span>
+                        <span class="qe-prev">${prevCellHtml(it, quoted)}</span>
                         <input class="qe-in qe-price" name="price__${escapeAttr(it.id)}" value="${priceVal}" inputmode="decimal" placeholder="${quoted ? "價格" : "—"}"${quoted ? "" : " disabled"}>
-                        <label class="qe-noq"><input type="checkbox" name="noq__${escapeAttr(it.id)}" onchange="var p=this.closest('.qe-row').querySelector('.qe-price');p.disabled=this.checked;if(this.checked)p.value='';"${quoted ? "" : " checked"}> 不報價</label>
+                        <label class="qe-noq"><input type="checkbox" name="noq__${escapeAttr(it.id)}" onchange="var r=this.closest('.qe-row');var p=r.querySelector('.qe-price');p.disabled=this.checked;if(this.checked)p.value='';r.classList.toggle('qe-noq-on',this.checked);"${quoted ? "" : " checked"}> 不報價</label>
                         ${hidden}
                       </div>`;
                 }
             }
             groupsHtml += `<div class="qe-cat">${escapeHtml(g.category)} <span class="n">${g.items.length} 項</span></div>${rows}`;
         }
+        groupsHtml = priceThead + groupsHtml;
 
         const headerFields = isHotel
             ? [["customer_name", "飯店名稱", row.customer_name], ["title", "標題", row.title], ["subtitle", "副標", row.subtitle], ["company", "公司", row.company], ["address", "地址", row.address], ["tel", "電話", row.tel], ["fax", "傳真", row.fax]]
@@ -20198,6 +20277,17 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
     });
 
 
+    // 標記月報「已發送給客戶」（寫 app_settings quote_sent_<ym>；儀表板發送提醒的按鈕呼叫）
+    router.post("/quotes/mark-sent", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const ym = String(req.body.ym || "").trim();
+            if (/^\d{4}-\d{2}$/.test(ym)) await quote_report_js_1.markQuoteSent(db, ym);
+        } catch (e) {
+            console.error("[admin] /quotes/mark-sent failed", e);
+        }
+        res.redirect(String(req.body.back || "") === "quotes" ? "/admin/quotes" : "/admin");
+    });
+
     // 編輯頁（月報與飯店共用；?manage=1 進管理品項模式）
     router.get("/quotes/:id", async (req, res) => {
         try {
@@ -20206,7 +20296,12 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
             const groups = await quote_report_js_1.getItemsGrouped(db, row.id);
             const manage = String(req.query.manage || "") === "1";
             const okMsg = String(req.query.ok || "");
-            const body = renderQuoteEditor(row, groups, { kind, manage, okMsg });
+            // 前月價格比較：只對「月報」且非管理模式建 map（飯店報價無月份概念）。前月不存在則靜默省略。
+            let prevMap = null;
+            if (kind === "monthly" && !manage && row.ym) {
+                try { prevMap = await quote_report_js_1.buildPrevPriceMap(db, row.ym); } catch (_) { prevMap = null; }
+            }
+            const body = renderQuoteEditor(row, groups, { kind, manage, okMsg, prevMap });
             res.type("text/html").send(notionPage("編輯報價單", body, "quotes", res));
         } catch (e) {
             console.error("[admin] /quotes/:id failed", e);
