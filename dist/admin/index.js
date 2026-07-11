@@ -19954,12 +19954,15 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
       .qe-cat .n{ color:var(--txt-3); font-weight:400; font-size:11px; }
       .qe-row{ display:grid; align-items:center; gap:8px; padding:2px 10px; border-bottom:var(--hairline); }
       .qe-row:hover{ background:var(--bg-1); }
-      /* 價格模式＝緊湊表格：序｜名稱｜單位｜前月｜價格｜不報價，收窄總寬置左 */
-      .qe-price-mode{ max-width:800px; }
+      /* 價格模式＝緊湊表格：序｜名稱｜單位｜前月｜價格｜不報價；兩欄平衡、置左 */
+      .qe-price-mode{ max-width:1320px; }
+      .qe-cols{ display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; align-items:start; }
+      .qe-col{ min-width:0; overflow-x:auto; }
       .qe-price-mode .qe-thead,
-      .qe-price-mode .qe-row{ display:grid; align-items:center; gap:8px; min-width:560px;
-        grid-template-columns:32px minmax(92px,1fr) 78px 92px 78px 54px; }
+      .qe-price-mode .qe-row{ display:grid; align-items:center; gap:8px; min-width:440px;
+        grid-template-columns:28px minmax(72px,1fr) 58px 96px 70px 46px; }
       .qe-price-mode .qe-row{ padding:1px 10px; }
+      @media (max-width:960px){ .qe-price-mode{ max-width:800px; } .qe-cols{ grid-template-columns:1fr; } }
       .qe-thead{ padding:5px 10px; font-size:11px; font-weight:600; color:var(--txt-3); border-bottom:var(--hairline); }
       .qe-thead .qe-th-price, .qe-thead .qe-th-prev{ text-align:right; }
       .qe-thead .qe-th-noq{ text-align:center; }
@@ -19971,9 +19974,11 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
       .qe-nm{ font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .qe-spec{ font-size:12px; color:var(--txt-3); white-space:nowrap; }
       .qe-unit{ font-size:12px; color:var(--txt-3); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-      .qe-prev{ font-size:12px; color:var(--txt-3); text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-      .qe-prev .qe-up{ color:#d92d20; font-weight:600; }   /* 漲＝紅（台灣習慣）*/
-      .qe-prev .qe-down{ color:#12805c; font-weight:600; } /* 跌＝綠 */
+      .qe-prev{ display:flex; flex-direction:column; align-items:flex-end; justify-content:center; gap:1px; font-size:12px; line-height:1.2; color:var(--txt-3); text-align:right; overflow:hidden; }
+      .qe-prev .qe-prevval{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+      .qe-delta{ font-size:10px; white-space:nowrap; font-weight:600; }
+      .qe-prev .qe-up, .qe-delta.qe-up{ color:#d92d20; font-weight:600; }   /* 漲＝紅（台灣習慣）*/
+      .qe-prev .qe-down, .qe-delta.qe-down{ color:#12805c; font-weight:600; } /* 跌＝綠 */
       .qe-in{ width:100%; font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; box-sizing:border-box; }
       .qe-price{ text-align:right; }
       .qe-noq{ font-size:12px; color:var(--txt-3); display:flex; align-items:center; gap:4px; white-space:nowrap; justify-content:center; }
@@ -20016,29 +20021,34 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
         // 前月價格 map（僅價格模式、僅內部編輯頁使用；列印頁不受影響）。
         const prevMap = opts.prevMap instanceof Map ? opts.prevMap : null;
         const normName = (s) => String(s == null ? "" : s).replace(/\s+/g, "").toLowerCase();
-        // 產生「前月」欄內容：顯示前月價，並依本月已填價 vs 前月標漲跌（漲紅↑／跌綠↓）。
-        function prevCellHtml(it, quoted) {
-            if (!prevMap || prevMap.size === 0) return "—";
+        // 前月價資訊：回傳 { hasPrev, prevStr, prevNum }（僅價格模式使用）。
+        function prevInfo(it) {
+            if (!prevMap || prevMap.size === 0) return { hasPrev: false };
             const prev = prevMap.get(normName(it.name));
-            if (!prev || !prev.is_quoted || prev.price == null || String(prev.price).trim() === "") return "—";
+            if (!prev || !prev.is_quoted || prev.price == null || String(prev.price).trim() === "") return { hasPrev: false };
             const prevStr = String(prev.price).trim();
             const prevNum = Number(prevStr);
-            const curNum = quoted && it.price != null && String(it.price).trim() !== "" ? Number(String(it.price).trim()) : NaN;
-            let arrow = "";
-            if (Number.isFinite(prevNum) && Number.isFinite(curNum) && curNum !== prevNum) {
-                const up = curNum > prevNum;
-                const diff = Math.abs(curNum - prevNum);
-                const diffStr = Number.isInteger(diff) ? String(diff) : String(Math.round(diff * 100) / 100);
-                arrow = up
-                    ? ` <span class="qe-up" title="較前月漲 ${escapeAttr(diffStr)}">↑${escapeHtml(diffStr)}</span>`
-                    : ` <span class="qe-down" title="較前月跌 ${escapeAttr(diffStr)}">↓${escapeHtml(diffStr)}</span>`;
+            return { hasPrev: true, prevStr, prevNum: Number.isFinite(prevNum) ? prevNum : NaN };
+        }
+        const fmtDelta = (n) => Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100);
+        // 「前月」欄內容：前月價 ＋ 即時漲跌初值（漲紅↑／跌綠↓，含金額與 %）；之後由 JS 依 data-prev 覆蓋。
+        function prevCell(pi, quoted, price) {
+            if (!pi.hasPrev) return `<span class="qe-prevval">—</span>`;
+            const curNum = quoted && price != null && String(price).trim() !== "" ? Number(String(price).trim()) : NaN;
+            let delta = `<span class="qe-delta"></span>`;
+            if (Number.isFinite(pi.prevNum) && Number.isFinite(curNum) && curNum !== pi.prevNum) {
+                const up = curNum > pi.prevNum;
+                const diff = curNum - pi.prevNum;
+                const amt = (up ? "+" : "-") + fmtDelta(Math.abs(diff));
+                const pct = pi.prevNum !== 0 ? ` (${up ? "+" : "-"}${Math.round(Math.abs(diff) / Math.abs(pi.prevNum) * 100)}%)` : "";
+                delta = `<span class="qe-delta ${up ? "qe-up" : "qe-down"}">${up ? "↑" : "↓"}${escapeHtml(amt + pct)}</span>`;
             }
-            return `${escapeHtml(prevStr)}${arrow}`;
+            return `<span class="qe-prevval">${escapeHtml(pi.prevStr)}</span>${delta}`;
         }
 
         let groupsHtml = "";
         let seq = 0;
-        // 價格模式表頭列（緊湊表格）
+        // 價格模式表頭列（緊湊表格）；兩欄版每欄各放一份。
         const priceThead = manage ? "" : `<div class="qe-thead">
             <span style="text-align:center;">序</span>
             <span>名稱</span>
@@ -20047,15 +20057,36 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
             <span class="qe-th-price">價格</span>
             <span class="qe-th-noq">不報價</span>
           </div>`;
-        for (const g of groups) {
-            let rows = "";
-            for (const it of g.items) {
-                seq++;
-                const quoted = !!it.is_quoted;
-                const noqCls = quoted ? "" : " qe-noq-on";
-                const priceVal = escapeAttr(quoted ? (it.price == null ? "" : it.price) : "");
-                const hidden = `<input type="hidden" name="row__${escapeAttr(it.id)}" value="1">`;
-                if (manage) {
+        // 類別標頭（cont=true → 跨欄切割時右欄的「（續）」）。
+        const catHead = (g, cont) => `<div class="qe-cat">${escapeHtml(g.category)}${cont ? `<span class="n">（續）</span>` : ` <span class="n">${g.items.length} 項</span>`}</div>`;
+        // 價格模式單列。
+        function priceRow(it) {
+            seq++;
+            const quoted = !!it.is_quoted;
+            const noqCls = quoted ? "" : " qe-noq-on";
+            const priceVal = escapeAttr(quoted ? (it.price == null ? "" : it.price) : "");
+            const hidden = `<input type="hidden" name="row__${escapeAttr(it.id)}" value="1">`;
+            const pi = prevInfo(it);
+            const dataPrev = pi.hasPrev ? ` data-prev="${escapeAttr(pi.prevStr)}"` : "";
+            return `<div class="qe-row${noqCls}">
+                <span class="qe-seq">${seq}</span>
+                <div class="qe-name"><span class="qe-nm">${escapeHtml(it.name)}</span></div>
+                <span class="qe-unit">${escapeHtml(it.spec || "")}</span>
+                <span class="qe-prev">${prevCell(pi, quoted, it.price)}</span>
+                <input class="qe-in qe-price" name="price__${escapeAttr(it.id)}" value="${priceVal}" inputmode="decimal" placeholder="${quoted ? "價格" : "—"}"${quoted ? "" : " disabled"}${dataPrev}>
+                <label class="qe-noq"><input type="checkbox" name="noq__${escapeAttr(it.id)}" onchange="var r=this.closest('.qe-row');var p=r.querySelector('.qe-price');p.disabled=this.checked;if(this.checked)p.value='';r.classList.toggle('qe-noq-on',this.checked);"${quoted ? "" : " checked"}> 不報價</label>
+                ${hidden}
+              </div>`;
+        }
+        if (manage) {
+            for (const g of groups) {
+                let rows = "";
+                for (const it of g.items) {
+                    seq++;
+                    const quoted = !!it.is_quoted;
+                    const noqCls = quoted ? "" : " qe-noq-on";
+                    const priceVal = escapeAttr(quoted ? (it.price == null ? "" : it.price) : "");
+                    const hidden = `<input type="hidden" name="row__${escapeAttr(it.id)}" value="1">`;
                     rows += `<div class="qe-row${noqCls}">
                         <span class="qe-seq">${seq}</span>
                         <input class="qe-in" name="name__${escapeAttr(it.id)}" value="${escapeAttr(it.name)}">
@@ -20066,21 +20097,54 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                         <button type="submit" formaction="/admin/quotes/${enc}/item/${encodeURIComponent(it.id)}/delete" formnovalidate class="sf-btn sm qe-del" onclick="return confirm('刪除此品項？')">刪</button>
                         ${hidden}
                       </div>`;
-                } else {
-                    rows += `<div class="qe-row${noqCls}">
-                        <span class="qe-seq">${seq}</span>
-                        <div class="qe-name"><span class="qe-nm">${escapeHtml(it.name)}</span></div>
-                        <span class="qe-unit">${escapeHtml(it.spec || "")}</span>
-                        <span class="qe-prev">${prevCellHtml(it, quoted)}</span>
-                        <input class="qe-in qe-price" name="price__${escapeAttr(it.id)}" value="${priceVal}" inputmode="decimal" placeholder="${quoted ? "價格" : "—"}"${quoted ? "" : " disabled"}>
-                        <label class="qe-noq"><input type="checkbox" name="noq__${escapeAttr(it.id)}" onchange="var r=this.closest('.qe-row');var p=r.querySelector('.qe-price');p.disabled=this.checked;if(this.checked)p.value='';r.classList.toggle('qe-noq-on',this.checked);"${quoted ? "" : " checked"}> 不報價</label>
-                        ${hidden}
-                      </div>`;
+                }
+                groupsHtml += `${catHead(g, false)}${rows}`;
+            }
+        } else if (items.length) {
+            // 價格模式：依累計品項數平均切成左右兩欄；類別標頭跟著品項，跨欄切割時右欄補「（續）」標頭。
+            const half = Math.ceil(items.length / 2);
+            const cols = ["", ""];
+            let col = 0, n = 0;
+            for (const g of groups) {
+                let headerCol = -1;   // 此類別標頭目前所在欄（-1＝尚未放）
+                let emitted = false;  // 是否已放過此類別標頭（跨欄時右欄補「（續）」）
+                for (const it of g.items) {
+                    if (col === 0 && n >= half) col = 1;
+                    if (headerCol !== col) { cols[col] += catHead(g, emitted); headerCol = col; emitted = true; }
+                    cols[col] += priceRow(it);
+                    n++;
                 }
             }
-            groupsHtml += `<div class="qe-cat">${escapeHtml(g.category)} <span class="n">${g.items.length} 項</span></div>${rows}`;
+            groupsHtml = `<div class="qe-cols">
+                <div class="qe-col">${priceThead}${cols[0]}</div>
+                ${cols[1] ? `<div class="qe-col">${priceThead}${cols[1]}</div>` : ""}
+              </div>`;
         }
-        groupsHtml = priceThead + groupsHtml;
+
+        // 價格模式：即時漲跌（金額＋%，漲紅↓跌綠）。伺服器端已算初值，這裡依 data-prev 即時覆蓋。
+        const priceScript = manage ? "" : `<script>
+(function(){
+  function fmt(n){ return Number.isInteger(n) ? String(n) : String(Math.round(n*100)/100); }
+  function calc(input){
+    var row = input.closest('.qe-row'); if(!row) return;
+    var delta = row.querySelector('.qe-delta'); if(!delta) return;
+    var pa = input.getAttribute('data-prev');
+    var prev = (pa==null||pa==='') ? NaN : Number(pa);
+    var raw = input.disabled ? '' : String(input.value).trim();
+    var cur = raw==='' ? NaN : Number(raw);
+    if(!isFinite(prev) || !isFinite(cur) || cur===prev){ delta.className='qe-delta'; delta.textContent=''; return; }
+    var diff = cur - prev, up = diff > 0;
+    var amt = (up?'+':'-') + fmt(Math.abs(diff));
+    var pct = prev!==0 ? ' ('+(up?'+':'-')+Math.round(Math.abs(diff)/Math.abs(prev)*100)+'%)' : '';
+    delta.className = 'qe-delta ' + (up?'qe-up':'qe-down');
+    delta.textContent = (up?'\\u2191':'\\u2193') + amt + pct;
+  }
+  var priceInputs = document.querySelectorAll('.qe-price-mode .qe-price[data-prev]');
+  for(var i=0;i<priceInputs.length;i++){ (function(inp){ calc(inp); inp.addEventListener('input', function(){ calc(inp); }); })(priceInputs[i]); }
+  var noqs = document.querySelectorAll('.qe-price-mode .qe-noq input[type=checkbox]');
+  for(var j=0;j<noqs.length;j++){ noqs[j].addEventListener('change', function(e){ var r=e.target.closest('.qe-row'); if(!r) return; var p=r.querySelector('.qe-price'); if(p) calc(p); }); }
+})();
+</script>`;
 
         const headerFields = isHotel
             ? [["customer_name", "飯店名稱", row.customer_name], ["title", "標題", row.title], ["subtitle", "副標", row.subtitle], ["company", "公司", row.company], ["address", "地址", row.address], ["tel", "電話", row.tel], ["fax", "傳真", row.fax]]
@@ -20145,6 +20209,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                 <button class="sf-btn" type="submit">新增</button>
               </form>
             </div>` : ""}
+            ${priceScript}
           </div>`;
     }
 
