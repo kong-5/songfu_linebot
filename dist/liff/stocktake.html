@@ -127,6 +127,8 @@
   .submit:disabled{opacity:.5;}
   .pad{padding-bottom:88px;}
   /* 品項照片（第四波，Sortly 式：照片語言中性，最好認貨）：縮圖 + 點擊放大 */
+  /* [2026-07-11] 照片功能暫時關閉（使用者：目前不需要）。要重開刪掉下一行的 display:none。 */
+  .stk-thumb{display:none!important;}
   .stk-thumb{flex:none;width:38px;height:38px;border-radius:9px;border:1px solid var(--line);background-color:var(--field);background-size:cover;background-position:center;padding:0;cursor:pointer;position:relative;}
   .stk-thumb::after{content:'';position:absolute;inset:-6px;} /* 擴大點擊熱區（戴手套），視覺不變 */
   /* 縮圖載入中：小轉圈；載入失敗：橘框＋↻ 提示可重試（三態：無照片→根本不畫縮圖） */
