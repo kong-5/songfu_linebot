@@ -216,6 +216,8 @@
   var CO_ORDER=['00','01','02','03'];
   var S={idToken:null,name:"",wh:null,date:"",icpno:'00',items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:initHz,lang:initLang,baseSubmittedAt:null};
   function coName(){return COMPANY[S.icpno]||('公司'+S.icpno);}
+  // 公司主題色:松揚(02)橘、其餘藍。改 :root --accent 讓整頁換色。
+  function applyCoTheme(){var o=(S.icpno==='02');var r=document.documentElement.style;r.setProperty('--accent',o?'#e8730c':'#2383e2');r.setProperty('--accent-soft',o?'#fdecd9':'#e8f1fd');}
   function t(k){return (I18N[S.lang]&&I18N[S.lang][k]!=null)?I18N[S.lang][k]:I18N.zh[k];}
   function toggleLang(){ S.lang=(S.lang==='zh')?'vi':'zh'; try{localStorage.setItem('stk_lang',S.lang);}catch(_){}
     if(S.wh){ var y=window.pageYOffset||document.documentElement.scrollTop||0; renderCount(); window.scrollTo(0,y); } // 重繪後還原捲動位置
@@ -382,6 +384,7 @@
       return liff.getProfile().then(function(p){ S.name=(p&&p.displayName)||""; }).catch(function(){});
     }).then(function(){
       var ic=getParam('icpno'); if(ic&&/^\d{2}$/.test(ic)) S.icpno=ic; // #盤點 松揚 → icpno=02 帶進來
+      applyCoTheme();
       var wh=getParam('warehouse');
       if(wh){ openWarehouse(wh); } else { showPicker(); }
     }).catch(function(e){ showCenter('<div>'+t('liffFail')+'</div><div style="font-size:12px;color:var(--txt-3)">'+esc(e&&e.message||e)+'</div>'); });
@@ -416,7 +419,7 @@
       }
       app.innerHTML='<div class="wrapx">'+html+'</div>';
       var lb=document.getElementById('stLang'); if(lb) lb.addEventListener('click',toggleLang);
-      Array.prototype.forEach.call(app.querySelectorAll('.co-seg button'),function(b){ b.addEventListener('click',function(){ S.icpno=b.getAttribute('data-co'); showPicker(); }); });
+      Array.prototype.forEach.call(app.querySelectorAll('.co-seg button'),function(b){ b.addEventListener('click',function(){ S.icpno=b.getAttribute('data-co'); applyCoTheme(); showPicker(); }); });
       Array.prototype.forEach.call(app.querySelectorAll('.pk'),function(b){ b.addEventListener('click',function(){ openWarehouse(b.getAttribute('data-w')); }); });
     }).catch(function(){ showCenter('<div>'+t('loadWhFail')+'</div>'); });
   }

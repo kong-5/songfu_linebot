@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>掃碼速查／建檔</title>
+<style>
+  :root{
+    --bg:#ffffff;--card:#ffffff;--line:#e5e7ec;--line-soft:#eef0f3;
+    --txt:#1f2430;--txt-2:#5b616e;--txt-3:#8b909c;
+    --accent:#2383e2;--accent-soft:#e8f1fd;
+    --neg:#d23b3b;--neg-soft:#fdecec;--pos:#1f9d57;--pos-soft:#e7f6ee;
+    --warn:#b9791b;--warn-soft:#fcf3e2;--chip:#eef0f3;--field:#f7f8fa;
+    --shadow:0 1px 2px rgba(20,30,50,.06),0 3px 12px rgba(20,30,50,.05);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html{background:#fff;}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","PingFang TC",sans-serif;-webkit-text-size-adjust:100%;}
+  .wrap{max-width:600px;margin:0 auto;}
+  .center{min-height:60vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--txt-2);padding:24px;text-align:center;}
+  .spin{width:30px;height:30px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:sp 1s linear infinite;}
+  @keyframes sp{to{transform:rotate(360deg);}}
+  header{position:sticky;top:0;z-index:20;background:var(--card);border-bottom:1px solid var(--line);}
+  .head-main{display:flex;align-items:center;gap:10px;padding:11px 14px 6px;}
+  .head-t{flex:1;min-width:0;}
+  .head-t h1{margin:0;font-size:16px;font-weight:800;}
+  .head-t .sub{font-size:11.5px;color:var(--txt-3);margin-top:1px;}
+  .back{border:0;background:transparent;color:var(--accent);font-size:14px;font-weight:600;cursor:pointer;padding:4px 2px;text-decoration:none;}
+  .co-seg{display:flex;gap:6px;padding:0 14px 10px;flex-wrap:wrap;}
+  .co-seg button{border:1px solid var(--line);background:var(--field);color:var(--txt-2);font-size:13px;font-weight:700;padding:7px 14px;border-radius:99px;cursor:pointer;}
+  .co-seg button.on{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .cam{position:relative;margin:10px 12px 0;border-radius:14px;overflow:hidden;background:#10131a;box-shadow:var(--shadow);}
+  .cam video{display:block;width:100%;height:30vh;object-fit:cover;}
+  .cam.paused video{opacity:.35;}
+  .cam-line{position:absolute;left:10%;right:10%;top:50%;height:2px;background:rgba(255,80,80,.85);border-radius:2px;box-shadow:0 0 8px rgba(255,80,80,.7);}
+  .cam-hint{position:absolute;left:0;right:0;bottom:0;padding:7px 10px;font-size:11.5px;color:#fff;background:linear-gradient(transparent,rgba(0,0,0,.55));text-align:center;}
+  .cam-tools{position:absolute;top:8px;right:8px;display:flex;gap:6px;}
+  .cam-btn{border:0;border-radius:9px;background:rgba(0,0,0,.45);color:#fff;font-size:12px;font-weight:700;padding:7px 11px;cursor:pointer;}
+  .cam-off{padding:22px 14px;text-align:center;color:#c7ccd6;font-size:13px;line-height:1.6;}
+  .manual{display:flex;gap:8px;margin:10px 12px 0;}
+  .manual input{flex:1;font-size:15px;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;background:var(--field);color:var(--txt);outline:none;}
+  .manual input:focus{border-color:var(--accent);background:var(--card);}
+  .manual button{border:0;border-radius:10px;background:var(--accent);color:#fff;font-size:14px;font-weight:700;padding:0 16px;cursor:pointer;white-space:nowrap;}
+  /* 速查卡 */
+  .info{margin:12px;background:var(--card);border:1.5px solid var(--accent);border-radius:14px;box-shadow:var(--shadow);padding:14px 16px;}
+  .info .nm{font-size:18px;font-weight:800;line-height:1.25;}
+  .info .code{font-size:12.5px;color:var(--txt-3);margin-top:2px;font-variant-numeric:tabular-nums;}
+  .info .qty{display:flex;align-items:baseline;gap:8px;margin:12px 0 4px;}
+  .info .qty .v{font-size:34px;font-weight:900;font-variant-numeric:tabular-nums;line-height:1;}
+  .info .qty .u{font-size:14px;font-weight:700;color:var(--txt-3);}
+  .info .qty .lab{font-size:12px;color:var(--txt-3);margin-left:auto;}
+  .info .rows{margin-top:8px;border-top:1px solid var(--line-soft);padding-top:8px;font-size:13px;color:var(--txt-2);}
+  .info .rows div{display:flex;justify-content:space-between;padding:3px 0;}
+  .info .rows b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums;}
+  .info .barcode-tag{display:inline-block;font-size:11.5px;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:3px 9px;border-radius:6px;margin-top:8px;font-variant-numeric:tabular-nums;}
+  .unknown{margin:12px;background:var(--warn-soft);border:1.5px solid color-mix(in srgb,var(--warn) 30%,transparent);border-radius:14px;padding:16px;text-align:center;}
+  .unknown .bc{font-size:14px;font-weight:800;color:var(--warn);font-variant-numeric:tabular-nums;}
+  .unknown .d{font-size:12.5px;color:var(--warn);margin-top:4px;}
+  .unknown button{margin-top:12px;border:0;border-radius:11px;background:var(--accent);color:#fff;font-size:15px;font-weight:800;padding:12px 26px;cursor:pointer;}
+  .hint{font-size:12px;color:var(--txt-3);margin:14px 16px;text-align:center;line-height:1.6;}
+  /* bind sheet */
+  .sheet-mask{position:fixed;inset:0;background:rgba(15,20,30,.45);z-index:40;display:flex;align-items:flex-end;}
+  .sheet{background:var(--card);border-radius:16px 16px 0 0;width:100%;max-width:600px;margin:0 auto;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 -6px 30px rgba(20,30,50,.25);position:relative;}
+  .sheet-h{padding:14px 16px 8px;border-bottom:1px solid var(--line-soft);}
+  .sheet-h .t{font-size:15.5px;font-weight:800;}
+  .sheet-h .bc{font-size:12.5px;color:var(--txt-2);margin-top:3px;font-variant-numeric:tabular-nums;}
+  .sheet-h .bc b{color:var(--txt);letter-spacing:.03em;}
+  .sheet-x{position:absolute;right:12px;top:10px;border:0;background:transparent;color:var(--txt-3);font-size:22px;cursor:pointer;padding:4px 8px;}
+  .sheet-body{padding:10px 14px 16px;overflow-y:auto;flex:1;}
+  .sheet .search{display:flex;align-items:center;gap:7px;background:var(--field);border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;margin-bottom:8px;}
+  .sheet .search input{border:0;background:transparent;color:inherit;font-size:15px;width:100%;outline:none;}
+  .cand{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:7px;cursor:pointer;}
+  .cand .info2{flex:1;min-width:0;}
+  .cand .nm{font-size:14px;font-weight:700;}
+  .cand .meta{font-size:11px;color:var(--txt-3);margin-top:1px;font-variant-numeric:tabular-nums;}
+  .cand .sysv{font-size:12.5px;color:var(--txt-2);font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .bind-qps{display:flex;align-items:center;gap:10px;background:var(--warn-soft);border:1px solid color-mix(in srgb,var(--warn) 28%,transparent);border-radius:10px;padding:10px 12px;margin:4px 0 10px;}
+  .bind-qps .lab{flex:1;font-size:12.5px;color:var(--warn);font-weight:700;}
+  .bind-qps input{width:76px;text-align:center;font-size:16px;font-weight:800;border:1.5px solid var(--line);border-radius:9px;padding:7px 6px;background:var(--card);color:var(--txt);}
+  .bind-sel{background:var(--accent-soft);border:1.5px solid var(--accent);border-radius:10px;padding:10px 12px;margin-bottom:10px;}
+  .bind-sel .nm{font-size:14.5px;font-weight:800;}
+  .bind-sel .meta{font-size:11.5px;color:var(--txt-2);margin-top:1px;}
+  .bind-act{display:flex;gap:10px;}
+  .bind-act .go{flex:1;border:0;border-radius:11px;background:var(--accent);color:#fff;font-size:15px;font-weight:800;padding:13px;cursor:pointer;}
+  .bind-act .go:disabled{opacity:.45;}
+  .bind-act .cancel{border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--txt-2);font-size:14px;font-weight:700;padding:13px 16px;cursor:pointer;}
+  .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:50;background:rgba(25,30,40,.92);color:#fff;font-size:13.5px;font-weight:700;padding:10px 16px;border-radius:99px;box-shadow:0 4px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .18s;pointer-events:none;max-width:86vw;text-align:center;}
+  .toast.on{opacity:1;}
+</style>
+</head>
+<body>
+<div class="wrap"><div id="app"><div class="center"><div class="spin"></div><div>載入中…</div></div></div></div>
+<div class="toast" id="toast"></div>
+<script>
+(function(){
+  var APIB='/admin/scan';
+  var app=document.getElementById('app');
+  var COMPANY={'00':'松富','01':'龍港','02':'松揚','03':'松成'};
+  var CO_ORDER=['02','00','01','03'];
+  var S={icpno:'02',barcodes:{},scanning:false,stream:null,detector:null,zreader:null,engine:'',cur:null};
+
+  function esc(s){s=(s==null?'':String(s));return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+  function fmt(n){var v=Number(n);if(!isFinite(v))return '0';return String(Math.round(v*100)/100);}
+  function api(p){return fetch(p,{credentials:'same-origin'}).then(function(r){return r.json();});}
+  function post(p,b){return fetch(p,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json();});}
+  function coName(){return COMPANY[S.icpno]||('公司'+S.icpno);}
+  function applyCoTheme(){var o=(S.icpno==='02');var r=document.documentElement.style;r.setProperty('--accent',o?'#e8730c':'#2383e2');r.setProperty('--accent-soft',o?'#fdecd9':'#e8f1fd');}
+  var _tt=null;function toast(m){var el=document.getElementById('toast');el.textContent=m;el.classList.add('on');if(_tt)clearTimeout(_tt);_tt=setTimeout(function(){el.classList.remove('on');},1400);}
+  var _ac=null;
+  function beep(ok){try{_ac=_ac||new (window.AudioContext||window.webkitAudioContext)();if(_ac.state==='suspended')_ac.resume();var o=_ac.createOscillator(),g=_ac.createGain();o.connect(g);g.connect(_ac.destination);o.frequency.value=ok?1320:340;g.gain.value=.12;o.start();o.stop(_ac.currentTime+(ok?.08:.22));}catch(_){}try{navigator.vibrate&&navigator.vibrate(ok?50:[80,60,80]);}catch(_){}}
+
+  function boot(){
+    try{var last=localStorage.getItem('scantool_icpno');if(last&&/^\d{2}$/.test(last))S.icpno=last;}catch(_){}
+    try{var u=new URL(location.href);var ic=u.searchParams.get('icpno');if(ic&&/^\d{2}$/.test(ic))S.icpno=ic;}catch(_){}
+    applyCoTheme();
+    loadBarcodes(function(){ render(); startScan(); });
+  }
+  function loadBarcodes(cb){
+    api(APIB+'/barcodes?icpno='+encodeURIComponent(S.icpno)).then(function(res){
+      S.barcodes=(res&&res.map)||{}; cb&&cb();
+    }).catch(function(){ S.barcodes={}; cb&&cb(); });
+  }
+
+  function render(){
+    stopScan();
+    S.cur=null;
+    app.innerHTML=''
+      +'<header><div class="head-main"><a class="back" href="/admin">‹ 儀表板</a>'
+        +'<div class="head-t"><h1>掃碼速查／建檔</h1><div class="sub">掃條碼→查庫存或建檔 · '+esc(coName())+'</div></div></div>'
+        +'<div class="co-seg">'+CO_ORDER.map(function(c){return '<button data-co="'+c+'" class="'+(c===S.icpno?'on':'')+'">'+esc(COMPANY[c])+'</button>';}).join('')+'</div>'
+      +'</header>'
+      +'<div class="cam" id="scCam"><video id="scVideo" playsinline muted autoplay></video><div class="cam-line"></div>'
+        +'<div class="cam-tools"><button class="cam-btn" id="scTorch" style="display:none;">手電筒</button><button class="cam-btn" id="scPause">暫停</button></div>'
+        +'<div class="cam-hint">對準條碼即可（自動連續掃描）</div></div>'
+      +'<div class="manual"><input id="scManual" inputmode="numeric" placeholder="掃不到？手動輸入條碼或料號" autocomplete="off"><button id="scMGo">查</button></div>'
+      +'<div id="scResult"></div>'
+      +'<div class="hint" id="scHint">掃到<b>已建檔</b>的條碼會顯示品名與目前庫存；掃到<b>沒建過</b>的會問你要不要建檔。</div>';
+    Array.prototype.forEach.call(app.querySelectorAll('.co-seg button'),function(b){
+      b.addEventListener('click',function(){ S.icpno=b.getAttribute('data-co'); try{localStorage.setItem('scantool_icpno',S.icpno);}catch(_){} applyCoTheme(); loadBarcodes(function(){ render(); startScan(); }); });
+    });
+    document.getElementById('scPause').addEventListener('click',function(){ if(S.scanning){pauseScan();this.textContent='繼續';}else{resumeScan();this.textContent='暫停';} });
+    document.getElementById('scMGo').addEventListener('click',manualGo);
+    document.getElementById('scManual').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();manualGo();}});
+  }
+  function manualGo(){var el=document.getElementById('scManual');var v=(el.value||'').trim();if(!v)return;el.value='';onBarcode(v,true);}
+
+  // ---------- 掃描引擎（BarcodeDetector → zxing → 手動）----------
+  var FORMATS=['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code'];
+  function stopScan(){S.scanning=false;try{if(S.zreader){S.zreader.reset();S.zreader=null;}}catch(_){}try{if(S.stream){S.stream.getTracks().forEach(function(t){t.stop();});S.stream=null;}}catch(_){}}
+  function pauseScan(){S.scanning=false;var c=document.getElementById('scCam');if(c)c.classList.add('paused');}
+  function resumeScan(){var c=document.getElementById('scCam');if(c)c.classList.remove('paused');if(S.engine==='native'&&S.stream){S.scanning=true;nativeLoop();}else if(S.engine==='zxing'){S.scanning=true;}}
+  function startScan(){
+    var video=document.getElementById('scVideo');if(!video)return;
+    if('BarcodeDetector' in window){try{S.detector=new BarcodeDetector({formats:FORMATS});}catch(_){S.detector=null;}if(S.detector){startNative(video);return;}}
+    loadZxing(function(ok){ if(ok)startZxing(video); else camManual('這支手機的瀏覽器不支援相機掃碼，請用下方欄位手動輸入。'); });
+  }
+  function startNative(video){
+    navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}},audio:false}).then(function(stream){
+      S.stream=stream;S.engine='native';video.srcObject=stream;
+      return video.play().then(function(){ S.scanning=true;nativeLoop();
+        try{var track=stream.getVideoTracks()[0];var caps=track.getCapabilities?track.getCapabilities():{};if(caps.torch){var tb=document.getElementById('scTorch');var on=false;tb.style.display='';tb.addEventListener('click',function(){on=!on;track.applyConstraints({advanced:[{torch:on}]}).catch(function(){});tb.textContent=on?'關手電筒':'手電筒';});}}catch(_){}
+      });
+    }).catch(function(){ camManual('無法開啟相機（可能未授權）。請允許相機，或手動輸入。'); });
+  }
+  function nativeLoop(){
+    if(!S.scanning||S.engine!=='native')return;
+    var video=document.getElementById('scVideo');if(!video||video.readyState<2){setTimeout(nativeLoop,180);return;}
+    S.detector.detect(video).then(function(codes){if(S.scanning&&codes&&codes.length){var raw=String(codes[0].rawValue||'').trim();if(raw)hitBarcode(raw);}}).catch(function(){}).then(function(){if(S.scanning)setTimeout(nativeLoop,220);});
+  }
+  function loadZxing(cb){if(window.ZXing){cb(true);return;}var s=document.createElement('script');s.src='/liff/vendor/zxing.min.js';s.onload=function(){cb(!!window.ZXing);};s.onerror=function(){cb(false);};document.head.appendChild(s);}
+  function startZxing(video){
+    try{if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){camManual();return;}
+      var Z=window.ZXing;var hints=new Map();
+      hints.set(Z.DecodeHintType.POSSIBLE_FORMATS,[Z.BarcodeFormat.EAN_13,Z.BarcodeFormat.EAN_8,Z.BarcodeFormat.UPC_A,Z.BarcodeFormat.UPC_E,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.ITF,Z.BarcodeFormat.QR_CODE]);
+      hints.set(Z.DecodeHintType.TRY_HARDER,true);
+      S.zreader=new Z.BrowserMultiFormatReader(hints,300);S.engine='zxing';S.scanning=true;
+      S.zreader.decodeFromConstraints({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}},audio:false},video,function(result){if(result&&S.scanning){var raw=String(result.getText()||'').trim();if(raw)hitBarcode(raw);}}).catch(function(){camManual('無法開啟相機（可能未授權）。');});
+    }catch(_){camManual();}
+  }
+  function camManual(msg){var cam=document.getElementById('scCam');if(cam)cam.innerHTML='<div class="cam-off">'+esc(msg||'這支手機無法用相機掃描，請手動輸入條碼／料號。')+'</div>';S.engine='manual';}
+  var _lastCode='',_lastAt=0;
+  function hitBarcode(raw){var now=Date.now();if(raw===_lastCode&&now-_lastAt<=1500)return;_lastCode=raw;_lastAt=now;onBarcode(raw,false);}
+
+  // ---------- 掃到條碼 → 速查 or 建檔 ----------
+  function onBarcode(raw,isManual){
+    var hit=S.barcodes[raw];
+    if(hit){ beep(true); lookupItem(hit.c, raw, hit.q||1); return; }
+    // 手動也可能直接打料號
+    if(isManual){ lookupItem(raw, null, 1, true); return; }
+    beep(false); showUnknown(raw);
+  }
+  function lookupItem(code, barcode, qps, maybeCode){
+    showResultLoading();
+    api(APIB+'/search?icpno='+encodeURIComponent(S.icpno)+'&q='+encodeURIComponent(code)).then(function(res){
+      var items=(res&&res.items)||[];
+      var it=items.filter(function(x){return x.c===code;})[0];
+      if(!it){
+        if(maybeCode){ // 手動打的字既不是條碼也不是料號 → 當未知條碼問建檔
+          beep(false); showUnknown(code); return;
+        }
+        document.getElementById('scResult').innerHTML='<div class="unknown"><div class="bc">'+esc(code)+'</div><div class="d">條碼已綁料號 '+esc(code)+'，但目前庫存快照查無此料號</div></div>';
+        return;
+      }
+      showInfo(it, barcode, qps);
+    }).catch(function(){ document.getElementById('scResult').innerHTML='<div class="hint">查詢失敗，請再試一次</div>'; });
+  }
+  function showResultLoading(){var r=document.getElementById('scResult');if(r)r.innerHTML='<div class="center" style="min-height:120px;"><div class="spin"></div></div>';}
+  function showInfo(it, barcode, qps){
+    S.cur=it.c;
+    var box=document.getElementById('scResult');
+    box.innerHTML='<div class="info"><div class="nm">'+esc(it.n)+'</div><div class="code">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div>'
+      +'<div class="qty"><span class="v">'+fmt(it.sys)+'</span><span class="u">'+esc(it.u||'')+'</span><span class="lab">目前庫存</span></div>'
+      +'<div class="rows">'
+        +'<div><span>倉別</span><b>'+esc(it.w||'—')+'</b></div>'
+        +(barcode?'<div><span>條碼</span><b>'+esc(barcode)+'</b></div>':'')
+        +((qps&&qps>1)?'<div><span>每掃數量</span><b>'+fmt(qps)+' '+esc(it.u||'')+'</b></div>':'')
+      +'</div>'
+      +(barcode?'':'<span class="barcode-tag">此為料號查詢（未帶條碼）</span>')
+      +'</div>'
+      +'<div class="hint">繼續掃下一個，或用下方欄位查料號。</div>';
+    document.getElementById('scHint') && (document.getElementById('scHint').style.display='none');
+  }
+  function showUnknown(raw){
+    stopScanPauseForSheet();
+    var box=document.getElementById('scResult');
+    box.innerHTML='<div class="unknown"><div class="bc">'+esc(raw)+'</div><div class="d">這個條碼還沒建檔</div>'
+      +'<button id="scBindBtn">建檔（綁定品項）</button></div>';
+    document.getElementById('scBindBtn').addEventListener('click',function(){ openBind(raw); });
+  }
+  function stopScanPauseForSheet(){ if(S.engine==='native')pauseScan(); if(S.engine==='zxing')S.scanning=false; var pb=document.getElementById('scPause'); if(pb)pb.textContent='繼續'; }
+
+  // ---------- 建檔（綁定條碼→品項）----------
+  var B={barcode:'',sel:null};
+  function openBind(raw){
+    stopScanPauseForSheet();
+    B={barcode:raw,sel:null};
+    var mask=document.createElement('div');mask.className='sheet-mask';mask.id='bindMask';
+    mask.innerHTML='<div class="sheet"><button class="sheet-x" id="bindX">×</button>'
+      +'<div class="sheet-h"><div class="t">建檔：綁定品項</div><div class="bc">條碼 <b>'+esc(raw)+'</b> → 選一個'+esc(coName())+'的品項</div></div>'
+      +'<div class="sheet-body">'
+        +'<div id="bindSelBox"></div>'
+        +'<div class="search"><input id="bindQ" placeholder="搜尋品名 / 料號 / 規格" autocomplete="off"></div>'
+        +'<div class="hint" style="margin:2px 2px 8px;text-align:left;">找到品項點一下選取；之後掃這條碼就直接帶出。</div>'
+        +'<div id="bindRes"></div>'
+        +'<div class="bind-qps"><span class="lab">掃 1 下＝幾個單位？（整箱條碼填入數）</span><input id="bindQps" inputmode="decimal" value="1"></div>'
+        +'<div class="bind-act"><button class="cancel" id="bindCancel">取消</button><button class="go" id="bindGo" disabled>建檔並帶入</button></div>'
+      +'</div></div>';
+    document.body.appendChild(mask);
+    var close=function(){var m=document.getElementById('bindMask');if(m)m.remove();resumeScan();var pb=document.getElementById('scPause');if(pb)pb.textContent='暫停';};
+    document.getElementById('bindX').addEventListener('click',close);
+    document.getElementById('bindCancel').addEventListener('click',close);
+    var t2=null;
+    document.getElementById('bindQ').addEventListener('input',function(e){if(t2)clearTimeout(t2);t2=setTimeout(function(){bindSearch(e.target.value.trim());},200);});
+    document.getElementById('bindGo').addEventListener('click',function(){
+      if(!B.sel)return;var qps=parseFloat(document.getElementById('bindQps').value);if(!isFinite(qps)||qps<=0)qps=1;
+      var btn=this;btn.disabled=true;btn.textContent='建檔中…';
+      post(APIB+'/bind',{icpno:S.icpno,barcode:B.barcode,erp_code:B.sel.c,qty_per_scan:qps}).then(function(res){
+        if(res.error){btn.disabled=false;btn.textContent='建檔並帶入';alert('建檔失敗：'+res.error);return;}
+        S.barcodes[B.barcode]={c:B.sel.c,q:qps};
+        close();
+        toast('已建檔：'+B.sel.n);
+        showInfo(B.sel, B.barcode, qps);
+      }).catch(function(){btn.disabled=false;btn.textContent='建檔並帶入';alert('建檔失敗，請稍後再試');});
+    });
+    setTimeout(function(){var q=document.getElementById('bindQ');if(q)q.focus();},50);
+  }
+  function bindSearch(q){
+    var box=document.getElementById('bindRes');if(!box)return;
+    if(!q){box.innerHTML='';return;}
+    box.innerHTML='<div class="hint" style="text-align:left;">搜尋中…</div>';
+    api(APIB+'/search?icpno='+encodeURIComponent(S.icpno)+'&q='+encodeURIComponent(q)).then(function(res){
+      var items=(res&&res.items)||[];
+      if(!items.length){box.innerHTML='<div class="hint" style="text-align:left;">找不到符合的品項</div>';return;}
+      box.innerHTML=items.map(function(it,i){return '<button class="cand" data-i="'+i+'"><div class="info2"><div class="nm">'+esc(it.n)+'</div><div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+(it.w?' · 倉 '+esc(it.w):'')+'</div></div><div class="sysv">庫存 '+fmt(it.sys)+' '+esc(it.u||'')+'</div></button>';}).join('');
+      Array.prototype.forEach.call(box.querySelectorAll('.cand'),function(b){b.addEventListener('click',function(){
+        B.sel=items[+b.getAttribute('data-i')];
+        document.getElementById('bindSelBox').innerHTML='<div class="bind-sel"><div class="nm">'+esc(B.sel.n)+'</div><div class="meta">'+esc(B.sel.c)+(B.sel.s?' · '+esc(B.sel.s):'')+' · 庫存 '+fmt(B.sel.sys)+' '+esc(B.sel.u||'')+'</div></div>';
+        document.getElementById('bindGo').disabled=false;
+      });});
+    }).catch(function(){box.innerHTML='<div class="hint" style="text-align:left;">搜尋失敗</div>';});
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
