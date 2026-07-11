@@ -62,6 +62,17 @@ function nextYm(ym) {
 }
 exports.nextYm = nextYm;
 
+/** 上一個月份的 YYYY-MM（給價格模式「前月價格」比較用）。 */
+function prevYm(ym) {
+    const m = /^(\d{4})-(\d{2})$/.exec(String(ym || "").trim());
+    if (!m) return "";
+    let y = parseInt(m[1], 10);
+    let mo = parseInt(m[2], 10) - 1;
+    if (mo < 1) { mo = 12; y -= 1; }
+    return `${y}-${String(mo).padStart(2, "0")}`;
+}
+exports.prevYm = prevYm;
+
 /** 由 Date（台北時區）取 YYYY-MM。 */
 function ymFromDate(d) {
     const t = new Date(d.getTime() + 8 * 3600 * 1000); // 轉台北
@@ -765,6 +776,75 @@ async function monthEndReminder(db, todayYmd, remindWithinDays) {
     return { show, targetYm, rocLabel, report: report || null, daysLeft };
 }
 exports.monthEndReminder = monthEndReminder;
+
+/** 讀某月報是否已標記「已發送給客戶」（app_settings key `quote_sent_<ym>`），回傳發送時間字串或 null。 */
+async function getQuoteSentAt(db, ym) {
+    try {
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(`quote_sent_${ym}`);
+        return row && row.value ? row.value : null;
+    } catch (_) { return null; }
+}
+exports.getQuoteSentAt = getQuoteSentAt;
+
+/** 標記某月報已發送（寫 app_settings key `quote_sent_<ym>` = 發送時間）。免動 schema。 */
+async function markQuoteSent(db, ym) {
+    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(`quote_sent_${ym}`, nowIso());
+}
+exports.markQuoteSent = markQuoteSent;
+
+/**
+ * 月底「發送」提醒：判斷「下個月的報價單是否該發送給客戶」。
+ * 條件：下月報價單已 finalized（做好可發）、尚未標記發送、且接近月底（本月剩餘天數 <= withinDays，預設 3）。
+ * 最後一日（daysLeft===0）最醒目。回傳 { show, targetYm, rocLabel, report, daysLeft, isLastDay, sent, sentAt }。
+ */
+async function monthEndSendReminder(db, todayYmd, opts) {
+    opts = opts || {};
+    const within = opts.withinDays == null ? 3 : opts.withinDays;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(todayYmd || "").trim());
+    if (!m) return { show: false };
+    const year = parseInt(m[1], 10), month = parseInt(m[2], 10), day = parseInt(m[3], 10);
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const daysLeft = daysInMonth - day;
+    const isLastDay = daysLeft === 0;
+    const curYm = `${m[1]}-${m[2]}`;
+    const targetYm = nextYm(curYm);
+    const rocLabel = rocLabelFromYm(targetYm);
+    const report = await getReportByYm(db, targetYm);
+    if (!report || report.status !== "finalized") {
+        return { show: false, targetYm, rocLabel, report: report || null, daysLeft, isLastDay };
+    }
+    const sentAt = await getQuoteSentAt(db, targetYm);
+    if (sentAt) return { show: false, sent: true, sentAt, targetYm, rocLabel, report, daysLeft, isLastDay };
+    const show = daysLeft <= within;
+    return { show, targetYm, rocLabel, report, daysLeft, isLastDay, sent: false, sentAt: null };
+}
+exports.monthEndSendReminder = monthEndSendReminder;
+
+/** 正規化品名（去所有空白＋小寫）供前月價格比對建 map。 */
+function normQuoteName(name) {
+    return String(name == null ? "" : name).replace(/\s+/g, "").toLowerCase();
+}
+exports.normQuoteName = normQuoteName;
+
+/**
+ * 建「品名 → 前月報價」map（供價格模式內部比較漲跌）。前月報價單不存在時回傳空 Map（呼叫端靜默省略）。
+ * key 用正規化品名；同名後者覆蓋前者（品名多半唯一，足夠）。value = { price, is_quoted, spec }。
+ */
+async function buildPrevPriceMap(db, curYm) {
+    const map = new Map();
+    const pym = prevYm(curYm);
+    if (!pym) return map;
+    let prevReport = null;
+    try { prevReport = await getReportByYm(db, pym); } catch (_) { return map; }
+    if (!prevReport) return map;
+    let items = [];
+    try { items = await getItems(db, prevReport.id); } catch (_) { return map; }
+    for (const it of items) {
+        map.set(normQuoteName(it.name), { price: it.price, is_quoted: it.is_quoted, spec: it.spec });
+    }
+    return map;
+}
+exports.buildPrevPriceMap = buildPrevPriceMap;
 
 /** 回傳 JPG Buffer（伺服器端 SVG→sharp）。 */
 async function renderQuoteImage(report, groups, opts) {
