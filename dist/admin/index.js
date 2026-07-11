@@ -1199,7 +1199,7 @@ const SF_TOKENS = `
 input:checked ~ .sf-switch { background: rgba(35,131,226,.9); }
 input:checked ~ .sf-switch::after { transform: translateX(16px); }
 input:focus-visible ~ .sf-switch { outline: 2px solid #2383e2; outline-offset: 2px; }
-.sf-switch-label { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; font-size: 12.5px; white-space: nowrap; cursor: pointer; user-select: none; }
+.sf-switch-label { margin: 0; display: inline-flex; align-items: center; gap: 8px; min-height: 32px; font-size: 12.5px; white-space: nowrap; cursor: pointer; user-select: none; }
 .sf-switch-label input { position: absolute; opacity: 0; width: 0; height: 0; }
 .sf-seg { display: inline-flex; align-items: center; gap: 2px; background: rgba(35,131,226,.08); border: 1px solid rgba(35,131,226,.18); border-radius: 999px; padding: 3px; }
 .sf-seg > a, .sf-seg > button { border: 0; background: transparent; border-radius: 999px; padding: 6px 15px; font-size: 12.5px; line-height: 1; font-family: inherit; color: #4a6fa5; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; transition: background .18s, color .18s; }
