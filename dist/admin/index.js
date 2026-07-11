@@ -1631,6 +1631,7 @@ const SF_ICONS = {
   scale: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.5v10M4 12.5h8M3 5h10M3 5L1.5 8.5h3zM13 5l-1.5 3.5h3z"/></svg>',
   stop: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5.5 2.5h5l3 3v5l-3 3h-5l-3-3v-5z"/><path d="M8 5v3.5"/><circle cx="8" cy="11" r=".7" fill="currentColor"/></svg>',
   tag: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.5" cy="5.5" r="1"/></svg>',
+  info: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 7.5V11"/><circle cx="8" cy="5.2" r=".7" fill="currentColor" stroke="none"/></svg>',
 };
 
 /** 內嵌用行內圖示（非 flex 容器如按鈕、分頁、標籤內用）。回傳 <span class="sfi">SVG</span> */
@@ -4406,7 +4407,7 @@ function createAdminRouter() {
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
             ${checklistCard("冷凍／冷藏庫", `${freezerRows.length} 個庫房`, freezerRows.slice(0,4).map(r => ({ name: r.name, val: r.freezer_type || "—", status: "info" })), "/admin/freezer-fridge")}
-            ${checklistCard("每日盤點", `${today}`, [{ name: "前往盤點作業", val: "→", status: "info" }, { name: "盤差報表", val: "→", status: "info" }, { name: "庫房管理", val: "→", status: "info" }, { name: "ERP 匯入", val: "→", status: "info" }], "/admin/inventory")}
+            ${checklistCard("每日盤點", `${today}`, [{ name: "前往每日盤點", val: "→", status: "info" }, { name: "目前庫存", val: "→", status: "info" }, { name: "倉庫設定", val: "→", status: "info" }, { name: "條碼對照", val: "→", status: "info" }], "/admin/inventory")}
             ${checklistCard("LINE 綁定", `${custBound} / ${custTotal} 戶`, [{ name: "已綁定客戶", val: custBound + " 戶", status: "ok" }, { name: "未綁定客戶", val: (custTotal-custBound) + " 戶", status: custBound===custTotal?"ok":"warn" }, { name: "群發訊息", val: "→", status: "info" }, { name: "綁定檢查", val: "→", status: "info" }], "/admin/customers")}
           </div>
           <div class="sf-card">
@@ -6353,6 +6354,7 @@ function createAdminRouter() {
     router.get("/inventory", async (req, res) => {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
+        const weekdayTxt = (() => { try { return new Intl.DateTimeFormat("zh-TW", { weekday: "short" }).format(new Date(date + "T12:00:00+08:00")); } catch (_) { return ""; } })();
         // 最新庫存快照（供「對最新盤差」對照）
         const latestMap = {};
         let stockMeta = {};
@@ -6363,14 +6365,29 @@ function createAdminRouter() {
         const day = await loadStocktakeDay(date, latestMap);
         let includedWh = [];
         try { includedWh = (await db.prepare("SELECT code, name, icpno FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY icpno, sort_order, code").all()) || []; } catch (_) { includedWh = []; }
-        let recentDates = [];
-        try { recentDates = (await db.prepare("SELECT count_date AS d, COUNT(*) AS n FROM stocktake_session GROUP BY count_date ORDER BY count_date DESC LIMIT 14").all()) || []; } catch (_) { recentDates = []; }
         // 多公司：倉庫鍵一律「icpno:倉號」（松富00 與松揚02 的倉號可能相同）
         const whKeyOf = (icp, code) => (0, erp_companies_js_1.normIcpno)(icp) + ":" + String(code);
-        const coTag = (icp) => ((0, erp_companies_js_1.normIcpno)(icp) === "00" ? "" : (0, erp_companies_js_1.erpCompanyName)(icp));
         const byWh = {}; day.forEach((x) => { byWh[whKeyOf(x.session.icpno, x.session.wh_code)] = x; });
-        const countedWh = new Set(day.map((x) => whKeyOf(x.session.icpno, x.session.wh_code)));
-        const pendingWh = includedWh.filter((w) => !countedWh.has(whKeyOf(w.icpno, w.code)));
+        // 公司分段切換：一次只看一家（候選＝納入盤點倉的公司 ∪ 當日有盤的公司）
+        const coSet = new Set();
+        includedWh.forEach((w) => coSet.add((0, erp_companies_js_1.normIcpno)(w.icpno)));
+        day.forEach((x) => coSet.add((0, erp_companies_js_1.normIcpno)(x.session.icpno)));
+        if (!coSet.size) coSet.add("00");
+        const companies = Array.from(coSet).sort();
+        let selWh = String(req.query.wh || "").trim();
+        if (selWh && selWh.indexOf(":") < 0) selWh = "00:" + selWh; // 相容舊網址：?wh=倉號（無公司前綴）視為松富
+        let selCo = (0, erp_companies_js_1.normIcpno)(req.query.co, "");
+        if (!selCo && selWh) selCo = selWh.split(":")[0];
+        if (!companies.includes(selCo)) selCo = "";
+        if (!selCo) {
+            // 預設：當日有盤的第一家公司（00 優先），否則松富
+            const countedCos = new Set(day.map((x) => (0, erp_companies_js_1.normIcpno)(x.session.icpno)));
+            selCo = companies.find((c) => countedCos.has(c)) || (companies.includes("00") ? "00" : companies[0]);
+        }
+        const dayCo = day.filter((x) => (0, erp_companies_js_1.normIcpno)(x.session.icpno) === selCo);
+        const includedCo = includedWh.filter((w) => (0, erp_companies_js_1.normIcpno)(w.icpno) === selCo);
+        const countedWh = new Set(dayCo.map((x) => whKeyOf(x.session.icpno, x.session.wh_code)));
+        const pendingWh = includedCo.filter((w) => !countedWh.has(whKeyOf(w.icpno, w.code)));
         const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
         const fmtN = (n) => (n == null ? "—" : String(n));
         const diffPct = (it) => {
@@ -6380,44 +6397,47 @@ function createAdminRouter() {
         };
         const diffCls = (it) => (it.diff == null ? "" : it.diff === 0 ? "stk-z" : it.diff > 0 ? "stk-p" : "stk-n");
         const expiryTxt = (arr) => (arr || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"} × ${b.qty || "?"}`).join("、");
-        // 左欄倉庫清單 = 納入盤點的倉 ∪ 當日有盤的倉（鍵含公司）
+        // 左欄倉庫清單 = 選定公司的納入盤點倉 ∪ 當日有盤倉
         const whList = [];
         const seen = new Set();
-        for (const w of includedWh) { const k = whKeyOf(w.icpno, w.code); whList.push({ key: k, code: String(w.code), name: String(w.name || ""), co: coTag(w.icpno) }); seen.add(k); }
-        for (const x of day) { const k = whKeyOf(x.session.icpno, x.session.wh_code); if (!seen.has(k)) { whList.push({ key: k, code: String(x.session.wh_code), name: String(x.session.wh_name || ""), co: coTag(x.session.icpno) }); seen.add(k); } }
-        // 預設選第一個「有盤」的倉
-        const firstCounted = day[0] ? whKeyOf(day[0].session.icpno, day[0].session.wh_code) : (whList[0] ? whList[0].key : "");
-        // 相容舊網址：?wh=倉號（無公司前綴）視為松富
-        let selWh = String(req.query.wh || "").trim() || firstCounted;
-        if (selWh && selWh.indexOf(":") < 0) selWh = "00:" + selWh;
+        for (const w of includedCo) { const k = whKeyOf(w.icpno, w.code); whList.push({ key: k, code: String(w.code), name: String(w.name || "") }); seen.add(k); }
+        for (const x of dayCo) { const k = whKeyOf(x.session.icpno, x.session.wh_code); if (!seen.has(k)) { whList.push({ key: k, code: String(x.session.wh_code), name: String(x.session.wh_name || "") }); seen.add(k); } }
+        // 預設選第一個「有盤」的倉；選定倉不屬於此公司或不在清單 → 落回預設
+        const firstCounted = dayCo[0] ? whKeyOf(dayCo[0].session.icpno, dayCo[0].session.wh_code) : (whList[0] ? whList[0].key : "");
+        if (!selWh || selWh.split(":")[0] !== selCo || !seen.has(selWh)) selWh = firstCounted;
         const sel = byWh[selWh] || null;
-        const totalDiff = day.reduce((s, x) => s + x.diffCount, 0);
-        const chips = recentDates.map((r) => `<a class="stk-chip ${String(r.d) === date ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(String(r.d))}">${escapeHtml(String(r.d))}<span>${r.n}倉</span></a>`).join("");
+        const totalDiff = dayCo.reduce((s, x) => s + x.diffCount, 0);
         // 左欄
         const whItemsHtml = whList.map((w) => {
             const x = byWh[w.key];
             const on = w.key === selWh;
-            const coChip = w.co ? `<span class="wh-co">${escapeHtml(w.co)}</span>` : "";
             if (x) {
                 const done = Number(x.session.counted_count || 0), all = Number(x.session.item_count || 0);
-                return `<a class="wh-it ${on ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(date)}&wh=${encodeURIComponent(w.key)}">
-                  <div class="wh-n">${escapeHtml(w.name || w.code)}${coChip}<span class="wh-c">${escapeHtml(w.code)}</span></div>
+                return `<a class="wh-it ${on ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(date)}&co=${encodeURIComponent(selCo)}&wh=${encodeURIComponent(w.key)}">
+                  <div class="wh-n">${escapeHtml(w.name || w.code)}<span class="wh-c">${escapeHtml(w.code)}</span></div>
                   <div class="wh-m"><span>已盤 ${done}/${all}</span>${x.diffCount ? `<span class="wh-diff">盤差 ${x.diffCount}</span>` : `<span class="wh-ok">✓</span>`}</div>
                 </a>`;
             }
             return `<div class="wh-it idle">
-                  <div class="wh-n">${escapeHtml(w.name || w.code)}${coChip}<span class="wh-c">${escapeHtml(w.code)}</span></div>
+                  <div class="wh-n">${escapeHtml(w.name || w.code)}<span class="wh-c">${escapeHtml(w.code)}</span></div>
                   <div class="wh-m"><span class="wh-pend">未盤</span></div>
                 </div>`;
         }).join("");
         // 右欄（選定倉）
         let rightHtml;
         if (!sel) {
-            rightHtml = `<div class="stk-empty">${day.length ? "請從左邊選一個倉庫查看。" : "此日期沒有盤點紀錄。<br>盤點方式：在白名單群組輸入「#盤點」，點倉庫按鈕進入 LIFF 盤點並送出。"}</div>`;
+            rightHtml = `<div class="stk-empty">${dayCo.length ? "請從左邊選一個倉庫查看。" : "此日期沒有盤點紀錄。<br>盤點方式：在白名單群組輸入「#盤點」，點倉庫按鈕進入 LIFF 盤點並送出。"}</div>`;
         } else {
             const s = sel.session;
             const done = Number(s.counted_count || 0), all = Number(s.item_count || 0);
             const dLatestCls = (d) => (d == null ? "" : d === 0 ? "stk-z" : d > 0 ? "stk-p" : "stk-n");
+            // 表頭 info 說明（取代整片黃底說明文字）
+            const infoIc = (tip) => `<span class="stk-info" tabindex="0" data-tip="${escapeAttr(tip)}">${SF_ICONS.info}</span>`;
+            const tipSys = "盤點送出那一刻的凌越庫存快照，已凍結、之後不會再變動。若當時快照較舊，盤差會偏大。";
+            const tipCounted = "同事實際盤點的數量；有填中貨時為「上＋中」合計，並另標示含中數。";
+            const tipDiff = "實盤 − 系統(盤點當下)。以盤點當下的凍結快照為基準。";
+            const tipLatest = `目前最新的系統庫存，會隨凌越異動持續更新（非當日凍結值）。基準：${sel.latestSource === "warehouse" ? `此倉分倉庫存（資料時間 ${stkAdminTwTime(stockMeta.wh_snapshot_at) || "—"}）` : `全公司總量（資料時間 ${stkAdminTwTime(stockMeta.snapshot_at) || "—"}；此倉尚無分倉資料）`}。按上方「更新最新庫存」可先拉一次最新再看。`;
+            const tipDiffLatest = "實盤 − 最新系統，較貼近目前現況；會隨最新庫存持續變動。";
             const rowsHtml = sel.items.map((it) => `
               <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
@@ -6433,20 +6453,18 @@ function createAdminRouter() {
             rightHtml = `
           <div class="stk-card">
             <div class="stk-card-h">
-              <div class="stk-card-t"><b>${escapeHtml(s.wh_name || s.wh_code)}</b>${coTag(s.icpno) ? `<span class="wh-co">${escapeHtml(coTag(s.icpno))}</span>` : ""}<span class="stk-code2">${escapeHtml(s.wh_code)}</span></div>
+              <div class="stk-card-t"><b>${escapeHtml(s.wh_name || s.wh_code)}</b><span class="stk-code2">${escapeHtml(s.wh_code)}</span></div>
               <div class="stk-card-m">
                 <span>盤點人 ${escapeHtml(s.created_by_name || "—")}</span>
                 <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
                 <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
                 <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
-                <span class="stk-badge" title="「最新系統」欄的資料基準：分倉＝該倉在凌越的分倉庫存量；總量＝全公司總庫存量（該倉無分倉資料時的後備）">最新基準：${sel.latestSource === "warehouse" ? "分倉" : "總量"}</span>
                 <button type="button" class="stk-togbtn sm" id="stkOnlyDiff">只看盤差</button>
               </div>
             </div>
-            <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
-              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下</span></th><th class="stk-num">盤差%</th><th class="stk-num">最新<br><span class="stk-th2">系統</span></th><th class="stk-num">對最新<br><span class="stk-th2">盤差</span></th><th>效期</th></tr></thead>
+              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統${infoIc(tipSys)}<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤${infoIc(tipCounted)}<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差${infoIc(tipDiff)}<br><span class="stk-th2">對當下</span></th><th class="stk-num">盤差%</th><th class="stk-num">最新${infoIc(tipLatest)}<br><span class="stk-th2">系統</span></th><th class="stk-num">對最新${infoIc(tipDiffLatest)}<br><span class="stk-th2">盤差</span></th><th>效期</th></tr></thead>
               <tbody>${rowsHtml || `<tr><td colspan="9" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
             </table>
             </div>
@@ -6461,11 +6479,7 @@ function createAdminRouter() {
         .stk-pill b{color:inherit;}
         .stk-pill.warn{background:#fcf3e2;border-color:#e8d5ac;color:#8a5a10;}
         .stk-pill.ok{background:#e7f6ee;border-color:#bfe5cf;color:#1f7a46;}
-        .stk-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px;}
-        .stk-chip{font-size:12px;padding:4px 10px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);text-decoration:none;color:#5b616e;background:var(--notion-card,#fff);}
-        .stk-chip span{margin-left:5px;color:#9b9a97;}
-        .stk-chip.on{background:#2383e2;color:#fff;border-color:#2383e2;}
-        .stk-chip.on span{color:#d7e9fb;}
+        .stk-wd{font-size:12.5px;font-weight:600;color:#5b616e;}
         .stk-grid{display:grid;grid-template-columns:246px minmax(0,1fr);gap:14px;align-items:start;}
         @media(max-width:760px){.stk-grid{grid-template-columns:1fr;}}
         .wh-panel{background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;overflow:hidden;}
@@ -6477,7 +6491,6 @@ function createAdminRouter() {
         .wh-it:hover:not(.idle):not(.on){background:rgba(55,53,47,.03);}
         .wh-n{font-size:13.5px;font-weight:600;line-height:1.2;}
         .wh-c{margin-left:7px;font-size:11px;color:#9b9a97;font-variant-numeric:tabular-nums;font-weight:400;}
-        .wh-co{margin-left:6px;font-size:10px;font-weight:700;color:#2383e2;background:#e8f1fd;padding:1px 6px;border-radius:5px;vertical-align:1px;}
         .wh-m{display:flex;gap:8px;align-items:center;margin-top:3px;font-size:11.5px;color:#787774;font-variant-numeric:tabular-nums;}
         .wh-diff{color:#b3261e;font-weight:600;}
         .wh-ok{color:#1f7a46;font-weight:700;}
@@ -6487,8 +6500,10 @@ function createAdminRouter() {
         .stk-card-t b{font-size:15px;}
         .stk-code2{margin-left:8px;font-size:12px;color:#9b9a97;font-variant-numeric:tabular-nums;}
         .stk-card-m{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:#787774;align-items:center;}
-        .stk-note{padding:7px 14px;font-size:11.5px;color:#8a5a10;background:#fcf8ee;border-bottom:1px solid var(--notion-border-soft,#f0efed);}
-        .stk-note b{color:#6b4a0e;}
+        .stk-info{display:inline-flex;vertical-align:-2px;margin-left:3px;color:#9b9a97;cursor:help;outline:none;}
+        .stk-info:hover,.stk-info:focus{color:#2383e2;}
+        .stk-info svg{width:13px;height:13px;}
+        #stkTip{position:fixed;z-index:99;max-width:300px;background:#37352f;color:#fff;font-size:11.5px;line-height:1.55;font-weight:400;padding:8px 11px;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.25);display:none;text-align:left;white-space:normal;}
         .stk-badge{font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:6px;background:#eef0f3;color:#5b616e;}
         .stk-badge.ok{background:#e7f6ee;color:#1f7a46;}
         .stk-badge.warn{background:#fdecec;color:#b3261e;}
@@ -6517,22 +6532,21 @@ function createAdminRouter() {
       <h1 class="notion-page-title" style="margin-bottom:14px;">每日盤點</h1>
       <form method="get" action="/admin/inventory" class="stk-bar">
         <input type="date" name="date" value="${escapeAttr(date)}" onchange="this.form.submit()">
-        ${selWh ? `<input type="hidden" name="wh" value="${escapeAttr(selWh)}">` : ""}
+        <span class="stk-wd">${escapeHtml(weekdayTxt)}</span>
+        <input type="hidden" name="co" value="${escapeAttr(selCo)}">
+        ${companies.length > 1 ? `<div class="sf-seg">${companies.map((c) => `<a class="${c === selCo ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(date)}&co=${encodeURIComponent(c)}">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))}</a>`).join("")}</div>` : ""}
         <button type="button" class="stk-togbtn" id="stkRefreshInv">↻ 更新最新庫存</button>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
         <span id="stkRefreshMsg" style="font-size:12px;color:#8a5a10;"></span>
-        <span style="flex:1"></span>
-        <a href="/admin/inventory/legacy" style="font-size:12px;color:#9b9a97;">舊版盤點作業 →</a>
       </form>
       <div class="stk-sum">
-        <span class="stk-pill">本日已盤 <b>${day.length}</b> / 納入盤點 <b>${includedWh.length}</b> 倉（${pct(day.length, includedWh.length)}%）</span>
+        <span class="stk-pill">本日已盤 <b>${dayCo.length}</b> / 納入盤點 <b>${includedCo.length}</b> 倉（${pct(dayCo.length, includedCo.length)}%）</span>
         <span class="stk-pill ${totalDiff ? "warn" : "ok"}">盤差品項 <b>${totalDiff}</b> 項</span>
-        ${pendingWh.length ? `<span class="stk-pill warn">未盤：${pendingWh.map((w) => escapeHtml(w.name || w.code)).join("、")}</span>` : (includedWh.length ? `<span class="stk-pill ok">全部倉庫已盤 ✓</span>` : "")}
+        ${includedCo.length && !pendingWh.length ? `<span class="stk-pill ok">全部倉庫已盤 ✓</span>` : ""}
       </div>
-      ${chips ? `<div class="stk-chips">${chips}</div>` : ""}
       <div class="stk-grid">
         <div class="wh-panel">
-          <div class="wh-panel-h">倉庫（${date}）</div>
+          <div class="wh-panel-h">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(selCo))}倉庫（${date} ${escapeHtml(weekdayTxt)}）</div>
           ${whItemsHtml || `<div class="wh-it idle"><div class="wh-n">尚無倉庫</div></div>`}
         </div>
         <div>${rightHtml}</div>
@@ -6545,6 +6559,24 @@ function createAdminRouter() {
           var rows=document.querySelectorAll('tr[data-diff]');
           Array.prototype.forEach.call(rows,function(tr){ tr.style.display=(on&&tr.getAttribute('data-diff')==='0')?'none':''; });
         }); }
+        // 表頭 info 說明浮窗（fixed 定位，避免被表格橫向捲動容器裁掉；手機點按也可開）
+        var tip=document.createElement('div'); tip.id='stkTip'; document.body.appendChild(tip);
+        function stkShowTip(el){
+          tip.textContent=el.getAttribute('data-tip')||''; tip.style.display='block';
+          var r=el.getBoundingClientRect(), w=tip.offsetWidth;
+          var x=Math.min(Math.max(8,r.left+r.width/2-w/2),window.innerWidth-w-8);
+          tip.style.left=x+'px'; tip.style.top=(r.bottom+7)+'px';
+        }
+        function stkHideTip(){ tip.style.display='none'; }
+        Array.prototype.forEach.call(document.querySelectorAll('.stk-info'),function(el){
+          el.addEventListener('mouseenter',function(){ stkShowTip(el); });
+          el.addEventListener('mouseleave',stkHideTip);
+          el.addEventListener('focus',function(){ stkShowTip(el); });
+          el.addEventListener('blur',stkHideTip);
+          el.addEventListener('click',function(e){ e.preventDefault(); e.stopPropagation(); stkShowTip(el); });
+        });
+        document.addEventListener('click',stkHideTip);
+        window.addEventListener('scroll',stkHideTip,true);
         // 更新最新庫存：觸發內網代理拉一次凌越，成功後重載頁面（對最新盤差就會更新）
         var rb=document.getElementById('stkRefreshInv'), msg=document.getElementById('stkRefreshMsg');
         if(rb){ rb.addEventListener('click',function(){
