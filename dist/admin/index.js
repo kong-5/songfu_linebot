@@ -1950,6 +1950,9 @@ const STK_STYLE = `
 .stk-gcount{font-weight:500;font-size:11px;color:var(--notion-text-light,#787774);margin-left:8px;}
 .stk-empty{text-align:center;color:var(--notion-text-light,#787774);padding:24px;}
 /* 品項照片欄（第四波）：縮圖／上傳鈕／放大 overlay */
+/* [2026-07-11] 照片功能暫時關閉（使用者：目前不需要）。整欄隱藏＝連表頭 th 一起收，版面不留空欄。
+   要重新開啟：刪掉下面這行 display:none 覆蓋即可，底層路由/資料都還在。 */
+.stk-table td.stk-photo,.stk-table th.stk-photo{display:none!important;}
 .stk-table td.stk-photo,.stk-table th.stk-photo{text-align:center;width:1%;white-space:nowrap;}
 .stk-thumb{width:34px;height:34px;object-fit:cover;border-radius:6px;border:1px solid var(--notion-border,#e3e2e0);cursor:pointer;vertical-align:middle;display:inline-block;background:var(--notion-bg,#f2f1ee);}
 .stk-upbtn{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:var(--notion-text-light,#787774);border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer;line-height:1.4;}
