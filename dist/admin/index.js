@@ -1638,6 +1638,225 @@ function sfInlineIcon(name) {
   return '<span class="sfi">' + (SF_ICONS[name] || "") + "</span>";
 }
 
+/**
+ * 條碼對照「新增品項（掃碼建檔）」彈出視窗。
+ * 掃條碼（BarcodeDetector → zxing → 手動）→ 模糊搜尋貨品主檔（/admin/scan/search）
+ * → 選品項配對 → /admin/scan/bind 寫入 product_barcode（料號需存在該公司庫存快照）。
+ * 純字串（style + html + script），JS 內不含反斜線／反引號，可安全嵌入模板字串。
+ */
+function barcodeAddModalHtml(icpno, coName) {
+  const icJson = JSON.stringify(String(icpno == null ? "02" : icpno));
+  const coJson = JSON.stringify(String(coName == null ? "" : coName));
+  return `
+  <style>
+    .bcm-mask{position:fixed;inset:0;background:rgba(15,20,30,.5);z-index:2000;display:none;align-items:flex-start;justify-content:center;padding:24px 12px;overflow:auto;}
+    .bcm-mask.on{display:flex;}
+    .bcm-panel{background:var(--notion-card-bg,#fff);color:var(--notion-text,#1f2430);border-radius:14px;width:100%;max-width:520px;box-shadow:0 12px 48px rgba(20,30,50,.28);position:relative;display:flex;flex-direction:column;max-height:calc(100vh - 48px);}
+    .bcm-h{padding:16px 18px 12px;border-bottom:1px solid var(--notion-border,#eef0f3);}
+    .bcm-h .t{font-size:16px;font-weight:800;display:flex;align-items:center;gap:7px;}
+    .bcm-h .s{font-size:12px;color:var(--notion-text-muted,#8b909c);margin-top:3px;}
+    .bcm-x{position:absolute;right:12px;top:12px;border:0;background:transparent;color:var(--notion-text-muted,#8b909c);font-size:24px;line-height:1;cursor:pointer;padding:2px 8px;}
+    .bcm-body{padding:14px 18px 18px;overflow-y:auto;}
+    .bcm-cam{position:relative;border-radius:12px;overflow:hidden;background:#10131a;margin-bottom:10px;}
+    .bcm-cam video{display:block;width:100%;height:30vh;max-height:260px;object-fit:cover;}
+    .bcm-cam.paused video{opacity:.35;}
+    .bcm-camline{position:absolute;left:10%;right:10%;top:50%;height:2px;background:rgba(255,80,80,.85);border-radius:2px;box-shadow:0 0 8px rgba(255,80,80,.7);}
+    .bcm-camtools{position:absolute;top:8px;right:8px;display:flex;gap:6px;}
+    .bcm-camtools button{border:0;border-radius:9px;background:rgba(0,0,0,.45);color:#fff;font-size:12px;font-weight:700;padding:6px 11px;cursor:pointer;}
+    .bcm-camoff{padding:20px 14px;text-align:center;color:#c7ccd6;font-size:13px;line-height:1.6;}
+    .bcm-manual{display:flex;gap:8px;margin-bottom:10px;}
+    .bcm-manual input{flex:1;}
+    .bcm-scanned{background:var(--notion-hover,#f7f8fa);border:1px solid var(--notion-border,#eef0f3);border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:13px;color:var(--notion-text-muted,#8b909c);}
+    .bcm-scanned b{color:var(--notion-text,#1f2430);font-variant-numeric:tabular-nums;letter-spacing:.03em;}
+    .bcm-dup{color:#b9791b;font-weight:700;margin-top:4px;font-size:12px;}
+    .bcm-searchrow{display:flex;align-items:center;gap:7px;margin-bottom:8px;}
+    .bcm-searchrow input{flex:1;}
+    .bcm-res{max-height:34vh;overflow-y:auto;}
+    .bcm-cand{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:var(--notion-card-bg,#fff);border:1px solid var(--notion-border,#eef0f3);border-radius:10px;padding:9px 12px;margin-bottom:7px;cursor:pointer;}
+    .bcm-cand:hover{border-color:var(--notion-accent,#2383e2);}
+    .bcm-cand .i{flex:1;min-width:0;}
+    .bcm-cand .nm{font-size:14px;font-weight:700;}
+    .bcm-cand .meta{font-size:11px;color:var(--notion-text-muted,#8b909c);margin-top:1px;font-variant-numeric:tabular-nums;}
+    .bcm-cand .sysv{font-size:12px;color:var(--notion-text-muted,#8b909c);white-space:nowrap;font-variant-numeric:tabular-nums;}
+    .bcm-sel{background:#e8f1fd;border:1.5px solid var(--notion-accent,#2383e2);border-radius:10px;padding:10px 12px;margin-bottom:10px;}
+    .bcm-sel .nm{font-size:14.5px;font-weight:800;}
+    .bcm-sel .meta{font-size:11.5px;color:var(--notion-text-muted,#5b616e);margin-top:1px;}
+    .bcm-qps{display:flex;align-items:center;gap:10px;background:#fcf3e2;border:1px solid rgba(185,121,27,.3);border-radius:10px;padding:9px 12px;margin-bottom:12px;}
+    .bcm-qps .lab{flex:1;font-size:12.5px;color:#8a5b12;font-weight:700;}
+    .bcm-qps input{width:84px;text-align:center;}
+    .bcm-act{display:flex;gap:10px;}
+    .bcm-act .cancel{border:1px solid var(--notion-border,#e5e7ec);border-radius:10px;background:var(--notion-card-bg,#fff);color:var(--notion-text-muted,#5b616e);font-size:14px;font-weight:700;padding:11px 16px;cursor:pointer;}
+    .bcm-act .go{flex:1;}
+    .bcm-act .go:disabled{opacity:.45;cursor:not-allowed;}
+    .bcm-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;z-index:2100;background:rgba(25,30,40,.94);color:#fff;font-size:13.5px;font-weight:700;padding:10px 18px;border-radius:99px;box-shadow:0 4px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .18s;pointer-events:none;max-width:86vw;text-align:center;}
+    .bcm-toast.on{opacity:1;}
+    .bcm-hint{font-size:12px;color:var(--notion-text-muted,#8b909c);margin:2px 0 8px;}
+  </style>
+  <div class="bcm-mask" id="bcmMask">
+    <div class="bcm-panel">
+      <button class="bcm-x" id="bcmX" aria-label="關閉">&times;</button>
+      <div class="bcm-h">
+        <div class="t">${SF_ICONS.tag}新增品項（掃碼建檔）</div>
+        <div class="s" id="bcmSub"></div>
+      </div>
+      <div class="bcm-body">
+        <div class="bcm-cam" id="bcmCam">
+          <video id="bcmVideo" playsinline muted autoplay></video>
+          <div class="bcm-camline"></div>
+          <div class="bcm-camtools"><button id="bcmTorch" style="display:none;">手電筒</button><button id="bcmPause">暫停</button></div>
+        </div>
+        <div class="bcm-manual"><input id="bcmManual" class="sf-input" inputmode="text" placeholder="掃不到？手動輸入條碼" autocomplete="off"><button type="button" class="btn" id="bcmManualGo">帶入</button></div>
+        <div class="bcm-scanned" id="bcmScanned" style="display:none;"></div>
+        <div class="bcm-searchrow"><input id="bcmQ" class="sf-input" placeholder="搜尋貨品主檔：品名 / 料號 / 規格" autocomplete="off"></div>
+        <p class="bcm-hint">從貨品主檔找到品項點一下配對，設定「每掃單位數」後建檔綁定。</p>
+        <div class="bcm-res" id="bcmRes"></div>
+        <div id="bcmSelBox"></div>
+        <div class="bcm-qps"><span class="lab">掃 1 下＝幾個單位？（整箱條碼填入數）</span><input id="bcmQps" class="sf-input" inputmode="decimal" value="1"></div>
+        <div class="bcm-act"><button type="button" class="cancel" id="bcmCancel">取消</button><button type="button" class="btn-primary go" id="bcmGo" disabled>建檔並綁定</button></div>
+      </div>
+    </div>
+  </div>
+  <div class="bcm-toast" id="bcmToast"></div>
+  <script>
+  (function(){
+    var IC=${icJson};var CO=${coJson};var API='/admin/scan';
+    var mask=document.getElementById('bcmMask');
+    var openBtn=document.getElementById('bcmOpen');
+    if(!mask||!openBtn)return;
+    var S={loaded:false,barcodes:{},scanning:false,stream:null,detector:null,zreader:null,engine:'',sel:null,barcode:'',changed:false,open:false};
+    function esc(s){s=(s==null?'':String(s));return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+    function fmt(n){var v=Number(n);if(!isFinite(v))return '0';return String(Math.round(v*100)/100);}
+    function api(p){return fetch(p,{credentials:'same-origin'}).then(function(r){return r.json();});}
+    function post(p,b){return fetch(p,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json();});}
+    var _tt=null;function toast(m){var el=document.getElementById('bcmToast');if(!el)return;el.textContent=m;el.classList.add('on');if(_tt)clearTimeout(_tt);_tt=setTimeout(function(){el.classList.remove('on');},1500);}
+    var _ac=null;
+    function beep(ok){try{_ac=_ac||new (window.AudioContext||window.webkitAudioContext)();if(_ac.state==='suspended')_ac.resume();var o=_ac.createOscillator(),g=_ac.createGain();o.connect(g);g.connect(_ac.destination);o.frequency.value=ok?1320:340;g.gain.value=.12;o.start();o.stop(_ac.currentTime+(ok?.08:.22));}catch(_){}try{navigator.vibrate&&navigator.vibrate(ok?40:[70,50,70]);}catch(_){}}
+
+    // ---------- 開關視窗 ----------
+    openBtn.addEventListener('click',openModal);
+    document.getElementById('bcmX').addEventListener('click',closeModal);
+    document.getElementById('bcmCancel').addEventListener('click',closeModal);
+    mask.addEventListener('click',function(e){if(e.target===mask)closeModal();});
+    function openModal(){
+      S.open=true;S.sel=null;S.barcode='';
+      mask.classList.add('on');
+      var sub=document.getElementById('bcmSub');if(sub)sub.textContent='條碼 → 配對 '+CO+' 貨品主檔品項 → 建檔';
+      resetForm();
+      loadBarcodes(function(){ startScan(); });
+      setTimeout(function(){var q=document.getElementById('bcmQ');if(q)q.focus();},60);
+    }
+    function closeModal(){
+      S.open=false;stopScan();mask.classList.remove('on');
+      if(S.changed){ location.reload(); }
+    }
+    function resetForm(){
+      S.sel=null;S.barcode='';
+      var sc=document.getElementById('bcmScanned');if(sc){sc.style.display='none';sc.innerHTML='';}
+      var q=document.getElementById('bcmQ');if(q)q.value='';
+      var r=document.getElementById('bcmRes');if(r)r.innerHTML='';
+      var sb=document.getElementById('bcmSelBox');if(sb)sb.innerHTML='';
+      var qp=document.getElementById('bcmQps');if(qp)qp.value='1';
+      var go=document.getElementById('bcmGo');if(go){go.disabled=true;go.textContent='建檔並綁定';}
+    }
+    function loadBarcodes(cb){
+      if(S.loaded){cb&&cb();return;}
+      api(API+'/barcodes?icpno='+encodeURIComponent(IC)).then(function(res){ S.barcodes=(res&&res.map)||{};S.loaded=true;cb&&cb(); }).catch(function(){ S.barcodes={};cb&&cb(); });
+    }
+
+    // ---------- 手動輸入 / 搜尋 ----------
+    document.getElementById('bcmManualGo').addEventListener('click',manualGo);
+    document.getElementById('bcmManual').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();manualGo();}});
+    function manualGo(){var el=document.getElementById('bcmManual');var v=(el.value||'').trim();if(!v)return;el.value='';gotBarcode(v);}
+    var _st=null;
+    document.getElementById('bcmQ').addEventListener('input',function(e){var v=e.target.value.trim();if(_st)clearTimeout(_st);_st=setTimeout(function(){doSearch(v);},200);});
+    document.getElementById('bcmGo').addEventListener('click',doBind);
+
+    function gotBarcode(raw){
+      S.barcode=raw;
+      var sc=document.getElementById('bcmScanned');
+      var dup=S.barcodes[raw];
+      sc.style.display='';
+      sc.innerHTML='已掃到條碼：<b>'+esc(raw)+'</b>'+(dup?('<div class="bcm-dup">此條碼已綁料號 '+esc(dup.c)+'，重新建檔將覆蓋原綁定。</div>'):'');
+      beep(true);
+      pauseScan();
+      var q=document.getElementById('bcmQ');if(q&&!q.value){setTimeout(function(){q.focus();},30);}
+    }
+    function doSearch(q){
+      var box=document.getElementById('bcmRes');if(!box)return;
+      if(!q){box.innerHTML='';return;}
+      box.innerHTML='<p class="bcm-hint">搜尋中…</p>';
+      api(API+'/search?icpno='+encodeURIComponent(IC)+'&q='+encodeURIComponent(q)).then(function(res){
+        var items=(res&&res.items)||[];
+        if(!items.length){box.innerHTML='<p class="bcm-hint">找不到符合的貨品主檔品項。</p>';return;}
+        box.innerHTML=items.map(function(it,i){return '<button type="button" class="bcm-cand" data-i="'+i+'"><div class="i"><div class="nm">'+esc(it.n)+'</div><div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+(it.w?' · 倉 '+esc(it.w):'')+'</div></div><div class="sysv">庫存 '+fmt(it.sys)+' '+esc(it.u||'')+'</div></button>';}).join('');
+        Array.prototype.forEach.call(box.querySelectorAll('.bcm-cand'),function(b){b.addEventListener('click',function(){ selectItem(items[+b.getAttribute('data-i')]); });});
+      }).catch(function(){box.innerHTML='<p class="bcm-hint">搜尋失敗，請再試一次。</p>';});
+    }
+    function selectItem(it){
+      S.sel=it;
+      var sb=document.getElementById('bcmSelBox');
+      sb.innerHTML='<div class="bcm-sel"><div class="nm">'+esc(it.n)+'</div><div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+' · 庫存 '+fmt(it.sys)+' '+esc(it.u||'')+'</div></div>';
+      var go=document.getElementById('bcmGo');if(go)go.disabled=!(S.barcode&&S.sel);
+    }
+    function doBind(){
+      if(!S.barcode){toast('請先掃或輸入條碼');return;}
+      if(!S.sel){toast('請先配對一個品項');return;}
+      var qps=parseFloat(document.getElementById('bcmQps').value);if(!isFinite(qps)||qps<=0)qps=1;
+      var go=document.getElementById('bcmGo');go.disabled=true;go.textContent='建檔中…';
+      post(API+'/bind',{icpno:IC,barcode:S.barcode,erp_code:S.sel.c,qty_per_scan:qps}).then(function(res){
+        if(res&&res.error){go.disabled=false;go.textContent='建檔並綁定';toast('建檔失敗：'+res.error);return;}
+        S.barcodes[S.barcode]={c:S.sel.c,q:qps};
+        S.changed=true;
+        toast('已建檔：'+S.sel.n);
+        resetForm();
+        resumeScan();
+        var m=document.getElementById('bcmManual');if(m)m.focus();
+      }).catch(function(){go.disabled=false;go.textContent='建檔並綁定';toast('建檔失敗，請稍後再試');});
+    }
+
+    // ---------- 掃描引擎（BarcodeDetector → zxing → 手動）----------
+    var FORMATS=['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code'];
+    function stopScan(){S.scanning=false;try{if(S.zreader){S.zreader.reset();S.zreader=null;}}catch(_){}try{if(S.stream){S.stream.getTracks().forEach(function(t){t.stop();});S.stream=null;}}catch(_){}}
+    function pauseScan(){S.scanning=false;var c=document.getElementById('bcmCam');if(c)c.classList.add('paused');var pb=document.getElementById('bcmPause');if(pb)pb.textContent='繼續';}
+    function resumeScan(){var c=document.getElementById('bcmCam');if(c)c.classList.remove('paused');var pb=document.getElementById('bcmPause');if(pb)pb.textContent='暫停';if(S.engine==='native'&&S.stream){S.scanning=true;nativeLoop();}else if(S.engine==='zxing'){S.scanning=true;}}
+    var pauseBtn=document.getElementById('bcmPause');
+    if(pauseBtn)pauseBtn.addEventListener('click',function(){if(S.scanning)pauseScan();else resumeScan();});
+    function startScan(){
+      var video=document.getElementById('bcmVideo');if(!video)return;
+      if('BarcodeDetector' in window){try{S.detector=new BarcodeDetector({formats:FORMATS});}catch(_){S.detector=null;}if(S.detector){startNative(video);return;}}
+      loadZxing(function(ok){ if(ok)startZxing(video); else camManual('這支瀏覽器不支援相機掃碼，請用上方欄位手動輸入條碼。'); });
+    }
+    function startNative(video){
+      navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}},audio:false}).then(function(stream){
+        if(!S.open){stream.getTracks().forEach(function(t){t.stop();});return;}
+        S.stream=stream;S.engine='native';video.srcObject=stream;
+        return video.play().then(function(){ S.scanning=true;nativeLoop();
+          try{var track=stream.getVideoTracks()[0];var caps=track.getCapabilities?track.getCapabilities():{};if(caps.torch){var tb=document.getElementById('bcmTorch');var on=false;tb.style.display='';tb.addEventListener('click',function(){on=!on;track.applyConstraints({advanced:[{torch:on}]}).catch(function(){});tb.textContent=on?'關手電筒':'手電筒';});}}catch(_){}
+        });
+      }).catch(function(){ camManual('無法開啟相機（可能未授權）。請允許相機，或手動輸入條碼。'); });
+    }
+    function nativeLoop(){
+      if(!S.scanning||S.engine!=='native')return;
+      var video=document.getElementById('bcmVideo');if(!video||video.readyState<2){setTimeout(nativeLoop,180);return;}
+      S.detector.detect(video).then(function(codes){if(S.scanning&&codes&&codes.length){var raw=String(codes[0].rawValue||'').trim();if(raw)hitBarcode(raw);}}).catch(function(){}).then(function(){if(S.scanning)setTimeout(nativeLoop,240);});
+    }
+    function loadZxing(cb){if(window.ZXing){cb(true);return;}var s=document.createElement('script');s.src='/liff/vendor/zxing.min.js';s.onload=function(){cb(!!window.ZXing);};s.onerror=function(){cb(false);};document.head.appendChild(s);}
+    function startZxing(video){
+      try{if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){camManual();return;}
+        var Z=window.ZXing;var hints=new Map();
+        hints.set(Z.DecodeHintType.POSSIBLE_FORMATS,[Z.BarcodeFormat.EAN_13,Z.BarcodeFormat.EAN_8,Z.BarcodeFormat.UPC_A,Z.BarcodeFormat.UPC_E,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.ITF,Z.BarcodeFormat.QR_CODE]);
+        hints.set(Z.DecodeHintType.TRY_HARDER,true);
+        S.zreader=new Z.BrowserMultiFormatReader(hints,300);S.engine='zxing';S.scanning=true;
+        S.zreader.decodeFromConstraints({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}},audio:false},video,function(result){if(result&&S.scanning){var raw=String(result.getText()||'').trim();if(raw)hitBarcode(raw);}}).catch(function(){camManual('無法開啟相機（可能未授權）。');});
+      }catch(_){camManual();}
+    }
+    function camManual(msg){var cam=document.getElementById('bcmCam');if(cam)cam.innerHTML='<div class="bcm-camoff">'+esc(msg||'這支裝置無法用相機掃描，請用上方欄位手動輸入條碼。')+'</div>';S.engine='manual';}
+    var _lastCode='',_lastAt=0;
+    function hitBarcode(raw){var now=Date.now();if(raw===_lastCode&&now-_lastAt<=1500)return;_lastCode=raw;_lastAt=now;gotBarcode(raw);}
+  })();
+  </script>`;
+}
+
 /** SF 側邊欄（新版視覺，URL 沿用既有路由） */
 function sfSidebar(active) {
   const item = (href, key, icon, label, badge) => `
@@ -7469,27 +7688,36 @@ function createAdminRouter() {
           </form>
         </td>
       </tr>`).join("");
+        const coNm = (0, erp_companies_js_1.erpCompanyName)(icpno);
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 條碼對照</div>
       <h1 class="notion-page-title">條碼對照</h1>
-      <p class="notion-hint" style="margin:-2px 0 14px;">商品條碼 ↔ 凌越料號。現場用「掃碼盤點」LIFF 頁掃到新條碼時就能綁定，這裡管理全部綁定（含整箱條碼的「每掃單位數」）。一個品項可以綁多個條碼（單支＋整箱）。</p>
+      <p class="notion-hint" style="margin:-2px 0 14px;">商品條碼 ↔ 凌越料號。點「新增品項」直接掃條碼，再模糊搜尋貨品主檔配對，掃完即建檔（凌越沒維護條碼→就在這裡對應）；現場用「掃碼盤點」LIFF 頁也能邊掃邊綁。一個品項可以綁多個條碼（單支＋整箱）。</p>
       ${coSeg}
       ${ok}
       <div class="notion-card" style="padding:14px 16px;margin-bottom:16px;">
-        <form method="post" action="/admin/inventory/barcodes" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
-          <input type="hidden" name="action" value="add"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}">
-          <input type="text" name="barcode" placeholder="條碼（掃描槍對準這裡掃也可以）" required class="sf-input" style="width:220px;">
-          <input type="text" name="erp_code" placeholder="凌越料號" required class="sf-input" style="width:140px;">
-          <input type="number" name="qty_per_scan" value="1" min="0.01" step="any" title="掃 1 下＝幾個單位（整箱條碼填入數）" class="sf-input" style="width:90px;text-align:right;">
-          <button type="submit" class="btn-primary">新增綁定</button>
-        </form>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <button type="button" id="bcmOpen" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;">${SF_ICONS.plus}新增品項（掃碼建檔）</button>
+          <span class="notion-hint" style="margin:0;">彈出掃碼視窗：掃條碼 → 模糊搜尋貨品主檔配對 → 建檔綁定（${escapeHtml(coNm)}）。</span>
+        </div>
+        <details style="margin-top:12px;">
+          <summary style="cursor:pointer;font-size:13px;color:var(--notion-text-muted,#9b9a97);">或手動輸入條碼＋料號綁定</summary>
+          <form method="post" action="/admin/inventory/barcodes" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px;">
+            <input type="hidden" name="action" value="add"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}">
+            <input type="text" name="barcode" placeholder="條碼（掃描槍對準這裡掃也可以）" required class="sf-input" style="width:220px;">
+            <input type="text" name="erp_code" placeholder="凌越料號" required class="sf-input" style="width:140px;">
+            <input type="number" name="qty_per_scan" value="1" min="0.01" step="any" title="掃 1 下＝幾個單位（整箱條碼填入數）" class="sf-input" style="width:90px;text-align:right;">
+            <button type="submit" class="btn-primary">新增綁定</button>
+          </form>
+        </details>
       </div>
       <div class="notion-card" style="padding:0;overflow:auto;">
         <table>
           <thead><tr><th>條碼</th><th>料號</th><th>品名</th><th style="text-align:center;">每掃單位數</th><th>綁定者</th><th style="text-align:center;">操作</th></tr></thead>
-          <tbody>${rowsHtml || `<tr><td colspan="6" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">還沒有任何條碼綁定。到 LIFF「掃碼盤點」頁掃第一輪，邊掃邊綁最快。</td></tr>`}</tbody>
+          <tbody>${rowsHtml || `<tr><td colspan="6" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">還沒有任何條碼綁定。點上方「新增品項」掃碼建檔，或到 LIFF「掃碼盤點」頁邊掃邊綁。</td></tr>`}</tbody>
         </table>
-      </div>`;
+      </div>
+      ${barcodeAddModalHtml(icpno, coNm)}`;
         res.type("text/html").send(notionPage("條碼對照", body, "inv-barcodes", res));
     });
     router.post("/inventory/barcodes", express_1.default.urlencoded({ extended: true }), async (req, res) => {
