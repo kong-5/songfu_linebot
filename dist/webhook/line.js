@@ -26,6 +26,7 @@ const basket_log_js_1 = require("../lib/basket-log.js");
 const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const line_conversation_js_1 = require("../lib/line-conversation.js");
+const erp_companies_js_1 = require("../lib/erp-companies.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
@@ -1394,19 +1395,29 @@ function createLineWebhook() {
                         continue;
                     }
                 }
-                // ── #盤點 指令：僅限開啟「盤點」功能的群組 ──
-                if (groupId && msgType === "text" && textEarly && textEarly.replace(/\s/g, "") === "#盤點") {
+                // ── #盤點 指令：僅限開啟「盤點」功能的群組。支援「#盤點 松揚」指定公司（不帶＝松富00）──
+                if (groupId && msgType === "text" && textEarly && /^#盤點/.test(textEarly.replace(/\s/g, ""))) {
                     try {
                         if (!(await getGroupFeat()).stocktake) {
                             // 未開啟盤點功能：靜默略過（不回覆、不進 AI 解析）
                             console.log("[LINE] #盤點 於未開啟盤點功能的群組略過 group=%s", groupId);
                             continue;
                         }
+                        // 解析公司：#盤點 後面的字（名稱或代碼）。空＝松富00；打錯＝提示可用公司。
+                        const coArg = textEarly.replace(/\s/g, "").replace(/^#盤點/, "");
+                        const stkIcpno = (0, erp_companies_js_1.companyArgToIcpno)(coArg);
+                        if (stkIcpno === null) {
+                            if (lineClient && event.replyToken) {
+                                try { await lineClient.replyMessage(event.replyToken, { type: "text", text: "看不懂公司「" + coArg + "」。可用：#盤點（松富）、#盤點 龍港、#盤點 松揚、#盤點 松成。" }); } catch (_) {}
+                            }
+                            continue;
+                        }
+                        const stkCoName = (0, erp_companies_js_1.erpCompanyName)(stkIcpno);
                         const stkLiffId = (process.env.LIFF_ID_STOCKTAKE || "2010106501-VocNwkbA").trim();
-                        const whRows = await db.prepare("SELECT code, name, sort_order FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY sort_order, code").all();
+                        const whRows = await db.prepare("SELECT code, name, sort_order FROM erp_warehouse WHERE include_stocktake = 1 AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY sort_order, code").all(stkIcpno);
                         if (!whRows || whRows.length === 0) {
                             if (lineClient && event.replyToken) {
-                                try { await lineClient.replyMessage(event.replyToken, { type: "text", text: "目前沒有納入盤點的倉庫。請先到後台『庫存管理 → 倉庫設定』勾選要盤點的倉庫。" }); } catch (_) {}
+                                try { await lineClient.replyMessage(event.replyToken, { type: "text", text: stkCoName + "目前沒有納入盤點的倉庫。請先到後台『庫存管理 → 倉庫設定』（切到" + stkCoName + "）勾選要盤點的倉庫。" }); } catch (_) {}
                             }
                             continue;
                         }
@@ -1414,26 +1425,27 @@ function createLineWebhook() {
                         const stkDate = nowTwStk.toISOString().slice(0, 10);
                         const whLabel = (w) => { const s = String(w.name || w.code || "").trim(); return s.length > 18 ? s.slice(0, 18) : s; };
                         const shown = whRows.slice(0, 11);
+                        const stkIcQ = `&icpno=${encodeURIComponent(stkIcpno)}`;
                         const btns = shown.map((w) => ({
                             type: "button", style: "secondary", height: "sm", margin: "sm",
-                            action: { type: "uri", label: whLabel(w), uri: `https://liff.line.me/${stkLiffId}?warehouse=${encodeURIComponent(String(w.code))}` },
+                            action: { type: "uri", label: whLabel(w), uri: `https://liff.line.me/${stkLiffId}?warehouse=${encodeURIComponent(String(w.code))}${stkIcQ}` },
                         }));
                         // 一律附「全部倉庫」按鈕（開啟選單頁），若倉庫數超過顯示上限也可從此進入
                         btns.push({
                             type: "button", style: "primary", color: "#1d4ed8", height: "sm", margin: "md",
-                            action: { type: "uri", label: whRows.length > shown.length ? `其他倉庫（共 ${whRows.length}）` : "開啟盤點選單", uri: `https://liff.line.me/${stkLiffId}` },
+                            action: { type: "uri", label: whRows.length > shown.length ? `其他倉庫（共 ${whRows.length}）` : "開啟盤點選單", uri: `https://liff.line.me/${stkLiffId}?icpno=${encodeURIComponent(stkIcpno)}` },
                         });
                         if (lineClient && event.replyToken) {
                             try {
                                 await lineClient.replyMessage(event.replyToken, {
                                     type: "flex",
-                                    altText: `松富盤點 ${stkDate}`,
+                                    altText: `${stkCoName}盤點 ${stkDate}`,
                                     contents: {
                                         type: "bubble", size: "kilo",
                                         body: {
                                             type: "box", layout: "vertical", spacing: "xs", paddingAll: "14px",
                                             contents: [
-                                                { type: "text", text: "📋 松富盤點", size: "md", weight: "bold", color: "#1d4ed8" },
+                                                { type: "text", text: `📋 ${stkCoName}盤點`, size: "md", weight: "bold", color: "#1d4ed8" },
                                                 { type: "text", text: `盤點日 ${stkDate} · 選擇倉庫`, size: "xxs", color: "#9b9a97", margin: "xs" },
                                                 { type: "separator", margin: "md" },
                                                 ...btns,
@@ -1443,7 +1455,7 @@ function createLineWebhook() {
                                 });
                             } catch (e) { console.warn("[LINE] #盤點 卡片回覆失敗:", e?.message || e); }
                         }
-                        console.log("[LINE] #盤點 已回倉庫按鈕 group=%s 倉數=%s", groupId, whRows.length);
+                        console.log("[LINE] #盤點 已回倉庫按鈕 group=%s 公司=%s 倉數=%s", groupId, stkIcpno, whRows.length);
                         continue;
                     } catch (e) {
                         console.error("[LINE] #盤點 處理失敗:", e?.message || e);
