@@ -145,11 +145,14 @@ function createLiffRouter() {
             const sysQtySource = whQtyMap ? "warehouse" : "total";
             const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item").all();
             const exp = {}; (expRows || []).forEach((r) => { exp[String(r.erp_code)] = String(r.expiry_unit || ""); });
+            // 品項照片（第四波）：只查有照片的料號組成 Set，items 帶 hp 布林；data URI 不塞進 items JSON（撐爆 payload），需要時走單張取圖端點 lazy-load
+            const photoSet = new Set();
+            try { (await db.prepare("SELECT erp_code FROM erp_stock_item_photo").all() || []).forEach((r) => photoSet.add(String(r.erp_code || ""))); } catch (_) { /* 照片表缺失不擋盤點 */ }
             const items = (rows || []).map((r) => {
                 const c = String(r.erp_code || "");
                 const isExp = Object.prototype.hasOwnProperty.call(exp, c);
                 const sysv = whQtyMap ? Number(whQtyMap[c] || 0) : Number(r.qty || 0);
-                return { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: sysv, exp: isExp, eunit: isExp ? (exp[c] || String(r.unit || "")) : "" };
+                return { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: sysv, exp: isExp, eunit: isExp ? (exp[c] || String(r.unit || "")) : "", hp: photoSet.has(c) ? 1 : undefined };
             });
             // 續盤：同倉同日若已送出過，帶回已存的實盤數與效期，重開可接著盤
             const date = stkTaipeiDate();
@@ -173,6 +176,19 @@ function createLiffRouter() {
             }
             res.json({ date, warehouse: { code, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt, sysQtySource });
         } catch (e) { console.error("[liff stocktake items]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    // 單張取圖（第四波）：回 JSON { url: data URI }。<img> 無法帶 Authorization header，
+    // 故前端用 fetch（帶 Bearer）取回 data URI 後再填進縮圖／燈箱；沿用 stkAuth（LIFF token）。
+    router.get("/api/stocktake/photo/:erpCode", async (req, res) => {
+        try {
+            const v = await stkAuth(req, res); if (!v) return;
+            const code = String(req.params.erpCode || "").trim();
+            if (!code) { res.status(400).json({ error: "缺少料號" }); return; }
+            const db = (0, index_js_1.getDb)(dbPath);
+            const row = await db.prepare("SELECT photo_url FROM erp_stock_item_photo WHERE erp_code = ?").get(code);
+            if (!row || !row.photo_url) { res.status(404).json({ error: "無照片" }); return; }
+            res.json({ url: String(row.photo_url) });
+        } catch (e) { console.error("[liff stocktake photo]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
     // 唯一索引衝突判斷（pg: 23505；better-sqlite3: SQLITE_CONSTRAINT*／UNIQUE constraint failed）
     function stkIsUniqueConflict(e) {

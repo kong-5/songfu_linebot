@@ -32,6 +32,14 @@ const lineConfig = { channelAccessToken, channelSecret };
 const hasLineConfig = Boolean(channelAccessToken && channelSecret);
 /** 收單模式：群組 ID -> { orderId, customerId, lastActivity }；可設 LINE_COLLECT_TIMEOUT_SEC 覆蓋，預設 30 秒 */
 const COLLECT_TIMEOUT_MS = (parseInt(process.env.LINE_COLLECT_TIMEOUT_SEC || "30", 10) || 30) * 1000;
+// ── 收單確認 Flex 卡（第四波：closed-loop 確認）門檻與上限 ──
+// 低信心門檻：order_items.confidence_score 低於此值即在 Flex 卡標醒目「⚠ 請確認」（0-100 分制）。
+// 沿用既有 confidence_score 語意；本檔無其他信心門檻常數，故取 70。
+const ORDER_CONFIRM_CONFIDENCE_THRESHOLD = 70;
+// 單一 bubble 品項上限：超過就截斷並在末列標「…等 N 項，可傳『線上改單』查看完整品項」（避免 Flex bubble 過大爆掉）。
+const ORDER_CONFIRM_MAX_ITEMS_PER_BUBBLE = 20;
+// carousel 最多泡數：超過（多單）就整則 fallback 純文字。
+const ORDER_CONFIRM_MAX_BUBBLES = 10;
 const collectingByGroup = new Map();
 const autoFinalizeTimers = new Map();
 // 補空籃邏輯抽到 ../lib/empty-baskets.js（後台拆併單也要用同一份，避免兩處版本漂移）
@@ -143,6 +151,171 @@ function formatOrderQty(q) {
     if (!Number.isFinite(n))
         return String(q ?? "");
     return String(parseFloat(n.toFixed(4)));
+}
+/**
+ * 把品項警示 remark 轉成「客戶看得懂」的文案（**只用於 LINE 客戶端呈現**，後台明細仍顯示原文技術細節）。
+ * - 內勤技術措辭「⚠ 字跡跨列（秀珍菇/洋菇），請確認」（來自 form-row-anchor.js）客戶看不懂「跨列」、
+ *   又同時看到兩個品名會困惑 → 轉成客戶語言「⚠ 此項辨識不確定，請確認品項與數量」。
+ * - 其他 ⚠ remark（一般備註警示）維持原樣。
+ * - 無 ⚠ remark 但屬低信心（confidence_score < 門檻）→ 通用「⚠ 辨識信心較低，請確認」。
+ * @param {string} remarkWarnText 取自 order_items.remark 的 ⚠ 警示段（可能為空）。
+ * @param {boolean} lowConf 是否低信心品項。
+ * @returns {string} 要顯示給客戶的警示文字（含 ⚠）；無警示回空字串。
+ */
+function toCustomerWarnText(remarkWarnText, lowConf) {
+    const w = (remarkWarnText || "").trim();
+    if (w.startsWith("⚠ 字跡跨列") || w.startsWith("⚠字跡跨列")) {
+        return "⚠ 此項辨識不確定，請確認品項與數量";
+    }
+    if (w)
+        return w;
+    if (lowConf)
+        return "⚠ 辨識信心較低，請確認";
+    return "";
+}
+/**
+ * 收單確認 Flex 卡組裝（純函式，好測）。借鏡 closed-loop 確認：把糾錯往上游（客戶端）推。
+ * @param {Array<{orderNo:(string|number), remark?:string, items:Array<{name:string, qtyStr:string, unit?:string, warn?:boolean, warnText?:string}>}>} orderBlocksData
+ *        每張訂單一個區塊；items 已排序；warn=低信心或 ⚠ 警示品項；warnText=要顯示的警示文字（僅 ⚠ 那段）。
+ * @param {string} dateStr 送貨日期。
+ * @param {object} [opts] { maxItemsPerBubble, maxBubbles }。
+ * @returns {{contents:object, altText:string}|null} 組裝失敗、無資料、或泡數超上限回 null（呼叫端 fallback 純文字）。
+ */
+function buildOrderConfirmFlex(orderBlocksData, dateStr, opts) {
+    try {
+        if (!Array.isArray(orderBlocksData) || orderBlocksData.length === 0)
+            return null;
+        const maxItems = (opts && opts.maxItemsPerBubble) || ORDER_CONFIRM_MAX_ITEMS_PER_BUBBLE;
+        const maxBubbles = (opts && opts.maxBubbles) || ORDER_CONFIRM_MAX_BUBBLES;
+        // 泡數超上限（多單過多）＝整則 fallback 純文字（altText 也無法塞下）。
+        if (orderBlocksData.length > maxBubbles)
+            return null;
+        const multi = orderBlocksData.length > 1;
+        const WARN_COLOR = "#d9480f"; // 醒目橘紅：低信心／警示品項
+        const MUTED = "#9b9a97";
+        const ACCENT = "#1d4ed8";
+        // [fix 2026-07-10] 單一 Flex text 值有 LINE 2000 字上限；垃圾 OCR 品名/備註可能超長 → 整則 400 推不出去。
+        // 逐值截斷到 200 字，杜絕踩上限（正常品名遠短於此）。
+        const clip = (s, n) => { const t = String(s == null ? "" : s); return t.length > (n || 200) ? t.slice(0, n || 200) + "…" : t; };
+        // startIdx：跨 bubble 連續品項編號的起始號（多單時第二泡接續第一泡）。讓客戶在 Flex 卡上看到的
+        // 號碼 == 「改第N項／刪第N項」作用的號碼（改單流程對當日全部待確認單建同一套連續編號）。
+        const buildBubble = (blk, seq, startIdx) => {
+            const items = Array.isArray(blk.items) ? blk.items : [];
+            const shown = items.slice(0, maxItems);
+            const truncated = items.length - shown.length;
+            const itemRows = [];
+            let idx = startIdx || 1;
+            for (const it of shown) {
+                const warn = !!it.warn;
+                const label = clip(`${idx}. ${clip(it.name || "待確認", 120)} ${it.qtyStr || ""}${it.unit || ""}`.trim());
+                itemRows.push({
+                    type: "text",
+                    text: warn ? `⚠ ${label}` : label,
+                    size: "sm",
+                    color: warn ? WARN_COLOR : "#37352f",
+                    weight: warn ? "bold" : "regular",
+                    wrap: true,
+                });
+                // 警示品項的說明文字（如「字跡跨列，請確認」）以縮排小字帶在下方。
+                if (warn && it.warnText) {
+                    itemRows.push({
+                        type: "text",
+                        text: `　${clip(it.warnText)}`,
+                        size: "xxs",
+                        color: WARN_COLOR,
+                        wrap: true,
+                    });
+                }
+                idx += 1;
+            }
+            if (truncated > 0) {
+                itemRows.push({
+                    type: "text",
+                    text: `…等 ${truncated} 項，可傳「線上改單」查看完整品項`,
+                    size: "xxs",
+                    color: MUTED,
+                    wrap: true,
+                });
+            }
+            if (!itemRows.length) {
+                itemRows.push({ type: "text", text: "（目前尚無可辨識品項）", size: "sm", color: MUTED, wrap: true });
+            }
+            const bodyContents = [];
+            // Header 區（body 內，維持單一 bubble 版面一致）：已收單 + 訂單編號（多單另標序）
+            bodyContents.push({
+                type: "text",
+                text: multi ? `✅ 已收單 (${seq}/${orderBlocksData.length})` : "✅ 已收單",
+                size: "md",
+                weight: "bold",
+                color: ACCENT,
+            });
+            bodyContents.push({ type: "text", text: `送貨日期 ${dateStr}`, size: "xxs", color: MUTED, margin: "xs" });
+            bodyContents.push({ type: "text", text: `訂單編號 ${blk.orderNo}`, size: "xxs", color: MUTED });
+            if (blk.remark)
+                bodyContents.push({ type: "text", text: clip(blk.remark), size: "xxs", color: MUTED, wrap: true });
+            bodyContents.push({ type: "separator", margin: "md" });
+            bodyContents.push({ type: "box", layout: "vertical", spacing: "xs", margin: "md", contents: itemRows });
+            return {
+                type: "bubble",
+                size: "mega",
+                body: { type: "box", layout: "vertical", spacing: "xs", paddingAll: "14px", contents: bodyContents },
+                footer: {
+                    type: "box",
+                    layout: "vertical",
+                    spacing: "sm",
+                    paddingAll: "12px",
+                    contents: [
+                        {
+                            type: "button",
+                            style: "primary",
+                            color: ACCENT,
+                            height: "sm",
+                            action: { type: "message", label: "內容有誤？線上改單", text: "線上改單" },
+                        },
+                        {
+                            type: "text",
+                            text: "改單：傳「改第1項 3 公斤」或「刪第1項」（數字自換）",
+                            size: "xxs",
+                            color: MUTED,
+                            wrap: true,
+                        },
+                        {
+                            type: "text",
+                            text: "品名有誤請刪除該項後重傳，或聯絡業務",
+                            size: "xxs",
+                            color: MUTED,
+                            wrap: true,
+                        },
+                    ],
+                },
+            };
+        };
+        let contents;
+        if (multi) {
+            // 跨 bubble 連續編號：每泡起始號 = 前面各泡「全部品項數」累加（含被截斷的品項，
+            // 以與改單流程「當日全部待確認單連續編號」對齊；截斷只影響顯示，不影響編號分配）。
+            let runningIdx = 1;
+            const bubbles = orderBlocksData.map((blk, i) => {
+                const b = buildBubble(blk, i + 1, runningIdx);
+                runningIdx += Array.isArray(blk.items) ? blk.items.length : 0;
+                return b;
+            });
+            contents = { type: "carousel", contents: bubbles };
+        }
+        else {
+            contents = buildBubble(orderBlocksData[0], 1, 1);
+        }
+        // altText：精簡摘要（品項數）；LINE altText 上限 400 字，取精簡版即可。
+        const totalItems = orderBlocksData.reduce((s, b) => s + (Array.isArray(b.items) ? b.items.length : 0), 0);
+        const altText = multi
+            ? `已收單（共 ${orderBlocksData.length} 張、${totalItems} 項）送貨日期 ${dateStr}`
+            : `已收單：品項數 ${totalItems}，送貨日期 ${dateStr}`;
+        return { contents, altText };
+    }
+    catch (e) {
+        console.warn("[LINE] buildOrderConfirmFlex 組裝失敗，fallback 純文字:", e?.message || e);
+        return null;
+    }
 }
 /** Gemini 品項依 sub_customer 分組；空字串／null／undefined 視為預設主客戶 */
 function subCustomerGroupKeyFromParsedItem(item) {
@@ -768,19 +941,39 @@ function createLineWebhook() {
                     console.log("[LINE] 結單時所有訂單皆為空白，已全部刪除，不發推播。");
                     return;
                 }
+                // [fix 2026-07-10] Flex 卡的多單連續編號必須與「線上改單」流程（ORDER BY order_no）對齊，
+                // 否則客戶在 Flex 卡看到的號碼 ≠ 改單指令作用的號碼＝又把「改到錯單」換個形式帶回來。
+                // survivingOrderIds 原為收集序（allOrderIds 插入序），這裡用同一句 SQL ORDER BY order_no 重排，
+                // 保證兩處排序完全相同（連 TEXT 排序的邊界行為都一致）。排序失敗維持原序、不阻斷推播。
+                try {
+                    if (survivingOrderIds.length > 1) {
+                        const ph = survivingOrderIds.map(() => "?").join(",");
+                        const orderedRows = await db.prepare("SELECT id FROM orders WHERE id IN (" + ph + ") ORDER BY order_no").all(...survivingOrderIds);
+                        const orderedIds = orderedRows.map((r) => r.id).filter((id) => survivingOrderIds.includes(id));
+                        if (orderedIds.length === survivingOrderIds.length) {
+                            survivingOrderIds.length = 0;
+                            survivingOrderIds.push(...orderedIds);
+                        }
+                    }
+                } catch (e) {
+                    console.warn("[LINE] 結單摘要依 order_no 排序失敗，維持收集序:", e?.message || e);
+                }
                 // 自動收單也要補空籃（與手動收單一致）；放在建摘要之前，讓推播明細就含空籃。
                 await insertEmptyBaskets(db, session.customerId, survivingOrderIds);
                 const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(survivingOrderIds[0]);
                 const dateStr = order?.order_date || getTaipeiOrderDate();
                 const orderBlocks = [];
+                // Flex 卡的結構化資料（與文字 orderBlocks 同時建）；文字版作 fallback（Flex 組裝失敗／泡數超限時用）。
+                const orderBlocksData = [];
                 for (const oid of survivingOrderIds) {
                     const ord = await db.prepare("SELECT order_no, remark FROM orders WHERE id = ?").get(oid);
                     const items = await db.prepare(`
-          SELECT oi.raw_name, oi.quantity, oi.unit, oi.remark, p.name AS product_name, p.erp_code
+          SELECT oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.confidence_score, p.name AS product_name, p.erp_code
           FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
           WHERE oi.order_id = ? ORDER BY oi.id
         `).all(oid);
                     const lines = [];
+                    const flexItems = [];
                     let idx = 1;
                     for (const it of items) {
                         const unit = normalizeOrderUnit(it.unit, "公斤");
@@ -788,12 +981,30 @@ function createLineWebhook() {
                         // remark 以「⚠」開頭＝AI 標記的警示（如照片辨識幾何校驗的「⚠ 字跡跨列（A/B），請確認」），
                         // 收單摘要要讓人看得到：品項行下方縮排帶出警示段（只取 ⚠ 那一段，後續換算備註不重複顯示）。
                         const remarkStr = it.remark != null ? String(it.remark).trim() : "";
-                        const warnSuffix = remarkStr.startsWith("⚠") ? `\n　${remarkStr.split(/[；;\n]/)[0].trim()}` : "";
+                        const warnFromRemark = remarkStr.startsWith("⚠");
+                        const remarkWarnText = warnFromRemark ? remarkStr.split(/[；;\n]/)[0].trim() : "";
+                        // 低信心：confidence_score 有值且低於門檻（0-100 分制）→ Flex 卡與純文字皆標醒目「請確認」。
+                        const conf = it.confidence_score;
+                        const lowConf = conf != null && Number.isFinite(Number(conf)) && Number(conf) < ORDER_CONFIRM_CONFIDENCE_THRESHOLD;
+                        // 客戶端警示文案：把內勤技術措辭（如「字跡跨列」）轉成客戶語言；低信心（且無 ⚠ remark）也補通用提示。
+                        // [fix 2026-07-10] 純文字 fallback 過去只在 warnFromRemark 才補警示，低信心品項在純文字版完全無標記
+                        // （Flex 被拒 fallback 時客戶反而看到更少警示）→ 現與 Flex 的 warn 判定（warnFromRemark || lowConf）對齊。
+                        const custWarnText = toCustomerWarnText(remarkWarnText, lowConf);
+                        const warnSuffix = custWarnText ? `\n　${custWarnText}` : "";
                         lines.push(`${idx}. ${name} ${formatOrderQty(it.quantity)}${unit || ""}${warnSuffix}`);
+                        flexItems.push({
+                            name,
+                            qtyStr: formatOrderQty(it.quantity),
+                            unit: unit || "",
+                            warn: warnFromRemark || lowConf,
+                            // 警示文字：走同一套客戶端轉譯（技術措辭轉客戶語言；低信心給通用提示）。
+                            warnText: custWarnText,
+                        });
                         idx += 1;
                     }
                     const hdr = ord?.remark ? `${ord.remark}\n` : "";
                     orderBlocks.push(`【${ord?.order_no ?? oid}】\n${hdr}${lines.length ? lines.join("\n") : "（目前尚無可辨識品項）"}`);
+                    orderBlocksData.push({ orderNo: ord?.order_no ?? oid, remark: ord?.remark || "", items: flexItems });
                 }
                 const multi = survivingOrderIds.length > 1;
                 const summary = [
@@ -806,7 +1017,23 @@ function createLineWebhook() {
                 ].join("\n");
                 if (lineClient) {
                     if (!(await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(db))) {
-                        await lineClient.pushMessage(groupId, { type: "text", text: summary });
+                        // 優先推 Flex 卡（closed-loop 確認）；組裝失敗／泡數超限回 null → fallback 純文字 summary。
+                        // [fix 2026-07-10] Flex 即使結構合法，LINE 仍可能語意拒絕（如某 text 超過 2000 字上限、整則過大）
+                        // 而回 400——此時 pushMessage 會拋錯。務必 try/catch 後 fallback 純文字，否則客戶「完全收不到」比舊版更糟。
+                        const flex = buildOrderConfirmFlex(orderBlocksData, dateStr);
+                        let flexSent = false;
+                        if (flex) {
+                            try {
+                                await lineClient.pushMessage(groupId, { type: "flex", altText: flex.altText, contents: flex.contents });
+                                flexSent = true;
+                            }
+                            catch (fe) {
+                                console.warn("[LINE] Flex 收單卡被拒，fallback 純文字:", fe?.message || fe);
+                            }
+                        }
+                        if (!flexSent) {
+                            await lineClient.pushMessage(groupId, { type: "text", text: summary });
+                        }
                     }
                     else {
                         console.log("[LINE] 已略過 30 秒結單推播（對客戶靜音） orders=%s", survivingOrderIds.join(","));
@@ -1672,24 +1899,34 @@ function createLineWebhook() {
                     continue;
                 }
                 const normLineText = text.replace(/[\uFF10-\uFF19]/g, (ch) => String(ch.charCodeAt(0) - 0xff10));
-                // [fix 2026-07-08] 線上改單目標訂單須排除作廢/客訴軟刪除單（不該讓客戶改到已作廢的單），並加 ORDER BY 取穩定的第一張。
-                const orderRowForEdit = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
-                if (orderRowForEdit) {
+                // [fix 2026-07-10] 線上改單目標由「單一第一張單」改為「該客戶當日全部待確認單」（排除作廢/客訴軟刪，
+                // 維持既有 ORDER BY order_no 穩定序），對全部品項建**一套連續編號**（第1單品項 1..k、第2單接續 k+1..）。
+                // 拆單時 Flex carousel 各泡不再各自從 1 重編，號碼與此連續編號一致 → 「改第N項」不再沉默改錯單。
+                // [fix 2026-07-08] 排除作廢/客訴軟刪除單（不該讓客戶改到已作廢的單）。
+                const editOrderRows = await db.prepare("SELECT id, order_no FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").all(customerId, orderDate);
+                if (editOrderRows.length) {
                     const custRowEdit = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
                     const fallbackUnitEdit = custRowEdit?.default_unit?.trim() || "公斤";
-                    const itemsOrdered = await db.prepare(`
+                    // 跨單攤平的連續品項清單；每筆帶自己的 orderId/orderNo，改/刪依連續編號定位到正確的訂單與品項。
+                    const flatItems = [];
+                    for (const oRow of editOrderRows) {
+                        const its = await db.prepare(`
       SELECT oi.id, oi.raw_name, oi.quantity, oi.unit, p.name AS product_name
       FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
-      ORDER BY oi.id`).all(orderRowForEdit.id);
+      ORDER BY oi.id`).all(oRow.id);
+                        for (const it of its)
+                            flatItems.push({ ...it, orderId: oRow.id, orderNo: oRow.order_no });
+                    }
+                    const multiEdit = editOrderRows.length > 1;
                     const delMatch = normLineText.match(/^刪第?(\d+)項?$/) || normLineText.match(/^刪除\s*(\d+)\s*$/);
                     if (delMatch) {
                         const num = parseInt(delMatch[1], 10);
-                        if (num >= 1 && num <= itemsOrdered.length) {
-                            const t = itemsOrdered[num - 1];
-                            await db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(t.id, orderRowForEdit.id);
+                        if (num >= 1 && num <= flatItems.length) {
+                            const t = flatItems[num - 1];
+                            await db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(t.id, t.orderId);
                             // [fix 2026-07-10] 記錄刪項軌跡供結單 rebuild 重放；match_key 存被刪品項的 raw_name 快照（品名穩、位置會漂移）
                             await recordOrderItemEdit(db, {
-                                orderId: orderRowForEdit.id,
+                                orderId: t.orderId,
                                 action: "delete",
                                 rawName: t.raw_name || t.product_name || "",
                                 quantity: null,
@@ -1700,7 +1937,7 @@ function createLineWebhook() {
                             await reply(lineClient, event.replyToken, `已刪除第${num}項：${nm}`, db);
                         }
                         else {
-                            await reply(lineClient, event.replyToken, `找不到第${num}項。今日共 ${itemsOrdered.length} 項，請先傳「今天叫了什麼」或「線上改單」確認編號。`, db);
+                            await reply(lineClient, event.replyToken, `找不到第${num}項。今日共 ${flatItems.length} 項，請先傳「今天叫了什麼」或「線上改單」確認編號。`, db);
                         }
                         continue;
                     }
@@ -1709,13 +1946,13 @@ function createLineWebhook() {
                         const num = parseInt(editMatch[1], 10);
                         const qtyNew = parseFloat(editMatch[2]);
                         const unitTail = (editMatch[3] || "").trim();
-                        if (num >= 1 && num <= itemsOrdered.length && Number.isFinite(qtyNew) && qtyNew >= 0) {
-                            const t = itemsOrdered[num - 1];
+                        if (num >= 1 && num <= flatItems.length && Number.isFinite(qtyNew) && qtyNew >= 0) {
+                            const t = flatItems[num - 1];
                             const unitNew = normalizeOrderUnit(unitTail || null, fallbackUnitEdit);
-                            await db.prepare("UPDATE order_items SET quantity = ?, unit = ? WHERE id = ? AND order_id = ?").run(qtyNew, unitNew, t.id, orderRowForEdit.id);
+                            await db.prepare("UPDATE order_items SET quantity = ?, unit = ? WHERE id = ? AND order_id = ?").run(qtyNew, unitNew, t.id, t.orderId);
                             // [fix 2026-07-10] 記錄改量軌跡供結單 rebuild 重放；match_key 存該位置品項的 raw_name 快照（品名穩、位置會漂移）
                             await recordOrderItemEdit(db, {
-                                orderId: orderRowForEdit.id,
+                                orderId: t.orderId,
                                 action: "set",
                                 rawName: t.raw_name || t.product_name || "",
                                 quantity: qtyNew,
@@ -1726,15 +1963,26 @@ function createLineWebhook() {
                             await reply(lineClient, event.replyToken, `已更新第${num}項 ${nm}：${formatOrderQty(qtyNew)}${unitNew}`, db);
                         }
                         else {
-                            await reply(lineClient, event.replyToken, `無法更新（項次或數量有誤）。今日共 ${itemsOrdered.length} 項。\n格式：改第1項 3 公斤`, db);
+                            await reply(lineClient, event.replyToken, `無法更新（項次或數量有誤）。今日共 ${flatItems.length} 項。\n格式：改第1項 3 公斤`, db);
                         }
                         continue;
                     }
                     if (normLineText === "線上改單" || normLineText === "訂單更正說明") {
-                        const numbered = itemsOrdered.map((it, i) => {
+                        // 多單時用同一套連續編號並以「【訂單編號 X】」分隔各單（與 Flex carousel 看到的號碼一致）；
+                        // 單單時不加分隔，輸出即 1..k，與現況完全相同。
+                        const numberedLines = [];
+                        let n = 1;
+                        let lastOrderId = null;
+                        for (const it of flatItems) {
+                            if (multiEdit && it.orderId !== lastOrderId) {
+                                numberedLines.push(`【訂單編號 ${it.orderNo ?? it.orderId}】`);
+                                lastOrderId = it.orderId;
+                            }
                             const nm = it.product_name || it.raw_name || "待確認";
-                            return `${i + 1}. ${nm} ${formatOrderQty(it.quantity)}${it.unit || ""}`;
-                        }).join("\n");
+                            numberedLines.push(`${n}. ${nm} ${formatOrderQty(it.quantity)}${it.unit || ""}`);
+                            n += 1;
+                        }
+                        const numbered = numberedLines.join("\n");
                         const hint = `【線上改今日叫貨】\n${numbered || "（尚無品項）"}\n\n改數量：改第1項 3 公斤\n刪除：刪第1項\n（請把 1 改成您的項次；品名辨識錯誤請洽業務或由後台改品項）`;
                         await reply(lineClient, event.replyToken, hint, db);
                         continue;
