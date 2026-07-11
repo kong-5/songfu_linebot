@@ -123,6 +123,28 @@
   .submit{border:0;border-radius:11px;background:var(--accent);color:#fff;font-size:15px;font-weight:700;padding:13px 22px;cursor:pointer;}
   .submit:disabled{opacity:.5;}
   .pad{padding-bottom:88px;}
+  /* 品項照片（第四波，Sortly 式：照片語言中性，最好認貨）：縮圖 + 點擊放大 */
+  .stk-thumb{flex:none;width:38px;height:38px;border-radius:9px;border:1px solid var(--line);background-color:var(--field);background-size:cover;background-position:center;padding:0;cursor:pointer;position:relative;}
+  .stk-thumb::after{content:'';position:absolute;inset:-6px;} /* 擴大點擊熱區（戴手套），視覺不變 */
+  /* 縮圖載入中：小轉圈；載入失敗：橘框＋↻ 提示可重試（三態：無照片→根本不畫縮圖） */
+  .stk-thumb[aria-busy]::before{content:'';position:absolute;top:50%;left:50%;width:14px;height:14px;margin:-7px 0 0 -7px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:sp 1s linear infinite;}
+  .stk-thumb.err{background-color:var(--warn-soft);border-color:var(--warn);}
+  .stk-thumb.err::before{content:'↻';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--warn);font-size:18px;font-weight:800;}
+  @media (prefers-reduced-motion:reduce){.stk-thumb[aria-busy]::before{animation:none;}}
+  .lb{position:fixed;inset:0;background:rgba(0,0,0,.8);display:none;align-items:center;justify-content:center;z-index:60;padding:20px;}
+  .lb.on{display:flex;}
+  .lb-close{position:absolute;top:calc(10px + env(safe-area-inset-top,0));right:12px;width:44px;height:44px;border-radius:50%;border:0;background:rgba(0,0,0,.55);color:#fff;font-size:26px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2;}
+  .lb-close:active{transform:translateY(1px);}
+  .lb-stage{min-width:120px;min-height:120px;display:flex;align-items:center;justify-content:center;}
+  .lb-img{max-width:94vw;max-height:86vh;border-radius:12px;background:#fff;box-shadow:0 10px 50px rgba(0,0,0,.5);display:none;}
+  .lb.loaded .lb-img{display:block;}
+  .lb-spin{display:none;}
+  .lb.loading .lb-spin{display:block;}
+  .lb-err{display:none;flex-direction:column;align-items:center;gap:12px;color:#fff;text-align:center;padding:24px;}
+  .lb.error .lb-err{display:flex;}
+  .lb-err-ic{font-size:34px;color:#ffcf6b;line-height:1;}
+  .lb-err-tx{font-size:14px;color:#e7e9ee;}
+  .lb-retry{border:0;border-radius:10px;background:#fff;color:var(--txt);font-size:15px;font-weight:700;padding:12px 24px;cursor:pointer;min-height:44px;}
 </style>
 </head>
 <body>
@@ -153,6 +175,7 @@
       draftResumed:'已回復未送出',drafting:'盤點中(未送出)',
       relogin:'登入逾時，重新登入中…（已盤資料已暫存）',
       invalidQty:'⚠ 以下品項數量無效（僅能填 0 或正數），請修正後再送出：',
+      close:'關閉',retry:'重試',photoFail:'照片載入失敗',photoRetry:'載入失敗，點擊重試',
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
       progN:function(d,a){return '已盤 '+d+'/'+a;},barN:function(d,a){return '已盤 '+d+'/'+a+' · 未盤 '+(a-d);},
       confirm:function(wh,d,a){return '送出盤點？\n\n倉庫：'+wh+'\n已盤 '+d+'/'+a+' 項（未盤的會標「未盤」）';},
@@ -175,6 +198,7 @@
       draftResumed:'Đã khôi phục (chưa gửi)',drafting:'Đang kiểm (chưa gửi)',
       relogin:'Phiên đăng nhập hết hạn, đang đăng nhập lại… (dữ liệu đã kiểm được lưu tạm)',
       invalidQty:'⚠ Số lượng không hợp lệ (chỉ nhập 0 hoặc số dương), vui lòng sửa rồi gửi lại:',
+      close:'Đóng',retry:'Thử lại',photoFail:'Tải ảnh thất bại',photoRetry:'Tải thất bại, nhấn để thử lại',
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
       progN:function(d,a){return 'Đã kiểm '+d+'/'+a;},barN:function(d,a){return 'Đã kiểm '+d+'/'+a+' · Chưa '+(a-d);},
       confirm:function(wh,d,a){return 'Gửi kiểm kê?\n\nKho: '+wh+'\nĐã kiểm '+d+'/'+a+' (mục chưa kiểm sẽ được đánh dấu "Chưa")';},
@@ -225,6 +249,75 @@
     });
   }
   function showCenter(html){app.innerHTML='<div class="center">'+html+'</div>';}
+
+  // ---------- 品項照片（第四波，Sortly 式：對語言不通的員工，照片比文字更好認貨）----------
+  // items 帶 hp 布林；縮圖 lazy-load（進入視窗才抓）避免品項多時一次抓幾百張。
+  // 照片端點需 Bearer token，<img> 無法帶 header → 用 fetch 取 data URI 再填進背景/燈箱。
+  // 快取語意（原子性）：string=有照片(data URI)；null=伺服器確認查無(404，永久快取不重抓)；
+  // 「載入失敗」(5xx／網路)一律不快取，可下次進視窗或點縮圖重抓——避免把暫時失敗誤當成永久無照片。
+  var _photoCache={};
+  var _lb=null, _lbCode=null;
+  // apiPhoto 回三態物件：{url:...}=成功；{missing:true,url:null}=404 查無；{error:true}=失敗(可重試)
+  function apiPhoto(code){
+    return fetch('/liff/api/stocktake/photo/'+encodeURIComponent(code),{headers:{'Authorization':'Bearer '+freshToken()}})
+      .then(function(r){
+        if(r.status===404) return {missing:true,url:null};       // 伺服器明確：無照片
+        if(!r.ok) return {error:true};                            // 5xx 等 → 可重試
+        return r.json().then(function(j){ var u=(j&&j.url)||null; return u?{url:u}:{error:true}; },function(){ return {error:true}; });
+      })
+      .catch(function(){ return {error:true}; });                 // 網路中斷 → 可重試
+  }
+  function paintThumb(el,u){ if(!u) return; el.style.backgroundImage='url("'+u+'")'; el.classList.remove('err'); el.classList.add('loaded'); el.removeAttribute('aria-busy'); el.removeAttribute('title'); }
+  function thumbErr(el){ el.classList.remove('loaded'); el.classList.add('err'); el.removeAttribute('aria-busy'); el.setAttribute('title',t('photoRetry')); }
+  function repaintThumbs(code){ var u=_photoCache[code]; if(!u) return; var list=document.querySelectorAll('.stk-thumb[data-pc]'); Array.prototype.forEach.call(list,function(el){ if(el.getAttribute('data-pc')===code) paintThumb(el,u); }); }
+  function loadThumb(el){
+    var code=el.getAttribute('data-pc'); if(!code) return;
+    if(Object.prototype.hasOwnProperty.call(_photoCache,code)){ if(_photoCache[code]) paintThumb(el,_photoCache[code]); return; } // 已快取：有圖才畫；null(查無)不畫
+    el.classList.remove('err'); el.removeAttribute('title'); el.setAttribute('aria-busy','1');
+    apiPhoto(code).then(function(res){
+      if(res.error){ thumbErr(el); return; }        // 失敗：不快取，顯示可重試狀態
+      _photoCache[code]=res.url||null;               // 成功或確認查無：快取
+      if(res.url) paintThumb(el,res.url); else el.removeAttribute('aria-busy'); // 查無：清掉載入中，維持空框
+    });
+  }
+  function observeThumbs(){ var list=document.querySelectorAll('.stk-thumb[data-pc]'); Array.prototype.forEach.call(list,function(el){ if(el.getAttribute('data-obs')==='1') return; el.setAttribute('data-obs','1'); var code=el.getAttribute('data-pc'); if(Object.prototype.hasOwnProperty.call(_photoCache,code)){ if(_photoCache[code]) paintThumb(el,_photoCache[code]); return; } if(_io) _io.observe(el); else loadThumb(el); }); }
+  var _io=('IntersectionObserver' in window)?new IntersectionObserver(function(ents){ ents.forEach(function(en){ if(en.isIntersecting){ _io.unobserve(en.target); loadThumb(en.target); } }); },{rootMargin:'160px'}):null;
+  // 燈箱：對齊 order-review modal——有 × 關閉鈕＋點遮罩關閉，但點圖片本身不關（避免看圖誤觸）。
+  function ensureLb(){
+    if(_lb) return;
+    _lb=document.createElement('div'); _lb.className='lb';
+    _lb.innerHTML='<button type="button" class="lb-close" aria-label="'+esc(t('close'))+'">×</button>'
+      +'<div class="lb-stage">'
+      +'<div class="lb-spin"><div class="spin"></div></div>'
+      +'<img class="lb-img" alt="">'
+      +'<div class="lb-err"><div class="lb-err-ic">↻</div><div class="lb-err-tx"></div><button type="button" class="lb-retry"></button></div>'
+      +'</div>';
+    document.body.appendChild(_lb);
+    _lb.addEventListener('click',closeLb);                                                              // 點遮罩關閉
+    _lb.querySelector('.lb-stage').addEventListener('click',function(ev){ ev.stopPropagation(); });      // 點圖／內容不關
+    _lb.querySelector('.lb-close').addEventListener('click',function(ev){ ev.stopPropagation(); closeLb(); });
+    _lb.querySelector('.lb-retry').addEventListener('click',function(ev){ ev.stopPropagation(); if(_lbCode) lbLoad(_lbCode); });
+  }
+  function closeLb(){ if(!_lb) return; _lb.classList.remove('on','loading','loaded','error'); _lb.querySelector('.lb-img').src=''; _lbCode=null; }
+  function lbState(s){ _lb.classList.remove('loading','loaded','error'); if(s) _lb.classList.add(s); }
+  function lbLoad(code){
+    lbState('loading');
+    if(Object.prototype.hasOwnProperty.call(_photoCache,code) && _photoCache[code]){ _lb.querySelector('.lb-img').src=_photoCache[code]; lbState('loaded'); return; }
+    apiPhoto(code).then(function(res){
+      if(_lbCode!==code || !_lb.classList.contains('on')) return;   // 期間已關閉或改看別張
+      if(res.error){ lbState('error'); return; }                    // 失敗：顯示 × 與重試（不快取）
+      _photoCache[code]=res.url||null;
+      if(res.url){ _lb.querySelector('.lb-img').src=res.url; lbState('loaded'); repaintThumbs(code); }
+      else lbState('error');                                        // 查無(hp 為真理論上不該發生)→ 當失敗讓使用者可重試
+    });
+  }
+  function openLightbox(code){
+    ensureLb(); _lbCode=code;
+    _lb.querySelector('.lb-close').setAttribute('aria-label',t('close'));   // 語言切換後標籤仍正確
+    _lb.querySelector('.lb-err-tx').textContent=t('photoFail');
+    _lb.querySelector('.lb-retry').textContent=t('retry');
+    _lb.classList.add('on'); lbLoad(code);
+  }
 
   // ---------- 自動暫存（防電話中斷 / LIFF 重載遺失盤點）----------
   // 一邊盤一邊把「上貨/中貨/效期/展開狀態」存進本機，重開同倉同日自動接回。
@@ -407,7 +500,8 @@
     var right='<div class="qtybox">'+diffPill(it)+'<input class="qty" inputmode="decimal" placeholder="'+esc(t('qtyPh'))+'" value="'+esc(S.counts[it.c]!=null?S.counts[it.c]:'')+'" data-c="'+esc(it.c)+'">'+(it.u?'<span class="qu">'+esc(it.u)+'</span>':'')+moreBtn+'</div>';
     var nb=(S.batches[it.c]||[]).length;
     var chip=it.exp?'<button class="exp-chip'+(nb?' filled':'')+'" data-toggle>'+esc(t('expChip'))+(nb?' '+esc(t('batchN')(nb)):'')+(S.expanded[it.c]?' ▴':' ▾')+'</button>':'';
-    return '<div class="item'+cnt+open+mopen+'" data-c="'+esc(it.c)+'"><div class="row"><div class="info"><div class="nm">'+esc(it.n)+chip+'</div>'
+    var thumb=it.hp?'<button type="button" class="stk-thumb" data-pc="'+esc(it.c)+'" aria-label="'+esc(it.n)+' 照片"></button>':'';
+    return '<div class="item'+cnt+open+mopen+'" data-c="'+esc(it.c)+'"><div class="row">'+thumb+'<div class="info"><div class="nm">'+esc(it.n)+chip+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div></div>'
       +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(it.sys)+(it.u?' <span class="su">'+esc(it.u)+'</span>':'')+'</div></div>'+right+'</div>'+midPanel(it)+(it.exp?batchRows(it):'')+'</div>';
   }
@@ -456,9 +550,9 @@
       +'<div class="pad" id="stListWrap">'+listHtml()+'</div>'
       +'<div class="bar"><div class="bar-in"><div class="s" id="stBarTxt"></div>'
         +'<button class="submit" id="stSubmit">'+esc(t('submit'))+'</button></div></div>';
-    bindCount(); updateProg();
+    bindCount(); updateProg(); observeThumbs();
   }
-  function relist(){ document.getElementById('stListWrap').innerHTML=listHtml(); saveDraft(); }
+  function relist(){ document.getElementById('stListWrap').innerHTML=listHtml(); observeThumbs(); saveDraft(); }
   function updateProg(){
     var done=S.items.filter(isCounted).length, all=S.items.length;
     document.getElementById('stProgTxt').textContent=t('progN')(done,all);
@@ -500,6 +594,8 @@
       saveDraft();
     });
     wrap.addEventListener('click',function(e){
+      var th=e.target.closest('.stk-thumb');
+      if(th){ openLightbox(th.getAttribute('data-pc')); return; }
       var add=e.target.closest('[data-add]'),del=e.target.closest('[data-del]'),done=e.target.closest('[data-done]'),tg=e.target.closest('[data-toggle]');
       var midtg=e.target.closest('[data-midtoggle]'),middone=e.target.closest('[data-middone]'),showzero=e.target.closest('[data-showzero]');
       if(showzero){ S.hz=false; try{localStorage.setItem('stk_hz','0');}catch(_){} var hzb=document.getElementById('stHideZero'); if(hzb) hzb.classList.remove('on'); relist(); return; }

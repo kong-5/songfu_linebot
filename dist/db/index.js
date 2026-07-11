@@ -279,6 +279,12 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        // [fix 2026-07-10] 品項照片：以 erp_code 為鍵獨立存放（不放 erp_stock_items——該表每次庫存推送
+        // 全表覆蓋會清掉）。盤點頁縮圖用（對語言不通的員工照片比文字更直觀）。photo_url 存後台上傳後的可存取路徑。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_item_photo (erp_code TEXT PRIMARY KEY, photo_url TEXT, updated_by TEXT, updated_at TEXT)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
         // 凌越倉別設定：代號→中文名、是否納入盤點。代號來源＝erp_stock_items.wh_code。
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_warehouse (code TEXT PRIMARY KEY, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
     }
@@ -925,6 +931,8 @@ async function initPg() {
                 //（取代單一公司總量 SK_NOWQTY 造成的多倉共用品項盤差失真）。
                 await client.query("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (erp_code, wh_code))");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
+                // [fix 2026-07-10] 品項照片（與 initSqlite 對應）：獨立表，跨庫存全表覆蓋保留
+                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_item_photo (erp_code TEXT PRIMARY KEY, photo_url TEXT, updated_by TEXT, updated_at TEXT)");
             }
             catch (_) { /* table may already exist */ }
             try {
