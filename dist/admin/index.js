@@ -16801,6 +16801,93 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         if (wantsJson) { res.json({ ok: true }); return; }
         res.redirect("/admin/customers?ok=del");
     });
+    // ── 貨品主檔 ↔ 凌越推送庫存 比對報告（唯讀，不動任何資料）──────────────
+    router.get("/products/reconcile", async (req, res) => {
+        try {
+            const norm = (s) => String(s == null ? "" : s).replace(/\s/g, "").toLowerCase();
+            const prods = (await db.prepare("SELECT id, name, erp_code, unit FROM products WHERE active = 1").all()) || [];
+            const erpRows = (await db.prepare("SELECT erp_code, name, unit, icpno FROM erp_stock_items").all()) || [];
+            // 凌越料號 → [{name, unit, icpno}...]（同料號可能多公司）
+            const erpByCode = {};
+            for (const r of erpRows) {
+                const c = String(r.erp_code || "").trim();
+                if (!c) continue;
+                (erpByCode[c] = erpByCode[c] || []).push({ name: String(r.name || ""), unit: String(r.unit || ""), icpno: (0, erp_companies_js_1.normIcpno)(r.icpno) });
+            }
+            const productCodes = new Set();
+            const nameDiff = [], unitDiff = [], orphan = [], noCode = [];
+            for (const p of prods) {
+                const code = String(p.erp_code || "").trim();
+                if (!code) { noCode.push(p); continue; }
+                productCodes.add(code);
+                const erp = erpByCode[code];
+                if (!erp || !erp.length) { orphan.push(p); continue; }
+                const e = erp[0];
+                if (norm(p.name) && norm(e.name) && norm(p.name) !== norm(e.name)) nameDiff.push({ p, e, cos: erp.map((x) => x.icpno) });
+                if (norm(p.unit) && norm(e.unit) && norm(p.unit) !== norm(e.unit)) unitDiff.push({ p, e });
+            }
+            // 凌越有、主檔沒有（依公司分組）
+            const erpMissing = {};
+            for (const code of Object.keys(erpByCode)) {
+                if (productCodes.has(code)) continue;
+                for (const e of erpByCode[code]) { (erpMissing[e.icpno] = erpMissing[e.icpno] || []).push({ code, name: e.name, unit: e.unit }); }
+            }
+            const erpCodeTotal = Object.keys(erpByCode).length;
+            const coName = (ic) => (0, erp_companies_js_1.erpCompanyName)(ic);
+            const card = (title, hint, count, tone) => `<div class="sf-card" style="flex:1;min-width:150px;"><div style="font-size:12px;color:var(--txt-3);">${escapeHtml(title)}</div><div style="font-size:26px;font-weight:700;color:${tone};font-variant-numeric:tabular-nums;">${count}</div><div style="font-size:11px;color:var(--txt-3);margin-top:2px;">${escapeHtml(hint)}</div></div>`;
+            const tbl = (headers, rows) => `<div class="notion-card" style="padding:0;overflow-x:auto;margin-top:8px;"><table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" style="text-align:center;color:var(--txt-3);padding:18px;">無</td></tr>`}</tbody></table></div>`;
+            const CAP = 300;
+            const orphanRows = orphan.slice(0, CAP).map((p) => `<tr><td>${escapeHtml(p.name)}</td><td style="font-variant-numeric:tabular-nums;">${escapeHtml(String(p.erp_code || ""))}</td><td>${escapeHtml(p.unit || "")}</td></tr>`).join("");
+            const nameRows = nameDiff.slice(0, CAP).map((x) => `<tr><td style="font-variant-numeric:tabular-nums;">${escapeHtml(String(x.p.erp_code))}</td><td>${escapeHtml(x.p.name)}</td><td style="color:#2383e2;">${escapeHtml(x.e.name)}</td><td style="font-size:11px;color:var(--txt-3);">${x.cos.map(coName).join("／")}</td></tr>`).join("");
+            const unitRows = unitDiff.slice(0, CAP).map((x) => `<tr><td style="font-variant-numeric:tabular-nums;">${escapeHtml(String(x.p.erp_code))}</td><td>${escapeHtml(x.p.name)}</td><td>${escapeHtml(x.p.unit || "—")}</td><td style="color:#2383e2;">${escapeHtml(x.e.unit || "—")}</td></tr>`).join("");
+            const noCodeRows = noCode.slice(0, CAP).map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.unit || "")}</td></tr>`).join("");
+            const missingSections = Object.keys(erpMissing).sort().map((ic) => {
+                const list = erpMissing[ic];
+                const rows = list.slice(0, CAP).map((e) => `<tr><td style="font-variant-numeric:tabular-nums;">${escapeHtml(e.code)}</td><td>${escapeHtml(e.name)}</td><td>${escapeHtml(e.unit || "")}</td></tr>`).join("");
+                return `<h3 style="margin:16px 0 4px;font-size:14px;">${escapeHtml(coName(ic))}(${ic})：凌越有、主檔沒有 <b>${list.length}</b> 項${list.length > CAP ? `（僅顯示前 ${CAP}）` : ""}</h3>${tbl(["料號", "凌越品名", "單位"], rows)}`;
+            }).join("");
+            const noErp = erpRows.length === 0;
+            const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/products">貨品管理</a> / 凌越比對</div>
+      <h1 class="notion-page-title">貨品主檔 ↔ 凌越 比對</h1>
+      <p class="notion-hint" style="margin:-2px 0 14px;">用<b>料號(erp_code)</b>比對「貨品管理」與「凌越推送的庫存」。<b>這頁只看差異、不會動任何資料</b>。凌越端資料時間依最後一次庫存推送。</p>
+      ${noErp ? `<div class="sf-pill bad" style="align-self:flex-start;">凌越庫存快照目前是空的——請先讓內網代理推一次庫存(00,01,02,03),再回來比對。</div>` : ""}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        ${card("主檔品項", "貨品管理 active", prods.length, "var(--txt)")}
+        ${card("凌越料號", "推送庫存(去重)", erpCodeTotal, "var(--txt)")}
+        ${card("孤兒料號", "主檔有、凌越查無", orphan.length, orphan.length ? "#b3261e" : "#1f9d57")}
+        ${card("沒填料號", "無法對應凌越", noCode.length, noCode.length ? "#b9791b" : "#1f9d57")}
+        ${card("名稱不一致", "同料號、名稱不同", nameDiff.length, nameDiff.length ? "#b9791b" : "#1f9d57")}
+        ${card("單位不一致", "同料號、單位不同", unitDiff.length, unitDiff.length ? "#b9791b" : "#1f9d57")}
+      </div>
+
+      <h2 style="margin:18px 0 2px;font-size:16px;">① 孤兒：主檔有料號、凌越查無 <span style="font-size:12px;color:var(--txt-3);">(${orphan.length})</span></h2>
+      <p class="notion-hint" style="margin:2px 0;">料號可能<b>填錯</b>、該品項在凌越<b>已停用</b>、或<b>該公司還沒推</b>庫存。逐項到凌越核對料號後,在「貨品管理」改該品項的料號即可(不用重建)。</p>
+      ${tbl(["主檔品名", "料號", "單位"], orphanRows)}${orphan.length > CAP ? `<p class="notion-hint">…共 ${orphan.length} 筆,僅顯示前 ${CAP}。</p>` : ""}
+
+      <h2 style="margin:18px 0 2px;font-size:16px;">② 名稱不一致 <span style="font-size:12px;color:var(--txt-3);">(${nameDiff.length})</span></h2>
+      <p class="notion-hint" style="margin:2px 0;">同一料號、主檔品名與凌越品名不同。<b>通常不用改</b>——主檔品名多半是你們的內部/俗稱,凌越是正式名。只有當它造成混淆時才調。</p>
+      ${tbl(["料號", "主檔品名", "凌越品名", "公司"], nameRows)}
+
+      <h2 style="margin:18px 0 2px;font-size:16px;">③ 單位不一致 <span style="font-size:12px;color:var(--txt-3);">(${unitDiff.length})</span></h2>
+      <p class="notion-hint" style="margin:2px 0;">同一料號、單位不同(如主檔「箱」vs 凌越「KG」)。這會影響數量換算,<b>建議核對</b>——若確定以凌越為準,到貨品管理改單位;若你們刻意用不同叫貨單位,則到「叫貨單位換算」設換算率。</p>
+      ${tbl(["料號", "品名", "主檔單位", "凌越單位"], unitRows)}
+
+      <h2 style="margin:18px 0 2px;font-size:16px;">④ 主檔沒填料號 <span style="font-size:12px;color:var(--txt-3);">(${noCode.length})</span></h2>
+      <p class="notion-hint" style="margin:2px 0;">這些品項<b>沒有 erp_code</b>,LINE 收單能靠俗名對到它、但無法回寫凌越/對庫存。有對應凌越料號的話補上去即可。</p>
+      ${tbl(["主檔品名", "單位"], noCodeRows)}${noCode.length > CAP ? `<p class="notion-hint">…共 ${noCode.length} 筆,僅顯示前 ${CAP}。</p>` : ""}
+
+      <h2 style="margin:18px 0 2px;font-size:16px;">⑤ 凌越有、主檔沒有(依公司) <span style="font-size:12px;color:var(--txt-3);">(${Object.values(erpMissing).reduce((a, b) => a + b.length, 0)})</span></h2>
+      <p class="notion-hint" style="margin:2px 0;">凌越有這些料號、但主檔還沒建。<b>要不要一次補進主檔跟我說</b>(只新增、絕不覆蓋你填過的)——尤其松揚(02)冷凍雜貨多半在這裡。</p>
+      ${missingSections || tbl(["料號", "凌越品名", "單位"], "")}
+      `;
+            res.type("text/html").send(notionPage("凌越比對", body, "products", res));
+        }
+        catch (e) {
+            console.error("[admin] products/reconcile", e?.message || e);
+            res.status(500).type("text/plain").send("比對失敗：" + String(e?.message || e));
+        }
+    });
     router.get("/products", async (req, res) => {
         const q = req.query.q?.trim() ?? "";
         let products = await db.prepare(`
@@ -16889,6 +16976,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               <p style="margin-top:4px;color:var(--txt-3);font-size:12px;">標準品項、俗名、單位規格管理。叫貨時客戶若使用俗名（例如「青菜頭→高麗菜」），可在這裡建立對應。</p>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <a class="sf-btn" href="/admin/products/reconcile" title="比對貨品主檔與凌越推送的庫存(只看差異、不動資料)">${SF_ICONS.filter}<span>凌越比對</span></a>
               <a class="sf-btn" href="/admin/import">${SF_ICONS.dl}<span>匯入品項</span></a>
               <a class="sf-btn" href="/admin/import-teraoka">${SF_ICONS.link}<span>寺岡資料對照</span></a>
               <button type="button" class="sf-btn primary" id="openQuickAddProduct">${SF_ICONS.plus}<span>新增貨品</span></button>
