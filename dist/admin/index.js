@@ -1652,44 +1652,43 @@ function sfSidebar(active) {
       <details class="sf-nav-group" open>
         <summary><div class="sf-nav-group-title">日常作業</div></summary>
         ${item("/admin", "dashboard", "spark", "儀表板")}
-        ${item("/admin/orders", "orders", "list", "訂單審核")}
+        ${item("/admin/orders", "orders", "check", "訂單審核")}
         ${item("/admin/complaints", "complaints", "warn", "客訴處理")}
         ${item("/admin/reminders", "reminders", "bell", "忘記叫貨提醒")}
-        ${item("/admin/baskets", "baskets", "box", "空籃記帳")}
-        ${item("/admin/quotes", "quotes", "list", "報價管理")}
-      </details>
-      <details class="sf-nav-group" ${["env","inventory","inv-scan","inv-stock","inv-wh-settings","inv-barcodes","logistics-procurement","logistics-market","logistics-livestock"].includes(active) ? "open" : ""}>
-        <summary><div class="sf-nav-group-title">庫存管理</div></summary>
-        ${item("/admin/scan", "inv-scan", "box", "掃碼盤點")}
-        ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
-        ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "box", "倉庫設定")}
-        ${item("/admin/inventory/barcodes", "inv-barcodes", "box", "條碼對照")}
+        ${item("/admin/baskets", "baskets", "cart", "空籃記帳")}
+        ${item("/admin/quotes", "quotes", "money", "報價管理")}
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
-        ${item("/admin/inventory", "inventory", "box", "每日盤點")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
-        ${item("/admin/logistics/market", "logistics-market", "truck", "北農行情")}
-        ${item("/admin/logistics/livestock", "logistics-livestock", "truck", "畜產雞蛋行情")}
+        ${item("/admin/logistics/market", "logistics-reports", "chartLine", "行情報表")}
+      </details>
+      <details class="sf-nav-group" ${["inventory","inv-scan","inv-stock","inv-wh-settings","inv-barcodes"].includes(active) ? "open" : ""}>
+        <summary><div class="sf-nav-group-title">庫存管理</div></summary>
+        ${item("/admin/scan", "inv-scan", "scale", "掃碼盤點")}
+        ${item("/admin/inventory", "inventory", "clipboard", "每日盤點")}
+        ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
+        ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "pin", "倉庫設定")}
+        ${item("/admin/inventory/barcodes", "inv-barcodes", "tag", "條碼對照")}
       </details>
       <details class="sf-nav-group" ${["customers","cust-groups","products","ai-examples"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">主檔管理</div></summary>
         ${item("/admin/customers", "customers", "users", "客戶管理")}
-        ${item("/admin/customers/groups", "cust-groups", "users", "群組功能")}
-        ${item("/admin/products", "products", "box", "貨品管理")}
-        ${item("/admin/ai-examples", "ai-examples", "spark", "AI 學習庫")}
+        ${item("/admin/customers/groups", "cust-groups", "message", "群組功能")}
+        ${item("/admin/products", "products", "note", "貨品管理")}
+        ${item("/admin/ai-examples", "ai-examples", "wand", "AI 學習庫")}
       </details>
       <details class="sf-nav-group" ${["audit","analytics","recognition-stats","broadcast","announcements","calendar"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">報表與通訊</div></summary>
-        ${item("/admin/analytics", "analytics", "spark", "營運分析")}
+        ${item("/admin/analytics", "analytics", "chartBar", "營運分析")}
         ${item("/admin/audit", "audit", "history", "稽核軌跡")}
-        ${item("/admin/recognition-stats", "recognition-stats", "spark", "辨識成效")}
-        ${item("/admin/broadcast", "broadcast", "bell", "群發訊息")}
+        ${item("/admin/recognition-stats", "recognition-stats", "bolt", "辨識成效")}
+        ${item("/admin/broadcast", "broadcast", "mail", "群發訊息")}
         ${item("/admin/announcements", "announcements", "megaphone", "公告管理")}
         ${item("/admin/calendar", "calendar", "calendar", "行事曆")}
       </details>
       <details class="sf-nav-group" ${["line-bot","users"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">系統設定</div></summary>
-        ${item("/admin/line-bot", "line-bot", "spark", "LINE 機器人")}
-        ${item("/admin/users", "users", "users", "人員管理")}
+        ${item("/admin/line-bot", "line-bot", "message", "LINE 機器人")}
+        ${item("/admin/users", "users", "user", "人員管理")}
       </details>
     </nav>
     <div class="sf-sidebar-foot" id="sfSidebarFoot"></div>
@@ -8202,7 +8201,11 @@ function createAdminRouter() {
             : snapSource === "snapshot" ? `<span class="sf-pill" style="background:#fef3c7;color:#92400e;">本地快照</span>`
             : "";
         const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 北農行情</div>
+        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 行情報表</div>
+        <div class="sf-seg" style="margin:2px 0 14px;display:inline-flex;">
+          <button type="button" class="active" onclick="location.href='/admin/logistics/market'">北農行情</button>
+          <button type="button" onclick="location.href='/admin/logistics/livestock'">畜產雞蛋行情</button>
+        </div>
         <h1 class="notion-page-title">北農行情 — 台北一、台北二 批發</h1>
         <p class="notion-hint">資料來源為<a href="${wholesale_price_js_1.TAPMC_PRICE_URL}" target="_blank" rel="noopener">臺北農產運銷「單日交易行情」</a>同一批發市場（農業部開放資料）。價格單位<strong>元／公斤</strong>、交易量<strong>公斤</strong>。每日自動抓存本地快照可回查。</p>
         <div style="display:flex;align-items:center;gap:10px;margin:4px 0 10px;flex-wrap:wrap;">
@@ -8235,7 +8238,7 @@ function createAdminRouter() {
           </form>
         </div>
       `;
-        res.type("text/html").send(notionPage("北農行情", body, "logistics-market", res));
+        res.type("text/html").send(notionPage("北農行情", body, "logistics-reports", res));
     });
 
     // 匯出讀本地快照（秒回）；該日無快照才即時抓一次。cat: veg/fruit/all（種類代碼 N05=水果）
@@ -8398,7 +8401,7 @@ function createAdminRouter() {
         })();
         </script>
       `;
-        res.type("text/html").send(notionPage("北農行情歷史", body, "logistics-market", res));
+        res.type("text/html").send(notionPage("北農行情歷史", body, "logistics-reports", res));
     });
 
     // 回補歷史（向農業部抓區間資料存本地）
@@ -8549,7 +8552,11 @@ function createAdminRouter() {
       </div>`;
         const body = `
       <div class="sf-root" style="padding:20px 28px;display:flex;flex-direction:column;gap:14px;">
-      <div class="sf-breadcrumb">庫存管理 / 畜產雞蛋行情</div>
+      <div class="sf-breadcrumb">行情報表</div>
+      <div class="sf-seg" style="margin:0;display:inline-flex;align-self:flex-start;">
+        <button type="button" onclick="location.href='/admin/logistics/market'">北農行情</button>
+        <button type="button" class="active" onclick="location.href='/admin/logistics/livestock'">畜產雞蛋行情</button>
+      </div>
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
         <h1 style="font-size:22px;font-weight:600;margin:0;">畜產雞蛋行情</h1>
         <div style="display:flex;gap:8px;align-items:center;">
@@ -8635,7 +8642,7 @@ function createAdminRouter() {
         document.addEventListener('pointermove',function(e){ if(tip.style.opacity==='1'){ var x=e.clientX+12, y=e.clientY-30; if(x+tip.offsetWidth>window.innerWidth-8) x=e.clientX-tip.offsetWidth-12; tip.style.left=x+'px'; tip.style.top=y+'px'; } });
       })();</script>
       </div>`;
-        res.type("text/html").send(notionPage("畜產雞蛋行情", body, "logistics-livestock", res));
+        res.type("text/html").send(notionPage("畜產雞蛋行情", body, "logistics-reports", res));
     });
     router.post("/logistics/livestock/refresh", express_1.default.urlencoded({ extended: true }), async (_req, res) => {
         try {
