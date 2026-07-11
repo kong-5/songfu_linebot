@@ -4312,6 +4312,7 @@ function createAdminRouter() {
               </div>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <a class="sf-btn primary" href="/admin/scan-tool" title="用手機相機掃條碼：速查庫存或快速建檔">${SF_ICONS.search}<span>掃碼速查</span></a>
               <a class="sf-btn" href="/admin/export">${SF_ICONS.dl}<span>當日報表</span></a>
               ${(process.env.LIFF_ID_ORDER_REVIEW||"").trim() ? `<button type="button" class="sf-btn" onclick="(async()=>{try{await navigator.clipboard.writeText('https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');this.querySelector('span').textContent='已複製，請貼到 LINE';setTimeout(()=>this.querySelector('span').textContent='手機審核連結',2000);}catch(e){prompt('複製失敗，請手動複製：','https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');}})();" title="複製訂單審核 LIFF 連結，貼到 LINE 開啟"><span>📱 手機審核連結</span></button>` : ""}
               <a class="sf-btn primary" href="/admin/orders?need_review=1">${SF_ICONS.check}<span>批次簽核 (${pendingOrders})</span></a>
@@ -7539,6 +7540,14 @@ function createAdminRouter() {
         const cfg = `<script>window.__SCAN_WEB__=true;window.__SCAN_API__="/admin/scan";window.__SCAN_NAME__=${JSON.stringify(who)};</script>`;
         // 網頁版不載 LINE LIFF SDK，直接用後台 cookie session；頁內 liff.* 全部有 WEB 判斷或 try/catch 保護
         const html = tpl.replace('<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>', cfg);
+        res.setHeader("Cache-Control", "no-store");
+        res.type("text/html").send(html);
+    });
+    // 掃碼速查／建檔工具（儀表板快速鍵）：掃條碼→已建檔顯示品名+目前庫存；未建檔→快速建檔。沿用 /admin/scan/* API。
+    router.get("/scan-tool", (_req, res) => {
+        let html;
+        try { html = require("fs").readFileSync(require("path").join(__dirname, "scan-tool.html"), "utf8"); }
+        catch (_) { res.status(500).type("text/plain").send("scan-tool.html 樣板缺失"); return; }
         res.setHeader("Cache-Control", "no-store");
         res.type("text/html").send(html);
     });

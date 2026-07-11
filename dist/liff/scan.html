@@ -181,6 +181,8 @@
   }
   function showCenter(html){app.innerHTML='<div class="center">'+html+'</div>';}
   function coName(){return COMPANY[S.icpno]||('公司'+S.icpno);}
+  // 公司主題色:松揚(02)橘、其餘藍。改 :root 的 --accent 讓整頁換色。
+  function applyCoTheme(){var o=(S.icpno==='02');var r=document.documentElement.style;r.setProperty('--accent',o?'#e8730c':'#2383e2');r.setProperty('--accent-soft',o?'#fdecd9':'#e8f1fd');}
 
   var _toastT=null;
   function toast(msg){var el=document.getElementById('toast');el.textContent=msg;el.classList.add('on');if(_toastT)clearTimeout(_toastT);_toastT=setTimeout(function(){el.classList.remove('on');},1400);}
@@ -219,6 +221,7 @@
   function boot(){
     var p=getParam('icpno');if(p&&/^\d{2}$/.test(p))S.icpno=p;
     else{try{var last=localStorage.getItem('scan_icpno');if(last&&/^\d{2}$/.test(last))S.icpno=last;}catch(_){}}
+    applyCoTheme();
     if(WEB){ // 後台網頁版：不需要 LINE 登入，身分由後台 cookie session 決定
       S.name=window.__SCAN_NAME__||'';
       showPicker();
@@ -263,6 +266,7 @@
         b.addEventListener('click',function(){
           S.icpno=b.getAttribute('data-co');
           try{localStorage.setItem('scan_icpno',S.icpno);}catch(_){}
+          applyCoTheme();
           showPicker();
         });
       });
