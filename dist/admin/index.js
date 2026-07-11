@@ -12412,7 +12412,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const pushUnitOpt = (x) => { const t = (x == null ? "" : String(x)).trim(); if (t && !unitSeen.has(t)) { unitSeen.add(t); unitOrdered.push(t); } };
             pushUnitOpt(stdUnit);
             pushUnitOpt("公斤");
-            units.forEach(pushUnitOpt);
+            // 有標準單位（凌越主檔）的品項：下拉收斂為「標準單位＋公斤＋現值」；沒有標準單位才列完整清單
+            if (!stdUnit) units.forEach(pushUnitOpt);
             pushUnitOpt(effU);
             const unitSelect = `<select name="unit_${i.item_id}" form="itemsForm">${unitOptions}</select>`;
             const unitSelectWithVal = `<select name="unit_${i.item_id}" form="itemsForm"><option value="">—</option>${unitOrdered.map((x) => `<option value="${escapeAttr(x)}" ${x === effU ? "selected" : ""}>${escapeHtml(x)}</option>`).join("")}</select>`;
@@ -17029,85 +17030,214 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         if (wantsJson) { res.json({ ok: true }); return; }
         res.redirect("/admin/customers?ok=del");
     });
-    // ── 貨品主檔 ↔ 凌越推送庫存 比對報告（唯讀，不動任何資料）──────────────
+    // ── 貨品主檔 ↔ 凌越 比對＋對齊（比對唯讀；三個對齊動作＝經理限定、冪等可重跑、交易分批、寫稽核、絕不刪資料）──
+    const RECON_KG_FAMILY = new Set(["公斤", "kg", "㎏"]);
+    function reconNorm(s) { return String(s == null ? "" : s).replace(/\s/g, "").toLowerCase(); }
+    function reconIsKg(u) { return RECON_KG_FAMILY.has(reconNorm(u)); }
+    async function computeProductReconcile() {
+        const prods = (await db.prepare("SELECT id, name, erp_code, unit FROM products WHERE active = 1").all()) || [];
+        // 回填判斷要對「全部 products(含停用)」查重，避免回填撞到停用品項的料號
+        const allCodeRows = (await db.prepare("SELECT erp_code FROM products WHERE erp_code IS NOT NULL AND TRIM(erp_code) <> ''").all()) || [];
+        const allCodes = new Set(allCodeRows.map((r) => String(r.erp_code).trim()));
+        const erpRows = (await db.prepare("SELECT erp_code, name, unit, icpno FROM erp_stock_items").all()) || [];
+        const erpByCode = {};
+        for (const r of erpRows) {
+            const c = String(r.erp_code || "").trim();
+            if (!c) continue;
+            (erpByCode[c] = erpByCode[c] || []).push({ name: String(r.name || ""), unit: String(r.unit || ""), icpno: (0, erp_companies_js_1.normIcpno)(r.icpno) });
+        }
+        for (const c of Object.keys(erpByCode)) erpByCode[c].sort((a, b) => (a.icpno < b.icpno ? -1 : 1));
+        const nameDiff = [], unitDiff = [], unitDiffKgExcluded = [], orphan = [], noCode = [];
+        for (const p of prods) {
+            const code = String(p.erp_code || "").trim();
+            if (!code) { noCode.push(p); continue; }
+            const erp = erpByCode[code];
+            if (!erp || !erp.length) { orphan.push(p); continue; }
+            const e = erp.find((x) => String(x.name || "").trim()) || erp[0];
+            if (reconNorm(p.name) && reconNorm(e.name) && reconNorm(p.name) !== reconNorm(e.name)) nameDiff.push({ p, e, cos: erp.map((x) => x.icpno) });
+            const eu = String((erp.find((x) => String(x.unit || "").trim()) || erp[0]).unit || "");
+            if (reconNorm(p.unit) && reconNorm(eu) && reconNorm(p.unit) !== reconNorm(eu)) {
+                // 公斤↔KG 同義對＝排除不動（公斤自動換算功能認 products.unit==='公斤'，動了會壞）
+                if (reconIsKg(p.unit) && reconIsKg(eu)) unitDiffKgExcluded.push({ p, eu });
+                else unitDiff.push({ p, eu, kgLoss: reconIsKg(p.unit) && !reconIsKg(eu) });
+            }
+        }
+        const erpMissing = {};
+        for (const code of Object.keys(erpByCode)) {
+            if (allCodes.has(code)) continue;
+            for (const e of erpByCode[code]) { (erpMissing[e.icpno] = erpMissing[e.icpno] || []).push({ code, name: e.name, unit: e.unit }); }
+        }
+        return { prods, erpByCode, nameDiff, unitDiff, unitDiffKgExcluded, orphan, noCode, erpMissing };
+    }
+    // 動作 C：凌越有、主檔沒有 → 回填（只 INSERT、絕不動既有列；重跑第二次＝0 新增）
+    router.post("/products/reconcile/backfill", express_1.default.json({ limit: "64kb" }), requireManager, async (req, res) => {
+        try {
+            const r = await computeProductReconcile();
+            const byCode = new Map();
+            for (const ic of Object.keys(r.erpMissing).sort()) {
+                for (const e of r.erpMissing[ic]) {
+                    const cur = byCode.get(e.code);
+                    if (!cur) byCode.set(e.code, { code: e.code, name: String(e.name || "").trim(), unit: String(e.unit || "").trim() });
+                    else { if (!cur.name && e.name) cur.name = String(e.name).trim(); if (!cur.unit && e.unit) cur.unit = String(e.unit).trim(); }
+                }
+            }
+            const list = Array.from(byCode.values());
+            const now = new Date().toISOString();
+            let inserted = 0, skipped = 0;
+            for (let i = 0; i < list.length; i += 100) {
+                const chunk = list.slice(i, i + 100);
+                await db.transaction(async (tx) => {
+                    const ph = chunk.map(() => "?").join(",");
+                    const exist = await tx.prepare(`SELECT erp_code FROM products WHERE erp_code IN (${ph})`).all(...chunk.map((x) => x.code));
+                    const has = new Set((exist || []).map((x) => String(x.erp_code).trim()));
+                    for (const it of chunk) {
+                        if (has.has(it.code)) { skipped++; continue; }
+                        await tx.prepare("INSERT INTO products (id, name, erp_code, teraoka_barcode, unit, active, updated_at) VALUES (?, ?, ?, NULL, ?, 1, ?)")
+                            .run((0, id_js_1.newId)("prod"), it.name || it.code, it.code, it.unit || null, now);
+                        inserted++;
+                    }
+                });
+            }
+            await logDataChange(req, { entityType: "product", entityId: "reconcile", action: "backfill_from_lingyue", summary: `凌越回填主檔：新增 ${inserted} 品項（跳過已存在 ${skipped}）`, meta: { inserted, skipped, sample: list.slice(0, 50).map((x) => x.code) } });
+            res.json({ ok: true, inserted, skipped });
+        } catch (e) { console.error("[admin] reconcile backfill", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 300) }); }
+    });
+    // 動作 A：名稱改成凌越名（舊名自動保留為全域別名 product_aliases → LINE 打舊名照樣認得；冪等）
+    router.post("/products/reconcile/align-names", express_1.default.json({ limit: "64kb" }), requireManager, async (req, res) => {
+        try {
+            const r = await computeProductReconcile();
+            const now = new Date().toISOString();
+            let renamed = 0, aliasAdded = 0, aliasSkipped = 0;
+            const items = r.nameDiff.filter(({ p, e }) => String(e.name || "").trim() && reconNorm(e.name) !== reconNorm(p.name));
+            for (let i = 0; i < items.length; i += 100) {
+                const chunk = items.slice(i, i + 100);
+                await db.transaction(async (tx) => {
+                    for (const { p, e } of chunk) {
+                        const newName = String(e.name).trim();
+                        const oldName = String(p.name || "").trim();
+                        await tx.prepare("UPDATE products SET name = ?, updated_at = ? WHERE id = ?").run(newName, now, p.id);
+                        renamed++;
+                        // 舊名→全域別名：僅在該別名尚不存在時新增（已存在＝別碰，避免搶走既有對照）
+                        if (oldName) {
+                            const exists = await tx.prepare("SELECT id FROM product_aliases WHERE alias = ?").get(oldName);
+                            if (!exists) { await tx.prepare("INSERT INTO product_aliases (id, product_id, alias) VALUES (?, ?, ?)").run((0, id_js_1.newId)("pa"), p.id, oldName); aliasAdded++; }
+                            else aliasSkipped++;
+                        }
+                    }
+                });
+                for (const { p, e } of chunk) {
+                    await logDataChange(req, { entityType: "product", entityId: p.id, productId: p.id, action: "align_name_lingyue", summary: `品名對齊凌越：「${String(p.name || "")}」→「${String(e.name).trim()}」（舊名保留為別名）`, meta: { erp_code: p.erp_code, old: p.name, next: String(e.name).trim() } });
+                }
+            }
+            res.json({ ok: true, renamed, aliasAdded, aliasSkipped });
+        } catch (e) { console.error("[admin] reconcile align-names", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 300) }); }
+    });
+    // 動作 B：單位改成凌越（公斤↔KG 同義對排除不動；product_unit_specs 以「叫貨單位」為鍵、與主檔單位無關，經查不需遷移；冪等）
+    router.post("/products/reconcile/align-units", express_1.default.json({ limit: "64kb" }), requireManager, async (req, res) => {
+        try {
+            const r = await computeProductReconcile();
+            const now = new Date().toISOString();
+            let changed = 0, kgLossCount = 0;
+            const items = r.unitDiff.filter(({ eu }) => String(eu || "").trim());
+            for (let i = 0; i < items.length; i += 100) {
+                const chunk = items.slice(i, i + 100);
+                await db.transaction(async (tx) => {
+                    for (const { p, eu } of chunk) {
+                        await tx.prepare("UPDATE products SET unit = ?, updated_at = ? WHERE id = ?").run(String(eu).trim(), now, p.id);
+                        changed++;
+                    }
+                });
+                for (const { p, eu, kgLoss } of chunk) {
+                    if (kgLoss) kgLossCount++;
+                    await logDataChange(req, { entityType: "product", entityId: p.id, productId: p.id, action: "align_unit_lingyue", summary: `單位對齊凌越：「${String(p.unit || "")}」→「${String(eu).trim()}」${kgLoss ? "（原公斤計價，此品項的自動換算公斤停用）" : ""}`, meta: { erp_code: p.erp_code, old: p.unit, next: String(eu).trim() } });
+                }
+            }
+            res.json({ ok: true, changed, kgLossCount });
+        } catch (e) { console.error("[admin] reconcile align-units", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 300) }); }
+    });
     router.get("/products/reconcile", async (req, res) => {
         try {
-            const norm = (s) => String(s == null ? "" : s).replace(/\s/g, "").toLowerCase();
-            const prods = (await db.prepare("SELECT id, name, erp_code, unit FROM products WHERE active = 1").all()) || [];
-            const erpRows = (await db.prepare("SELECT erp_code, name, unit, icpno FROM erp_stock_items").all()) || [];
-            // 凌越料號 → [{name, unit, icpno}...]（同料號可能多公司）
-            const erpByCode = {};
-            for (const r of erpRows) {
-                const c = String(r.erp_code || "").trim();
-                if (!c) continue;
-                (erpByCode[c] = erpByCode[c] || []).push({ name: String(r.name || ""), unit: String(r.unit || ""), icpno: (0, erp_companies_js_1.normIcpno)(r.icpno) });
-            }
-            const productCodes = new Set();
-            const nameDiff = [], unitDiff = [], orphan = [], noCode = [];
-            for (const p of prods) {
-                const code = String(p.erp_code || "").trim();
-                if (!code) { noCode.push(p); continue; }
-                productCodes.add(code);
-                const erp = erpByCode[code];
-                if (!erp || !erp.length) { orphan.push(p); continue; }
-                const e = erp[0];
-                if (norm(p.name) && norm(e.name) && norm(p.name) !== norm(e.name)) nameDiff.push({ p, e, cos: erp.map((x) => x.icpno) });
-                if (norm(p.unit) && norm(e.unit) && norm(p.unit) !== norm(e.unit)) unitDiff.push({ p, e });
-            }
-            // 凌越有、主檔沒有（依公司分組）
-            const erpMissing = {};
-            for (const code of Object.keys(erpByCode)) {
-                if (productCodes.has(code)) continue;
-                for (const e of erpByCode[code]) { (erpMissing[e.icpno] = erpMissing[e.icpno] || []).push({ code, name: e.name, unit: e.unit }); }
-            }
+            const r = await computeProductReconcile();
+            const { prods, erpByCode, nameDiff, unitDiff, unitDiffKgExcluded, orphan, noCode, erpMissing } = r;
             const erpCodeTotal = Object.keys(erpByCode).length;
+            const missingTotal = (() => { const s = new Set(); for (const ic of Object.keys(erpMissing)) for (const e of erpMissing[ic]) s.add(e.code); return s.size; })();
             const coName = (ic) => (0, erp_companies_js_1.erpCompanyName)(ic);
             const card = (title, hint, count, tone) => `<div class="sf-card" style="flex:1;min-width:150px;"><div style="font-size:12px;color:var(--txt-3);">${escapeHtml(title)}</div><div style="font-size:26px;font-weight:700;color:${tone};font-variant-numeric:tabular-nums;">${count}</div><div style="font-size:11px;color:var(--txt-3);margin-top:2px;">${escapeHtml(hint)}</div></div>`;
             const tbl = (headers, rows) => `<div class="notion-card" style="padding:0;overflow-x:auto;margin-top:8px;"><table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" style="text-align:center;color:var(--txt-3);padding:18px;">無</td></tr>`}</tbody></table></div>`;
             const CAP = 300;
             const orphanRows = orphan.slice(0, CAP).map((p) => `<tr><td>${escapeHtml(p.name)}</td><td style="font-variant-numeric:tabular-nums;">${escapeHtml(String(p.erp_code || ""))}</td><td>${escapeHtml(p.unit || "")}</td></tr>`).join("");
             const nameRows = nameDiff.slice(0, CAP).map((x) => `<tr><td style="font-variant-numeric:tabular-nums;">${escapeHtml(String(x.p.erp_code))}</td><td>${escapeHtml(x.p.name)}</td><td style="color:#2383e2;">${escapeHtml(x.e.name)}</td><td style="font-size:11px;color:var(--txt-3);">${x.cos.map(coName).join("／")}</td></tr>`).join("");
-            const unitRows = unitDiff.slice(0, CAP).map((x) => `<tr><td style="font-variant-numeric:tabular-nums;">${escapeHtml(String(x.p.erp_code))}</td><td>${escapeHtml(x.p.name)}</td><td>${escapeHtml(x.p.unit || "—")}</td><td style="color:#2383e2;">${escapeHtml(x.e.unit || "—")}</td></tr>`).join("");
+            const unitRows = unitDiff.slice(0, CAP).map((x) => `<tr><td style="font-variant-numeric:tabular-nums;">${escapeHtml(String(x.p.erp_code))}</td><td>${escapeHtml(x.p.name)}</td><td>${escapeHtml(x.p.unit || "—")}</td><td style="color:#2383e2;">${escapeHtml(x.eu || "—")}</td><td>${x.kgLoss ? '<span style="font-size:11px;font-weight:700;color:#b3261e;">原公斤計價，改後自動換算停用</span>' : ""}</td></tr>`).join("");
             const noCodeRows = noCode.slice(0, CAP).map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.unit || "")}</td></tr>`).join("");
             const missingSections = Object.keys(erpMissing).sort().map((ic) => {
                 const list = erpMissing[ic];
                 const rows = list.slice(0, CAP).map((e) => `<tr><td style="font-variant-numeric:tabular-nums;">${escapeHtml(e.code)}</td><td>${escapeHtml(e.name)}</td><td>${escapeHtml(e.unit || "")}</td></tr>`).join("");
                 return `<h3 style="margin:16px 0 4px;font-size:14px;">${escapeHtml(coName(ic))}(${ic})：凌越有、主檔沒有 <b>${list.length}</b> 項${list.length > CAP ? `（僅顯示前 ${CAP}）` : ""}</h3>${tbl(["料號", "凌越品名", "單位"], rows)}`;
             }).join("");
-            const noErp = erpRows.length === 0;
+            const noErp = erpCodeTotal === 0;
+            const kgLossN = unitDiff.filter((x) => x.kgLoss).length;
+            const actBtn = (id, label, tone) => `<button type="button" id="${id}" class="btn ${tone === "primary" ? "btn-primary" : ""}" style="margin:6px 0 0;">${escapeHtml(label)}</button> <span id="${id}Msg" style="font-size:12px;color:var(--txt-3);margin-left:8px;"></span>`;
             const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/products">貨品管理</a> / 凌越比對</div>
-      <h1 class="notion-page-title">貨品主檔 ↔ 凌越 比對</h1>
-      <p class="notion-hint" style="margin:-2px 0 14px;">用<b>料號(erp_code)</b>比對「貨品管理」與「凌越推送的庫存」。<b>這頁只看差異、不會動任何資料</b>。凌越端資料時間依最後一次庫存推送。</p>
-      ${noErp ? `<div class="sf-pill bad" style="align-self:flex-start;">凌越庫存快照目前是空的——請先讓內網代理推一次庫存(00,01,02,03),再回來比對。</div>` : ""}
+      <h1 class="notion-page-title">貨品主檔 ↔ 凌越 比對與對齊</h1>
+      <p class="notion-hint" style="margin:-2px 0 14px;">用<b>料號(erp_code)</b>比對「貨品管理」與「凌越推送的庫存」。報告即預覽；下方各段的「執行」按鈕（僅經理）會依畫面上列出的清單套用變更——<b>絕不刪資料、絕不覆蓋你填過的別名/寺岡碼/換算設定</b>，全部寫入稽核軌跡，可重複執行（第二次＝0 變動）。凌越端資料時間依最後一次庫存推送。</p>
+      ${noErp ? `<div class="sf-pill bad" style="align-self:flex-start;">凌越庫存快照目前是空的——請先讓內網代理推一次庫存(00,01,02,03)，再回來比對。</div>` : ""}
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
         ${card("主檔品項", "貨品管理 active", prods.length, "var(--txt)")}
         ${card("凌越料號", "推送庫存(去重)", erpCodeTotal, "var(--txt)")}
         ${card("孤兒料號", "主檔有、凌越查無", orphan.length, orphan.length ? "#b3261e" : "#1f9d57")}
         ${card("沒填料號", "無法對應凌越", noCode.length, noCode.length ? "#b9791b" : "#1f9d57")}
-        ${card("名稱不一致", "同料號、名稱不同", nameDiff.length, nameDiff.length ? "#b9791b" : "#1f9d57")}
-        ${card("單位不一致", "同料號、單位不同", unitDiff.length, unitDiff.length ? "#b9791b" : "#1f9d57")}
+        ${card("名稱不一致", "將改為凌越名", nameDiff.length, nameDiff.length ? "#b9791b" : "#1f9d57")}
+        ${card("單位不一致", "公斤↔KG 已排除", unitDiff.length, unitDiff.length ? "#b9791b" : "#1f9d57")}
+        ${card("待回填", "凌越有、主檔沒有", missingTotal, missingTotal ? "#b9791b" : "#1f9d57")}
       </div>
+      <p class="notion-hint" style="margin:0 0 6px;">建議執行順序：<b>⑤回填 → ②改名 → ③改單位</b>。</p>
 
       <h2 style="margin:18px 0 2px;font-size:16px;">① 孤兒：主檔有料號、凌越查無 <span style="font-size:12px;color:var(--txt-3);">(${orphan.length})</span></h2>
-      <p class="notion-hint" style="margin:2px 0;">料號可能<b>填錯</b>、該品項在凌越<b>已停用</b>、或<b>該公司還沒推</b>庫存。逐項到凌越核對料號後,在「貨品管理」改該品項的料號即可(不用重建)。</p>
-      ${tbl(["主檔品名", "料號", "單位"], orphanRows)}${orphan.length > CAP ? `<p class="notion-hint">…共 ${orphan.length} 筆,僅顯示前 ${CAP}。</p>` : ""}
+      <p class="notion-hint" style="margin:2px 0;">料號可能<b>填錯</b>、該品項在凌越<b>已停用</b>、或<b>該公司還沒推</b>庫存。這類要逐項人工核對，不提供一鍵處理。</p>
+      ${tbl(["主檔品名", "料號", "單位"], orphanRows)}${orphan.length > CAP ? `<p class="notion-hint">…共 ${orphan.length} 筆，僅顯示前 ${CAP}。</p>` : ""}
 
-      <h2 style="margin:18px 0 2px;font-size:16px;">② 名稱不一致 <span style="font-size:12px;color:var(--txt-3);">(${nameDiff.length})</span></h2>
-      <p class="notion-hint" style="margin:2px 0;">同一料號、主檔品名與凌越品名不同。<b>通常不用改</b>——主檔品名多半是你們的內部/俗稱,凌越是正式名。只有當它造成混淆時才調。</p>
-      ${tbl(["料號", "主檔品名", "凌越品名", "公司"], nameRows)}
+      <h2 style="margin:18px 0 2px;font-size:16px;">② 名稱不一致 → 改成凌越名 <span style="font-size:12px;color:var(--txt-3);">(${nameDiff.length})</span></h2>
+      <p class="notion-hint" style="margin:2px 0;">名稱權威＝凌越。執行時<b>舊主檔名會自動保留為全域別名</b>——LINE 打舊名照樣認得、你設過的俗名對照（以品項 ID 連結）完全不受影響。</p>
+      ${nameDiff.length ? actBtn("btnAlignNames", `執行：${nameDiff.length} 項改成凌越名（舊名轉別名）`, "primary") : ""}
+      ${tbl(["料號", "主檔品名（將成為別名）", "凌越品名（新名稱）", "公司"], nameRows)}
 
-      <h2 style="margin:18px 0 2px;font-size:16px;">③ 單位不一致 <span style="font-size:12px;color:var(--txt-3);">(${unitDiff.length})</span></h2>
-      <p class="notion-hint" style="margin:2px 0;">同一料號、單位不同(如主檔「箱」vs 凌越「KG」)。這會影響數量換算,<b>建議核對</b>——若確定以凌越為準,到貨品管理改單位;若你們刻意用不同叫貨單位,則到「叫貨單位換算」設換算率。</p>
-      ${tbl(["料號", "品名", "主檔單位", "凌越單位"], unitRows)}
+      <h2 style="margin:18px 0 2px;font-size:16px;">③ 單位不一致 → 改成凌越單位 <span style="font-size:12px;color:var(--txt-3);">(${unitDiff.length}${unitDiffKgExcluded.length ? `，另有 ${unitDiffKgExcluded.length} 筆「公斤↔KG」已排除不動` : ""})</span></h2>
+      <p class="notion-hint" style="margin:2px 0;">數量單位以凌越為準；<b>公斤↔KG 同義差異不在此列、不會被改</b>（公斤自動換算功能不受影響）。換算規格表以「叫貨單位」為鍵，改主檔單位不影響既有換算設定。${kgLossN ? `<b style="color:#b3261e;">注意：${kgLossN} 筆原為「公斤」計價、凌越是其他單位——改後這些品項的自動換算公斤會停用（清單有標示）。</b>` : ""}</p>
+      ${unitDiff.length ? actBtn("btnAlignUnits", `執行：${unitDiff.length} 項改成凌越單位`, "primary") : ""}
+      ${tbl(["料號", "品名", "主檔單位", "凌越單位", "備註"], unitRows)}
 
       <h2 style="margin:18px 0 2px;font-size:16px;">④ 主檔沒填料號 <span style="font-size:12px;color:var(--txt-3);">(${noCode.length})</span></h2>
-      <p class="notion-hint" style="margin:2px 0;">這些品項<b>沒有 erp_code</b>,LINE 收單能靠俗名對到它、但無法回寫凌越/對庫存。有對應凌越料號的話補上去即可。</p>
-      ${tbl(["主檔品名", "單位"], noCodeRows)}${noCode.length > CAP ? `<p class="notion-hint">…共 ${noCode.length} 筆,僅顯示前 ${CAP}。</p>` : ""}
+      <p class="notion-hint" style="margin:2px 0;">這些品項<b>沒有 erp_code</b>，無法對應凌越，需人工判斷補料號（可能與⑤回填後的新品項重複，補完料號建議把重複的一方停用）。</p>
+      ${tbl(["主檔品名", "單位"], noCodeRows)}${noCode.length > CAP ? `<p class="notion-hint">…共 ${noCode.length} 筆，僅顯示前 ${CAP}。</p>` : ""}
 
-      <h2 style="margin:18px 0 2px;font-size:16px;">⑤ 凌越有、主檔沒有(依公司) <span style="font-size:12px;color:var(--txt-3);">(${Object.values(erpMissing).reduce((a, b) => a + b.length, 0)})</span></h2>
-      <p class="notion-hint" style="margin:2px 0;">凌越有這些料號、但主檔還沒建。<b>要不要一次補進主檔跟我說</b>(只新增、絕不覆蓋你填過的)——尤其松揚(02)冷凍雜貨多半在這裡。</p>
+      <h2 style="margin:18px 0 2px;font-size:16px;">⑤ 凌越有、主檔沒有 → 回填主檔 <span style="font-size:12px;color:var(--txt-3);">(${missingTotal})</span></h2>
+      <p class="notion-hint" style="margin:2px 0;">一鍵把缺漏品項建進主檔（名稱/單位取凌越；同料號多公司只建一筆）。<b>只新增、絕不覆蓋既有品項</b>（含停用中的也不會被動到）。</p>
+      ${missingTotal ? actBtn("btnBackfill", `執行：回填 ${missingTotal} 個品項進主檔`, "primary") : ""}
       ${missingSections || tbl(["料號", "凌越品名", "單位"], "")}
+      <script>
+      (function(){
+        function run(btnId, url, confirmMsg){
+          var b=document.getElementById(btnId); if(!b) return;
+          var m=document.getElementById(btnId+'Msg');
+          b.addEventListener('click', function(){
+            if(!confirm(confirmMsg)) return;
+            b.disabled=true; if(m) m.textContent='執行中…';
+            fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+              .then(function(r){return r.json();})
+              .then(function(d){
+                if(d.error){ b.disabled=false; if(m){m.style.color='#b3261e'; m.textContent='失敗：'+d.error;} return; }
+                if(m){m.style.color='#1f7a46'; m.textContent='完成：'+JSON.stringify(d);}
+                setTimeout(function(){ location.reload(); }, 900);
+              })
+              .catch(function(){ b.disabled=false; if(m){m.style.color='#b3261e'; m.textContent='執行失敗，請重試';} });
+          });
+        }
+        run('btnBackfill','/admin/products/reconcile/backfill','回填缺漏品項進主檔？\\n\\n只會新增、不會動任何既有品項。可重複執行。');
+        run('btnAlignNames','/admin/products/reconcile/align-names','把清單中的品名改成凌越名？\\n\\n舊名會自動保留為別名（LINE 打舊名仍認得），俗名/寺岡碼等設定不受影響。');
+        run('btnAlignUnits','/admin/products/reconcile/align-units','把清單中的單位改成凌越單位？\\n\\n公斤↔KG 已排除不會被改；清單中紅字標示的品項改後將停用自動換算公斤。');
+      })();
+      </script>
       `;
             res.type("text/html").send(notionPage("凌越比對", body, "products", res));
         }
