@@ -11951,21 +11951,108 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     // 讀當日銷貨單快照 + 分組加總（頁面/匯出/列印共用）
+    // 解析銷貨單號 → {series:'num'|'A', prefix:YYYYMMDD, width, seq}；不符格式回 null
+    function parseCashSeq(spNo) {
+        const s = String(spNo || "").trim().toUpperCase();
+        const m = s.match(/^(A?)(\d{8})(\d+)$/);
+        if (!m)
+            return null;
+        return { series: m[1] === "A" ? "A" : "num", prefix: m[2], width: m[3].length, seq: parseInt(m[3], 10) };
+    }
     async function loadCashDaily(icpno, date) {
         const rows = await db.prepare("SELECT sp_no, doc_date, ct_no, ct_name, fkfs, total, unpaid, paid, kind FROM cash_sales_doc WHERE icpno = ? AND doc_date = ? ORDER BY sp_no ASC").all(icpno, date) || [];
         const numRows = rows.filter((r) => r.kind !== "A");
         const aRows = rows.filter((r) => r.kind === "A");
         const sum = (arr, f) => arr.reduce((s, r) => s + Number(r[f] || 0), 0);
         const meta = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("cash_sales_ingested_at_" + icpno + "_" + date);
+        // 流水號斷號檢查：同 series+prefix，找 min..max 間缺的號（可能是作廢/刪單，須填原因）
+        const groups = new Map();
+        for (const r of rows) {
+            const p = parseCashSeq(r.sp_no);
+            if (!p)
+                continue;
+            const key = p.series + "|" + p.prefix;
+            if (!groups.has(key))
+                groups.set(key, { series: p.series, prefix: p.prefix, width: p.width, seqs: new Set(), min: p.seq, max: p.seq });
+            const g = groups.get(key);
+            g.seqs.add(p.seq);
+            if (p.width > g.width)
+                g.width = p.width;
+            if (p.seq < g.min)
+                g.min = p.seq;
+            if (p.seq > g.max)
+                g.max = p.seq;
+        }
+        const reasonRows = await db.prepare("SELECT series, seq, reason FROM cash_seq_gap_reason WHERE icpno = ? AND doc_date = ?").all(icpno, date) || [];
+        const reasonMap = new Map(reasonRows.map((x) => [x.series + "|" + x.seq, x.reason || ""]));
+        const gaps = [];
+        const seriesInfo = {};
+        for (const g of groups.values()) {
+            seriesInfo[g.series] = { min: g.min, max: g.max, count: g.seqs.size, width: g.width, prefix: g.prefix };
+            for (let i = g.min; i <= g.max; i++) {
+                if (g.seqs.has(i))
+                    continue;
+                const spNo = (g.series === "A" ? "A" : "") + g.prefix + String(i).padStart(g.width, "0");
+                gaps.push({ series: g.series, seq: i, spNo, reason: reasonMap.get(g.series + "|" + i) || "" });
+            }
+        }
+        gaps.sort((a, b) => a.series === b.series ? a.seq - b.seq : (a.series < b.series ? 1 : -1)); // num 在前、A 在後
+        const gapsMissingReason = gaps.filter((x) => !String(x.reason).trim()).length;
         return {
             rows, numRows, aRows,
             numTotal: sum(numRows, "total"), aTotal: sum(aRows, "total"),
             grandTotal: sum(rows, "total"), unpaidTotal: sum(rows, "unpaid"),
             ingestedAt: meta?.value || "",
+            gaps, gapsMissingReason, seriesInfo,
         };
     }
     const CASH_COMPANIES = erp_companies_js_1.ERP_COMPANY_NAMES || { "00": "松富", "01": "龍港", "02": "松揚", "03": "松成" };
     function cashMoney(n) { return Number(n || 0).toLocaleString("en-US"); }
+    // 流水號檢查卡片：列出斷號、每個缺號要填原因（存 cash_seq_gap_reason）
+    function renderGapCard(d, icpno, date) {
+        const si = d.seriesInfo || {};
+        const range = (k) => si[k]
+            ? `${String(si[k].min).padStart(si[k].width, "0")}–${String(si[k].max).padStart(si[k].width, "0")}，共 ${si[k].count} 張`
+            : "（無資料）";
+        const numGaps = (d.gaps || []).filter((g) => g.series === "num");
+        const aGaps = (d.gaps || []).filter((g) => g.series === "A");
+        const gapRows = (arr) => arr.map((g) => `
+        <tr>
+          <td style="font-family:ui-monospace,monospace;color:#c62828;font-weight:600;">${escapeHtml(g.spNo)}</td>
+          <td><input class="sf-input cash-gap-reason" data-series="${g.series}" data-seq="${g.seq}" value="${escapeAttr(g.reason || "")}" placeholder="必填：斷號原因（作廢／跳號／退回…）" style="width:100%;${String(g.reason || "").trim() ? "" : "border-color:#c62828;"}"></td>
+          <td><button type="button" class="sf-btn cash-gap-save" data-series="${g.series}" data-seq="${g.seq}">儲存</button></td>
+        </tr>`).join("");
+        const hasGaps = (d.gaps || []).length > 0;
+        const head = hasGaps
+            ? `<strong style="color:#c62828;">⚠ 流水號有斷號 ${d.gaps.length} 個${d.gapsMissingReason ? `（其中 ${d.gapsMissingReason} 個未填原因）` : "（原因皆已填）"}</strong>`
+            : `<strong style="color:#2e7d32;">✅ 流水號連續、無斷號</strong>`;
+        const table = hasGaps ? `
+          <table style="margin-top:8px;">
+            <thead><tr><th style="width:180px;">缺號</th><th>斷號原因（必填）</th><th style="width:80px;"></th></tr></thead>
+            <tbody>
+              ${numGaps.length ? `<tr><td colspan="3" style="background:#f7f6f3;font-weight:600;">純數字（直打凌越）</td></tr>${gapRows(numGaps)}` : ""}
+              ${aGaps.length ? `<tr><td colspan="3" style="background:#f7f6f3;font-weight:600;">A 開頭（寺岡EDI）</td></tr>${gapRows(aGaps)}` : ""}
+            </tbody>
+          </table>` : "";
+        const script = hasGaps ? `<script>(function(){
+          document.querySelectorAll('.cash-gap-save').forEach(function(btn){
+            btn.addEventListener('click', function(){
+              var s=btn.getAttribute('data-series'), q=btn.getAttribute('data-seq');
+              var inp=document.querySelector('.cash-gap-reason[data-series="'+s+'"][data-seq="'+q+'"]');
+              var reason=(inp&&inp.value||'').trim();
+              if(!reason){ if(window.sfToast)sfToast('請先填斷號原因','err'); if(inp)inp.focus(); return; }
+              fetch('/admin/cash/gap-reason',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:'${icpno}',date:'${date}',series:s,seq:parseInt(q,10),reason:reason})})
+                .then(function(r){return r.json();}).then(function(j){ if(j&&j.ok){ if(inp)inp.style.borderColor=''; if(window.sfToast)sfToast('已儲存原因'); } else { if(window.sfToast)sfToast('儲存失敗','err'); } })
+                .catch(function(){ if(window.sfToast)sfToast('儲存失敗','err'); });
+            });
+          });
+        })();</script>` : "";
+        return `<div class="notion-card" style="margin-bottom:16px;">
+          <div style="margin-bottom:6px;">${head}</div>
+          <div style="font-size:13px;color:#787774;">純數字：${range("num")}　｜　A 開頭：${range("A")}</div>
+          ${table}${script}
+        </div>`;
+    }
     // 後台頁：銷貨單總計表
     router.get("/cash", async (req, res) => {
         try {
@@ -12017,6 +12104,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div>合計<br><strong style="font-size:20px;">${cashMoney(d.grandTotal)}</strong> <span style="color:#9b9a97;">/ ${d.rows.length} 張</span></div>
         <div>當日未收<br><strong style="font-size:20px;color:#c62828;">${cashMoney(d.unpaidTotal)}</strong></div>
       </div>
+      ${renderGapCard(d, icpno, date)}
       ${section("純數字（直打凌越）", d.numRows, d.numTotal)}
       ${section("A 開頭（訂單拋轉寺岡 EDI 回轉）", d.aRows, d.aTotal)}`;
             res.type("text/html").send(notionPage("每日帳款收款", body, "cash", res));
@@ -12024,6 +12112,30 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         catch (e) {
             console.error("[admin] /cash", e?.message || e);
             res.status(500).type("text/html").send("讀取失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    // 儲存流水號斷號原因
+    router.post("/cash/gap-reason", express_1.default.json({ limit: "64kb" }), async (req, res) => {
+        try {
+            const b = req.body || {};
+            const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
+            const date = (typeof b.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(b.date.trim())) ? b.date.trim() : "";
+            const series = b.series === "A" ? "A" : "num";
+            const seq = parseInt(b.seq, 10);
+            const reason = String(b.reason ?? "").trim();
+            if (!date || !Number.isInteger(seq)) {
+                res.status(400).json({ error: "參數錯誤（date/seq）" });
+                return;
+            }
+            const by = (res.locals && res.locals.adminUser) || "";
+            const at = new Date().toISOString();
+            await db.prepare("INSERT INTO cash_seq_gap_reason (icpno, doc_date, series, seq, reason, updated_by, updated_at) VALUES (?,?,?,?,?,?,?) " +
+                "ON CONFLICT (icpno, doc_date, series, seq) DO UPDATE SET reason = excluded.reason, updated_by = excluded.updated_by, updated_at = excluded.updated_at").run(icpno, date, series, seq, reason, by, at);
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/gap-reason", e?.message || e);
+            res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
         }
     });
     // 匯出 Excel（銷貨單總計表）
@@ -12050,6 +12162,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             pushGroup("【純數字（直打凌越）】", d.numRows, d.numTotal);
             pushGroup("【A 開頭（寺岡EDI）】", d.aRows, d.aTotal);
             aoa.push(["總計", "", "", "", d.grandTotal, d.unpaidTotal, ""]);
+            // 流水號斷號區
+            aoa.push([]);
+            if ((d.gaps || []).length) {
+                aoa.push([`流水號斷號（${d.gaps.length} 個）`, "缺號", "原因"]);
+                for (const g of d.gaps)
+                    aoa.push([g.series === "A" ? "A開頭" : "純數字", g.spNo, String(g.reason || "").trim() || "（未填原因）"]);
+            }
+            else {
+                aoa.push(["流水號連續、無斷號"]);
+            }
             const ws = XLSX.utils.aoa_to_sheet(aoa);
             ws["!cols"] = [{ wch: 16 }, { wch: 12 }, { wch: 28 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }];
             const wb = XLSX.utils.book_new();
@@ -12097,6 +12219,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           <tr class="total"><td colspan="4">總計（${d.rows.length} 張）</td><td class="r">${cashMoney(d.grandTotal)}</td><td class="r">${cashMoney(d.unpaidTotal)}</td></tr>
         </tbody>
       </table>
+      ${(d.gaps || []).length
+                ? `<h3 style="font-size:14px;margin:14px 0 4px;">流水號斷號（${d.gaps.length} 個${d.gapsMissingReason ? `，${d.gapsMissingReason} 個未填原因` : ""}）</h3>
+      <table><thead><tr><th style="width:90px;">類別</th><th style="width:160px;">缺號</th><th>斷號原因</th></tr></thead><tbody>
+        ${d.gaps.map((g) => `<tr><td>${g.series === "A" ? "A開頭" : "純數字"}</td><td class="mono">${escapeHtml(g.spNo)}</td><td${String(g.reason || "").trim() ? "" : ' style="color:#c62828;font-weight:700;"'}>${escapeHtml(String(g.reason || "").trim() || "（未填原因）")}</td></tr>`).join("")}
+      </tbody></table>`
+                : `<p style="font-size:12px;color:#2e7d32;margin-top:12px;">流水號連續、無斷號。</p>`}
       </body></html>`);
         }
         catch (e) {

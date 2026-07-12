@@ -350,6 +350,8 @@ function initSqlite(dbPath) {
         // 收款客戶主檔：以凌越客戶編號(CT_NO=SP_CTNO)為鍵。name/fkfs/sales/stop 由推送覆蓋；
         // is_cash（是否當日收現金）、route_line（路線/司機）、note 為後台人工維護，推送不覆蓋。
         sqlite.exec("CREATE TABLE IF NOT EXISTS cash_customer (icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT NOT NULL, name TEXT, fkfs TEXT, sales TEXT, is_cash INTEGER, route_line TEXT, stop INTEGER NOT NULL DEFAULT 0, note TEXT, updated_at TEXT, PRIMARY KEY (icpno, ct_no))");
+        // 流水號斷號原因：series='num'(純數字)|'A'(寺岡EDI)，seq＝缺的流水號。斷號一定要填原因。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_seq_gap_reason (icpno TEXT NOT NULL DEFAULT '00', doc_date TEXT NOT NULL, series TEXT NOT NULL, seq INTEGER NOT NULL, reason TEXT, updated_by TEXT, updated_at TEXT, PRIMARY KEY (icpno, doc_date, series, seq))");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -1008,6 +1010,7 @@ async function initPg() {
                 await client.query("CREATE TABLE IF NOT EXISTS cash_sales_doc (icpno TEXT NOT NULL DEFAULT '00', sp_no TEXT NOT NULL, doc_date TEXT NOT NULL, ct_no TEXT, ct_name TEXT, fkfs TEXT, total DOUBLE PRECISION NOT NULL DEFAULT 0, unpaid DOUBLE PRECISION NOT NULL DEFAULT 0, paid DOUBLE PRECISION NOT NULL DEFAULT 0, nopay_fg TEXT, sales TEXT, kind TEXT, ingested_at TEXT, ingested_by TEXT, PRIMARY KEY (icpno, sp_no))");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_cash_sales_date ON cash_sales_doc(icpno, doc_date)");
                 await client.query("CREATE TABLE IF NOT EXISTS cash_customer (icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT NOT NULL, name TEXT, fkfs TEXT, sales TEXT, is_cash INTEGER, route_line TEXT, stop INTEGER NOT NULL DEFAULT 0, note TEXT, updated_at TEXT, PRIMARY KEY (icpno, ct_no))");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_seq_gap_reason (icpno TEXT NOT NULL DEFAULT '00', doc_date TEXT NOT NULL, series TEXT NOT NULL, seq INTEGER NOT NULL, reason TEXT, updated_by TEXT, updated_at TEXT, PRIMARY KEY (icpno, doc_date, series, seq))");
             }
             catch (_) { /* table may already exist */ }
             try {

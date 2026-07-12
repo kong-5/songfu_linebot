@@ -141,6 +141,34 @@ def post_cloud(base: str, key: str, body: dict, timeout: int) -> dict:
         raise RuntimeError(f"連線失敗 POST {url}：{e.reason}") from None
 
 
+def _expand_icpnos(icpno: str) -> list:
+    """公司代碼可為 'all'（全公司 00,01,02,03）或逗號多家或單一。回代碼清單。"""
+    s = (icpno or "00").strip()
+    if s.lower() == "all":
+        return ["00", "01", "02", "03"]
+    out = [p.strip() for p in s.split(",") if p.strip() and p.strip().lower() != "all"]
+    return out or ["00"]
+
+
+def push_once(base: str, key: str, icpno: str, date=None, timeout: int = 90, verbose: bool = True) -> int:
+    """給「凌越整合代理」GUI 呼叫：撈某天銷貨單並推上雲端。回傳推送的銷貨單張數（多公司加總）。
+    icpno 可為 'all'／逗號多家／單一；date 預設今天。"""
+    ensure_timeout_client(timeout)
+    d = datetime.date.fromisoformat(date).isoformat() if date else datetime.date.today().isoformat()
+    total = 0
+    for one in _expand_icpnos(icpno):
+        company = lystk.COMPANIES.get(one, one)
+        if verbose:
+            print(f"🧾 取單 {d}  ICPNO={one}（{company}）…", flush=True)
+        body = build_payload(one, d, verbose=verbose)
+        res = post_cloud(base, key, body, timeout)
+        n = int(res.get("docs", len(body["docs"]))) if isinstance(res, dict) else len(body["docs"])
+        if verbose:
+            print(f"✅ 已推 {n} 張（{one} {d}）", flush=True)
+        total += n
+    return total
+
+
 def run(args) -> int:
     icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
     date = datetime.date.fromisoformat(args.date.strip()).isoformat()
