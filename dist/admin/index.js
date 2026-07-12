@@ -1879,6 +1879,7 @@ function sfSidebar(active) {
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
         ${item("/admin/logistics/market", "logistics-reports", "chartLine", "行情報表")}
+        ${item("/admin/cash", "cash", "money", "每日帳款收款")}
       </details>
       <details class="sf-nav-group" ${["inventory","inv-scan","inv-stock","inv-wh-settings","inv-barcodes"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
@@ -11863,6 +11864,244 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             // [ops 2026-07-10] 庫存推送失敗＝後台庫存可能過期，推播告警（交易已回滾、保留上一份快照）。
             ops_notify_js_1.notifyOps(db, `凌越庫存推送（inventory-push）失敗：${String(e?.message || e).slice(0, 200)}`).catch(() => { });
             res.status(500).json({ error: "inventory-push 失敗", detail: String(e?.message || e) });
+        }
+    });
+    // ============================================================
+    //  每日帳款收款（Phase 1：取單上雲 + 銷貨單總計表）
+    //  資料源：凌越銷貨單(0000A1) 主表 + 客戶主檔(00000D) 結帳方式(CT_FKFS)，
+    //  由內網代理 scripts/ly_sales_push.py 推上雲（air-gap，雲端連不到凌越）。
+    // ============================================================
+    // 內網推當日銷貨單上雲（機器對機器，X-Writeback-Key，走上方 /lingyue-writeback/ 中介層）
+    router.post("/lingyue-writeback/cash-ingest", express_1.default.json({ limit: "16mb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const docs = Array.isArray(body.docs) ? body.docs : null;
+            if (!docs) {
+                res.status(400).json({ error: "缺少 docs 陣列" });
+                return;
+            }
+            const icpno = erp_companies_js_1.normIcpno(body.icpno, "00");
+            const date = (typeof body.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.date.trim())) ? body.date.trim() : "";
+            if (!date) {
+                res.status(400).json({ error: "缺少或格式錯誤 date (需 YYYY-MM-DD)" });
+                return;
+            }
+            const ingestedAt = new Date().toISOString();
+            const num = (v) => { const n = Number(String(v ?? "").replace(/,/g, "").trim()); return Number.isFinite(n) ? n : 0; };
+            const docRows = [];
+            for (const d of docs) {
+                const spNo = String(d?.sp_no ?? "").trim();
+                if (!spNo)
+                    continue;
+                const kind = spNo.toUpperCase().startsWith("A") ? "A" : "num";
+                docRows.push([
+                    icpno, spNo, date,
+                    String(d?.ct_no ?? "").trim(),
+                    String(d?.ct_name ?? "").trim(),
+                    String(d?.fkfs ?? "").trim(),
+                    num(d?.total), num(d?.unpaid), num(d?.paid),
+                    String(d?.nopay_fg ?? "").trim(),
+                    String(d?.sales ?? "").trim(),
+                    kind, ingestedAt, String(body.pushed_by ?? "agent").trim(),
+                ]);
+            }
+            // 收款客戶主檔 seed：name/fkfs/sales/stop 由推送覆蓋；is_cash/route_line/note 為人工維護，不覆蓋。
+            const custList = Array.isArray(body.customers) ? body.customers : [];
+            const custRows = [];
+            for (const c of custList) {
+                const ctNo = String(c?.ct_no ?? "").trim();
+                if (!ctNo)
+                    continue;
+                const fkfs = String(c?.fkfs ?? "").trim();
+                const isCashSeed = /現金|現收|cash/i.test(fkfs) ? 1 : 0; // 由結帳方式含「現金」推定；人工可覆蓋
+                custRows.push([
+                    icpno, ctNo, String(c?.name ?? "").trim(), fkfs,
+                    String(c?.sales ?? "").trim(), isCashSeed, (c?.stop ? 1 : 0), ingestedAt,
+                ]);
+            }
+            const doIngest = async (h) => {
+                // 該公司該日全表覆蓋：重新取單即反映凌越當下狀態（含新增/刪除），對應「印報表再跑一次」。
+                await h.prepare("DELETE FROM cash_sales_doc WHERE icpno = ? AND doc_date = ?").run(icpno, date);
+                const CHUNK = 100;
+                for (let i = 0; i < docRows.length; i += CHUNK) {
+                    const chunk = docRows.slice(i, i + CHUNK);
+                    const ph = chunk.map(() => "(?,?,?,?,?,?,?,?,?,?,?,?,?,?)").join(",");
+                    const flat = [];
+                    for (const r of chunk)
+                        flat.push(...r);
+                    await h.prepare("INSERT INTO cash_sales_doc (icpno, sp_no, doc_date, ct_no, ct_name, fkfs, total, unpaid, paid, nopay_fg, sales, kind, ingested_at, ingested_by) VALUES " + ph).run(...flat);
+                }
+                for (const r of custRows) {
+                    await h.prepare("INSERT INTO cash_customer (icpno, ct_no, name, fkfs, sales, is_cash, stop, updated_at) VALUES (?,?,?,?,?,?,?,?) " +
+                        "ON CONFLICT (icpno, ct_no) DO UPDATE SET name = excluded.name, fkfs = excluded.fkfs, sales = excluded.sales, stop = excluded.stop, " +
+                        "is_cash = COALESCE(cash_customer.is_cash, excluded.is_cash), updated_at = excluded.updated_at").run(...r);
+                }
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("cash_sales_ingested_at_" + icpno + "_" + date, ingestedAt);
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doIngest);
+            else
+                await doIngest(db);
+            console.log("[admin] cash-ingest 完成：", icpno, date, "docs", docRows.length, "customers", custRows.length);
+            res.json({ ok: true, date, icpno, docs: docRows.length, customers: custRows.length, ingested_at: ingestedAt });
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/cash-ingest", e?.message || e);
+            res.status(500).json({ error: "cash-ingest 失敗", detail: String(e?.message || e) });
+        }
+    });
+    // 讀當日銷貨單快照 + 分組加總（頁面/匯出/列印共用）
+    async function loadCashDaily(icpno, date) {
+        const rows = await db.prepare("SELECT sp_no, doc_date, ct_no, ct_name, fkfs, total, unpaid, paid, kind FROM cash_sales_doc WHERE icpno = ? AND doc_date = ? ORDER BY sp_no ASC").all(icpno, date) || [];
+        const numRows = rows.filter((r) => r.kind !== "A");
+        const aRows = rows.filter((r) => r.kind === "A");
+        const sum = (arr, f) => arr.reduce((s, r) => s + Number(r[f] || 0), 0);
+        const meta = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("cash_sales_ingested_at_" + icpno + "_" + date);
+        return {
+            rows, numRows, aRows,
+            numTotal: sum(numRows, "total"), aTotal: sum(aRows, "total"),
+            grandTotal: sum(rows, "total"), unpaidTotal: sum(rows, "unpaid"),
+            ingestedAt: meta?.value || "",
+        };
+    }
+    const CASH_COMPANIES = erp_companies_js_1.ERP_COMPANY_NAMES || { "00": "松富", "01": "龍港", "02": "松揚", "03": "松成" };
+    function cashMoney(n) { return Number(n || 0).toLocaleString("en-US"); }
+    // 後台頁：銷貨單總計表
+    router.get("/cash", async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
+                ? req.query.date.trim() : getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadCashDaily(icpno, date);
+            const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
+            const renderRows = (arr) => arr.length ? arr.map((r) => `
+        <tr>
+          <td style="font-family:var(--sf-mono,monospace);">${escapeHtml(r.sp_no)}</td>
+          <td>${escapeHtml(String(r.doc_date || "").slice(0, 10))}</td>
+          <td>${escapeHtml(r.ct_name || "")}</td>
+          <td>${escapeHtml(r.fkfs || "")}</td>
+          <td style="text-align:right;">${cashMoney(r.total)}</td>
+          <td style="text-align:right;${Number(r.unpaid || 0) > 0 ? "color:#c62828;font-weight:600;" : "color:#9b9a97;"}">${cashMoney(r.unpaid)}</td>
+        </tr>`).join("") : `<tr><td colspan="6" style="text-align:center;color:#9b9a97;padding:18px;">（無資料）</td></tr>`;
+            const section = (title, arr, subtotal) => `
+        <div class="notion-card" style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+            <strong>${title}</strong>
+            <span>${arr.length} 張　合計 <strong>${cashMoney(subtotal)}</strong></span>
+          </div>
+          <table>
+            <thead><tr><th>單號</th><th>單據日期</th><th>客戶名稱</th><th>結帳方式</th><th style="text-align:right;">金額</th><th style="text-align:right;">未收</th></tr></thead>
+            <tbody>${renderRows(arr)}</tbody>
+          </table>
+        </div>`;
+            const ingestNote = d.ingestedAt
+                ? `資料更新時間：${escapeHtml(new Date(d.ingestedAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }))}`
+                : `<span style="color:#c62828;">尚無當日資料——請於內網那台執行 <code>ly_sales_push.py --date ${date}</code> 取單上雲。</span>`;
+            const q = `?icpno=${icpno}&date=${date}`;
+            const body = `
+      <h1 class="notion-page-title">每日帳款收款</h1>
+      <div class="notion-card" style="margin-bottom:16px;">
+        <form method="get" action="/admin/cash" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+          <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
+          <label>日期<br><input type="date" name="date" value="${date}" class="sf-input"></label>
+          <button type="submit" class="btn-primary">查詢</button>
+          <span style="flex:1;"></span>
+          <a class="sf-btn" href="/admin/cash/export.xlsx${q}">下載 Excel</a>
+          <a class="sf-btn" href="/admin/cash/print${q}" target="_blank">列印 / PDF</a>
+        </form>
+        <div style="margin-top:10px;font-size:13px;">${ingestNote}</div>
+      </div>
+      <div class="notion-card" style="margin-bottom:16px;display:flex;gap:24px;flex-wrap:wrap;">
+        <div>純數字（直打凌越）<br><strong style="font-size:20px;">${cashMoney(d.numTotal)}</strong> <span style="color:#9b9a97;">/ ${d.numRows.length} 張</span></div>
+        <div>A 開頭（寺岡EDI）<br><strong style="font-size:20px;">${cashMoney(d.aTotal)}</strong> <span style="color:#9b9a97;">/ ${d.aRows.length} 張</span></div>
+        <div>合計<br><strong style="font-size:20px;">${cashMoney(d.grandTotal)}</strong> <span style="color:#9b9a97;">/ ${d.rows.length} 張</span></div>
+        <div>當日未收<br><strong style="font-size:20px;color:#c62828;">${cashMoney(d.unpaidTotal)}</strong></div>
+      </div>
+      ${section("純數字（直打凌越）", d.numRows, d.numTotal)}
+      ${section("A 開頭（訂單拋轉寺岡 EDI 回轉）", d.aRows, d.aTotal)}`;
+            res.type("text/html").send(notionPage("每日帳款收款", body, "cash", res));
+        }
+        catch (e) {
+            console.error("[admin] /cash", e?.message || e);
+            res.status(500).type("text/html").send("讀取失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    // 匯出 Excel（銷貨單總計表）
+    router.get("/cash/export.xlsx", async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
+                ? req.query.date.trim() : getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadCashDaily(icpno, date);
+            const printedBy = (res.locals && res.locals.adminUser) || "";
+            const aoa = [
+                ["松富物流股份有限公司　銷貨單總計表"],
+                [`公司：${CASH_COMPANIES[icpno] || icpno}(${icpno})`, `日期：${date}`, `列印人：${printedBy}`],
+                [],
+                ["單號", "單據日期", "客戶名稱", "結帳方式", "金額", "未收", "類型"],
+            ];
+            const pushGroup = (label, arr, subtotal) => {
+                aoa.push([label]);
+                for (const r of arr)
+                    aoa.push([r.sp_no, String(r.doc_date || "").slice(0, 10), r.ct_name || "", r.fkfs || "", Number(r.total || 0), Number(r.unpaid || 0), r.kind === "A" ? "A" : "純數字"]);
+                aoa.push(["小計", "", "", "", subtotal, "", ""]);
+                aoa.push([]);
+            };
+            pushGroup("【純數字（直打凌越）】", d.numRows, d.numTotal);
+            pushGroup("【A 開頭（寺岡EDI）】", d.aRows, d.aTotal);
+            aoa.push(["總計", "", "", "", d.grandTotal, d.unpaidTotal, ""]);
+            const ws = XLSX.utils.aoa_to_sheet(aoa);
+            ws["!cols"] = [{ wch: 16 }, { wch: 12 }, { wch: 28 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }];
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "銷貨單總計表");
+            const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+            res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            res.setHeader("Content-Disposition", `attachment; filename="sales_total_${icpno}_${date}.xlsx"`);
+            res.send(buf);
+        }
+        catch (e) {
+            console.error("[admin] /cash/export.xlsx", e?.message || e);
+            res.status(500).send("匯出失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    // 列印版（瀏覽器另存 PDF）：表頭帶公司名／日期／列印人／列印時間
+    router.get("/cash/print", async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
+                ? req.query.date.trim() : getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadCashDaily(icpno, date);
+            const printedBy = (res.locals && res.locals.adminUser) || "";
+            const printedAt = new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
+            const rowHtml = (arr) => arr.map((r) => `<tr><td class="mono">${escapeHtml(r.sp_no)}</td><td>${escapeHtml(String(r.doc_date || "").slice(0, 10))}</td><td>${escapeHtml(r.ct_name || "")}</td><td>${escapeHtml(r.fkfs || "")}</td><td class="r">${cashMoney(r.total)}</td><td class="r">${cashMoney(r.unpaid)}</td></tr>`).join("");
+            const grp = (label, arr, subtotal) => `<tr class="grp"><td colspan="6">${escapeHtml(label)}（${arr.length} 張）</td></tr>${rowHtml(arr)}<tr class="sub"><td colspan="4">小計</td><td class="r">${cashMoney(subtotal)}</td><td></td></tr>`;
+            res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>銷貨單總計表 ${date}</title>
+      <style>
+        *{box-sizing:border-box;} body{font-family:'Noto Sans TC',ui-sans-serif,sans-serif;color:#111;margin:24px;}
+        h1{font-size:20px;margin:0 0 2px;text-align:center;} .sub-h{text-align:center;font-size:15px;margin:0 0 4px;}
+        .meta{display:flex;justify-content:space-between;font-size:12px;color:#333;margin:8px 0;border-bottom:1px solid #999;padding-bottom:6px;}
+        table{width:100%;border-collapse:collapse;font-size:12px;} th,td{border:1px solid #bbb;padding:4px 6px;} th{background:#f0f0f0;}
+        td.r,th.r{text-align:right;} td.mono{font-family:ui-monospace,monospace;} tr.grp td{background:#eef3fb;font-weight:700;} tr.sub td{background:#fafafa;font-weight:600;}
+        tr.total td{background:#fff3cd;font-weight:700;font-size:13px;}
+        .btns{margin:12px 0;} @media print{.btns{display:none;}}
+      </style></head><body>
+      <div class="btns"><button onclick="window.print()">列印 / 另存 PDF</button></div>
+      <h1>松富物流股份有限公司</h1>
+      <div class="sub-h">銷貨單總計表</div>
+      <div class="meta"><span>公司：${escapeHtml(CASH_COMPANIES[icpno] || icpno)}(${icpno})</span><span>日期：${date}</span><span>列印人：${escapeHtml(printedBy)}</span><span>列印時間：${escapeHtml(printedAt)}</span></div>
+      <table>
+        <thead><tr><th>單號</th><th>單據日期</th><th>客戶名稱</th><th>結帳方式</th><th class="r">金額</th><th class="r">未收</th></tr></thead>
+        <tbody>
+          ${grp("純數字（直打凌越）", d.numRows, d.numTotal)}
+          ${grp("A 開頭（訂單拋轉寺岡 EDI 回轉）", d.aRows, d.aTotal)}
+          <tr class="total"><td colspan="4">總計（${d.rows.length} 張）</td><td class="r">${cashMoney(d.grandTotal)}</td><td class="r">${cashMoney(d.unpaidTotal)}</td></tr>
+        </tbody>
+      </table>
+      </body></html>`);
+        }
+        catch (e) {
+            console.error("[admin] /cash/print", e?.message || e);
+            res.status(500).send("列印頁失敗：" + escapeHtml(String(e?.message || e)));
         }
     });
     /**
