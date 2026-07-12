@@ -5172,7 +5172,7 @@ function createAdminRouter() {
                 return `<span class="sf-pill warn">中</span>`;
             };
             const body = `
-              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;max-width:1100px;margin:0 auto;">
+              <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:16px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
                 <div>
                   <div class="sf-breadcrumb" style="margin-bottom:6px;">日常作業 / 忘記叫貨提醒</div>
                   <h1 style="margin:0;font-size:22px;font-weight:600;">忘記叫貨提醒</h1>
@@ -5226,7 +5226,7 @@ function createAdminRouter() {
                         <td data-label="等級" style="text-align:center;">${severityPill(r.overdueRatio)}</td>
                         <td data-label="客戶" style="overflow:hidden;">
                           <a href="/admin/customers/${encodeURIComponent(r.id)}/360" style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;max-width:100%;">${escapeHtml(r.name)}</a>
-                          ${r.handoverNotes ? `<div style="font-size:11px;color:var(--txt-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(r.handoverNotes)}">📝 ${escapeHtml(String(r.handoverNotes).slice(0,40))}${String(r.handoverNotes).length>40?"…":""}</div>` : ""}
+                          ${r.handoverNotes ? `<div style="font-size:11px;color:var(--txt-3);margin-top:2px;display:flex;align-items:center;gap:4px;overflow:hidden;" title="${escapeAttr(r.handoverNotes)}">${sfInlineIcon('note')}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(String(r.handoverNotes).slice(0,40))}${String(r.handoverNotes).length>40?"…":""}</span></div>` : ""}
                         </td>
                         <td data-label="最後叫貨" class="mono" style="color:var(--txt-3);white-space:nowrap;">${escapeHtml(r.lastOrderDate || "—")}</td>
                         <td data-label="已 N 天" style="text-align:right;white-space:nowrap;" class="mono"><strong style="color:var(--bad);">${r.daysSince}</strong></td>
