@@ -81,6 +81,32 @@ def run(args) -> int:
 
     ensure_timeout_client(args.timeout)
 
+    # --customer CT_NO：倒出客戶主檔(00000D)某客戶的全部欄位，找「結帳方式(CT_FKFS)」。
+    if args.customer:
+        ct = args.customer.strip()
+        print(f"▶ 查客戶主檔 00000D  ICPNO={icpno}  CT_NO={ct} …", flush=True)
+        try:
+            rows = lystk.query(icpno=icpno, idakd="00000D",
+                               where="CT_NO='@v1@'", whval=ct) or []
+        except Exception as e:
+            print(f"⚠ where 查詢失敗（{e}），改抓前 200 筆本地過濾…", flush=True)
+            rows = [r for r in (lystk.query(icpno=icpno, idakd="00000D", limit=200) or [])
+                    if str(r.get("CT_NO", "")).strip() == ct]
+        if not rows:
+            print(f"⚠ 客戶主檔找不到 CT_NO={ct}。")
+            return 0
+        r = rows[0]
+        print(f"── 客戶 {ct} 全部欄位（共 {len(r)} 欄）──")
+        for k, v in r.items():
+            print(f"    {k:<16} {str(v).strip()!r}")
+        hints = {k: v for k, v in r.items()
+                 if any(t in k.upper() for t in ("FKFS", "PAY", "CASH", "REM", "NAME", "ROUTE", "SALE", "TERM", "結"))}
+        if hints:
+            print("\n  【可能相關欄位（結帳方式/付款/備註）】")
+            for k, v in hints.items():
+                print(f"    {k:<16} {str(v).strip()!r}")
+        return 0
+
     # --fields：把當天某一張（或第一張）銷貨單的「所有欄位」倒出來，
     # 用來找「結帳方式／付款方式」是哪一欄（SP_FKFS 之類）。
     if args.fields is not None:
@@ -182,6 +208,8 @@ def build_parser():
     p.add_argument("--list", action="store_true", help="逐張列出單號+金額（否則只印分組合計）")
     p.add_argument("--fields", nargs="?", const="__first__", metavar="SP_NO",
                    help="倒出某張銷貨單全部欄位（找結帳方式那欄用）；不給單號＝當天第一張")
+    p.add_argument("--customer", metavar="CT_NO",
+                   help="倒出客戶主檔(00000D)某客戶全部欄位，找結帳方式(CT_FKFS)；CT_NO＝銷貨單的 SP_CTNO")
     p.add_argument("--json", action="store_true", help="輸出 JSON（供程式串接；配 --list 附逐張）")
     p.add_argument("--timeout", type=int, default=60, help="連線/操作逾時秒數（預設 60）")
     return p
