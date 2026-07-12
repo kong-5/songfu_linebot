@@ -20239,6 +20239,8 @@ document.addEventListener('keydown',function(e){
         save: _fi('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>'),
         checkc: _fi('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'),
         back: _fi('<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>'),
+        pdf: _fi('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8.5 13.5h1a1 1 0 0 1 0 2h-1zM8.5 15.5V18"/><path d="M12.5 13.5V18h1a1.2 1.2 0 0 0 1.2-1.2v-2.1a1.2 1.2 0 0 0-1.2-1.2z"/>'),
+        dl: _fi('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'),
     };
 
     /**
@@ -20335,7 +20337,8 @@ document.addEventListener('keydown',function(e){
   @media print{ body{ background:#fff; } .toolbar{ display:none; } .sheet{ box-shadow:none; margin:0; width:auto; min-height:auto; padding:4mm; page-break-after:always; } .sheet:last-child{ page-break-after:auto; } @page{ size:A4; margin:8mm; } }
 </style></head><body>
 <div class="toolbar">
-  <button class="primary" onclick="window.print()">${QI.print}<span>列印 / 存成 PDF</span></button>
+  <a class="primary" href="/admin/quotes/${escapeAttr(report.id)}/pdf">${QI.pdf}<span>下載 PDF</span></a>
+  <button onclick="window.print()">${QI.print}<span>列印</span></button>
   <a href="/admin/quotes/${escapeAttr(report.id)}/image.jpg" download>${QI.image}<span>下載 JPG 圖</span></a>
   <a href="/admin/quotes/${escapeAttr(report.id)}">${QI.back}<span>回編輯</span></a>
   <span class="fontlbl">字型</span>
@@ -20616,8 +20619,9 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                 <h1>${titleMain} 報價單 ${statusPill}</h1>
               </div>
               <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <a class="sf-btn" href="/admin/quotes/${enc}/sheet" target="_blank">${QI.print}<span>預覽 / PDF</span></a>
-                <a class="sf-btn" href="/admin/quotes/${enc}/image.jpg" target="_blank">${QI.image}<span>下載 JPG</span></a>
+                <a class="sf-btn primary" href="/admin/quotes/${enc}/pdf">${QI.pdf}<span>下載 PDF</span></a>
+                <a class="sf-btn" href="/admin/quotes/${enc}/image.jpg" download>${QI.image}<span>下載 JPG</span></a>
+                <a class="sf-btn" href="/admin/quotes/${enc}/sheet" target="_blank">${QI.print}<span>預覽 / 列印</span></a>
               </div>
             </div>
             ${okMsg === "created" ? `<div class="sf-card sf-qflash">${QI.checkc}<span>已建立，${items.length ? "已帶入品項與價格，請逐項確認單價。" : "目前尚無品項，請切到「管理品項」新增。"}</span></div>` : ""}
@@ -20695,8 +20699,8 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                           <div>${h.status === "finalized" ? `<span class="sf-pill ok">已完成</span>` : `<span class="sf-pill warn">草稿</span>`}</div>
                           <div class="sf-qrow-actions">
                             <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(h.id)}">編輯</a>
-                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(h.id)}/sheet" target="_blank">預覽 / PDF</a>
-                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(h.id)}/image.jpg" target="_blank">JPG</a>
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(h.id)}/pdf">PDF</a>
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(h.id)}/image.jpg" download>JPG</a>
                           </div></div>`).join("")}
                       </div>`
                     : `<div class="sf-card sf-qempty">
@@ -20729,8 +20733,8 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                           <div>${r.status === "finalized" ? `<span class="sf-pill ok">已完成</span>` : `<span class="sf-pill warn">草稿</span>`}</div>
                           <div class="sf-qrow-actions">
                             <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}">編輯</a>
-                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/sheet" target="_blank">預覽 / PDF</a>
-                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/image.jpg" target="_blank">JPG</a>
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/pdf">PDF</a>
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/image.jpg" download>JPG</a>
                           </div></div>`).join("")}
                       </div>`
                     : `<div class="sf-card sf-qempty">
@@ -20953,19 +20957,37 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
         }
     });
 
-    // JPG 圖
+    // JPG 圖（分頁直向堆疊成一張長圖，內容與 PDF 一致）
     router.get("/quotes/:id/image.jpg", async (req, res) => {
         try {
             const data = await loadQuoteForRender(req.params.id);
             if (!data) { res.status(404).send("找不到此報價"); return; }
             const logo = await quote_report_js_1.getDefaultLogoDataUri();
             const fontCss = quoteFontCss(await getQuoteFontKey());
-            const buf = await quote_report_js_1.renderQuoteImage(data.report, data.groups, { logoDataUri: logo, fontCss });
+            const buf = await quote_report_js_1.renderQuoteStackedJpeg(data.report, data.groups, { logoDataUri: logo, fontCss });
             res.setHeader("Content-Type", "image/jpeg");
             res.setHeader("Content-Disposition", `inline; filename="quote-${encodeURIComponent(data.report.ym || req.params.id)}.jpg"`);
             res.send(buf);
         } catch (e) {
             console.error("[admin] /quotes/:id/image.jpg failed", e);
+            res.status(500).send("產生失敗：" + String(e && e.message || e));
+        }
+    });
+
+    // PDF 下載（伺服器直接產生多頁 A4 PDF，不需瀏覽器列印）
+    router.get("/quotes/:id/pdf", async (req, res) => {
+        try {
+            const data = await loadQuoteForRender(req.params.id);
+            if (!data) { res.status(404).send("找不到此報價"); return; }
+            const logo = await quote_report_js_1.getDefaultLogoDataUri();
+            const fontCss = quoteFontCss(await getQuoteFontKey());
+            const buf = await quote_report_js_1.renderQuotePdf(data.report, data.groups, { logoDataUri: logo, fontCss });
+            const fname = "報價單-" + (data.report.ym || data.report.customer_name || req.params.id) + ".pdf";
+            res.setHeader("Content-Type", "application/pdf");
+            res.setHeader("Content-Disposition", `attachment; filename="quote-${encodeURIComponent(data.report.ym || req.params.id)}.pdf"; filename*=UTF-8''${encodeURIComponent(fname)}`);
+            res.send(buf);
+        } catch (e) {
+            console.error("[admin] /quotes/:id/pdf failed", e);
             res.status(500).send("產生失敗：" + String(e && e.message || e));
         }
     });

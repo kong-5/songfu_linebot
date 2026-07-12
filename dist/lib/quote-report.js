@@ -853,3 +853,181 @@ async function renderQuoteImage(report, groups, opts) {
     return await sharp(Buffer.from(svg, "utf-8")).jpeg({ quality: 92 }).toBuffer();
 }
 exports.renderQuoteImage = renderQuoteImage;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A4 分頁輸出：與列印頁相同版面（兩欄、大字、公司藍），每頁一張圖。
+//   - PDF：把每頁圖嵌進多頁 PDF（DCTDecode），正式環境不需 headless 瀏覽器。
+//   - JPG：把各頁直向堆疊成一張長圖，內容與 PDF 一致、好閱讀。
+// ─────────────────────────────────────────────────────────────────────────────
+const QUOTE_PAGE_W = 1240;   // A4 直式 @150dpi 像素寬
+const QUOTE_PAGE_H = 1754;   // A4 直式 @150dpi 像素高
+const QUOTE_PAGE_ROWS = 50;  // 每頁列數（兩欄合計），與列印頁一致
+
+/** 產生單頁 A4 報價單 SVG（1240×1754）。 */
+function renderQuotePageSvg(report, pageRows, opts, pageNo, totalPages) {
+    opts = opts || {};
+    const logo = opts.logoDataUri || "";
+    const FONT = (opts.fontCss ? opts.fontCss + "," : "") + "'Noto Sans CJK TC','Noto Sans TC','Microsoft JhengHei','PingFang TC',sans-serif";
+    const BLUE = "#1a6fb5";
+    const W = QUOTE_PAGE_W, H = QUOTE_PAGE_H, M = 48;
+    const gap = 30;
+    const colW = (W - M * 2 - gap) / 2;
+    const headerH = 236;
+    const colHeadH = 42;
+    const bodyTop = headerH + colHeadH;
+    const rowH = 54;
+    const [colL, colR] = splitTwoColumns(pageRows);
+
+    // 欄內欄位寬：序號 / 品名 / 規格 / 單價
+    const cSeq = 52, cName = colW * 0.50, cSpec = colW * 0.26, cPrice = colW - cSeq - (colW * 0.50) - (colW * 0.26);
+
+    function renderColumn(rows, x0) {
+        let out = "";
+        // 欄位標題列
+        out += `<rect x="${x0}" y="${bodyTop - colHeadH}" width="${colW}" height="${colHeadH}" fill="#eef2f7" stroke="#c8d0da"/>`;
+        const heads = [["序號", cSeq, "middle"], ["品　名", cName, "start"], ["規　格", cSpec, "start"], ["單　價", cPrice, "end"]];
+        let hx = x0;
+        for (const [label, w, anchor] of heads) {
+            const tx = anchor === "middle" ? hx + w / 2 : anchor === "end" ? hx + w - 12 : hx + 12;
+            out += `<text x="${tx}" y="${bodyTop - 14}" font-size="19" font-weight="700" fill="#334" text-anchor="${anchor}" font-family="${FONT}">${escapeXml(label)}</text>`;
+            hx += w;
+        }
+        let y = bodyTop;
+        const baseY = rowH - 18;
+        for (const r of rows) {
+            if (r.type === "cat") {
+                out += `<rect x="${x0}" y="${y}" width="${colW}" height="${rowH}" fill="${BLUE}"/>`;
+                out += `<text x="${x0 + 14}" y="${y + baseY}" font-size="24" font-weight="700" fill="#fff" font-family="${FONT}">${escapeXml(r.category)}</text>`;
+                out += `<text x="${x0 + colW - 12}" y="${y + baseY}" font-size="17" fill="#cfe3f5" text-anchor="end" font-family="${FONT}">${r.count} 項</text>`;
+            } else {
+                out += `<rect x="${x0}" y="${y}" width="${colW}" height="${rowH}" fill="${r.seq % 2 ? "#ffffff" : "#f7f9fb"}" stroke="#e3e8ee"/>`;
+                let ix = x0;
+                out += `<text x="${ix + cSeq / 2}" y="${y + baseY}" font-size="18" fill="#556" text-anchor="middle" font-family="${FONT}">${r.seq}</text>`;
+                ix += cSeq;
+                out += `<text x="${ix + 12}" y="${y + baseY}" font-size="25" font-weight="500" fill="#1c1c1c" font-family="${FONT}">${escapeXml(clip(r.name, 12))}</text>`;
+                ix += cName;
+                out += `<text x="${ix + 12}" y="${y + baseY}" font-size="18" fill="#667" font-family="${FONT}">${escapeXml(clip(r.spec, 12))}</text>`;
+                ix += cSpec;
+                const priceDisplay = r.quoted ? r.priceText : "—";
+                const priceColor = r.quoted ? "#111" : "#b0b6bf";
+                out += `<text x="${ix + cPrice - 12}" y="${y + baseY}" font-size="27" font-weight="${r.quoted ? 700 : 400}" fill="${priceColor}" text-anchor="end" font-family="${FONT}">${escapeXml(priceDisplay)}</text>`;
+            }
+            y += rowH;
+        }
+        return out;
+    }
+
+    const logoBox = logo
+        ? `<image href="${escapeXml(logo)}" x="${M}" y="34" width="126" height="126" preserveAspectRatio="xMidYMid meet"/>`
+        : `<rect x="${M}" y="44" width="116" height="116" fill="none" stroke="#ccd3db" stroke-dasharray="4 4"/><text x="${M + 58}" y="108" font-size="16" fill="#aab" text-anchor="middle" font-family="${FONT}">LOGO</text>`;
+    const cx = W / 2;
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+<rect width="${W}" height="${H}" fill="#ffffff"/>
+${logoBox}
+<text x="${cx}" y="86" text-anchor="middle" font-size="50" font-weight="800" fill="${BLUE}" font-family="${FONT}" letter-spacing="9">${escapeXml(report.title || DEFAULT_HEADER.title)}</text>
+<text x="${cx}" y="132" text-anchor="middle" font-size="28" font-weight="600" fill="#334" font-family="${FONT}" letter-spacing="10">${escapeXml(report.subtitle || DEFAULT_HEADER.subtitle)}</text>
+<text x="${cx}" y="172" text-anchor="middle" font-size="24" font-weight="600" fill="#333" font-family="${FONT}">${escapeXml((report.company || "") + "　" + (report.roc_label || ""))}</text>
+<text x="${W - M}" y="82" text-anchor="end" font-size="17" fill="#667" font-family="${FONT}">${escapeXml(report.address || "")}</text>
+<text x="${W - M}" y="108" text-anchor="end" font-size="17" fill="#667" font-family="${FONT}">Tel：${escapeXml(report.tel || "")}</text>
+<text x="${W - M}" y="134" text-anchor="end" font-size="17" fill="#667" font-family="${FONT}">Fax：${escapeXml(report.fax || "")}</text>
+<text x="${W - M}" y="160" text-anchor="end" font-size="16" fill="#99a" font-family="${FONT}">第 ${pageNo} 頁，共 ${totalPages} 頁</text>
+<line x1="${M}" y1="${headerH - 12}" x2="${W - M}" y2="${headerH - 12}" stroke="${BLUE}" stroke-width="3"/>
+${renderColumn(colL, M)}
+${renderColumn(colR, M + colW + gap)}
+<text x="${cx}" y="${H - 24}" text-anchor="middle" font-size="16" fill="#99a" font-family="${FONT}">松富物流 · 本報價單為 ${escapeXml(report.roc_label || report.ym || "")}　單位：新台幣元　「—」表該項本月不報價</text>
+</svg>`;
+}
+
+/** 依分頁把整份報價切成多頁 A4 SVG 字串。 */
+function renderQuotePageSvgs(report, groups, opts) {
+    const rows = buildDisplayRows(groups);
+    const pages = [];
+    for (let i = 0; i < rows.length; i += QUOTE_PAGE_ROWS) pages.push(rows.slice(i, i + QUOTE_PAGE_ROWS));
+    if (pages.length === 0) pages.push([]);
+    return pages.map((pg, idx) => renderQuotePageSvg(report, pg, opts, idx + 1, pages.length));
+}
+exports.renderQuotePageSvgs = renderQuotePageSvgs;
+
+/** 每頁光柵化為 JPEG buffer。 */
+async function renderQuotePagesJpegs(report, groups, opts) {
+    const sharp = require("sharp");
+    const svgs = renderQuotePageSvgs(report, groups, opts);
+    const bufs = [];
+    for (const svg of svgs) {
+        bufs.push(await sharp(Buffer.from(svg, "utf-8")).jpeg({ quality: 90 }).toBuffer());
+    }
+    return bufs;
+}
+exports.renderQuotePagesJpegs = renderQuotePagesJpegs;
+
+/** 各頁直向堆疊成一張長 JPEG（JPG 下載用；內容與 PDF 一致）。 */
+async function renderQuoteStackedJpeg(report, groups, opts) {
+    const sharp = require("sharp");
+    const svgs = renderQuotePageSvgs(report, groups, opts);
+    const pngs = [];
+    for (const svg of svgs) {
+        pngs.push(await sharp(Buffer.from(svg, "utf-8")).png().toBuffer());
+    }
+    const n = pngs.length || 1;
+    const canvas = sharp({ create: { width: QUOTE_PAGE_W, height: QUOTE_PAGE_H * n, channels: 3, background: "#ffffff" } });
+    const composite = pngs.map((input, i) => ({ input, top: i * QUOTE_PAGE_H, left: 0 }));
+    return await canvas.composite(composite).jpeg({ quality: 88 }).toBuffer();
+}
+exports.renderQuoteStackedJpeg = renderQuoteStackedJpeg;
+
+/**
+ * 把一組（相同像素尺寸的）JPEG 組成多頁 PDF（每頁滿版一張圖）。
+ * 手寫最小 PDF（DCTDecode 直接內嵌 JPEG），不需任何 PDF 套件或 headless 瀏覽器。
+ * A4 頁面點數 595.28 × 841.89（與 1240×1754 同比例，不變形）。
+ */
+function imagesToPdf(jpegs, pxW, pxH) {
+    const A4W = 595.28, A4H = 841.89;
+    const parts = [];
+    let len = 0;
+    const offsets = {};
+    const w = (s) => { const b = Buffer.isBuffer(s) ? s : Buffer.from(s, "latin1"); parts.push(b); len += b.length; };
+    const obj = (n) => { offsets[n] = len; w(n + " 0 obj\n"); };
+    const endobj = () => w("endobj\n");
+
+    w("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+    const N = jpegs.length;
+    const pageNums = [];
+    for (let i = 0; i < N; i++) pageNums.push(3 + i * 3);
+
+    obj(1); w("<< /Type /Catalog /Pages 2 0 R >>\n"); endobj();
+    obj(2); w("<< /Type /Pages /Count " + N + " /Kids [" + pageNums.map((n) => n + " 0 R").join(" ") + "] >>\n"); endobj();
+
+    for (let i = 0; i < N; i++) {
+        const pageObj = 3 + i * 3, contentObj = 4 + i * 3, imgObj = 5 + i * 3;
+        const content = "q " + A4W.toFixed(2) + " 0 0 " + A4H.toFixed(2) + " 0 0 cm /Im0 Do Q\n";
+        obj(pageObj);
+        w("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + A4W.toFixed(2) + " " + A4H.toFixed(2) + "] " +
+          "/Resources << /XObject << /Im0 " + imgObj + " 0 R >> >> /Contents " + contentObj + " 0 R >>\n");
+        endobj();
+        obj(contentObj);
+        w("<< /Length " + content.length + " >>\nstream\n"); w(content); w("endstream\n"); endobj();
+        obj(imgObj);
+        w("<< /Type /XObject /Subtype /Image /Width " + pxW + " /Height " + pxH +
+          " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length " + jpegs[i].length + " >>\nstream\n");
+        w(jpegs[i]); w("\nendstream\n"); endobj();
+    }
+
+    const xrefOff = len;
+    const objCount = 2 + 3 * N;
+    w("xref\n0 " + (objCount + 1) + "\n");
+    w("0000000000 65535 f \n");
+    for (let n = 1; n <= objCount; n++) {
+        w(String(offsets[n]).padStart(10, "0") + " 00000 n \n");
+    }
+    w("trailer\n<< /Size " + (objCount + 1) + " /Root 1 0 R >>\nstartxref\n" + xrefOff + "\n%%EOF\n");
+    return Buffer.concat(parts);
+}
+exports.imagesToPdf = imagesToPdf;
+
+/** 產生整份報價單的多頁 PDF buffer。 */
+async function renderQuotePdf(report, groups, opts) {
+    const jpegs = await renderQuotePagesJpegs(report, groups, opts);
+    return imagesToPdf(jpegs, QUOTE_PAGE_W, QUOTE_PAGE_H);
+}
+exports.renderQuotePdf = renderQuotePdf;
