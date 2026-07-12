@@ -81,6 +81,33 @@ def run(args) -> int:
 
     ensure_timeout_client(args.timeout)
 
+    # --fields：把當天某一張（或第一張）銷貨單的「所有欄位」倒出來，
+    # 用來找「結帳方式／付款方式」是哪一欄（SP_FKFS 之類）。
+    if args.fields is not None:
+        rows = lystk.query(icpno=icpno, idakd=IDAKD_SALES, date=ds) or []
+        if not rows:
+            print(f"⚠ {ds} 查無銷貨單，無法倒欄位。")
+            return 0
+        target = None
+        want = str(args.fields).strip()
+        if want and want != "__first__":
+            target = next((r for r in rows if str(r.get("SP_NO", "")).strip() == want), None)
+            if target is None:
+                print(f"⚠ 當天找不到單號 {want}，改倒第一張。")
+        if target is None:
+            target = rows[0]
+        print(f"── 銷貨單 {str(target.get('SP_NO','')).strip()} 全部欄位（共 {len(target)} 欄）──")
+        for k, v in target.items():
+            print(f"    {k:<16} {str(v).strip()!r}")
+        # 順手把「看起來像結帳/付款方式」的欄位挑出來提示
+        hints = {k: v for k, v in target.items()
+                 if any(t in k.upper() for t in ("FKFS", "PAY", "CASH", "MONEY", "REM", "CHECK", "SALES", "DPNO", "CTNO"))}
+        if hints:
+            print("\n  【可能相關欄位】")
+            for k, v in hints.items():
+                print(f"    {k:<16} {str(v).strip()!r}")
+        return 0
+
     if not args.json:
         print(f"▶ 查 {ds} 銷貨單金額  ICPNO={icpno}（{company}）… 只抓主表、不撈明細", flush=True)
 
@@ -153,6 +180,8 @@ def build_parser():
     p.add_argument("--date", required=True, help="查詢日期 YYYY-MM-DD（必填，只查這一天）")
     p.add_argument("--icpno", help="公司代碼（預設 00 松富；01 龍港、03 桂田/松成，或 LY_ICPNO）")
     p.add_argument("--list", action="store_true", help="逐張列出單號+金額（否則只印分組合計）")
+    p.add_argument("--fields", nargs="?", const="__first__", metavar="SP_NO",
+                   help="倒出某張銷貨單全部欄位（找結帳方式那欄用）；不給單號＝當天第一張")
     p.add_argument("--json", action="store_true", help="輸出 JSON（供程式串接；配 --list 附逐張）")
     p.add_argument("--timeout", type=int, default=60, help="連線/操作逾時秒數（預設 60）")
     return p
