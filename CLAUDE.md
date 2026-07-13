@@ -59,6 +59,7 @@
   - **網站版盤點入口** `/admin/inventory/entry`：後台帳號 cookie 登入、免 LINE token（解外部瀏覽器登入逾時），與 LIFF 頁共用 `stocktake.html`（`window.__STK_WEB__` 注入 WEB 模式），寫進同一套盤點表。
   - **庫存調整（誤差補償，免凌越重整）**：`stock_adjustment`（主鍵 `(icpno, erp_code)`、`delta`）。**顯示庫存＝凌越快照＋delta**（`/admin/inventory/stock`），每日盤點「最新系統／對最新盤差」也加 delta（校正後歸零）。每日盤點盤差表一鍵「建立調整」＝`delta=實盤−凌越量`；總管理在「庫存管理 → 庫存調整」(`/admin/inventory/adjustments`) 可改/刪。**只影響內部顯示與盤差，不寫回凌越**；凌越重整後要記得刪調整避免雙重補償。
   - **中價貨**：盤點數旁的小「⋯」點開才填中貨（極少數品項才有，方案B）；**counted_qty 存上＋中合計**，`mid_qty` 單獨保留。
+  - **必盤**：盤點清單把「自昨天（或上次盤點）以來凌越有變動」的品項**排到最上面＋標紅「必盤」**（全公司）。權威 helper：`dist/lib/stock-mustcount.js` 的 `computeMustCount`（混合基準：優先比 `erp_stock_daily` 昨天快照、無則退回上次 `stocktake_count.sys_qty`；|變動|≥門檻才算，門檻預設 1、可用 `app_settings.stocktake_mustcount_min_delta` 覆寫）。每日快照由**庫存推送 `inventory-push` 同交易寫入 `erp_stock_daily`**（一天一份、留 14 天）。
 - **群組功能白名單 `group_features`（新，取代舊「盤點群組」開關）**：每個 LINE 群組可分別開關三項功能——
   **辨識訂單／盤點／空籃**。無資料列時**辨識訂單／空籃預設開、盤點預設關**（盤點為 opt-in 白名單制，只有明確設為開的群組才回應 `#盤點`）。權威 helper：`dist/lib/group-features.js`
   的 `getGroupFeatures(db, groupId)`（查不到或出錯：訂單/空籃回開絕不意外斷單、盤點回關）＋ `setGroupFeatures`。
