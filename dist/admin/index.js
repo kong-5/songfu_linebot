@@ -12720,8 +12720,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <thead><tr><th style="width:34px;"></th><th>單號</th><th>客戶</th><th style="width:54px;text-align:center;">路線</th><th>結帳</th><th style="text-align:right;">應收</th><th style="width:210px;">狀態</th></tr></thead>
             <tbody id="ccBody">${rowHtml}</tbody>
           </table>
-          ${priorShown.length ? `<details style="margin-top:14px;" open>
-            <summary style="cursor:pointer;font-weight:700;color:#c62828;">此路線跨日未收（${priorShown.length} 張，${cashMoney(priorDue)}）— 勾選可一起收款</summary>
+          ${priorShown.length ? `<details id="ccPriorDetails" style="margin-top:14px;" open>
+            <summary style="cursor:pointer;font-weight:700;color:#c62828;">此路線跨日未收（${priorShown.length} 張，${cashMoney(priorDue)}）— 可用上面搜尋框找、勾選一起收款</summary>
             <table class="cc-table" style="margin-top:6px;">
               <thead><tr><th style="width:34px;"></th><th>單號(原單日)</th><th>客戶</th><th style="width:54px;text-align:center;">路線</th><th>結帳</th><th style="text-align:right;">應收</th><th style="width:210px;">狀態</th></tr></thead>
               <tbody id="ccBodyPrior">${priorHtml}</tbody>
@@ -12791,6 +12791,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           });
           var sn=document.getElementById('ccShownN'); if(sn)sn.textContent=n;
           var sd=document.getElementById('ccShownDue'); if(sd)sd.textContent=money(due);
+          var det=document.getElementById('ccPriorDetails'); if(det&&q){ det.open=true; } // 搜尋時自動展開跨日未收
         }
         document.getElementById('ccCashOnly').addEventListener('change',applyFilter);
         document.getElementById('ccSearch').addEventListener('input',applyFilter);
@@ -12804,9 +12805,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           fetch('/admin/cash/extra-income',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:ICPNO,income_date:PAYDATE,item:item,amount:amt,collected_by:document.getElementById('ceBy').value,note:document.getElementById('ceNote').value})}).then(function(r){return r.json();}).then(function(j){ b.disabled=false; if(j&&j.ok){ if(window.sfToast)sfToast('已新增入帳'); document.getElementById('ccExtraBg').style.display='none'; document.getElementById('ceItem').value='';document.getElementById('ceAmount').value='';document.getElementById('ceNote').value=''; } else { if(window.sfToast)sfToast('新增失敗','err'); } }).catch(function(){ b.disabled=false; if(window.sfToast)sfToast('新增失敗','err'); });
         });
         function checked(){ return [].slice.call(document.querySelectorAll('.cc-row:checked')); }
-        function refreshN(){ var n=checked().length; document.getElementById('ccSelN').textContent=n; }
-        document.getElementById('ccBody').addEventListener('change',function(e){ if(e.target.classList.contains('cc-row')) refreshN(); });
-        document.getElementById('ccSelAll').addEventListener('click',function(){ var b=[].slice.call(document.querySelectorAll('.cc-row')).filter(function(x){var tr=x.closest('tr');return tr&&tr.style.display!=='none';}); var allOn=b.length&&b.every(function(x){return x.checked;}); b.forEach(function(x){x.checked=!allOn;}); refreshN(); });
+        function selTotal(){ var t=0; checked().forEach(function(r){ t+=Number(r.dataset.due||0); }); return t; }
+        function refreshN(showToast){ var n=checked().length; var t=selTotal(); document.getElementById('ccSelN').textContent=n+(n?('・'+money(t)):''); if(showToast&&n>0&&window.sfToast){ sfToast('已選 '+n+' 張・合計 '+money(t)); } }
+        // 兩個表（當日＋跨日未收）的勾選都要更新上面數字＋跳 toast
+        document.addEventListener('change',function(e){ if(e.target&&e.target.classList&&e.target.classList.contains('cc-row')) refreshN(true); });
+        document.getElementById('ccSelAll').addEventListener('click',function(){ var b=[].slice.call(document.querySelectorAll('.cc-row')).filter(function(x){var tr=x.closest('tr');return tr&&tr.style.display!=='none';}); var allOn=b.length&&b.every(function(x){return x.checked;}); b.forEach(function(x){x.checked=!allOn;}); refreshN(true); });
         // 票列
         function checkRow(){ var d=document.createElement('div'); d.className='cc-check-row';
           d.innerHTML='<label style="margin:0;">票號<br><input class="ck-no sf-input" style="width:110px;"></label>'+
@@ -12843,6 +12846,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           fetch('/admin/cash/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){
             btn.disabled=false;
             if(!j||!j.ok){ if(window.sfToast)sfToast((j&&j.error)||'登記失敗','err'); return; }
+            if(window.sfToast)sfToast('✅ 收款成功，共 '+i.rows.length+' 張・實收 '+money(Number(cash||0)+checks.reduce(function(s,c){return s+Number(c.amount||0);},0)));
             document.getElementById('ccModalBg').style.display='none';
             var chkTot=checks.reduce(function(s,c){return s+Number(c.amount||0);},0); var cashN=Number(cash||0);
             var rowsHtml=i.rows.map(function(r){return '<tr><td style="font-family:monospace;">'+r.value+'</td><td>'+r.dataset.ctname+'</td><td style="text-align:right;">'+money(r.dataset.due)+'</td></tr>';}).join('');
@@ -12874,8 +12878,27 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             g.fillText(r.sp,pad,y); g.fillText(r.ct.slice(0,14),pad+150,y); g.fillText(r.rt,pad+360,y); g.textAlign='right'; g.fillText(r.due,pad+520,y); g.textAlign='left'; g.fillStyle=(r.st.indexOf('未收')>=0)?'#c62828':'#2e7d32'; g.fillText(r.st.replace(/取消/,'').trim(),pad+560,y); g.fillStyle='#111'; });
           var link=document.createElement('a'); link.download='收款清單_'+ROUTE+'_'+PAYDATE+'.jpg'; link.href=cv.toDataURL('image/jpeg',0.92); link.click();
         }
+        // 收款明細 JPG：畫「這一筆剛收的款」（不是整條路線），所以不會顯示未收
+        function drawDetailJpg(){
+          var d=window.__lastDetail; if(!d){ if(window.sfToast)sfToast('無明細可存','err'); return; }
+          var W=680, pad=24, lh=26, top=132; var H=top+d.rows.length*lh+90;
+          var cv=document.getElementById('ccCanvas'); cv.width=W; cv.height=H; var g=cv.getContext('2d');
+          g.fillStyle='#fff'; g.fillRect(0,0,W,H); g.fillStyle='#111';
+          g.font='bold 20px "Microsoft JhengHei",sans-serif'; g.fillText(d.company+'　收款明細', pad, 34);
+          g.font='13px "Microsoft JhengHei",sans-serif'; g.fillStyle='#333';
+          g.fillText('日期：'+d.date+'　路線：'+d.route+'　司機：'+d.driver, pad, 58);
+          g.fillText('收款人：'+d.me+'　列印：'+new Date().toLocaleString('zh-TW',{hour12:false}), pad, 78);
+          g.strokeStyle='#999'; g.beginPath(); g.moveTo(pad,92); g.lineTo(W-pad,92); g.stroke();
+          g.font='bold 13px "Microsoft JhengHei",sans-serif'; g.fillStyle='#111';
+          g.fillText('單號',pad,top-6); g.fillText('客戶',pad+180,top-6); g.textAlign='right'; g.fillText('應收',pad+430,top-6); g.textAlign='left';
+          g.font='13px "Microsoft JhengHei",sans-serif';
+          d.rows.forEach(function(r,idx){ var y=top+idx*lh+14; g.fillStyle=(idx%2)?'#f4f4f4':'#fff'; g.fillRect(pad,y-16,W-2*pad,lh); g.fillStyle='#111'; g.fillText(r.sp,pad,y); g.fillText((r.ct||'').slice(0,14),pad+180,y); g.textAlign='right'; g.fillText(money(r.due),pad+430,y); g.textAlign='left'; });
+          var yy=top+d.rows.length*lh+24; g.font='bold 14px "Microsoft JhengHei",sans-serif';
+          g.fillText('應收 '+money(d.due)+'　實收 '+money(d.cash+d.chk)+'（現'+money(d.cash)+'／票'+money(d.chk)+'）　差額 '+money(d.diff), pad, yy);
+          var link=document.createElement('a'); link.download='收款明細_'+d.date+'.jpg'; link.href=cv.toDataURL('image/jpeg',0.92); link.click();
+        }
         document.getElementById('ccJpgBtn').addEventListener('click',drawListJpg);
-        document.getElementById('ccDetailJpg').addEventListener('click',drawListJpg);
+        document.getElementById('ccDetailJpg').addEventListener('click',drawDetailJpg);
         refreshN();
         applyFilter();
       })();</script>`;
@@ -13117,6 +13140,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
     // ============================================================
     async function loadDailyReport(icpno, date) {
         const payments = await db.prepare("SELECT id, ct_no, ct_name, collected_by, cash_amount, check_amount, total_amount, due_total, diff, note, recorded_by FROM cash_payment WHERE icpno = ? AND pay_date = ? ORDER BY COALESCE(collected_by,''), recorded_at").all(icpno, date) || [];
+        // 每筆收款對應的銷貨單（日期/單號/金額），供日報表逐單顯示與多筆對帳
+        const allocs = await db.prepare("SELECT a.payment_id, a.sp_no, a.doc_date, a.due_amount FROM cash_payment_alloc a JOIN cash_payment p ON p.id = a.payment_id WHERE a.icpno = ? AND p.pay_date = ? ORDER BY a.doc_date, a.sp_no").all(icpno, date) || [];
+        const allocByPay = new Map();
+        for (const al of allocs) {
+            const arr = allocByPay.get(al.payment_id) || [];
+            arr.push(al);
+            allocByPay.set(al.payment_id, arr);
+        }
+        for (const p of payments)
+            p.allocs = allocByPay.get(p.id) || [];
         const checks = await db.prepare("SELECT ch.check_no, ch.bank, ch.due_date, ch.amount, p.ct_name, p.collected_by FROM cash_check ch JOIN cash_payment p ON p.id = ch.payment_id WHERE ch.icpno = ? AND p.pay_date = ? ORDER BY ch.due_date, ch.check_no").all(icpno, date) || [];
         const extra = await db.prepare("SELECT id, item, amount, collected_by, note FROM cash_extra_income WHERE icpno = ? AND income_date = ? ORDER BY created_at").all(icpno, date) || [];
         const ds = await db.prepare("SELECT COALESCE(SUM(total),0) AS t FROM cash_sales_doc WHERE icpno = ? AND doc_date = ?").get(icpno, date);
@@ -13152,15 +13185,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const me = (res.locals && res.locals.adminUser) || "";
             const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
             const diffTxt = (n) => Number(n) === 0 ? "0" : (Number(n) > 0 ? `+${cashMoney(n)}（溢收）` : `${cashMoney(n)}（短收）`);
+            const allocLineHtml = (p) => (p.allocs || []).map((a) => `${escapeHtml(a.sp_no)} <span style="color:#9b9a97;">${escapeHtml(String(a.doc_date || "").slice(0, 10))}</span> ${cashMoney(a.due_amount)}`).join("<br>");
+            const autoNoteHtml = (p) => { const n = (p.allocs || []).length; const base = p.note ? escapeHtml(p.note) : ""; if (n > 1) { const nos = (p.allocs || []).map((a) => a.sp_no).join("、"); return (base ? base + "　" : "") + `<span style="color:#787774;">共 ${n} 筆：${escapeHtml(nos)}</span>`; } return base; };
             const payRows = d.payments.length ? d.payments.map((p) => `<tr>
-          <td>${escapeHtml(p.ct_name || p.ct_no || "")}</td>
+          <td>${escapeHtml(p.ct_name || p.ct_no || "")}<div style="color:#787774;font-size:11px;margin-top:2px;">${allocLineHtml(p)}</div></td>
           <td>${escapeHtml(p.collected_by || "")}</td>
           <td style="text-align:right;">${cashMoney(p.due_total)}</td>
           <td style="text-align:right;">${cashMoney(p.cash_amount)}</td>
           <td style="text-align:right;">${cashMoney(p.check_amount)}</td>
           <td style="text-align:right;font-weight:600;">${cashMoney(p.total_amount)}</td>
           <td style="text-align:right;color:${Number(p.diff) < 0 ? "#c62828" : "#2e7d32"};">${Number(p.diff) === 0 ? "" : diffTxt(p.diff)}</td>
-          <td>${escapeHtml(p.note || "")}</td>
+          <td>${autoNoteHtml(p)}</td>
         </tr>`).join("") : `<tr><td colspan="8" style="text-align:center;color:#9b9a97;padding:16px;">當日尚無收款紀錄。</td></tr>`;
             const checkRows = d.checks.length ? d.checks.map((c) => `<tr>
           <td style="font-family:ui-monospace,monospace;">${escapeHtml(c.check_no || "")}</td>
@@ -13290,11 +13325,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 ["松富物流股份有限公司　現金日報表"],
                 [`公司：${CASH_COMPANIES[icpno] || icpno}(${icpno})`, `日期：${date}`, `列印人：${printedBy}`],
                 [],
-                ["客戶", "收款人", "應收", "現金", "票", "實收", "短溢收", "備註"],
+                ["客戶", "收款人", "應收", "現金", "票", "實收", "短溢收", "備註", "銷貨單明細（單號 日期 金額）"],
             ];
-            for (const p of d.payments)
-                aoa.push([p.ct_name || p.ct_no || "", p.collected_by || "", Number(p.due_total || 0), Number(p.cash_amount || 0), Number(p.check_amount || 0), Number(p.total_amount || 0), Number(p.diff || 0), p.note || ""]);
-            aoa.push(["合計", "", d.t.due, d.t.cash, d.t.check, d.t.received, d.t.diff, ""]);
+            for (const p of d.payments) {
+                const detail = (p.allocs || []).map((a) => `${a.sp_no} ${String(a.doc_date || "").slice(0, 10)} ${Number(a.due_amount || 0)}`).join(" ; ");
+                const noteN = (p.allocs || []).length > 1 ? ((p.note ? p.note + " " : "") + "共" + (p.allocs || []).length + "筆") : (p.note || "");
+                aoa.push([p.ct_name || p.ct_no || "", p.collected_by || "", Number(p.due_total || 0), Number(p.cash_amount || 0), Number(p.check_amount || 0), Number(p.total_amount || 0), Number(p.diff || 0), noteN, detail]);
+            }
+            aoa.push(["合計", "", d.t.due, d.t.cash, d.t.check, d.t.received, d.t.diff, "", ""]);
             aoa.push([]);
             aoa.push(["票據明細", "票號", "銀行/分行", "到期日", "金額", "客戶"]);
             for (const c of d.checks)
@@ -13328,7 +13366,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const printedBy = (res.locals && res.locals.adminUser) || "";
             const printedAt = new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
             const diffTxt = (n) => Number(n) === 0 ? "0" : (Number(n) > 0 ? `+${cashMoney(n)}` : `${cashMoney(n)}`);
-            const payRows = d.payments.map((p) => `<tr><td>${escapeHtml(p.ct_name || p.ct_no || "")}</td><td>${escapeHtml(p.collected_by || "")}</td><td class="r">${cashMoney(p.due_total)}</td><td class="r">${cashMoney(p.cash_amount)}</td><td class="r">${cashMoney(p.check_amount)}</td><td class="r">${cashMoney(p.total_amount)}</td><td class="r">${Number(p.diff) === 0 ? "" : diffTxt(p.diff)}</td><td>${escapeHtml(p.note || "")}</td></tr>`).join("");
+            const pAllocs = (p) => (p.allocs || []).map((a) => `${escapeHtml(a.sp_no)} ${escapeHtml(String(a.doc_date || "").slice(0, 10))} ${cashMoney(a.due_amount)}`).join("<br>");
+            const pNote = (p) => { const n = (p.allocs || []).length; const base = p.note ? escapeHtml(p.note) : ""; if (n > 1) return (base ? base + "　" : "") + "共 " + n + " 筆"; return base; };
+            const payRows = d.payments.map((p) => `<tr><td>${escapeHtml(p.ct_name || p.ct_no || "")}<div style="color:#666;font-size:10px;">${pAllocs(p)}</div></td><td>${escapeHtml(p.collected_by || "")}</td><td class="r">${cashMoney(p.due_total)}</td><td class="r">${cashMoney(p.cash_amount)}</td><td class="r">${cashMoney(p.check_amount)}</td><td class="r">${cashMoney(p.total_amount)}</td><td class="r">${Number(p.diff) === 0 ? "" : diffTxt(p.diff)}</td><td>${pNote(p)}</td></tr>`).join("");
             const checkRows = d.checks.map((c) => `<tr><td class="mono">${escapeHtml(c.check_no || "")}</td><td>${escapeHtml(c.bank || "")}</td><td>${escapeHtml(String(c.due_date || "").slice(0, 10))}</td><td class="r">${cashMoney(c.amount)}</td><td>${escapeHtml(c.ct_name || "")}</td></tr>`).join("");
             const extraRows = d.extra.map((e) => `<tr><td>${escapeHtml(e.item || "")}</td><td class="r">${cashMoney(e.amount)}</td><td>${escapeHtml(e.collected_by || "")}</td><td>${escapeHtml(e.note || "")}</td></tr>`).join("");
             res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>現金日報表 ${date}</title>
