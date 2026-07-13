@@ -1886,8 +1886,9 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/cash/collect", "cash-collect", "check", "現金收款")}
         ${item("/admin/cash/customers", "cash-customers", "users", "收款客戶主檔")}
       </details>` : ""}
-      <details class="sf-nav-group" ${["inventory","inv-scan","inv-stock","inv-wh-settings","inv-barcodes"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-wh-settings","inv-barcodes"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
+        ${item("/admin/inventory/entry", "inv-entry", "edit", "網站盤點")}
         ${item("/admin/scan", "inv-scan", "scale", "掃碼盤點")}
         ${item("/admin/inventory", "inventory", "clipboard", "每日盤點")}
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
@@ -7927,6 +7928,114 @@ function createAdminRouter() {
             }
             res.json({ ok: true, counted: counts.length, total });
         } catch (e) { console.error("[admin scan submit]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    // ── 每日盤點「網站版」輸入頁（後台帳號登入，不碰 LINE/LIFF token → 無登入逾時）──
+    // 與 LINE LIFF 盤點頁共用 dist/liff/stocktake.html（WEB 模式），寫進同一套 stocktake_session/stocktake_count，
+    // 後台每日盤點直接看得到。資料 API 與 /liff/api/stocktake/* 同邏輯，改用後台 session 認證＋身分。
+    router.get("/inventory/entry", (req, res) => {
+        let tpl;
+        try { tpl = require("fs").readFileSync(require("path").join(__dirname, "..", "liff", "stocktake.html"), "utf8"); }
+        catch (_) { res.status(500).type("text/plain").send("stocktake.html 樣板缺失"); return; }
+        const who = String(res.locals.adminUser || req.adminUsername || "");
+        const cfg = `<script>window.__STK_WEB__=true;window.__STK_API__="/admin/inventory/entry";window.__STK_NAME__=${JSON.stringify(who)};</script>`;
+        // 網頁版不載 LINE LIFF SDK，直接用後台 cookie session；頁內 liff.* 全部有 WEB 判斷保護
+        const html = tpl.replace('<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>', cfg);
+        res.setHeader("Cache-Control", "no-store");
+        res.type("text/html").send(html);
+    });
+    router.get("/inventory/entry/warehouses", async (req, res) => {
+        try {
+            const icpno = scanIc(req.query.icpno);
+            const date = stkAdminTaipeiDate();
+            const whRows = await db.prepare("SELECT code, name, include_stocktake, sort_order FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
+            const cntRows = await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? GROUP BY wh_code").all(icpno);
+            const cnt = {}; (cntRows || []).forEach((r) => { cnt[String(r.code)] = Number(r.cnt || 0); });
+            const doneRows = await db.prepare("SELECT DISTINCT wh_code FROM stocktake_session WHERE count_date = ? AND status = 'submitted' AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(date, icpno);
+            const done = {}; (doneRows || []).forEach((r) => { done[String(r.wh_code)] = true; });
+            let list;
+            if ((whRows || []).length) {
+                list = whRows.filter((w) => Number(w.include_stocktake) === 1).map((w) => ({ code: String(w.code), name: String(w.name || ""), sort: Number(w.sort_order || 0), items: cnt[String(w.code)] || 0, countedToday: !!done[String(w.code)] }));
+            } else {
+                list = Object.keys(cnt).map((code) => ({ code, name: "", sort: 0, items: cnt[code], countedToday: !!done[code] }));
+            }
+            list.sort((a, b) => (a.sort - b.sort) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+            res.json({ date, warehouses: list });
+        } catch (e) { console.error("[admin entry warehouses]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    router.get("/inventory/entry/items", async (req, res) => {
+        try {
+            const code = String(req.query.warehouse || "").trim();
+            if (!code) { res.status(400).json({ error: "缺少 warehouse" }); return; }
+            const icpno = scanIc(req.query.icpno);
+            const wh = await db.prepare("SELECT code, name FROM erp_warehouse WHERE code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
+            const rows = await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY erp_code").all(code, icpno);
+            let whQtyMap = null;
+            try { const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(code); if ((wq || []).length) { whQtyMap = {}; for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0); } } catch (_) { whQtyMap = null; }
+            const sysQtySource = whQtyMap ? "warehouse" : "total";
+            const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item").all();
+            const exp = {}; (expRows || []).forEach((r) => { exp[String(r.erp_code)] = String(r.expiry_unit || ""); });
+            const photoSet = new Set();
+            try { (await db.prepare("SELECT erp_code FROM erp_stock_item_photo").all() || []).forEach((r) => photoSet.add(String(r.erp_code || ""))); } catch (_) { /* 照片表缺失不擋盤點 */ }
+            const items = (rows || []).map((r) => { const c = String(r.erp_code || ""); const isExp = Object.prototype.hasOwnProperty.call(exp, c); const sysv = whQtyMap ? Number(whQtyMap[c] || 0) : Number(r.qty || 0); return { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: sysv, exp: isExp, eunit: isExp ? (exp[c] || String(r.unit || "")) : "", hp: photoSet.has(c) ? 1 : undefined }; });
+            const date = stkAdminTaipeiDate();
+            const saved = {}; let resumed = false; let submittedAt = null;
+            const sess = await db.prepare("SELECT id, submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, date, icpno);
+            if (sess) {
+                const cRows = await db.prepare("SELECT erp_code, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ?").all(sess.id);
+                for (const r of cRows || []) { let expiry = []; try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; } const totalv = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty); const midv = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty); const goodv = totalv == null ? null : Math.round((totalv - (midv || 0)) * 100) / 100; saved[String(r.erp_code || "")] = { counted: goodv, mid: midv, expiry }; }
+                resumed = (cRows || []).length > 0; submittedAt = sess.submitted_at != null && sess.submitted_at !== "" ? String(sess.submitted_at) : null;
+            }
+            res.json({ date, warehouse: { code, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt, sysQtySource });
+        } catch (e) { console.error("[admin entry items]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    router.get("/inventory/entry/photo/:erpCode", async (req, res) => {
+        try {
+            const code = String(req.params.erpCode || "").trim();
+            if (!code) { res.status(400).json({ error: "缺少料號" }); return; }
+            const row = await db.prepare("SELECT photo_url FROM erp_stock_item_photo WHERE erp_code = ?").get(code);
+            if (!row || !row.photo_url) { res.status(404).json({ error: "無照片" }); return; }
+            res.json({ url: String(row.photo_url) });
+        } catch (e) { console.error("[admin entry photo]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    router.post("/inventory/entry/submit", express_1.default.json({ limit: "2mb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const code = String(body.warehouse || "").trim();
+            const counts = Array.isArray(body.counts) ? body.counts : null;
+            if (!code || !counts) { res.status(400).json({ error: "缺少 warehouse 或 counts" }); return; }
+            const icpno = scanIc(body.icpno);
+            const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || "")) ? String(body.date) : stkAdminTaipeiDate();
+            const today = stkAdminTaipeiDate();
+            const yst = scanYesterdayTaipei();
+            if (date !== today && date !== yst) { res.status(400).json({ error: "盤點日期僅限今日或昨日（" + yst + " ～ " + today + "）" }); return; }
+            const { newId } = require("../lib/id.js");
+            const wh = await db.prepare("SELECT name FROM erp_warehouse WHERE code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
+            const totalRow = await db.prepare("SELECT COUNT(*) AS n FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
+            const total = totalRow ? Number(totalRow.n || 0) : counts.length;
+            const now = new Date().toISOString();
+            const curSess = await db.prepare("SELECT submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, date, icpno);
+            const baseSubmittedAt = (body.baseSubmittedAt == null || body.baseSubmittedAt === "") ? null : String(body.baseSubmittedAt);
+            const curSubmittedAt = (curSess && curSess.submitted_at != null && curSess.submitted_at !== "") ? String(curSess.submitted_at) : null;
+            if (curSubmittedAt !== baseSubmittedAt) { res.status(409).json({ error: "開頁後已有他人送出此倉盤點，請重載後續盤再送出", code: "conflict_stale" }); return; }
+            const sid = newId("stk");
+            const name = String(body.name || res.locals.adminUser || req.adminUsername || "").trim();
+            const createdBy = "admin:" + String(req.adminUsername || "");
+            const countRows = counts.map((c) => { const good = (c.counted == null || c.counted === "") ? null : Number(c.counted); const mid = (c.mid == null || c.mid === "") ? null : Number(c.mid); const cv = (good == null && mid == null) ? null : ((good || 0) + (mid || 0)); return [newId("stc"), sid, String(c.code || ""), String(c.name || ""), String(c.spec || ""), String(c.unit || ""), Number(c.sys || 0), cv, mid, JSON.stringify(c.expiry || []), now]; });
+            try {
+                await db.transaction(async (tx) => {
+                    await tx.prepare("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?)").run(code, date, icpno);
+                    await tx.prepare("DELETE FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").run(code, date, icpno);
+                    await tx.prepare("INSERT INTO stocktake_session (id, wh_code, wh_name, count_date, status, group_id, created_by, created_by_name, item_count, counted_count, created_at, submitted_at, icpno) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(sid, code, wh ? String(wh.name || "") : "", date, "submitted", null, createdBy, name, total, counts.length, now, now, icpno);
+                    const BATCH = 50;
+                    for (let i = 0; i < countRows.length; i += BATCH) { const chunk = countRows.slice(i, i + BATCH); const ph = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", "); const params = []; for (const row of chunk) params.push(...row); await tx.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, updated_at) VALUES " + ph).run(...params); }
+                });
+            } catch (e) {
+                const cs = String(e && e.code || ""); const isUniq = cs === "23505" || cs.indexOf("SQLITE_CONSTRAINT") === 0 || /UNIQUE constraint failed/i.test(String(e && e.message || ""));
+                if (isUniq) { res.status(409).json({ error: "此倉今日盤點已被其他人送出，請重新載入", code: "conflict_taken" }); return; }
+                throw e;
+            }
+            res.json({ ok: true, counted: counts.length, total });
+        } catch (e) { console.error("[admin entry submit]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
     // ── 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空籃」。無 group_features 列＝三項全開。 ──
     async function loadStocktakeGroupCandidates() {
