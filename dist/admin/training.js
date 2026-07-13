@@ -472,7 +472,12 @@ function registerTrainingRoutes(router, ctx) {
           </form>
         </div>
         <div class="notion-card">
-          <h2 style="margin-top:0;">${esc(plan.year)} 年度排定（${items.length} 項）</h2>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+            <h2 style="margin:0;">${esc(plan.year)} 年度排定（${items.length} 項）</h2>
+            <span style="margin-left:auto;"></span>
+            <a href="/admin/training/plans/${encodeURIComponent(plan.id)}/print?c=${icp}" target="_blank" class="btn">列印計畫表</a>
+            <a href="/admin/training/plans/${encodeURIComponent(plan.id)}/export.csv?c=${icp}" class="btn">CSV</a>
+          </div>
           <table>
             <thead><tr><th>月</th><th>主題</th><th>類別</th><th>講師</th><th>地點</th><th style="text-align:right;">時數</th><th>狀態</th><th>操作</th></tr></thead>
             <tbody>${itemRows || `<tr><td colspan="8">尚無排定項目。</td></tr>`}</tbody>
@@ -560,7 +565,10 @@ function registerTrainingRoutes(router, ctx) {
           </form>
         </div>
         <div class="notion-card">
-          <h2 style="margin-top:0;">${esc(erp.erpCompanyName(icp))} 課程紀錄</h2>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+            <h2 style="margin:0;">${esc(erp.erpCompanyName(icp))} 課程紀錄</h2>
+            <a href="/admin/training/courses/export.csv?c=${icp}" class="btn" style="margin-left:auto;">CSV 匯出</a>
+          </div>
           <table>
             <thead><tr><th>日期</th><th>題目</th><th>類別</th><th>講師</th><th style="text-align:right;">時數</th><th>狀態</th><th>操作</th></tr></thead>
             <tbody>${rows || `<tr><td colspan="7">尚無課程紀錄。可從年度計畫「轉為課程」或於上方新增。</td></tr>`}</tbody>
@@ -617,6 +625,19 @@ function registerTrainingRoutes(router, ctx) {
         if (typeof db.transaction === "function") await db.transaction(doDel); else await doDel(db);
         res.redirect(`/admin/training/courses?c=${icp}&ok=${encodeURIComponent("已刪除")}`);
     });
+    // 課程紀錄 CSV（該公司全部）— 必須在 :id 之前註冊，否則會被 /training/courses/:id 攔截
+    router.get("/training/courses/export.csv", async (req, res) => {
+        const icp = icpOf(req);
+        const courses = await db.prepare("SELECT * FROM training_course WHERE icpno = ? ORDER BY (course_date IS NULL), course_date DESC, created_at DESC").all(icp);
+        const rows = [["日期", "題目", "類別", "講師", "內外部", "地點", "時數", "對象", "課程概要", "經辦者", "確認", "狀態", "簽到人數", "滿意度平均"]];
+        for (const c of courses) {
+            const cnt = (await db.prepare("SELECT COUNT(*) n FROM training_attendance WHERE course_id = ? AND signed = 1").get(c.id)).n || 0;
+            const svg = await db.prepare("SELECT AVG(overall_score) a, COUNT(overall_score) n FROM training_survey WHERE course_id = ?").get(c.id);
+            const avg = svg && svg.n ? Number(svg.a).toFixed(1) : "";
+            rows.push([c.course_date, c.title, c.category, c.instructor, c.instructor_type, c.location, c.hours, c.target_audience, c.summary, c.handler, c.confirmed_by, c.status === "done" ? "已辦" : "規劃", cnt, avg]);
+        }
+        sendCsv(res, `${erp.erpCompanyName(icp)}_課程紀錄.csv`, rows);
+    });
     router.get("/training/courses/:id", async (req, res) => {
         const icp = icpOf(req);
         const c = await db.prepare("SELECT * FROM training_course WHERE id = ?").get(req.params.id);
@@ -661,6 +682,9 @@ function registerTrainingRoutes(router, ctx) {
             <h2 style="margin:0;">課程紀錄表</h2>
             ${c.status === "done" ? '<span class="sf-pill ok">已辦理</span>' : '<span class="sf-pill">規劃中</span>'}
             ${c.plan_item_id ? '<span class="sf-pill info">來自年度計畫</span>' : ""}
+            <span style="margin-left:auto;"></span>
+            <a href="/admin/training/courses/${encodeURIComponent(c.id)}/print?c=${icp}" target="_blank" class="btn">列印紀錄表</a>
+            <a href="/admin/training/courses/${encodeURIComponent(c.id)}/sign-sheet?c=${icp}" target="_blank" class="btn">列印簽到表</a>
           </div>
           <form method="post" action="/admin/training/courses/save" style="margin-top:12px;">
             <input type="hidden" name="c" value="${icp}"><input type="hidden" name="id" value="${att(c.id)}">
@@ -800,5 +824,153 @@ function registerTrainingRoutes(router, ctx) {
             await db.prepare("INSERT INTO training_outcome (reaction, learning, behavior, result, eval_method, eval_score, effectiveness_note, evidence_url, evaluated_by, evaluated_at, updated_at, course_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(...vals, cid);
         }
         res.redirect(`/admin/training/courses/${encodeURIComponent(cid)}?c=${icp}&ok=1`);
+    });
+
+    // ============================================================
+    //  列印（對齊原紙本表單）＋ CSV 匯出
+    // ============================================================
+    // 乾淨可列印的獨立頁（不套後台 shell）；螢幕上方有「列印」鈕，列印時自動隱藏。
+    function printShell(title, inner) {
+        return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>${esc(title)}</title>
+        <style>
+          *{box-sizing:border-box;}
+          body{font-family:"Microsoft JhengHei","PingFang TC",ui-sans-serif,system-ui,"Noto Sans TC",sans-serif;color:#111;margin:0;padding:24px;background:#f4f4f4;}
+          .sheet{max-width:800px;margin:0 auto;background:#fff;padding:32px 36px;box-shadow:0 2px 12px rgba(0,0,0,.1);}
+          h1{text-align:center;font-size:20px;margin:0 0 4px;}
+          h2{text-align:center;font-size:15px;font-weight:400;color:#333;margin:0 0 18px;}
+          table{width:100%;border-collapse:collapse;margin:0 0 14px;}
+          th,td{border:1px solid #333;padding:7px 9px;font-size:13.5px;vertical-align:top;line-height:1.5;}
+          th{background:#f0f0f0;font-weight:600;white-space:nowrap;text-align:center;}
+          .lbl{background:#f0f0f0;font-weight:600;white-space:nowrap;width:96px;text-align:center;}
+          .sign-cell{height:44px;}
+          .toolbar{max-width:800px;margin:0 auto 14px;text-align:right;}
+          .toolbar button{font-size:14px;padding:8px 18px;border:1px solid #2383e2;background:#2383e2;color:#fff;border-radius:6px;cursor:pointer;}
+          .muted{color:#666;font-size:12px;text-align:center;margin-top:10px;}
+          @media print{ body{background:#fff;padding:0;} .sheet{box-shadow:none;max-width:none;padding:8px;} .toolbar{display:none;} }
+        </style></head><body>
+        <div class="toolbar"><button onclick="window.print()">列印 / 存成 PDF</button></div>
+        <div class="sheet">${inner}</div>
+        </body></html>`;
+    }
+    // CSV：Excel 相容（UTF-8 BOM），欄位含逗號/引號/換行時以引號包起並跳脫。
+    function csvCell(v) { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+    function sendCsv(res, filename, rows) {
+        const body = "\uFEFF" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+        res.send(body);
+    }
+
+    // 年度教育訓練計畫表（列印）
+    router.get("/training/plans/:id/print", async (req, res) => {
+        const icp = icpOf(req);
+        const plan = await db.prepare("SELECT * FROM training_plan WHERE id = ?").get(req.params.id);
+        if (!plan) { res.status(404).send("找不到計畫"); return; }
+        const items = await db.prepare("SELECT * FROM training_plan_item WHERE plan_id = ? ORDER BY sort_order, CAST(month AS INTEGER), month").all(plan.id);
+        const rowsHtml = items.length ? items.map((i) => `
+          <tr>
+            <td style="text-align:center;white-space:nowrap;">${esc(i.month || "")}</td>
+            <td>${esc(i.theme || "")}</td>
+            <td style="text-align:center;">${esc(i.category || "")}</td>
+            <td>${esc(i.instructor || "")}${i.instructor_type ? `（${esc(i.instructor_type)}）` : ""}</td>
+            <td style="text-align:center;">${esc(i.location || "")}</td>
+            <td style="text-align:center;">${i.planned_hours != null ? esc(i.planned_hours) : ""}</td>
+          </tr>`).join("") : `<tr><td colspan="6" style="text-align:center;color:#666;">（尚無排定項目）</td></tr>`;
+        const inner = `
+          <h1>${esc(erp.erpCompanyName(icp))}</h1>
+          <h2>員工年度教育訓練計畫表　${esc(plan.year)} 年度${plan.title ? "　" + esc(plan.title) : ""}</h2>
+          ${plan.goal ? `<table><tr><td class="lbl">年度目標</td><td>${esc(plan.goal)}</td></tr></table>` : ""}
+          <table>
+            <thead><tr><th style="width:64px;">月份</th><th>主題</th><th style="width:64px;">類別</th><th style="width:150px;">講師</th><th style="width:120px;">地點</th><th style="width:56px;">時數</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+          <table><tr><td class="lbl">承辦</td><td style="width:180px;"></td><td class="lbl">主管</td><td style="width:180px;"></td></tr></table>
+          <p class="muted">列印日期：${esc(nowIso().slice(0, 10))}</p>`;
+        res.type("text/html").send(printShell(`${plan.year}年度教育訓練計畫表`, inner));
+    });
+    // 年度計畫 CSV
+    router.get("/training/plans/:id/export.csv", async (req, res) => {
+        const plan = await db.prepare("SELECT * FROM training_plan WHERE id = ?").get(req.params.id);
+        if (!plan) { res.status(404).send("找不到計畫"); return; }
+        const items = await db.prepare("SELECT * FROM training_plan_item WHERE plan_id = ? ORDER BY sort_order, CAST(month AS INTEGER), month").all(plan.id);
+        const statusZh = (s) => s === "done" ? "已辦" : s === "canceled" ? "取消" : "未辦";
+        const rows = [["月份", "主題", "類別", "講師", "內外部", "地點", "預計時數", "狀態", "備註"]];
+        for (const i of items) rows.push([i.month, i.theme, i.category, i.instructor, i.instructor_type, i.location, i.planned_hours, statusZh(i.status), i.note]);
+        sendCsv(res, `${erp.erpCompanyName(icpOf(req))}_${plan.year}年度教育訓練計畫.csv`, rows);
+    });
+
+    // 課程紀錄表（列印，對齊原「員工教育訓練課程紀錄表」）
+    router.get("/training/courses/:id/print", async (req, res) => {
+        const c = await db.prepare("SELECT * FROM training_course WHERE id = ?").get(req.params.id);
+        if (!c) { res.status(404).send("找不到課程"); return; }
+        const cIcp = erp.normIcpno(c.icpno);
+        const atts = await db.prepare("SELECT * FROM training_attendance WHERE course_id = ? AND signed = 1 ORDER BY created_at").all(c.id);
+        const surveys = await db.prepare("SELECT overall_score FROM training_survey WHERE course_id = ? AND overall_score IS NOT NULL").all(c.id);
+        const outcome = (await db.prepare("SELECT * FROM training_outcome WHERE course_id = ?").get(c.id)) || {};
+        const svgN = surveys.length;
+        const svgAvg = svgN ? (surveys.reduce((s, r) => s + Number(r.overall_score || 0), 0) / svgN).toFixed(1) : "";
+        const timeStr = [c.start_time, c.end_time].filter(Boolean).join("～");
+        const names = atts.map((a) => esc(a.name || "")).join("、");
+        const inner = `
+          <h1>${esc(erp.erpCompanyName(cIcp))}</h1>
+          <h2>員工教育訓練課程紀錄表</h2>
+          <table>
+            <tr><td class="lbl">題目</td><td colspan="3">${esc(c.title)}</td></tr>
+            <tr><td class="lbl">日期</td><td>${esc(c.course_date || "")}</td><td class="lbl">時間</td><td>${esc(timeStr)}${c.hours != null ? `（${esc(c.hours)} 小時）` : ""}</td></tr>
+            <tr><td class="lbl">講師</td><td>${esc(c.instructor || "")}${c.instructor_type ? `（${esc(c.instructor_type)}）` : ""}</td><td class="lbl">地點</td><td>${esc(c.location || "")}</td></tr>
+            <tr><td class="lbl">類別</td><td>${esc(c.category || "")}</td><td class="lbl">對象</td><td>${esc(c.target_audience || "")}</td></tr>
+            ${c.objective ? `<tr><td class="lbl">課程目標</td><td colspan="3">${esc(c.objective)}</td></tr>` : ""}
+            <tr><td class="lbl">課程概要</td><td colspan="3" style="height:90px;">${esc(c.summary || "").replace(/\n/g, "<br>")}</td></tr>
+            <tr><td class="lbl">參加人員</td><td colspan="3">${names || "（見簽到表）"}${atts.length ? `　共 ${atts.length} 人` : ""}</td></tr>
+            ${(outcome.reaction || outcome.learning || outcome.behavior || outcome.result || svgN) ? `<tr><td class="lbl">成效評估</td><td colspan="3">${[
+              svgN ? `滿意度 ${svgAvg}/5（${svgN} 份）` : "",
+              outcome.reaction ? `反應：${esc(outcome.reaction)}` : "",
+              outcome.learning ? `學習：${esc(outcome.learning)}` : "",
+              outcome.behavior ? `行為：${esc(outcome.behavior)}` : "",
+              outcome.result ? `成果：${esc(outcome.result)}` : "",
+            ].filter(Boolean).join("<br>")}</td></tr>` : ""}
+            <tr><td class="lbl">經辦者</td><td>${esc(c.handler || "")}</td><td class="lbl">確認</td><td>${esc(c.confirmed_by || "")}</td></tr>
+          </table>
+          <p class="muted">列印日期：${esc(nowIso().slice(0, 10))}</p>`;
+        res.type("text/html").send(printShell(`課程紀錄表-${c.title}`, inner));
+    });
+    // 簽到表（列印，含簽名欄）
+    router.get("/training/courses/:id/sign-sheet", async (req, res) => {
+        const c = await db.prepare("SELECT * FROM training_course WHERE id = ?").get(req.params.id);
+        if (!c) { res.status(404).send("找不到課程"); return; }
+        const cIcp = erp.normIcpno(c.icpno);
+        // 已簽到者在前；其餘在職員工列出供現場補簽
+        const signed = await db.prepare("SELECT employee_id, name, dept FROM training_attendance WHERE course_id = ? AND signed = 1 ORDER BY created_at").all(c.id);
+        const signedIds = new Set(signed.filter((s) => s.employee_id).map((s) => s.employee_id));
+        const roster = await db.prepare("SELECT id, name, dept FROM training_employee WHERE icpno = ? AND status = 'active' ORDER BY sort_order, name").all(cIcp);
+        const extra = roster.filter((e) => !signedIds.has(e.id));
+        const people = [...signed.map((s) => ({ name: s.name, dept: s.dept, pre: true })), ...extra.map((e) => ({ name: e.name, dept: e.dept, pre: false }))];
+        const bodyRows = (people.length ? people : [{ name: "", dept: "" }]).map((p, i) => `
+          <tr>
+            <td style="text-align:center;width:40px;">${i + 1}</td>
+            <td style="width:150px;">${esc(p.name || "")}</td>
+            <td style="width:120px;">${esc(p.dept || "")}</td>
+            <td class="sign-cell"></td>
+          </tr>`).join("");
+        // 額外空白列供臨時人員簽名
+        const blanks = Array.from({ length: 5 }, (_, i) => `
+          <tr><td style="text-align:center;">${people.length + i + 1}</td><td></td><td></td><td class="sign-cell"></td></tr>`).join("");
+        const timeStr = [c.start_time, c.end_time].filter(Boolean).join("～");
+        const inner = `
+          <h1>${esc(erp.erpCompanyName(cIcp))}</h1>
+          <h2>教育訓練簽到表</h2>
+          <table>
+            <tr><td class="lbl">題目</td><td colspan="3">${esc(c.title)}</td></tr>
+            <tr><td class="lbl">日期</td><td>${esc(c.course_date || "")}</td><td class="lbl">時間</td><td>${esc(timeStr)}</td></tr>
+            <tr><td class="lbl">講師</td><td>${esc(c.instructor || "")}</td><td class="lbl">地點</td><td>${esc(c.location || "")}</td></tr>
+          </table>
+          <table>
+            <thead><tr><th style="width:40px;">#</th><th>姓名</th><th>部門</th><th>簽名</th></tr></thead>
+            <tbody>${bodyRows}${blanks}</tbody>
+          </table>
+          <p class="muted">列印日期：${esc(nowIso().slice(0, 10))}　　（名冊 ${roster.length} 人；已預簽到 ${signed.length} 人）</p>`;
+        res.type("text/html").send(printShell(`簽到表-${c.title}`, inner));
     });
 }
