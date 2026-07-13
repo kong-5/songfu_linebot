@@ -316,7 +316,7 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_session_date ON stocktake_session(count_date, wh_code)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_count (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, erp_code TEXT, name TEXT, spec TEXT, unit TEXT, sys_qty REAL, counted_qty REAL, expiry_json TEXT, updated_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
-        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (erp_code TEXT PRIMARY KEY, expiry_unit TEXT, created_at TEXT)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
         // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
         sqlite.exec("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
         // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。
@@ -325,6 +325,19 @@ function initSqlite(dbPath) {
         sqlite.exec("INSERT INTO group_features (group_id, feat_order, feat_stocktake, feat_basket, updated_at) SELECT sg.group_id, CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.line_group_id IS NOT NULL AND c.line_group_id <> '' AND LOWER(REPLACE(c.line_group_id,' ','')) = LOWER(REPLACE(sg.group_id,' ',''))) THEN 1 ELSE 0 END, 1, 1, datetime('now') FROM stocktake_group sg WHERE NOT EXISTS (SELECT 1 FROM group_features gf WHERE gf.group_id = sg.group_id)");
     }
     catch (_) { /* tables may already exist */ }
+    // [migration 2026-07-13] 效期品也按公司：主鍵 erp_code → (icpno, erp_code)；舊資料補 icpno='00'（松富）。
+    try {
+        const hasIcpno = sqlite.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('stocktake_expiry_item') WHERE name='icpno'").get().n > 0;
+        const pkCols = sqlite.prepare("SELECT name FROM pragma_table_info('stocktake_expiry_item') WHERE pk > 0 ORDER BY pk").all().map((r) => String(r.name));
+        if (!hasIcpno || pkCols.length < 2) {
+            sqlite.exec("CREATE TABLE stocktake_expiry_item_v2 (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
+            sqlite.exec("INSERT OR IGNORE INTO stocktake_expiry_item_v2 (icpno, erp_code, expiry_unit, created_at) SELECT '00', erp_code, expiry_unit, created_at FROM stocktake_expiry_item");
+            sqlite.exec("DROP TABLE stocktake_expiry_item");
+            sqlite.exec("ALTER TABLE stocktake_expiry_item_v2 RENAME TO stocktake_expiry_item");
+            console.log("[migration] stocktake_expiry_item 主鍵改為 (icpno, erp_code)");
+        }
+    }
+    catch (e) { console.warn("[migration] stocktake_expiry_item 多公司主鍵遷移失敗:", e?.message || e); }
     try {
         // [fix 2026-07-10] 盤點「一倉一日一筆」補真正的 UNIQUE 約束（原 idx_stk_session_date 只是普通索引，
         // 併發送出可打破唯一性）。先冪等去重：同倉同日保留最後送出（submitted_at/created_at 最大者，再以 id 決勝），
@@ -999,10 +1012,24 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_session_date ON stocktake_session(count_date, wh_code)");
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_count (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, erp_code TEXT, name TEXT, spec TEXT, unit TEXT, sys_qty DOUBLE PRECISION, counted_qty DOUBLE PRECISION, expiry_json TEXT, updated_at TEXT)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
-                await client.query("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (erp_code TEXT PRIMARY KEY, expiry_unit TEXT, created_at TEXT)");
+                await client.query("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS mid_qty DOUBLE PRECISION");
                 // 多公司盤點（松富00＋松揚02…）：場次記公司代碼，NULL 視為 '00'
                 await client.query("ALTER TABLE stocktake_session ADD COLUMN IF NOT EXISTS icpno TEXT");
+                // [migration 2026-07-13] 效期品也按公司：erp_code 單一主鍵 → (icpno, erp_code)；舊資料補 icpno='00'。
+                try {
+                    await client.query("ALTER TABLE stocktake_expiry_item ADD COLUMN IF NOT EXISTS icpno TEXT");
+                    const eiPk = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'stocktake_expiry_item'::regclass AND i.indisprimary");
+                    if (!eiPk.rows.some((r) => r.attname === "icpno")) {
+                        await client.query("UPDATE stocktake_expiry_item SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
+                        await client.query("ALTER TABLE stocktake_expiry_item DROP CONSTRAINT IF EXISTS stocktake_expiry_item_pkey");
+                        await client.query("ALTER TABLE stocktake_expiry_item ALTER COLUMN icpno SET NOT NULL");
+                        await client.query("ALTER TABLE stocktake_expiry_item ALTER COLUMN icpno SET DEFAULT '00'");
+                        await client.query("ALTER TABLE stocktake_expiry_item ADD PRIMARY KEY (icpno, erp_code)");
+                        console.log("[migration] stocktake_expiry_item 主鍵改為 (icpno, erp_code)");
+                    }
+                }
+                catch (e) { console.warn("[migration] stocktake_expiry_item 多公司主鍵遷移失敗:", e?.message || e); }
                 // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
                 await client.query("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
                 // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。

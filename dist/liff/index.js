@@ -143,7 +143,7 @@ function createLiffRouter() {
                 }
             } catch (_) { whQtyMap = null; /* 查詢失敗 → 沿用總量基準，不擋盤點 */ }
             const sysQtySource = whQtyMap ? "warehouse" : "total";
-            const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item").all();
+            const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
             const exp = {}; (expRows || []).forEach((r) => { exp[String(r.erp_code)] = String(r.expiry_unit || ""); });
             // 品項照片（第四波）：只查有照片的料號組成 Set，items 帶 hp 布林；data URI 不塞進 items JSON（撐爆 payload），需要時走單張取圖端點 lazy-load
             const photoSet = new Set();
