@@ -55,7 +55,9 @@
 ## LINE 盤點系統（已上線）
 - **LIFF 盤點頁** `dist/liff/stocktake.html`（LIFF `2010106501-VocNwkbA`，端點 `/liff/stocktake`）：
   倉庫選擇→緊湊盤點清單→送出；白底、可隱藏0、**中／越雙語**、**續盤**（重開帶回今日已盤）。
-  - **效期品**：由 `stocktake_expiry_item` 標記的品項才出現效期批號輸入。
+  - **效期品**：由 `stocktake_expiry_item` 標記的品項才出現效期批號輸入。**此表已分公司**（主鍵 `(icpno, erp_code)`）；後台「庫存管理 → 效期品設定」(`/admin/inventory/expiry-items`) 可單筆或**整倉批次**帶入（例：松揚雜貨庫房）。
+  - **網站版盤點入口** `/admin/inventory/entry`：後台帳號 cookie 登入、免 LINE token（解外部瀏覽器登入逾時），與 LIFF 頁共用 `stocktake.html`（`window.__STK_WEB__` 注入 WEB 模式），寫進同一套盤點表。
+  - **庫存調整（誤差補償，免凌越重整）**：`stock_adjustment`（主鍵 `(icpno, erp_code)`、`delta`）。**顯示庫存＝凌越快照＋delta**（`/admin/inventory/stock`），每日盤點「最新系統／對最新盤差」也加 delta（校正後歸零）。每日盤點盤差表一鍵「建立調整」＝`delta=實盤−凌越量`；總管理在「庫存管理 → 庫存調整」(`/admin/inventory/adjustments`) 可改/刪。**只影響內部顯示與盤差，不寫回凌越**；凌越重整後要記得刪調整避免雙重補償。
   - **中價貨**：盤點數旁的小「⋯」點開才填中貨（極少數品項才有，方案B）；**counted_qty 存上＋中合計**，`mid_qty` 單獨保留。
 - **群組功能白名單 `group_features`（新，取代舊「盤點群組」開關）**：每個 LINE 群組可分別開關三項功能——
   **辨識訂單／盤點／空籃**。無資料列時**辨識訂單／空籃預設開、盤點預設關**（盤點為 opt-in 白名單制，只有明確設為開的群組才回應 `#盤點`）。權威 helper：`dist/lib/group-features.js`
