@@ -1886,12 +1886,13 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/cash/collect", "cash-collect", "check", "現金收款")}
         ${item("/admin/cash/customers", "cash-customers", "users", "收款客戶主檔")}
       </details>` : ""}
-      <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-wh-settings","inv-barcodes","inv-expiry"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-wh-settings","inv-barcodes","inv-expiry","inv-adjust"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory/entry", "inv-entry", "edit", "網站盤點")}
         ${item("/admin/scan", "inv-scan", "scale", "掃碼盤點")}
         ${item("/admin/inventory", "inventory", "clipboard", "每日盤點")}
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
+        ${item("/admin/inventory/adjustments", "inv-adjust", "refresh", "庫存調整")}
         ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "pin", "倉庫設定")}
         ${item("/admin/inventory/barcodes", "inv-barcodes", "tag", "條碼對照")}
         ${item("/admin/inventory/expiry-items", "inv-expiry", "calendar", "效期品設定")}
@@ -2248,7 +2249,7 @@ const STK_CLIENT_JS = `
   function rowHtml(it){
     var s=safetyOf(it.c); var neg=it.q<0; var low=(it.q>0&&s>0&&it.q<s);
     var cls=neg?'stk-neg':(low?'stk-low':'');
-    return '<tr class="'+cls+'"'+(TXN_ENABLED?(' data-code="'+esc(it.c)+'" data-name="'+esc(it.n)+'"'):'')+'><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td>'+photoCell(it)+'</tr>';
+    return '<tr class="'+cls+'"'+(TXN_ENABLED?(' data-code="'+esc(it.c)+'" data-name="'+esc(it.n)+'"'):'')+'><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+(it.adj?('<span title="含人工調整 '+(it.adj>0?'+':'')+it.adj+'（原凌越 '+fmtQty(it.qraw)+'）" style="margin-left:6px;font-size:10.5px;font-weight:700;color:#8250df;background:#f3eefd;border-radius:5px;padding:1px 5px;white-space:nowrap;">調'+(it.adj>0?'+':'')+it.adj+'</span>'):'')+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td>'+photoCell(it)+'</tr>';
   }
   function theadHtml(){ return '<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>凌越倉別</th><th class="stk-photo">照片</th></tr></thead>'; }
   function renderList(list){
@@ -6554,9 +6555,10 @@ function createAdminRouter() {
         try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, hour: "2-digit", minute: "2-digit" }); }
         catch (_) { return String(iso); }
     }
-    async function loadStocktakeDay(date, latestMap) {
+    async function loadStocktakeDay(date, latestMap, adjMap) {
         // latestMap 以「icpno|料號」為鍵（多公司料號可能撞號，不能只用料號）
         const lm = latestMap || {};
+        const am = adjMap || {}; // 人工調整值（icpno|料號→delta）：最新系統＝凌越 + delta，讓盤差扣掉系統誤差
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
         // [分倉庫存 2026-07-10] 「最新系統／對最新盤差」的基準：該倉在 erp_stock_wh_qty 有任何分倉列
@@ -6585,19 +6587,22 @@ function createAdminRouter() {
                 const mid = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
                 const diff = counted == null ? null : Math.round((counted - sys) * 100) / 100;
                 const code = String(r.erp_code || "");
+                const adj = Number(am[sIcp + "|" + code] || 0); // 人工調整值
                 // 分倉庫存優先（該倉有 000009 資料）；否則 fallback 到公司總量快照（鍵含 icpno）
-                let latest;
+                let latestRaw;
                 if (whm) {
-                    latest = Number(whm[code] || 0); // 分倉基準：該品項無分倉列＝0
+                    latestRaw = Number(whm[code] || 0); // 分倉基準：該品項無分倉列＝0
                 } else {
                     const lmKey = sIcp + "|" + code;
                     const hasLatest = Object.prototype.hasOwnProperty.call(lm, lmKey);
-                    latest = hasLatest ? Number(lm[lmKey]) : null;
+                    latestRaw = hasLatest ? Number(lm[lmKey]) : null;
                 }
+                // 最新系統＝凌越 + 人工調整；對最新盤差＝實盤−最新系統（建立調整後歸零）
+                const latest = latestRaw == null ? null : Math.round((latestRaw + adj) * 100) / 100;
                 const diffLatest = (counted == null || latest == null) ? null : Math.round((counted - latest) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
-                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, diffLatest, expiry };
+                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, latestRaw, adj, diffLatest, expiry };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
             out.push({ session: s, items, diffCount, latestSource: whm ? "warehouse" : "total" });
@@ -6614,7 +6619,10 @@ function createAdminRouter() {
             (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); });
             stockMeta = await readStockMeta();
         } catch (_) { /* 無庫存快照時照樣顯示 */ }
-        const day = await loadStocktakeDay(date, latestMap);
+        // 人工調整值（彌補系統誤差）：最新系統/對最新盤差都會加上它
+        const adjMap = {};
+        try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
+        const day = await loadStocktakeDay(date, latestMap, adjMap);
         let includedWh = [];
         try { includedWh = (await db.prepare("SELECT code, name, icpno FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY icpno, sort_order, code").all()) || []; } catch (_) { includedWh = []; }
         let recentDates = [];
@@ -6672,6 +6680,20 @@ function createAdminRouter() {
             const s = sel.session;
             const done = Number(s.counted_count || 0), all = Number(s.item_count || 0);
             const dLatestCls = (d) => (d == null ? "" : d === 0 ? "stk-z" : d > 0 ? "stk-p" : "stk-n");
+            // 調整欄：一鍵把「顯示/最新系統」校正成此次實盤（delta＝實盤−凌越總量），之後每日盤差都扣掉此系統誤差；可重設/取消。
+            const icpForm = (0, erp_companies_js_1.normIcpno)(s.icpno);
+            const backQ = `date=${encodeURIComponent(date)}&wh=${encodeURIComponent(selWh)}`;
+            const adjHidden = (it) => `<input type="hidden" name="icpno" value="${escapeAttr(icpForm)}"><input type="hidden" name="erp_code" value="${escapeAttr(it.code)}"><input type="hidden" name="back" value="${escapeAttr(backQ)}">`;
+            const setForm = (it, label, cls) => `<form method="post" action="/admin/inventory/adjustments" style="display:inline;"><input type="hidden" name="action" value="set_from_count">${adjHidden(it)}<input type="hidden" name="counted" value="${escapeAttr(String(it.counted))}"><input type="hidden" name="name" value="${escapeAttr(it.name)}"><input type="hidden" name="spec" value="${escapeAttr(it.spec)}"><input type="hidden" name="unit" value="${escapeAttr(it.unit)}"><button type="submit" class="stk-adjbtn${cls || ""}" title="讓最新系統＝此次實盤，之後每日盤差都扣掉這個系統誤差">${label}</button></form>`;
+            const delForm = (it) => `<form method="post" action="/admin/inventory/adjustments" style="display:inline;" onsubmit="return confirm('取消 ${escapeAttr(it.code)} 的庫存調整？');"><input type="hidden" name="action" value="delete">${adjHidden(it)}<button type="submit" class="stk-adjbtn del">取消</button></form>`;
+            const adjCell = (it) => {
+                if (it.adj) {
+                    let h = `<span class="stk-adjchip" title="人工調整值，顯示與盤差都已加上此數">調 ${it.adj > 0 ? "+" : ""}${it.adj}</span>`;
+                    if (it.counted != null && it.diffLatest != null && it.diffLatest !== 0) h += setForm(it, "重設");
+                    return h + delForm(it);
+                }
+                return it.counted == null ? "—" : setForm(it, "建立調整");
+            };
             const rowsHtml = sel.items.map((it) => `
               <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
@@ -6682,6 +6704,7 @@ function createAdminRouter() {
                 <td class="stk-num">${diffPct(it)}</td>
                 <td class="stk-num stk-latest">${fmtN(it.latest)}</td>
                 <td class="stk-num ${dLatestCls(it.diffLatest)}"><b>${it.diffLatest == null ? "—" : (it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b></td>
+                <td class="stk-adj">${adjCell(it)}</td>
                 <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
               </tr>`).join("");
             rightHtml = `
@@ -6700,8 +6723,8 @@ function createAdminRouter() {
             <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
-              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下</span></th><th class="stk-num">盤差%</th><th class="stk-num">最新<br><span class="stk-th2">系統</span></th><th class="stk-num">對最新<br><span class="stk-th2">盤差</span></th><th>效期</th></tr></thead>
-              <tbody>${rowsHtml || `<tr><td colspan="9" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
+              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下</span></th><th class="stk-num">盤差%</th><th class="stk-num">最新<br><span class="stk-th2">系統+調整</span></th><th class="stk-num">對最新<br><span class="stk-th2">盤差</span></th><th>調整<br><span class="stk-th2">誤差補償</span></th><th>效期</th></tr></thead>
+              <tbody>${rowsHtml || `<tr><td colspan="10" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
             </table>
             </div>
           </div>`;
@@ -6766,6 +6789,11 @@ function createAdminRouter() {
         .stk-togbtn.sm{padding:4px 10px;font-size:11.5px;}
         .stk-togbtn.on{background:#2383e2;border-color:#2383e2;color:#fff;}
         .stk-empty{background:var(--notion-card,#fff);border:1px dashed var(--notion-border,#e3e2e0);border-radius:12px;padding:34px 16px;text-align:center;color:#787774;}
+        .stk-adjchip{display:inline-block;font-size:11px;font-weight:700;color:#8250df;background:#f3eefd;border-radius:5px;padding:1px 6px;white-space:nowrap;margin-right:5px;}
+        .stk-adjbtn{font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;white-space:nowrap;margin-left:3px;}
+        .stk-adjbtn:hover{background:#f3eefd;border-color:#c9b6f0;color:#6a3fc0;}
+        .stk-adjbtn.del{color:#b3261e;}
+        .stk-adjbtn.del:hover{background:#fdecec;border-color:#e8b4b0;color:#8f1d17;}
       </style>
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 每日盤點</div>
       <h1 class="notion-page-title" style="margin-bottom:14px;">每日盤點</h1>
@@ -6819,12 +6847,135 @@ function createAdminRouter() {
       </script>`;
         res.type("text/html").send(notionPage("每日盤點", body, "inventory", res));
     });
+    // ── 庫存調整（彌補凌越系統誤差，免重整）：每公司每料號一個總調整值 delta。
+    //    顯示庫存＝凌越快照 + delta；盤差「最新系統」也加 delta（校正後對最新盤差歸零）。只影響內部顯示，不寫回凌越。──
+    router.post("/inventory/adjustments", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.body && req.body.icpno);
+        const back = String(req.body?.back || "").replace(/[^\w=&%:.\-]/g, "");
+        const dest = back === "mgmt" ? ("/admin/inventory/adjustments?icpno=" + encodeURIComponent(icpno)) : ("/admin/inventory" + (back ? ("?" + back) : ""));
+        const done = (extra) => res.redirect(dest + (extra ? ((dest.indexOf("?") >= 0 ? "&" : "?") + extra) : ""));
+        try {
+            const action = String(req.body?.action || "").trim();
+            const erpCode = String(req.body?.erp_code || "").trim();
+            if (!erpCode) { done("adjerr=" + encodeURIComponent("缺少料號")); return; }
+            const now = new Date().toISOString();
+            const who = String(res.locals.adminUser || req.adminUsername || "");
+            const createdBy = "admin:" + String(req.adminUsername || "");
+            if (action === "delete") {
+                await db.prepare("DELETE FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode);
+                done("adjok=1"); return;
+            }
+            const cur = await db.prepare("SELECT * FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").get(icpno, erpCode);
+            const stock = await db.prepare("SELECT name, spec, unit, qty FROM erp_stock_items WHERE erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(erpCode, icpno);
+            let delta, baseQty, countedQty, name, spec, unit, note;
+            if (action === "set_from_count") {
+                const counted = Number(req.body?.counted);
+                if (!Number.isFinite(counted)) { done("adjerr=" + encodeURIComponent("實盤數無效")); return; }
+                baseQty = stock ? Number(stock.qty || 0) : 0; // 凌越目前總量
+                delta = Math.round((counted - baseQty) * 100) / 100; // 讓顯示/最新系統＝實盤
+                countedQty = counted;
+                name = String(req.body?.name || (stock && stock.name) || (cur && cur.name) || "");
+                spec = String(req.body?.spec || (stock && stock.spec) || (cur && cur.spec) || "");
+                unit = String(req.body?.unit || (stock && stock.unit) || (cur && cur.unit) || "");
+                note = cur ? cur.note : null;
+                if (delta === 0) { // 實盤與系統一致→不需調整；原本有的話移除
+                    await db.prepare("DELETE FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode);
+                    done("adjok=1"); return;
+                }
+            }
+            else if (action === "update") {
+                const d = Number(req.body?.delta);
+                if (!Number.isFinite(d)) { done("adjerr=" + encodeURIComponent("調整值無效（要是數字）")); return; }
+                delta = Math.round(d * 100) / 100;
+                baseQty = cur ? cur.base_qty : (stock ? Number(stock.qty || 0) : null);
+                countedQty = cur ? cur.counted_qty : null;
+                name = String((cur && cur.name) || (stock && stock.name) || "");
+                spec = String((cur && cur.spec) || (stock && stock.spec) || "");
+                unit = String((cur && cur.unit) || (stock && stock.unit) || "");
+                note = req.body?.note != null ? String(req.body.note).slice(0, 200) : (cur ? cur.note : null);
+                if (delta === 0) { await db.prepare("DELETE FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode); done("adjok=1"); return; }
+            }
+            else { done("adjerr=" + encodeURIComponent("未知動作")); return; }
+            const createdAt = (cur && cur.created_at) ? cur.created_at : now;
+            const createdByKeep = (cur && cur.created_by) ? cur.created_by : createdBy;
+            const createdByNameKeep = (cur && cur.created_by_name) ? cur.created_by_name : who;
+            const isPg = Boolean(process.env.DATABASE_URL);
+            if (isPg) {
+                await db.prepare("INSERT INTO stock_adjustment (icpno, erp_code, delta, name, spec, unit, base_qty, counted_qty, note, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (icpno, erp_code) DO UPDATE SET delta = EXCLUDED.delta, name = EXCLUDED.name, spec = EXCLUDED.spec, unit = EXCLUDED.unit, base_qty = EXCLUDED.base_qty, counted_qty = EXCLUDED.counted_qty, note = EXCLUDED.note, updated_at = EXCLUDED.updated_at").run(icpno, erpCode, delta, name, spec, unit, baseQty, countedQty, note, createdByKeep, createdByNameKeep, createdAt, now);
+            } else {
+                await db.prepare("INSERT OR REPLACE INTO stock_adjustment (icpno, erp_code, delta, name, spec, unit, base_qty, counted_qty, note, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(icpno, erpCode, delta, name, spec, unit, baseQty, countedQty, note, createdByKeep, createdByNameKeep, createdAt, now);
+            }
+            done("adjok=1");
+        }
+        catch (e) {
+            console.error("[admin] adjustments save", e?.message || e);
+            done("adjerr=" + encodeURIComponent(String(e?.message || e).slice(0, 120)));
+        }
+    });
+    router.get("/inventory/adjustments", async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno, "02");
+        const companies = await listStockCompanies();
+        if (companies.indexOf(icpno) < 0) companies.push(icpno);
+        companies.sort();
+        let rows = [];
+        try {
+            rows = (await db.prepare(
+                "SELECT a.erp_code, a.delta, a.base_qty, a.counted_qty, a.note, a.created_by_name, a.updated_at, i.name, i.spec, i.unit, i.qty AS cur_qty " +
+                "FROM stock_adjustment a LEFT JOIN erp_stock_items i ON i.erp_code = a.erp_code AND COALESCE(NULLIF(TRIM(i.icpno),''),'00') = COALESCE(NULLIF(TRIM(a.icpno),''),'00') " +
+                "WHERE COALESCE(NULLIF(TRIM(a.icpno),''),'00') = ? ORDER BY a.erp_code").all(icpno)) || [];
+        } catch (e) { console.error("[admin] adjustments list", e?.message || e); rows = []; }
+        const coSeg = companies.length > 1 ? `<div class="sf-seg" style="margin:0 0 14px;display:inline-flex;">${companies.map((c) => `<button type="button" class="${c === icpno ? "active" : ""}" onclick="location.href='/admin/inventory/adjustments?icpno=${c}'">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))}</button>`).join("")}</div>` : "";
+        const banner = req.query.adjok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存。</div>` : (req.query.adjerr ? `<div style="background:#fdecec;color:#b3261e;padding:10px 12px;border-radius:8px;margin-bottom:12px;">操作失敗：${escapeHtml(String(req.query.adjerr))}</div>` : "");
+        const n2 = (v) => (v == null ? "—" : String(Math.round(Number(v) * 100) / 100));
+        const rowsHtml = rows.map((r) => {
+            const hasStock = r.name != null;
+            const rawq = Number(r.cur_qty || 0);
+            const shown = hasStock ? Math.round((rawq + Number(r.delta || 0)) * 100) / 100 : null;
+            return `
+      <tr>
+        <td style="font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:600;">${escapeHtml(String(r.erp_code))}</td>
+        <td>${escapeHtml(String(r.name || "（庫存快照查無此料號）"))}${r.spec ? `<span style="margin-left:6px;font-size:11px;color:var(--notion-text-muted,#9b9a97);">${escapeHtml(String(r.spec))}</span>` : ""}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums;">${hasStock ? n2(rawq) : "—"}</td>
+        <td style="text-align:center;">
+          <form method="post" action="/admin/inventory/adjustments" style="display:inline-flex;align-items:center;gap:6px;">
+            <input type="hidden" name="action" value="update"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}"><input type="hidden" name="erp_code" value="${escapeAttr(String(r.erp_code))}"><input type="hidden" name="back" value="mgmt">
+            <input type="number" name="delta" value="${escapeAttr(n2(r.delta))}" step="any" class="sf-input" style="width:92px;text-align:right;">
+            <button type="submit" class="btn" style="font-size:12px;padding:4px 10px;">存</button>
+          </form>
+        </td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:#8250df;">${shown == null ? "—" : n2(shown)}</td>
+        <td style="font-size:12px;color:var(--notion-text-muted,#9b9a97);white-space:nowrap;">${escapeHtml(String(r.created_by_name || "—"))}</td>
+        <td style="text-align:center;">
+          <form method="post" action="/admin/inventory/adjustments" onsubmit="return confirm('刪除 ${escapeAttr(String(r.erp_code))} 的庫存調整？');" style="display:inline;">
+            <input type="hidden" name="action" value="delete"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}"><input type="hidden" name="erp_code" value="${escapeAttr(String(r.erp_code))}"><input type="hidden" name="back" value="mgmt">
+            <button type="submit" class="btn" style="font-size:12px;padding:4px 10px;color:#b3261e;">刪除</button>
+          </form>
+        </td>
+      </tr>`;
+        }).join("");
+        const emptyRow = `<tr><td colspan="7" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此公司尚無庫存調整。到「每日盤點」的盤差表，對有誤差的品項按「建立調整」即可。</td></tr>`;
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 庫存調整</div>
+      <h1 class="notion-page-title">庫存調整</h1>
+      <p class="notion-hint" style="margin:-2px 0 14px;">彌補凌越系統誤差用（免重整）。<b>顯示庫存＝凌越快照 ＋ 調整值</b>；每日盤點的「最新系統／對最新盤差」也會加上調整值（校正後盤差歸零）。<b>只影響我們內部顯示與盤差，不會寫回凌越</b>。建立方式：到<a href="/admin/inventory">每日盤點</a>盤差表按「建立調整」；日後凌越重整/校正好了，記得回這裡<b>刪除</b>對應調整，避免雙重補償。</p>
+      ${coSeg}
+      ${banner}
+      <div class="notion-card" style="padding:0;overflow:auto;">
+        <table>
+          <thead><tr><th>料號</th><th>品名</th><th style="text-align:right;">凌越量</th><th style="text-align:center;">調整值</th><th style="text-align:right;">顯示量</th><th>建立者</th><th style="text-align:center;">操作</th></tr></thead>
+          <tbody>${rowsHtml || emptyRow}</tbody>
+        </table>
+      </div>`;
+        res.type("text/html").send(notionPage("庫存調整", body, "inv-adjust", res));
+    });
     router.get("/inventory/stocktake.csv", async (req, res) => {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
         const latestMapCsv = {};
         try { (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMapCsv[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) {}
-        const day = await loadStocktakeDay(date, latestMapCsv);
+        const adjMapCsv = {};
+        try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMapCsv[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) {}
+        const day = await loadStocktakeDay(date, latestMapCsv, adjMapCsv);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
         const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量,最新系統基準,對最新盤差,效期明細,盤點人,送出時間"];
         for (const { session: s, items, latestSource } of day) {
@@ -7373,6 +7524,9 @@ function createAdminRouter() {
         // 左欄固定列出全部四家（00 松富、01 龍港、02 松揚、03 松成），方便隨時切換
         const allCompanies = Object.keys(erp_companies_js_1.ERP_COMPANY_NAMES).sort();
         const stockRows = await db.prepare("SELECT erp_code, name, spec, unit, qty, wh_code FROM erp_stock_items WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY erp_code").all(icpno);
+        // 人工調整值：顯示庫存＝凌越快照 + delta（彌補系統誤差）。keyed by 料號（本頁已限定單一公司）。
+        const adjMap = {};
+        try { (await db.prepare("SELECT erp_code, delta FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno) || []).forEach((r) => { adjMap[String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
         const assignRows = await db.prepare(`
       SELECT p.erp_code AS code, w.name AS wh_name, w.sort_order AS wh_sort, COALESCE(iwp.safety_stock, 0) AS safety
       FROM inventory_warehouse_products iwp
@@ -7387,14 +7541,21 @@ function createAdminRouter() {
                 continue;
             (assign[code] = assign[code] || []).push({ wh: String(a.wh_name || ""), sort: Number(a.wh_sort || 0), safety: Number(a.safety || 0) });
         }
-        const items = (stockRows || []).map((r) => ({
-            c: String(r.erp_code || ""),
-            n: String(r.name || ""),
-            s: String(r.spec || ""),
-            u: String(r.unit || ""),
-            q: Number(r.qty || 0),
-            w: String(r.wh_code || ""),
-        }));
+        const items = (stockRows || []).map((r) => {
+            const c = String(r.erp_code || "");
+            const raw = Number(r.qty || 0);
+            const adj = Number(adjMap[c] || 0);
+            return {
+                c,
+                n: String(r.name || ""),
+                s: String(r.spec || ""),
+                u: String(r.unit || ""),
+                q: adj ? Math.round((raw + adj) * 100) / 100 : raw, // 顯示量＝凌越 + 調整
+                qraw: adj ? raw : undefined, // 原凌越量（有調整時給 badge/tooltip）
+                adj: adj || undefined,
+                w: String(r.wh_code || ""),
+            };
+        });
         // 倉別代號→中文名（倉庫設定頁維護），給前端把標籤/欄位顯示成「代號 中文名」
         const whRows = await db.prepare("SELECT code, name FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
         const whname = {};
