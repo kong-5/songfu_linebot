@@ -179,6 +179,9 @@
       zeroSep:function(n){return '— 帳上 0（現場有再盤）· '+n+' 項 —';},
       draftResumed:'已回復未送出',drafting:'盤點中(未送出)',
       relogin:'登入逾時，重新登入中…（已盤資料已暫存）',
+      reloginStuckTitle:'登入一直逾時',
+      reloginStuck:'登入一直過期（在 LINE App 以外的瀏覽器較容易發生）。你已盤的數量都安全存在這台裝置，沒有遺失。請點下方按鈕重新登入一次，登入後會自動帶回你剛剛盤的資料。',
+      reloginRetry:'重新登入一次',
       invalidQty:'⚠ 以下品項數量無效（僅能填 0 或正數），請修正後再送出：',
       close:'關閉',retry:'重試',photoFail:'照片載入失敗',photoRetry:'載入失敗，點擊重試',
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
@@ -202,6 +205,9 @@
       zeroSep:function(n){return '— Tồn 0 (có hàng thì kiểm) · '+n+' —';},
       draftResumed:'Đã khôi phục (chưa gửi)',drafting:'Đang kiểm (chưa gửi)',
       relogin:'Phiên đăng nhập hết hạn, đang đăng nhập lại… (dữ liệu đã kiểm được lưu tạm)',
+      reloginStuckTitle:'Đăng nhập liên tục hết hạn',
+      reloginStuck:'Đăng nhập liên tục hết hạn (thường xảy ra trên trình duyệt ngoài LINE). Số lượng bạn đã kiểm được lưu an toàn trên thiết bị này, không bị mất. Vui lòng nhấn nút bên dưới để đăng nhập lại; sau khi đăng nhập sẽ tự động khôi phục dữ liệu vừa kiểm.',
+      reloginRetry:'Đăng nhập lại',
       invalidQty:'⚠ Số lượng không hợp lệ (chỉ nhập 0 hoặc số dương), vui lòng sửa rồi gửi lại:',
       close:'Đóng',retry:'Thử lại',photoFail:'Tải ảnh thất bại',photoRetry:'Tải thất bại, nhấn để thử lại',
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
@@ -242,8 +248,28 @@
   }
   // ---------- API（每次現取 ID Token；過期自動續登）----------
   function freshToken(){ try{ var tk=liff.getIDToken(); if(tk) S.idToken=tk; }catch(_){} return S.idToken||''; }
+  // 續登迴圈防護：外部瀏覽器（LINE App 以外）的 ID Token 會過期且 SDK 常回舊 token，
+  // 一過期就 liff.login() 會無限「登入逾時→跳轉→又逾時」跳來跳去，卡在載入畫面回不到頁面。
+  // 用 sessionStorage 記最近 60 秒的續登次數；連續 ≥2 次仍失敗＝進入迴圈，停止自動跳轉，
+  // 改給手動恢復畫面（草稿已存本機，登入後自動帶回）。API 一旦驗證通過即清零，之後真的過期仍可續登一次。
+  var RELOGIN_KEY='stk_relogin_ts';
+  function reloginCount(){ try{ var a=JSON.parse(sessionStorage.getItem(RELOGIN_KEY)||'[]'); if(!Array.isArray(a)) return 0; var now=Date.now(); return a.filter(function(ts){return now-ts<60000;}).length; }catch(_){ return 0; } }
+  function markRelogin(){ try{ var a; try{a=JSON.parse(sessionStorage.getItem(RELOGIN_KEY)||'[]');}catch(_){a=[];} if(!Array.isArray(a)) a=[]; var now=Date.now(); a.push(now); a=a.filter(function(ts){return now-ts<60000;}); sessionStorage.setItem(RELOGIN_KEY,JSON.stringify(a)); }catch(_){} }
+  function clearRelogin(){ try{ sessionStorage.removeItem(RELOGIN_KEY); }catch(_){} }
+  function showReloginStuck(){ // 打破迴圈：停在穩定畫面，按鈕強制登出後重新互動登入，取得全新 ID Token
+    showCenter('<div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(t('reloginStuckTitle'))+'</div>'
+      +'<div style="font-size:14px;color:var(--txt-2);line-height:1.7;max-width:300px;margin:4px auto 0">'+esc(t('reloginStuck'))+'</div>'
+      +'<button class="btn-primary" id="stReloginRetry" style="margin-top:14px">'+esc(t('reloginRetry'))+'</button>');
+    document.getElementById('stReloginRetry').addEventListener('click',function(){
+      clearRelogin();
+      try{ if(liff.logout) liff.logout(); }catch(_){}          // 登出後下一次 login 會強制互動登入，拿到全新 token（打破過期迴圈）
+      try{ liff.login({redirectUri:location.href}); }catch(_){ try{location.reload();}catch(_2){} }
+    });
+  }
   function relogin(){ // ID Token 過期：先立即存草稿再重新登入，登入後帶原網址回來、草稿自動接回
     flushDraft();
+    if(reloginCount()>=2){ showReloginStuck(); return; }         // 連續續登仍失敗＝跳轉迴圈：停手、改手動恢復
+    markRelogin();
     showCenter('<div class="spin"></div><div>'+esc(t('relogin'))+'</div>');
     try{ liff.login({redirectUri:location.href}); }catch(_){}
   }
@@ -255,6 +281,7 @@
           return j;
         });
       }
+      clearRelogin();                                            // 驗證通過：重置續登計數
       return r.json();
     });
   }
