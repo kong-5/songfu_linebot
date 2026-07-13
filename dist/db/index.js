@@ -355,6 +355,22 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        // 收款（Phase2）：一筆收款可對應一或多張銷貨單（一張一筆＝一筆對一張；一次付多筆＝一筆對多張）。
+        // cash_payment＝一次收款（現金＋票合計）；cash_payment_alloc＝分配到哪些銷貨單；cash_check＝票據明細。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_payment (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT, ct_name TEXT, pay_date TEXT NOT NULL, collected_by TEXT, route_line TEXT, cash_amount REAL NOT NULL DEFAULT 0, check_amount REAL NOT NULL DEFAULT 0, total_amount REAL NOT NULL DEFAULT 0, due_total REAL NOT NULL DEFAULT 0, diff REAL NOT NULL DEFAULT 0, note TEXT, recorded_by TEXT, recorded_at TEXT, updated_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_payment_date ON cash_payment(icpno, pay_date)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_payment_alloc (id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, icpno TEXT NOT NULL DEFAULT '00', sp_no TEXT NOT NULL, doc_date TEXT, due_amount REAL NOT NULL DEFAULT 0, alloc_amount REAL NOT NULL DEFAULT 0)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_alloc_sp ON cash_payment_alloc(icpno, sp_no)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_alloc_pay ON cash_payment_alloc(payment_id)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_check (id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, icpno TEXT NOT NULL DEFAULT '00', check_no TEXT, bank TEXT, due_date TEXT, amount REAL NOT NULL DEFAULT 0, note TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_check_pay ON cash_check(payment_id)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_check_due ON cash_check(icpno, due_date)");
+        // 額外收入（非銷貨單的款，列現金日報表最後）
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_extra_income (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', income_date TEXT NOT NULL, item TEXT, amount REAL NOT NULL DEFAULT 0, collected_by TEXT, note TEXT, recorded_by TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_extra_date ON cash_extra_income(icpno, income_date)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TEXT)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT, raw_name TEXT, quantity REAL NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (order_id) REFERENCES logistics_orders(id), FOREIGN KEY (product_id) REFERENCES products(id))");
     }
@@ -1011,6 +1027,17 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_cash_sales_date ON cash_sales_doc(icpno, doc_date)");
                 await client.query("CREATE TABLE IF NOT EXISTS cash_customer (icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT NOT NULL, name TEXT, fkfs TEXT, sales TEXT, is_cash INTEGER, route_line TEXT, stop INTEGER NOT NULL DEFAULT 0, note TEXT, updated_at TEXT, PRIMARY KEY (icpno, ct_no))");
                 await client.query("CREATE TABLE IF NOT EXISTS cash_seq_gap_reason (icpno TEXT NOT NULL DEFAULT '00', doc_date TEXT NOT NULL, series TEXT NOT NULL, seq INTEGER NOT NULL, reason TEXT, updated_by TEXT, updated_at TEXT, PRIMARY KEY (icpno, doc_date, series, seq))");
+                // 收款（Phase2）
+                await client.query("CREATE TABLE IF NOT EXISTS cash_payment (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT, ct_name TEXT, pay_date TEXT NOT NULL, collected_by TEXT, route_line TEXT, cash_amount DOUBLE PRECISION NOT NULL DEFAULT 0, check_amount DOUBLE PRECISION NOT NULL DEFAULT 0, total_amount DOUBLE PRECISION NOT NULL DEFAULT 0, due_total DOUBLE PRECISION NOT NULL DEFAULT 0, diff DOUBLE PRECISION NOT NULL DEFAULT 0, note TEXT, recorded_by TEXT, recorded_at TEXT, updated_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_payment_date ON cash_payment(icpno, pay_date)");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_payment_alloc (id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, icpno TEXT NOT NULL DEFAULT '00', sp_no TEXT NOT NULL, doc_date TEXT, due_amount DOUBLE PRECISION NOT NULL DEFAULT 0, alloc_amount DOUBLE PRECISION NOT NULL DEFAULT 0)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_alloc_sp ON cash_payment_alloc(icpno, sp_no)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_alloc_pay ON cash_payment_alloc(payment_id)");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_check (id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, icpno TEXT NOT NULL DEFAULT '00', check_no TEXT, bank TEXT, due_date TEXT, amount DOUBLE PRECISION NOT NULL DEFAULT 0, note TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_check_pay ON cash_check(payment_id)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_check_due ON cash_check(icpno, due_date)");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_extra_income (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', income_date TEXT NOT NULL, item TEXT, amount DOUBLE PRECISION NOT NULL DEFAULT 0, collected_by TEXT, note TEXT, recorded_by TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_extra_date ON cash_extra_income(icpno, income_date)");
             }
             catch (_) { /* table may already exist */ }
             try {
