@@ -406,6 +406,14 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* column exists */ }
     try {
+        sqlite.exec("ALTER TABLE cash_payment ADD COLUMN transfer_amount REAL NOT NULL DEFAULT 0"); // 匯款金額（現金+票+匯款=total_amount）
+    }
+    catch (_) { /* column exists */ }
+    try {
+        sqlite.exec("ALTER TABLE cash_extra_income ADD COLUMN method TEXT"); // 額外收入入帳方式 cash/check/transfer
+    }
+    catch (_) { /* column exists */ }
+    try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TEXT)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT, raw_name TEXT, quantity REAL NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (order_id) REFERENCES logistics_orders(id), FOREIGN KEY (product_id) REFERENCES products(id))");
     }
@@ -1099,6 +1107,8 @@ async function initPg() {
                 await client.query("CREATE TABLE IF NOT EXISTS cash_extra_income (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', income_date TEXT NOT NULL, item TEXT, amount DOUBLE PRECISION NOT NULL DEFAULT 0, collected_by TEXT, note TEXT, recorded_by TEXT, created_at TEXT)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_cash_extra_date ON cash_extra_income(icpno, income_date)");
                 await client.query("ALTER TABLE cash_customer ADD COLUMN IF NOT EXISTS last_txn TEXT");
+                await client.query("ALTER TABLE cash_payment ADD COLUMN IF NOT EXISTS transfer_amount DOUBLE PRECISION NOT NULL DEFAULT 0");
+                await client.query("ALTER TABLE cash_extra_income ADD COLUMN IF NOT EXISTS method TEXT");
             }
             catch (_) { /* table may already exist */ }
             try {
