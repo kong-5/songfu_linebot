@@ -12493,14 +12493,15 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
       <div class="cc-modal-bg" id="ccModalBg">
         <div class="cc-modal">
           <h3>登記收款</h3>
-          <div id="ccSummary" style="font-size:14px;margin-bottom:6px;"></div>
+          <div id="ccSummary" style="font-size:15px;margin-bottom:6px;font-weight:600;"></div>
+          <div id="ccBreakdown" style="font-size:13px;margin-bottom:10px;border:1px solid #eee;border-radius:8px;max-height:180px;overflow:auto;"></div>
           <label>現金金額<input type="number" step="1" id="ccCash" class="sf-input" placeholder="0" style="width:160px;"></label>
           <div style="margin-top:8px;font-size:13px;font-weight:600;">票據（可多張）</div>
           <div id="ccChecks"></div>
           <button type="button" class="sf-btn sf-btn-sm" id="ccAddCheck" style="margin-top:6px;">＋加一張票</button>
           <label>司機<select id="ccDriver" class="sf-input" style="width:200px;">${driverOpts}</select></label>
           <input type="text" id="ccDriverOther" class="sf-input" placeholder="自行輸入司機" style="display:none;width:200px;margin-top:4px;">
-          <label>備註（短收／溢收原因）<input type="text" id="ccNote" class="sf-input" style="width:100%;"></label>
+          <label>備註（自由填寫）<input type="text" id="ccNote" class="sf-input" style="width:100%;"></label>
           <div id="ccCalc" style="margin-top:10px;font-size:14px;padding:8px;background:#f7f6f3;border-radius:8px;"></div>
           <div style="font-size:12px;color:#787774;margin-top:6px;">收款人：${escapeHtml(me || "（未登入）")}</div>
           <div style="margin-top:14px;text-align:right;display:flex;gap:8px;justify-content:flex-end;">
@@ -12580,10 +12581,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         document.getElementById('ccChecks').addEventListener('input',recalc);
         document.getElementById('ccCash').addEventListener('input',recalc);
         document.getElementById('ccDriver').addEventListener('change',function(){ document.getElementById('ccDriverOther').style.display=(this.value==='__other__')?'block':'none'; });
-        function selInfo(){ var rows=checked(); var due=0, custs={}; rows.forEach(function(r){ due+=Number(r.dataset.due||0); custs[r.dataset.ct]=r.dataset.ctname; }); return {rows:rows, due:due, custN:Object.keys(custs).length, custName:Object.keys(custs).length===1?rows[0].dataset.ctname:('多客戶('+Object.keys(custs).length+'家)')}; }
+        function selInfo(){ var rows=checked(); var due=0, custs={}, order=[]; rows.forEach(function(r){ var d=Number(r.dataset.due||0); due+=d; var ct=r.dataset.ct; if(!custs[ct]){ custs[ct]={name:r.dataset.ctname,due:0,n:0}; order.push(ct); } custs[ct].due+=d; custs[ct].n++; }); var byCust=order.map(function(ct){return custs[ct];}); return {rows:rows, due:due, custN:order.length, byCust:byCust, custName:order.length===1?(rows[0]?rows[0].dataset.ctname:''):('多客戶('+order.length+'家)')}; }
         function checksData(){ return [].slice.call(document.querySelectorAll('#ccChecks .cc-check-row')).map(function(r){ return {check_no:r.querySelector('.ck-no').value, bank:r.querySelector('.ck-bank').value, due_date:r.querySelector('.ck-due').value, amount:r.querySelector('.ck-amt').value}; }); }
         function recalc(){ var i=selInfo(); var cash=Number(document.getElementById('ccCash').value||0); var chk=checksData().reduce(function(s,c){return s+Number(c.amount||0);},0); var got=cash+chk; var diff=got-i.due; var t=diff===0?'剛好':(diff>0?('溢收 '+money(diff)):('短收 '+money(-diff))); document.getElementById('ccCalc').innerHTML='應收 <b>'+money(i.due)+'</b>　實收 <b>'+money(got)+'</b>（現'+money(cash)+'／票'+money(chk)+'）　差額：<b style="color:'+(diff<0?'#c62828':'#2e7d32')+'">'+t+'</b>'; }
-        function openPayModal(){ var i=selInfo(); if(!i.rows.length){ if(window.sfToast)sfToast('請先勾要收款的單','err'); return; } document.getElementById('ccSummary').innerHTML='客戶：<b>'+i.custName+'</b>　選取 <b>'+i.rows.length+'</b> 張　應收 <b>'+money(i.due)+'</b>'; document.getElementById('ccCash').value=i.due; document.getElementById('ccChecks').innerHTML=''; document.getElementById('ccNote').value=''; recalc(); document.getElementById('ccModalBg').style.display='flex'; }
+        function openPayModal(){ var i=selInfo(); if(!i.rows.length){ if(window.sfToast)sfToast('請先勾要收款的單','err'); return; }
+          document.getElementById('ccSummary').innerHTML='總計：'+i.rows.length+' 張・'+i.custN+' 家・應收 <b>'+money(i.due)+'</b>';
+          var bd='<table style="width:100%;font-size:13px;"><thead><tr><th style="text-align:left;padding:4px 8px;">客戶</th><th style="text-align:right;padding:4px 8px;">張數</th><th style="text-align:right;padding:4px 8px;">應收</th></tr></thead><tbody>';
+          i.byCust.forEach(function(c){ bd+='<tr><td style="padding:3px 8px;">'+(c.name||'')+'</td><td style="text-align:right;padding:3px 8px;">'+c.n+'</td><td style="text-align:right;padding:3px 8px;">'+money(c.due)+'</td></tr>'; });
+          bd+='</tbody></table>';
+          document.getElementById('ccBreakdown').innerHTML=bd;
+          document.getElementById('ccCash').value=i.due; document.getElementById('ccChecks').innerHTML=''; document.getElementById('ccNote').value=''; recalc(); document.getElementById('ccModalBg').style.display='flex'; }
         document.getElementById('ccPayBtn').addEventListener('click',openPayModal);
         // 每列「收款」按鈕：直接收這一單（不用先打勾）
         document.addEventListener('click',function(e){ if(e.target&&e.target.classList.contains('cc-payone')){ var tr=e.target.closest('tr'); var cb=tr&&tr.querySelector('.cc-row'); if(cb){ cb.checked=true; refreshN(); } openPayModal(); } });
