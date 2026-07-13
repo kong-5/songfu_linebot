@@ -44,6 +44,11 @@
   .pk-done{font-size:11px;font-weight:700;color:var(--pos);background:var(--pos-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
   .pk-draft{font-size:11px;font-weight:700;color:var(--warn);background:var(--warn-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
   .pk-arrow{color:var(--txt-3);font-size:20px;flex:none;}
+  /* 網站版頂列（後台帳號登入時才出現，給一條明確的返回路徑，不然全螢幕頁不知怎麼回去） */
+  .web-topbar{position:sticky;top:0;z-index:30;height:46px;box-sizing:border-box;display:flex;align-items:center;gap:12px;padding:0 14px;background:var(--card);border-bottom:1px solid var(--line);}
+  .web-topbar a.wt-back{color:var(--accent);font-weight:700;text-decoration:none;font-size:15px;display:inline-flex;align-items:center;gap:4px;flex:none;}
+  .web-topbar .wt-t{font-size:14px;font-weight:700;color:var(--txt);}
+  body.web header{top:46px;} /* 盤點清單的 sticky 表頭讓出頂列高度，兩條不重疊 */
   /* count header */
   header{position:sticky;top:0;z-index:20;background:var(--card);border-bottom:1px solid var(--line);}
   .head-main{display:flex;align-items:center;gap:10px;padding:10px 14px 6px;}
@@ -91,6 +96,9 @@
   .diff.sp{background:var(--accent-soft);color:var(--accent);}
   .diff.sn{background:var(--neg-soft);color:var(--neg);}
   .zsep{font-size:11px;font-weight:700;color:var(--txt-3);letter-spacing:.02em;text-align:center;padding:9px 8px;background:var(--bg);border-top:1px solid var(--line);border-bottom:1px solid var(--line-soft);}
+  .zsep.mcsep{color:#c0392b;background:#fdecea;border-top-color:#f3c2bc;}
+  .mc-badge{display:inline-block;font-size:10.5px;font-weight:800;color:#fff;background:#e74c3c;border-radius:5px;padding:1px 6px;margin-right:6px;vertical-align:1px;letter-spacing:.02em;}
+  .item.mc{background:#fef6f5;box-shadow:inset 3px 0 0 #e74c3c;}
   .hz-hint{display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;color:var(--txt-3);padding:12px 8px 4px;}
   .hz-show{border:1px solid var(--line);background:var(--card);color:var(--accent);font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;cursor:pointer;}
   .batches{border-top:1px dashed var(--line);padding:9px 13px 12px;background:color-mix(in srgb,var(--warn-soft) 40%,var(--card));display:none;}
@@ -153,12 +161,17 @@
 </style>
 </head>
 <body>
+<div class="web-topbar" id="webTop" style="display:none"><a class="wt-back" href="/admin/inventory">‹ 返回後台</a><span class="wt-t">網站盤點</span></div>
 <div class="wrap"><div id="app"><div class="center"><div class="spin"></div><div>載入中… / Đang tải…</div></div></div></div>
 
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <script>
 (function(){
   var LIFF_ID=window.__LIFF_ID__||"";
+  // 網站版（後台帳號登入）：window.__STK_WEB__ 由後台 /admin/inventory/entry 注入，改走後台 cookie，不碰 LINE token → 無登入逾時
+  var WEB=(window.__STK_WEB__===true);
+  var STK=WEB?(window.__STK_API__||'/admin/inventory/entry'):'/liff/api/stocktake';
+  var WEB_NAME=WEB?String(window.__STK_NAME__||''):'';
   var app=document.getElementById('app');
 
   // ---------- 中／越 語系 ----------
@@ -177,8 +190,16 @@
       sumLine:function(g,m,tot){return '上 '+g+'  ＋  中 '+m+'  ＝  合計 '+tot;},
       showZero:'顯示庫存0',hiddenN:function(n){return '另有 '+n+' 項庫存 0 已隱藏';},
       zeroSep:function(n){return '— 帳上 0（現場有再盤）· '+n+' 項 —';},
+      mustCount:'必盤',mcSep:function(n){return '— ⚠ 必盤：昨天以來有異動，務必確認 · '+n+' 項 —';},
       draftResumed:'已回復未送出',drafting:'盤點中(未送出)',
       relogin:'登入逾時，重新登入中…（已盤資料已暫存）',
+      reloginStuckTitle:'登入一直逾時',
+      reloginStuck:'登入一直過期（在 LINE App 以外的瀏覽器較容易發生）。你已盤的數量都安全存在這台裝置，沒有遺失。請點下方按鈕重新登入一次，登入後會自動帶回你剛剛盤的資料。',
+      reloginRetry:'重新登入一次',
+      draftDumpTitle:'你已盤的內容（暫存本機，料號：數量）',
+      draftCopy:'複製全部盤點內容',
+      draftCopied:'已複製 ✓',
+      draftMid:'中',
       invalidQty:'⚠ 以下品項數量無效（僅能填 0 或正數），請修正後再送出：',
       close:'關閉',retry:'重試',photoFail:'照片載入失敗',photoRetry:'載入失敗，點擊重試',
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
@@ -200,8 +221,16 @@
       sumLine:function(g,m,tot){return 'Loại A '+g+'  +  Loại B '+m+'  =  Tổng '+tot;},
       showZero:'Hiện tồn 0',hiddenN:function(n){return 'Còn '+n+' mục tồn 0 đang ẩn';},
       zeroSep:function(n){return '— Tồn 0 (có hàng thì kiểm) · '+n+' —';},
+      mustCount:'Phải kiểm',mcSep:function(n){return '— ⚠ Phải kiểm: có biến động từ hôm qua · '+n+' —';},
       draftResumed:'Đã khôi phục (chưa gửi)',drafting:'Đang kiểm (chưa gửi)',
       relogin:'Phiên đăng nhập hết hạn, đang đăng nhập lại… (dữ liệu đã kiểm được lưu tạm)',
+      reloginStuckTitle:'Đăng nhập liên tục hết hạn',
+      reloginStuck:'Đăng nhập liên tục hết hạn (thường xảy ra trên trình duyệt ngoài LINE). Số lượng bạn đã kiểm được lưu an toàn trên thiết bị này, không bị mất. Vui lòng nhấn nút bên dưới để đăng nhập lại; sau khi đăng nhập sẽ tự động khôi phục dữ liệu vừa kiểm.',
+      reloginRetry:'Đăng nhập lại',
+      draftDumpTitle:'Nội dung bạn đã kiểm (lưu tạm trên máy, mã hàng : SL)',
+      draftCopy:'Sao chép toàn bộ nội dung kiểm kê',
+      draftCopied:'Đã sao chép ✓',
+      draftMid:'Loại B',
       invalidQty:'⚠ Số lượng không hợp lệ (chỉ nhập 0 hoặc số dương), vui lòng sửa rồi gửi lại:',
       close:'Đóng',retry:'Thử lại',photoFail:'Tải ảnh thất bại',photoRetry:'Tải thất bại, nhấn để thử lại',
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
@@ -214,7 +243,7 @@
   var initHz=false; try{ if(localStorage.getItem('stk_hz')==='1') initHz=true; }catch(_){}  // 預設不隱藏，0 排最後；可切成隱藏0
   var COMPANY={'00':'松富','01':'龍港','02':'松揚','03':'松成'};
   var CO_ORDER=['00','01','02','03'];
-  var S={idToken:null,name:"",wh:null,date:"",icpno:'00',items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:initHz,lang:initLang,baseSubmittedAt:null};
+  var S={idToken:null,name:"",wh:null,date:"",icpno:'00',items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:false,lang:initLang,baseSubmittedAt:null};
   function coName(){return COMPANY[S.icpno]||('公司'+S.icpno);}
   // 公司主題色:松揚(02)橘、其餘藍。改 :root --accent 讓整頁換色。
   function applyCoTheme(){var o=(S.icpno==='02');var r=document.documentElement.style;r.setProperty('--accent',o?'#e8730c':'#2383e2');r.setProperty('--accent-soft',o?'#fdecd9':'#e8f1fd');}
@@ -242,19 +271,96 @@
   }
   // ---------- API（每次現取 ID Token；過期自動續登）----------
   function freshToken(){ try{ var tk=liff.getIDToken(); if(tk) S.idToken=tk; }catch(_){} return S.idToken||''; }
-  function relogin(){ // ID Token 過期：先立即存草稿再重新登入，登入後帶原網址回來、草稿自動接回
+  // 續登迴圈防護：外部瀏覽器（LINE App 以外）的 ID Token 會過期且 SDK 常回舊 token，
+  // 一過期就 liff.login() 會無限「登入逾時→跳轉→又逾時」跳來跳去，卡在載入畫面回不到頁面。
+  // 用 sessionStorage 記最近 60 秒的續登次數；連續 ≥2 次仍失敗＝進入迴圈，停止自動跳轉，
+  // 改給手動恢復畫面（草稿已存本機，登入後自動帶回）。API 一旦驗證通過即清零，之後真的過期仍可續登一次。
+  var RELOGIN_KEY='stk_relogin_ts';
+  function reloginCount(){ try{ var a=JSON.parse(sessionStorage.getItem(RELOGIN_KEY)||'[]'); if(!Array.isArray(a)) return 0; var now=Date.now(); return a.filter(function(ts){return now-ts<60000;}).length; }catch(_){ return 0; } }
+  function markRelogin(){ try{ var a; try{a=JSON.parse(sessionStorage.getItem(RELOGIN_KEY)||'[]');}catch(_){a=[];} if(!Array.isArray(a)) a=[]; var now=Date.now(); a.push(now); a=a.filter(function(ts){return now-ts<60000;}); sessionStorage.setItem(RELOGIN_KEY,JSON.stringify(a)); }catch(_){} }
+  function clearRelogin(){ try{ sessionStorage.removeItem(RELOGIN_KEY); }catch(_){} }
+  // 離線保險：外部瀏覽器登入完全卡死時，仍能從本機草稿讀回今日已盤數量（料號→數量），
+  // 直接顯示＋一鍵複製，資料永遠不會被登入迴圈困住（就算 token 一直救不回也能手抄／貼進 LINE）。
+  function todayTpe(){ try{ return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); }catch(_){ return ''; } }
+  function currentDrafts(){ // 掃出本機所有「今日」盤點草稿
+    var out=[];
+    try{
+      var today=todayTpe();
+      for(var i=0;i<localStorage.length;i++){
+        var k=localStorage.key(i);
+        if(!k||k.indexOf('stk_draft_')!==0||k.length<21) continue;
+        if(k.slice(-10)!==today) continue;                     // 尾端 _YYYY-MM-DD（11 字）中的日期
+        var code=k.slice(10,k.length-11);                      // 去掉前綴 'stk_draft_'（10 字）與尾端 '_'+日期（11 字）
+        var d=null; try{ d=JSON.parse(localStorage.getItem(k)); }catch(_){ d=null; }
+        if(d) out.push({wh:code,date:today,d:d});
+      }
+    }catch(_){}
+    return out;
+  }
+  function draftToText(entry){ // 一倉草稿→純文字（料號 : 上貨數量 (中 中貨數量)）
+    var d=entry.d||{},counts=d.counts||{},mid=d.mid||{},keys={},lines=[];
+    Object.keys(counts).forEach(function(k){keys[k]=1;}); Object.keys(mid).forEach(function(k){keys[k]=1;});
+    Object.keys(keys).forEach(function(code){
+      var g=counts[code],m=mid[code];
+      var hasG=(g!=null&&g!==''),hasM=(m!=null&&m!=='');
+      if(!hasG&&!hasM) return;
+      lines.push(code+' : '+(hasG?g:'-')+(hasM?(' ('+t('draftMid')+' '+m+')'):''));
+    });
+    return (entry.wh||'')+' / '+entry.date+'\n'+(lines.length?lines.join('\n'):'—');
+  }
+  function copyText(txt,cb){
+    try{ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(function(){cb&&cb();},function(){fallbackCopy(txt,cb);}); return; } }catch(_){}
+    fallbackCopy(txt,cb);
+  }
+  function fallbackCopy(txt,cb){ try{ var ta=document.createElement('textarea'); ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.focus(); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); cb&&cb(); }catch(_){} }
+  function showReloginStuck(){ // 打破迴圈：停在穩定畫面，按鈕強制登出後重新互動登入，取得全新 ID Token
+    var drafts=currentDrafts();
+    var dumpHtml='';
+    if(drafts.length){
+      var txt=drafts.map(draftToText).join('\n\n');
+      dumpHtml='<div style="margin-top:16px;text-align:left;width:100%;max-width:320px;background:var(--card,#fff);border:1px solid var(--line,#eaeaea);border-radius:12px;padding:12px 14px;box-sizing:border-box">'
+        +'<div style="font-size:12px;color:var(--txt-3);margin-bottom:8px">'+esc(t('draftDumpTitle'))+'</div>'
+        +'<pre style="white-space:pre-wrap;word-break:break-all;font-size:13px;line-height:1.6;color:var(--txt);margin:0;max-height:44vh;overflow:auto;font-family:inherit">'+esc(txt)+'</pre>'
+        +'<button class="btn-primary" id="stCopyDraft" style="margin-top:10px;width:100%">'+esc(t('draftCopy'))+'</button>'
+        +'</div>';
+    }
+    showCenter('<div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(t('reloginStuckTitle'))+'</div>'
+      +'<div style="font-size:14px;color:var(--txt-2);line-height:1.7;max-width:300px;margin:4px auto 0">'+esc(t('reloginStuck'))+'</div>'
+      +'<button class="btn-primary" id="stReloginRetry" style="margin-top:14px">'+esc(t('reloginRetry'))+'</button>'
+      +dumpHtml);
+    document.getElementById('stReloginRetry').addEventListener('click',function(){
+      clearRelogin();
+      try{ if(liff.logout) liff.logout(); }catch(_){}          // 登出後下一次 login 會強制互動登入，拿到全新 token（打破過期迴圈）
+      try{ liff.login({redirectUri:location.href}); }catch(_){ try{location.reload();}catch(_2){} }
+    });
+    var cp=document.getElementById('stCopyDraft');
+    if(cp) cp.addEventListener('click',function(){ copyText(drafts.map(draftToText).join('\n\n'),function(){ cp.textContent=t('draftCopied'); }); });
+  }
+  function webLoginNeeded(){ // 網站版：後台 cookie 逾期時停在提示畫面（草稿已暫存），重新登入後台再回來自動帶回
     flushDraft();
+    var next=encodeURIComponent(location.pathname+location.search);
+    showCenter('<div style="font-size:17px;font-weight:700;color:var(--txt)">後台登入已逾期</div>'
+      +'<div style="font-size:14px;color:var(--txt-2);line-height:1.7;max-width:300px;margin:4px auto 0">你已盤的數量都安全存在這台裝置，沒有遺失。請重新登入後台後回到此頁，會自動帶回剛剛盤的資料。</div>'
+      +'<a class="btn-primary" style="margin-top:14px;text-decoration:none" href="/admin/login?next='+next+'">重新登入後台</a>');
+  }
+  function relogin(){ // ID Token 過期：先立即存草稿再重新登入，登入後帶原網址回來、草稿自動接回
+    if(WEB){ webLoginNeeded(); return; }                         // 網站版不走 LINE 登入
+    flushDraft();
+    if(reloginCount()>=2){ showReloginStuck(); return; }         // 連續續登仍失敗＝跳轉迴圈：停手、改手動恢復
+    markRelogin();
     showCenter('<div class="spin"></div><div>'+esc(t('relogin'))+'</div>');
     try{ liff.login({redirectUri:location.href}); }catch(_){}
   }
   function api(path){
     return fetch(path,{headers:{'Authorization':'Bearer '+freshToken()}}).then(function(r){
+      if(WEB&&(r.status===401||r.status===403||r.redirected)){ webLoginNeeded(); return new Promise(function(){}); } // 後台 cookie 逾期/被導去登入頁
       if(r.status===401){ // 同 order-review.html 的續登模式；回傳不 resolve 的 promise 停在載入畫面等跳轉
         return r.json().catch(function(){return {};}).then(function(j){
           if(/expired|IdToken/i.test(String(j&&j.error||''))){ relogin(); return new Promise(function(){}); }
           return j;
         });
       }
+      clearRelogin();                                            // 驗證通過：重置續登計數
       return r.json();
     });
   }
@@ -269,7 +375,7 @@
   var _lb=null, _lbCode=null;
   // apiPhoto 回三態物件：{url:...}=成功；{missing:true,url:null}=404 查無；{error:true}=失敗(可重試)
   function apiPhoto(code){
-    return fetch('/liff/api/stocktake/photo/'+encodeURIComponent(code),{headers:{'Authorization':'Bearer '+freshToken()}})
+    return fetch(STK+'/photo/'+encodeURIComponent(code),{headers:{'Authorization':'Bearer '+freshToken()}})
       .then(function(r){
         if(r.status===404) return {missing:true,url:null};       // 伺服器明確：無照片
         if(!r.ok) return {error:true};                            // 5xx 等 → 可重試
@@ -377,6 +483,16 @@
   // ---------- 開始 ----------
   function boot(){
     cleanOldDrafts();
+    if(WEB){ // 網站版：跳過 LINE 登入，身分＝後台登入者，直接進盤點
+      document.body.classList.add('web');
+      var wt=document.getElementById('webTop'); if(wt) wt.style.display='flex';
+      S.name=WEB_NAME;
+      var icw=getParam('icpno'); if(icw&&/^\d{2}$/.test(icw)) S.icpno=icw;
+      applyCoTheme();
+      var whw=getParam('warehouse');
+      if(whw){ openWarehouse(whw); } else { showPicker(); }
+      return;
+    }
     if(!LIFF_ID){ showCenter('<div>'+t('liffNotSet')+'</div>'); return; }
     liff.init({liffId:LIFF_ID}).then(function(){
       if(!liff.isLoggedIn()){ liff.login({redirectUri:location.href}); return; }
@@ -398,7 +514,7 @@
   // ---------- 倉庫選擇 ----------
   function showPicker(){
     showCenter('<div class="spin"></div><div>'+t('loadWh')+'</div>');
-    api('/liff/api/stocktake/warehouses?icpno='+encodeURIComponent(S.icpno)).then(function(res){
+    api(STK+'/warehouses?icpno='+encodeURIComponent(S.icpno)).then(function(res){
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
       var whs=res.warehouses||[];
       var coseg='<div class="co-seg">'+CO_ORDER.map(function(c){return '<button data-co="'+c+'" class="'+(c===S.icpno?'on':'')+'">'+esc(COMPANY[c])+'</button>';}).join('')+'</div>';
@@ -427,7 +543,7 @@
   // ---------- 載入某倉品項 ----------
   function openWarehouse(code){
     showCenter('<div class="spin"></div><div>'+t('loadItems')+'</div>');
-    api('/liff/api/stocktake/items?warehouse='+encodeURIComponent(code)+'&icpno='+encodeURIComponent(S.icpno)).then(function(res){
+    api(STK+'/items?warehouse='+encodeURIComponent(code)+'&icpno='+encodeURIComponent(S.icpno)).then(function(res){
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
       S.wh=res.warehouse; S.date=res.date; S.items=res.items||[]; S.counts={}; S.mid={}; S.midOpen={}; S.batches={}; S.expanded={};
       // 樂觀鎖基準：開頁當下該 session 的 submitted_at（無 session 為 null），送出時帶回伺服器比對
@@ -515,7 +631,8 @@
     var nb=(S.batches[it.c]||[]).length;
     var chip=it.exp?'<button class="exp-chip'+(nb?' filled':'')+'" data-toggle>'+esc(t('expChip'))+(nb?' '+esc(t('batchN')(nb)):'')+(S.expanded[it.c]?' ▴':' ▾')+'</button>':'';
     var thumb=it.hp?'<button type="button" class="stk-thumb" data-pc="'+esc(it.c)+'" aria-label="'+esc(it.n)+' 照片"></button>':'';
-    return '<div class="item'+cnt+open+mopen+'" data-c="'+esc(it.c)+'"><div class="row">'+thumb+'<div class="info"><div class="nm">'+esc(it.n)+chip+'</div>'
+    var mcBadge=it.mc?'<span class="mc-badge">'+esc(t('mustCount'))+'</span>':'';
+    return '<div class="item'+cnt+open+mopen+(it.mc?' mc':'')+'" data-c="'+esc(it.c)+'"><div class="row">'+thumb+'<div class="info"><div class="nm">'+mcBadge+esc(it.n)+chip+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div></div>'
       +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(it.sys)+(it.u?' <span class="su">'+esc(it.u)+'</span>':'')+'</div></div>'+right+'</div>'+midPanel(it)+(it.exp?batchRows(it):'')+'</div>';
   }
@@ -526,29 +643,24 @@
     var arr=S.items.filter(function(it){
       if(S.f==='todo'&&isCounted(it)) return false;
       if(S.f==='exp'&&!it.exp) return false;
-      if(S.hz&&!searching&&isZeroIdle(it)) return false;   // 選用：完全隱藏0
       if(q&&it.c.toLowerCase().indexOf(q)<0&&it.n.toLowerCase().indexOf(q)<0) return false;
       return true;
     });
     if(!arr.length) return '<div class="list"><div class="empty">'+esc(t('noMatch'))+'</div></div>';
     var body;
-    if(searching||S.hz){
+    if(searching){
       body='<div class="list">'+arr.map(rowHtml).join('')+'</div>';
     } else {
-      // 預設：有量/已盤的排上面，帳上0未盤的沉到最後，中間放分隔
-      var top=[],zeros=[];
-      for(var i=0;i<arr.length;i++){ (isZeroIdle(arr[i])?zeros:top).push(arr[i]); }
-      var html=top.map(rowHtml).join('');
+      // 排序：必盤（昨天以來有異動）浮到最上面 → 一般 → 帳上0沉到最後（各自分隔）
+      var must=[],top=[],zeros=[];
+      for(var i=0;i<arr.length;i++){ var it=arr[i]; if(it.mc) must.push(it); else if(isZeroIdle(it)) zeros.push(it); else top.push(it); }
+      var html='';
+      if(must.length) html+='<div class="zsep mcsep">'+esc(t('mcSep')(must.length))+'</div>'+must.map(rowHtml).join('');
+      html+=top.map(rowHtml).join('');
       if(zeros.length) html+='<div class="zsep">'+esc(t('zeroSep')(zeros.length))+'</div>'+zeros.map(rowHtml).join('');
       body='<div class="list">'+html+'</div>';
     }
-    // 隱藏0 模式的提示：告知還有多少 0 被藏起來，一鍵顯示
-    var hint='';
-    if(S.hz&&!searching){
-      var hidden=0; for(var j=0;j<S.items.length;j++){ if(isZeroIdle(S.items[j])) hidden++; }
-      if(hidden) hint='<div class="hz-hint">'+esc(t('hiddenN')(hidden))+'<button class="hz-show" data-showzero>'+esc(t('showZero'))+'</button></div>';
-    }
-    return body+hint;
+    return body;
   }
   function renderCount(){
     var done=S.items.filter(isCounted).length, all=S.items.length;
@@ -559,7 +671,7 @@
         +'<div class="prog"><div class="prog-bar"><div class="prog-fill" id="stFill"></div></div><div class="prog-num"><span id="stProgTxt"></span></div></div>'
         +'<div class="tools"><div class="search"><input id="stQ" type="search" enterkeyhint="search" placeholder="'+esc(t('searchPh'))+'" autocomplete="off" value="'+esc(S.q)+'"></div>'
           +'<div class="seg" id="stFilter"><button data-f="all" class="'+(S.f==='all'?'on':'')+'">'+esc(t('fAll'))+'</button><button data-f="todo" class="'+(S.f==='todo'?'on':'')+'">'+esc(t('fTodo'))+'</button><button data-f="exp" class="'+(S.f==='exp'?'on':'')+'">'+esc(t('fExp'))+'</button></div>'
-          +'<button class="tog'+(S.hz?' on':'')+'" id="stHideZero">'+esc(t('hideZero'))+'</button></div>'
+          +'</div>'
       +'</header>'
       +'<div class="pad" id="stListWrap">'+listHtml()+'</div>'
       +'<div class="bar"><div class="bar-in"><div class="s" id="stBarTxt"></div>'
@@ -576,7 +688,6 @@
   function bindCount(){
     document.getElementById('stBack').addEventListener('click',showPicker);
     document.getElementById('stLang').addEventListener('click',toggleLang);
-    document.getElementById('stHideZero').addEventListener('click',function(){ S.hz=!S.hz; this.classList.toggle('on',S.hz); try{localStorage.setItem('stk_hz',S.hz?'1':'0');}catch(_){} relist(); });
     var t2=null, qEl=document.getElementById('stQ');
     qEl.addEventListener('input',function(e){ if(t2)clearTimeout(t2); t2=setTimeout(function(){ S.q=e.target.value.trim(); relist(); },120); });
     qEl.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); e.target.blur(); } }); // Enter 收鍵盤
@@ -611,8 +722,7 @@
       var th=e.target.closest('.stk-thumb');
       if(th){ openLightbox(th.getAttribute('data-pc')); return; }
       var add=e.target.closest('[data-add]'),del=e.target.closest('[data-del]'),done=e.target.closest('[data-done]'),tg=e.target.closest('[data-toggle]');
-      var midtg=e.target.closest('[data-midtoggle]'),middone=e.target.closest('[data-middone]'),showzero=e.target.closest('[data-showzero]');
-      if(showzero){ S.hz=false; try{localStorage.setItem('stk_hz','0');}catch(_){} var hzb=document.getElementById('stHideZero'); if(hzb) hzb.classList.remove('on'); relist(); return; }
+      var midtg=e.target.closest('[data-midtoggle]'),middone=e.target.closest('[data-middone]');
       if(add){ var c=e.target.closest('.item').getAttribute('data-c'); S.expanded[c]=true; S.batches[c].push({date:'',qty:''}); relist(); }
       else if(del){ var item=e.target.closest('.item'),c=item.getAttribute('data-c'); S.expanded[c]=true; S.batches[c].splice(+del.getAttribute('data-del'),1); relist(); }
       else if(done){ var c=e.target.closest('.item').getAttribute('data-c'); S.expanded[c]=false; relist(); }
@@ -646,10 +756,13 @@
       // counted 傳「上貨」，mid 傳「中貨」；後端合計存 counted_qty
       counts.push({ code:it.c, name:it.n, spec:it.s, unit:it.u, sys:it.sys, counted:(g==null?null:g), mid:(m==null?null:m), expiry:bx });
     });
-    fetch('/liff/api/stocktake/submit',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+freshToken()},
+    fetch(STK+'/submit',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+freshToken()},
       body:JSON.stringify({warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:(S.baseSubmittedAt==null?null:S.baseSubmittedAt)})
-    }).then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {status:r.status,res:j}; }); }).then(function(o){
+    }).then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {status:r.status,res:j,redirected:r.redirected}; }); }).then(function(o){
       var res=o.res||{};
+      if(WEB&&(o.status===401||o.status===403||o.redirected)){ // 後台 cookie 逾期：草稿保住，重登後台再送（不誤判成功清草稿）
+        btn.disabled=false; btn.textContent=t('submit'); webLoginNeeded(); return;
+      }
       if(o.status===401&&/expired|IdToken/i.test(String(res.error||''))){
         relogin(); return; // ID Token 過期：草稿已保住，續登回來自動帶回再送
       }
@@ -669,7 +782,7 @@
         +'<div>'+esc(whLabel)+' · '+esc(dateLabel)+'</div>'
         +'<div style="font-size:13px;color:var(--txt-3)">'+esc(t('recorded')(res.counted,res.total))+'</div>'
         +'<button class="btn-primary" id="stClose" style="margin-top:8px">'+esc(t('finish'))+'</button>');
-      document.getElementById('stClose').addEventListener('click',function(){ try{ if(liff.isInClient()) liff.closeWindow(); else showPicker(); }catch(_){ showPicker(); } });
+      document.getElementById('stClose').addEventListener('click',function(){ try{ if(!WEB && liff.isInClient()) liff.closeWindow(); else showPicker(); }catch(_){ showPicker(); } });
     }).catch(function(){ btn.disabled=false; btn.textContent=t('submit'); alert(t('submitFailRetry')); });
   }
 

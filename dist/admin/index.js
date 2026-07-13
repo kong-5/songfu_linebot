@@ -73,6 +73,7 @@ const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
 const training_js_1 = require("./training.js");
+const stock_mustcount_js_1 = require("../lib/stock-mustcount.js");
 const line_conversation_js_1 = require("../lib/line-conversation.js");
 const announcement_templates_js_1 = require("../lib/announcement-templates.js");
 const announcement_image_js_1 = require("../lib/announcement-image.js");
@@ -1859,7 +1860,7 @@ function barcodeAddModalHtml(icpno, coName) {
 }
 
 /** SF 側邊欄（新版視覺，URL 沿用既有路由） */
-function sfSidebar(active) {
+function sfSidebar(active, opts = {}) {
   const item = (href, key, icon, label, badge) => `
     <a href="${href}" class="${active === key ? "active" : ""}">
       <span class="sf-nav-icon">${SF_ICONS[icon] || ""}</span>
@@ -1881,13 +1882,22 @@ function sfSidebar(active) {
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
         ${item("/admin/logistics/market", "logistics-reports", "chartLine", "行情報表")}
       </details>
-      <details class="sf-nav-group" ${["inventory","inv-scan","inv-stock","inv-wh-settings","inv-barcodes"].includes(active) ? "open" : ""}>
+      ${opts.canCash ? `<details class="sf-nav-group" ${["cash","cash-collect","cash-customers","cash-report"].includes(active) ? "open" : ""}>
+        <summary><div class="sf-nav-group-title">收款作業</div></summary>
+        ${item("/admin/cash", "cash", "money", "松富銷貨統計")}
+        ${item("/admin/cash/collect", "cash-collect", "check", "現金收款")}
+        ${item("/admin/cash/customers", "cash-customers", "users", "收款客戶主檔")}
+      </details>` : ""}
+      <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-wh-settings","inv-barcodes","inv-expiry","inv-adjust"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
+        ${item("/admin/inventory/entry", "inv-entry", "edit", "網站盤點")}
         ${item("/admin/scan", "inv-scan", "scale", "掃碼盤點")}
         ${item("/admin/inventory", "inventory", "clipboard", "每日盤點")}
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
+        ${item("/admin/inventory/adjustments", "inv-adjust", "refresh", "庫存調整")}
         ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "pin", "倉庫設定")}
         ${item("/admin/inventory/barcodes", "inv-barcodes", "tag", "條碼對照")}
+        ${item("/admin/inventory/expiry-items", "inv-expiry", "calendar", "效期品設定")}
       </details>
       <details class="sf-nav-group" ${["customers","cust-groups","products","ai-examples"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">主檔管理</div></summary>
@@ -2006,6 +2016,7 @@ function normalizeAdminUserRecord(raw) {
         passwordHash,
         title,
         status,
+        canCash: raw.canCash === true || raw.canCash === 1 || raw.canCash === "1",
         approvedBy: raw.approvedBy != null ? String(raw.approvedBy) : null,
         approvedAt: raw.approvedAt != null ? String(raw.approvedAt) : null,
         createdAt: raw.createdAt != null ? String(raw.createdAt) : null,
@@ -2248,7 +2259,7 @@ const STK_CLIENT_JS = `
   function rowHtml(it){
     var s=safetyOf(it.c); var neg=it.q<0; var low=(it.q>0&&s>0&&it.q<s);
     var cls=neg?'stk-neg':(low?'stk-low':'');
-    return '<tr class="'+cls+'"'+(TXN_ENABLED?(' data-code="'+esc(it.c)+'" data-name="'+esc(it.n)+'"'):'')+'><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td>'+photoCell(it)+'</tr>';
+    return '<tr class="'+cls+'"'+(TXN_ENABLED?(' data-code="'+esc(it.c)+'" data-name="'+esc(it.n)+'"'):'')+'><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+(it.adj?('<span title="含人工調整 '+(it.adj>0?'+':'')+it.adj+'（原凌越 '+fmtQty(it.qraw)+'）" style="margin-left:6px;font-size:10.5px;font-weight:700;color:#8250df;background:#f3eefd;border-radius:5px;padding:1px 5px;white-space:nowrap;">調'+(it.adj>0?'+':'')+it.adj+'</span>'):'')+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td>'+photoCell(it)+'</tr>';
   }
   function theadHtml(){ return '<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>凌越倉別</th><th class="stk-photo">照片</th></tr></thead>'; }
   function renderList(list){
@@ -2513,6 +2524,7 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
     let sfTheme = "light";
     let adminUserName = "";
     let adminTitle = "";
+    let sidebarOpts = { canCash: true };
     if (topBarOrRes && typeof topBarOrRes === "object" && topBarOrRes.locals) {
         const res = topBarOrRes;
         topBar = res.locals.topBarHtml || "";
@@ -2520,6 +2532,7 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
         sfTheme = res.locals.sfTheme === "dark" ? "dark" : "light";
         adminUserName = res.locals.adminUser || "";
         adminTitle = res.locals.adminTitle || "";
+        sidebarOpts = { canCash: res.locals.canCash === true };
         headerOpts = {
             canManageUsers: res.locals.canManageUsers === true,
             adminTitle: res.locals.adminTitle || "",
@@ -2536,8 +2549,8 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
     const mainWrap = `<div class="notion-main-wrap">${tb}<main class="notion-main">${body}</main></div>`;
     // 使用新 SF 側邊欄，但容器仍維持既有 .notion-app / .notion-layout 以利不破壞既有 layout JS
     const shell = headerHtml
-        ? `<div class="notion-app" id="notionAppRoot">${headerHtml}<div class="notion-layout">${sfSidebar(active)}<div class="notion-sidebar-overlay" id="sidebarOverlay"></div>${mainWrap}</div></div>`
-        : `<div class="notion-layout">${sfSidebar(active)}${mainWrap}</div>`;
+        ? `<div class="notion-app" id="notionAppRoot">${headerHtml}<div class="notion-layout">${sfSidebar(active, sidebarOpts)}<div class="notion-sidebar-overlay" id="sidebarOverlay"></div>${mainWrap}</div></div>`
+        : `<div class="notion-layout">${sfSidebar(active, sidebarOpts)}${mainWrap}</div>`;
     const uiScript = `<script>(function(){
       // 全域 toast（shell 級共用實作）：固定畫面下方中央，捲到哪都看得到。
       // 訂單頁與庫存頁共用同一份實作與時長，避免兩套 toast 尺寸／動畫／時長不一致。
@@ -3101,6 +3114,7 @@ function createAdminRouter() {
         res.locals.adminUser = profile.name || uname;
         res.locals.adminTitle = profile.title;
         res.locals.canManageUsers = profile.title === "經理";
+        res.locals.canCash = profile.title === "經理" || profile.canCash === true; // 收款作業權限（經理天生有）
         res.locals.isOwner = isAdminOwnerUsername(uname);
         // SF 主題：從 cookie sf_theme=dark|light 讀取（預設淺色）
         res.locals.sfTheme = (cookies.sf_theme === "dark") ? "dark" : "light";
@@ -3218,6 +3232,20 @@ function createAdminRouter() {
         }
         next();
     }
+    // 收款作業權限：經理天生有；其他人需在人員管理勾「收款權限」
+    function requireCash(req, res, next) {
+        const p = req.adminProfile;
+        if (p && (p.title === "經理" || p.canCash === true)) {
+            next();
+            return;
+        }
+        const wantsJson = req.method === "POST" || (req.headers.accept || "").includes("application/json");
+        if (wantsJson) {
+            res.status(403).json({ error: "無收款作業權限（請聯絡經理開通）" });
+            return;
+        }
+        res.status(403).type("text/html").send("<!DOCTYPE html><html lang=\"zh-TW\"><head><meta charset=\"utf-8\"><title>權限不足</title></head><body style=\"font-family:sans-serif;padding:24px;\"><p><strong>收款作業</strong>僅限有權限的人員使用，請聯絡經理開通。</p><p><a href=\"/admin\">返回儀表板</a></p></body></html>");
+    }
     router.get("/users", requireManager, async (req, res) => {
         const users = await loadAdminUsers();
         const msg = req.query.ok === "add" ? "<p class=\"notion-msg ok\">已新增帳號（待審核）。</p>"
@@ -3243,7 +3271,7 @@ function createAdminRouter() {
         const activeRows = activeList.map((u) => {
             const ownerMark = isAdminOwnerUsername(u.username) ? ` <span class="sf-pill accent" style="font-size:10px;">負責人</span>` : "";
             const ops = [];
-            ops.push(`<button type="button" class="sf-btn sm" onclick='openUserEdit(${JSON.stringify({u:u.username,n:u.name||"",t:u.title||"",owner:isAdminOwnerUsername(u.username)})})'>${SF_ICONS.edit}<span>編輯</span></button>`);
+            ops.push(`<button type="button" class="sf-btn sm" onclick='openUserEdit(${JSON.stringify({u:u.username,n:u.name||"",t:u.title||"",owner:isAdminOwnerUsername(u.username),c:!!u.canCash})})'>${SF_ICONS.edit}<span>編輯</span></button>`);
             if (!isAdminOwnerUsername(u.username)) {
                 ops.push(`<form method="post" action="/admin/users/set-status" style="display:inline;margin:0;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><input type="hidden" name="status" value="disabled"><button type="submit" class="sf-btn sm" onclick="return confirm('確定停用此帳號？');">停用</button></form>`);
             }
@@ -3474,6 +3502,12 @@ function createAdminRouter() {
                 <select class="sf-select" name="title" id="ue-title">${titleOptsAll}</select>
                 <p style="margin-top:6px;font-size:11px;color:var(--txt-3);">負責人帳號無法變更職稱。<strong>移工</strong>無法刪除任何資料（系統限制）。</p>
               </div>
+              <div>
+                <label class="sf-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                  <input type="checkbox" name="can_cash" id="ue-cancash" value="1"> 收款作業權限（可進入松富銷貨統計／現金收款／收款客戶主檔）
+                </label>
+                <p style="margin-top:6px;font-size:11px;color:var(--txt-3);">經理天生具備此權限，無需勾選。</p>
+              </div>
               <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:6px;border-top:var(--hairline);">
                 <button type="button" class="sf-btn ghost" onclick="document.getElementById('userEditModal').style.display='none'">取消</button>
                 <button type="submit" class="sf-btn primary">${SF_ICONS.check}<span>儲存</span></button>
@@ -3528,6 +3562,8 @@ function createAdminRouter() {
             titleSel.disabled = false;
             titleSel.value = info.t || '行政';
           }
+          var cc = document.getElementById('ue-cancash');
+          if (cc) { cc.checked = !!info.c; cc.disabled = !!info.owner; }
           document.getElementById('userEditModal').style.display = 'flex';
         }
         </script>`;
@@ -3619,6 +3655,7 @@ function createAdminRouter() {
         }
         users[ix].title = title;
         if (name) users[ix].name = name;
+        users[ix].canCash = (req.body.can_cash === "1" || req.body.can_cash === "on");
         await saveAdminUsers(users);
         res.redirect("/admin/users?ok=status");
     });
@@ -6533,9 +6570,10 @@ function createAdminRouter() {
         try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, hour: "2-digit", minute: "2-digit" }); }
         catch (_) { return String(iso); }
     }
-    async function loadStocktakeDay(date, latestMap) {
+    async function loadStocktakeDay(date, latestMap, adjMap) {
         // latestMap 以「icpno|料號」為鍵（多公司料號可能撞號，不能只用料號）
         const lm = latestMap || {};
+        const am = adjMap || {}; // 人工調整值（icpno|料號→delta）：最新系統＝凌越 + delta，讓盤差扣掉系統誤差
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
         // [分倉庫存 2026-07-10] 「最新系統／對最新盤差」的基準：該倉在 erp_stock_wh_qty 有任何分倉列
@@ -6557,26 +6595,29 @@ function createAdminRouter() {
         for (const s of sessions || []) {
             const sIcp = (0, erp_companies_js_1.normIcpno)(s.icpno);
             const whm = await getWhLatest(String(s.wh_code || ""));
-            const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
+            const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, edited_at, edited_by_name FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
             const items = (rows || []).map((r) => {
                 const sys = Number(r.sys_qty || 0);
                 const counted = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty);
                 const mid = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
                 const diff = counted == null ? null : Math.round((counted - sys) * 100) / 100;
                 const code = String(r.erp_code || "");
+                const adj = Number(am[sIcp + "|" + code] || 0); // 人工調整值
                 // 分倉庫存優先（該倉有 000009 資料）；否則 fallback 到公司總量快照（鍵含 icpno）
-                let latest;
+                let latestRaw;
                 if (whm) {
-                    latest = Number(whm[code] || 0); // 分倉基準：該品項無分倉列＝0
+                    latestRaw = Number(whm[code] || 0); // 分倉基準：該品項無分倉列＝0
                 } else {
                     const lmKey = sIcp + "|" + code;
                     const hasLatest = Object.prototype.hasOwnProperty.call(lm, lmKey);
-                    latest = hasLatest ? Number(lm[lmKey]) : null;
+                    latestRaw = hasLatest ? Number(lm[lmKey]) : null;
                 }
+                // 最新系統＝凌越 + 人工調整；對最新盤差＝實盤−最新系統（建立調整後歸零）
+                const latest = latestRaw == null ? null : Math.round((latestRaw + adj) * 100) / 100;
                 const diffLatest = (counted == null || latest == null) ? null : Math.round((counted - latest) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
-                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, diffLatest, expiry };
+                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, latestRaw, adj, diffLatest, expiry, editedAt: r.edited_at || null, editedBy: r.edited_by_name || null };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
             out.push({ session: s, items, diffCount, latestSource: whm ? "warehouse" : "total" });
@@ -6593,7 +6634,10 @@ function createAdminRouter() {
             (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); });
             stockMeta = await readStockMeta();
         } catch (_) { /* 無庫存快照時照樣顯示 */ }
-        const day = await loadStocktakeDay(date, latestMap);
+        // 人工調整值（彌補系統誤差）：最新系統/對最新盤差都會加上它
+        const adjMap = {};
+        try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
+        const day = await loadStocktakeDay(date, latestMap, adjMap);
         let includedWh = [];
         try { includedWh = (await db.prepare("SELECT code, name, icpno FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY icpno, sort_order, code").all()) || []; } catch (_) { includedWh = []; }
         let recentDates = [];
@@ -6610,6 +6654,11 @@ function createAdminRouter() {
             if (it.diff == null) return "—";
             if (it.sys === 0) return it.diff === 0 ? "0%" : "—";
             return ((it.diff / it.sys) * 100).toFixed(1) + "%";
+        };
+        const latestPct = (it) => {
+            if (it.diffLatest == null || it.latest == null) return "—";
+            if (it.latest === 0) return it.diffLatest === 0 ? "0%" : "—";
+            return ((it.diffLatest / it.latest) * 100).toFixed(1) + "%";
         };
         const diffCls = (it) => (it.diff == null ? "" : it.diff === 0 ? "stk-z" : it.diff > 0 ? "stk-p" : "stk-n");
         const expiryTxt = (arr) => (arr || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"} × ${b.qty || "?"}`).join("、");
@@ -6651,16 +6700,32 @@ function createAdminRouter() {
             const s = sel.session;
             const done = Number(s.counted_count || 0), all = Number(s.item_count || 0);
             const dLatestCls = (d) => (d == null ? "" : d === 0 ? "stk-z" : d > 0 ? "stk-p" : "stk-n");
+            // 調整欄：一鍵把「顯示/最新系統」校正成此次實盤（delta＝實盤−凌越總量），之後每日盤差都扣掉此系統誤差；可重設/取消。
+            const icpForm = (0, erp_companies_js_1.normIcpno)(s.icpno);
+            const backQ = `date=${encodeURIComponent(date)}&wh=${encodeURIComponent(selWh)}`;
+            const adjHidden = (it) => `<input type="hidden" name="icpno" value="${escapeAttr(icpForm)}"><input type="hidden" name="erp_code" value="${escapeAttr(it.code)}"><input type="hidden" name="back" value="${escapeAttr(backQ)}">`;
+            const setForm = (it, label, cls) => `<form method="post" action="/admin/inventory/adjustments" style="display:inline;"><input type="hidden" name="action" value="set_from_count">${adjHidden(it)}<input type="hidden" name="counted" value="${escapeAttr(String(it.counted))}"><input type="hidden" name="name" value="${escapeAttr(it.name)}"><input type="hidden" name="spec" value="${escapeAttr(it.spec)}"><input type="hidden" name="unit" value="${escapeAttr(it.unit)}"><button type="submit" class="stk-adjbtn${cls || ""}" title="讓最新系統＝此次實盤，之後每日盤差都扣掉這個系統誤差">${label}</button></form>`;
+            const delForm = (it) => `<form method="post" action="/admin/inventory/adjustments" style="display:inline;" onsubmit="return confirm('取消 ${escapeAttr(it.code)} 的庫存調整？');"><input type="hidden" name="action" value="delete">${adjHidden(it)}<button type="submit" class="stk-adjbtn del">取消</button></form>`;
+            const adjCell = (it) => {
+                if (it.adj) {
+                    let h = `<span class="stk-adjchip" title="人工調整值，顯示與盤差都已加上此數">調 ${it.adj > 0 ? "+" : ""}${it.adj}</span>`;
+                    if (it.counted != null && it.diffLatest != null && it.diffLatest !== 0) h += setForm(it, "重設");
+                    return h + delForm(it);
+                }
+                return it.counted == null ? "—" : setForm(it, "建立調整");
+            };
+            // 複盤：實盤可直接改（confirm 確認、寫修改軌跡）；盤差／對最新盤差把 % 用括號併進同一欄。
+            const countForm = (it) => `<form method="post" action="/admin/inventory/count-edit" style="display:inline-flex;gap:3px;align-items:center;justify-content:flex-end;" onsubmit="return confirm('複盤修正 ${escapeAttr(it.code)}：實盤改為 '+this.counted.value+'？（會留下修改軌跡）');"><input type="hidden" name="session_id" value="${escapeAttr(s.id)}"><input type="hidden" name="erp_code" value="${escapeAttr(it.code)}"><input type="hidden" name="back" value="${escapeAttr(backQ)}"><input type="number" name="counted" value="${it.counted == null ? "" : escapeAttr(String(it.counted))}" step="any" class="stk-editqty" title="複盤：直接改實盤數"><button type="submit" class="stk-adjbtn" title="送出複盤修正（會留修改軌跡）">改</button></form>`;
             const rowsHtml = sel.items.map((it) => `
               <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
                 <td>${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
                 <td class="stk-num">${fmtN(it.sys)}</td>
-                <td class="stk-num">${fmtN(it.counted)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}</td>
-                <td class="stk-num stk-diff">${it.diff == null ? "—" : (it.diff > 0 ? "+" : "") + it.diff}</td>
-                <td class="stk-num">${diffPct(it)}</td>
+                <td class="stk-num">${countForm(it)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}${it.editedAt ? `<span class="stk-edited" title="複盤修正 ${escapeAttr(stkAdminTwTime(it.editedAt))}${it.editedBy ? " · " + escapeAttr(it.editedBy) : ""}">✎ ${escapeHtml(stkAdminTwTime(it.editedAt))}</span>` : ""}</td>
+                <td class="stk-num stk-diff">${it.diff == null ? "—" : `${(it.diff > 0 ? "+" : "") + it.diff}<span class="stk-pctp">(${diffPct(it)})</span>`}</td>
                 <td class="stk-num stk-latest">${fmtN(it.latest)}</td>
-                <td class="stk-num ${dLatestCls(it.diffLatest)}"><b>${it.diffLatest == null ? "—" : (it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b></td>
+                <td class="stk-num ${dLatestCls(it.diffLatest)}">${it.diffLatest == null ? "—" : `<b>${(it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b><span class="stk-pctp">(${latestPct(it)})</span>`}</td>
+                <td class="stk-adj">${adjCell(it)}</td>
                 <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
               </tr>`).join("");
             rightHtml = `
@@ -6679,7 +6744,7 @@ function createAdminRouter() {
             <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
-              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下</span></th><th class="stk-num">盤差%</th><th class="stk-num">最新<br><span class="stk-th2">系統</span></th><th class="stk-num">對最新<br><span class="stk-th2">盤差</span></th><th>效期</th></tr></thead>
+              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下 ${escapeHtml(stkAdminTwTime(s.submitted_at) || "—")}</span></th><th class="stk-num">實盤<br><span class="stk-th2">可改·含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下(%)</span></th><th class="stk-num">最新系統<br><span class="stk-th2">+調整 ${escapeHtml(stkAdminTwTime(sel.latestSource === "warehouse" ? stockMeta.wh_snapshot_at : stockMeta.snapshot_at) || "—")}</span></th><th class="stk-num">對最新盤差<br><span class="stk-th2">(%)</span></th><th>調整<br><span class="stk-th2">誤差補償</span></th><th>效期</th></tr></thead>
               <tbody>${rowsHtml || `<tr><td colspan="9" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
             </table>
             </div>
@@ -6745,6 +6810,14 @@ function createAdminRouter() {
         .stk-togbtn.sm{padding:4px 10px;font-size:11.5px;}
         .stk-togbtn.on{background:#2383e2;border-color:#2383e2;color:#fff;}
         .stk-empty{background:var(--notion-card,#fff);border:1px dashed var(--notion-border,#e3e2e0);border-radius:12px;padding:34px 16px;text-align:center;color:#787774;}
+        .stk-adjchip{display:inline-block;font-size:11px;font-weight:700;color:#8250df;background:#f3eefd;border-radius:5px;padding:1px 6px;white-space:nowrap;margin-right:5px;}
+        .stk-adjbtn{font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;white-space:nowrap;margin-left:3px;}
+        .stk-adjbtn:hover{background:#f3eefd;border-color:#c9b6f0;color:#6a3fc0;}
+        .stk-adjbtn.del{color:#b3261e;}
+        .stk-adjbtn.del:hover{background:#fdecec;border-color:#e8b4b0;color:#8f1d17;}
+        .stk-editqty{width:58px;text-align:right;font-variant-numeric:tabular-nums;font-size:12.5px;padding:2px 5px;border:1px solid var(--notion-border,#e3e2e0);border-radius:6px;background:var(--notion-card,#fff);color:inherit;}
+        .stk-pctp{margin-left:4px;font-size:10.5px;color:#9b9a97;font-weight:400;}
+        .stk-edited{display:block;font-size:10px;color:#8250df;margin-top:1px;white-space:nowrap;}
       </style>
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 每日盤點</div>
       <h1 class="notion-page-title" style="margin-bottom:14px;">每日盤點</h1>
@@ -6757,6 +6830,8 @@ function createAdminRouter() {
         <span style="flex:1"></span>
         <a href="/admin/inventory/legacy" style="font-size:12px;color:#9b9a97;">舊版盤點作業 →</a>
       </form>
+      ${(req.query.cok || req.query.adjok) ? `<div style="background:#e7f5e9;color:#2e7d32;padding:8px 12px;border-radius:8px;margin:0 0 12px;font-size:13px;">已更新。</div>` : ""}
+      ${(req.query.cerr || req.query.adjerr) ? `<div style="background:#fdecec;color:#b3261e;padding:8px 12px;border-radius:8px;margin:0 0 12px;font-size:13px;">操作失敗：${escapeHtml(String(req.query.cerr || req.query.adjerr))}</div>` : ""}
       <div class="stk-sum">
         <span class="stk-pill">本日已盤 <b>${day.length}</b> / 納入盤點 <b>${includedWh.length}</b> 倉（${pct(day.length, includedWh.length)}%）</span>
         <span class="stk-pill ${totalDiff ? "warn" : "ok"}">盤差品項 <b>${totalDiff}</b> 項</span>
@@ -6798,12 +6873,165 @@ function createAdminRouter() {
       </script>`;
         res.type("text/html").send(notionPage("每日盤點", body, "inventory", res));
     });
+    // ── 庫存調整（彌補凌越系統誤差，免重整）：每公司每料號一個總調整值 delta。
+    //    顯示庫存＝凌越快照 + delta；盤差「最新系統」也加 delta（校正後對最新盤差歸零）。只影響內部顯示，不寫回凌越。──
+    router.post("/inventory/adjustments", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.body && req.body.icpno);
+        const back = String(req.body?.back || "").replace(/[^\w=&%:.\-]/g, "");
+        const dest = back === "mgmt" ? ("/admin/inventory/adjustments?icpno=" + encodeURIComponent(icpno)) : ("/admin/inventory" + (back ? ("?" + back) : ""));
+        const done = (extra) => res.redirect(dest + (extra ? ((dest.indexOf("?") >= 0 ? "&" : "?") + extra) : ""));
+        try {
+            const action = String(req.body?.action || "").trim();
+            const erpCode = String(req.body?.erp_code || "").trim();
+            if (!erpCode) { done("adjerr=" + encodeURIComponent("缺少料號")); return; }
+            const now = new Date().toISOString();
+            const who = String(res.locals.adminUser || req.adminUsername || "");
+            const createdBy = "admin:" + String(req.adminUsername || "");
+            if (action === "delete") {
+                await db.prepare("DELETE FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode);
+                done("adjok=1"); return;
+            }
+            const cur = await db.prepare("SELECT * FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").get(icpno, erpCode);
+            const stock = await db.prepare("SELECT name, spec, unit, qty FROM erp_stock_items WHERE erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(erpCode, icpno);
+            let delta, baseQty, countedQty, name, spec, unit, note;
+            if (action === "set_from_count") {
+                const counted = Number(req.body?.counted);
+                if (!Number.isFinite(counted)) { done("adjerr=" + encodeURIComponent("實盤數無效")); return; }
+                baseQty = stock ? Number(stock.qty || 0) : 0; // 凌越目前總量
+                delta = Math.round((counted - baseQty) * 100) / 100; // 讓顯示/最新系統＝實盤
+                countedQty = counted;
+                name = String(req.body?.name || (stock && stock.name) || (cur && cur.name) || "");
+                spec = String(req.body?.spec || (stock && stock.spec) || (cur && cur.spec) || "");
+                unit = String(req.body?.unit || (stock && stock.unit) || (cur && cur.unit) || "");
+                note = cur ? cur.note : null;
+                if (delta === 0) { // 實盤與系統一致→不需調整；原本有的話移除
+                    await db.prepare("DELETE FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode);
+                    done("adjok=1"); return;
+                }
+            }
+            else if (action === "update") {
+                const d = Number(req.body?.delta);
+                if (!Number.isFinite(d)) { done("adjerr=" + encodeURIComponent("調整值無效（要是數字）")); return; }
+                delta = Math.round(d * 100) / 100;
+                baseQty = cur ? cur.base_qty : (stock ? Number(stock.qty || 0) : null);
+                countedQty = cur ? cur.counted_qty : null;
+                name = String((cur && cur.name) || (stock && stock.name) || "");
+                spec = String((cur && cur.spec) || (stock && stock.spec) || "");
+                unit = String((cur && cur.unit) || (stock && stock.unit) || "");
+                note = req.body?.note != null ? String(req.body.note).slice(0, 200) : (cur ? cur.note : null);
+                if (delta === 0) { await db.prepare("DELETE FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode); done("adjok=1"); return; }
+            }
+            else { done("adjerr=" + encodeURIComponent("未知動作")); return; }
+            const createdAt = (cur && cur.created_at) ? cur.created_at : now;
+            const createdByKeep = (cur && cur.created_by) ? cur.created_by : createdBy;
+            const createdByNameKeep = (cur && cur.created_by_name) ? cur.created_by_name : who;
+            const isPg = Boolean(process.env.DATABASE_URL);
+            if (isPg) {
+                await db.prepare("INSERT INTO stock_adjustment (icpno, erp_code, delta, name, spec, unit, base_qty, counted_qty, note, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (icpno, erp_code) DO UPDATE SET delta = EXCLUDED.delta, name = EXCLUDED.name, spec = EXCLUDED.spec, unit = EXCLUDED.unit, base_qty = EXCLUDED.base_qty, counted_qty = EXCLUDED.counted_qty, note = EXCLUDED.note, updated_at = EXCLUDED.updated_at").run(icpno, erpCode, delta, name, spec, unit, baseQty, countedQty, note, createdByKeep, createdByNameKeep, createdAt, now);
+            } else {
+                await db.prepare("INSERT OR REPLACE INTO stock_adjustment (icpno, erp_code, delta, name, spec, unit, base_qty, counted_qty, note, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(icpno, erpCode, delta, name, spec, unit, baseQty, countedQty, note, createdByKeep, createdByNameKeep, createdAt, now);
+            }
+            done("adjok=1");
+        }
+        catch (e) {
+            console.error("[admin] adjustments save", e?.message || e);
+            done("adjerr=" + encodeURIComponent(String(e?.message || e).slice(0, 120)));
+        }
+    });
+    router.get("/inventory/adjustments", async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno, "02");
+        const companies = await listStockCompanies();
+        if (companies.indexOf(icpno) < 0) companies.push(icpno);
+        companies.sort();
+        let rows = [];
+        try {
+            rows = (await db.prepare(
+                "SELECT a.erp_code, a.delta, a.base_qty, a.counted_qty, a.note, a.created_by_name, a.updated_at, i.name, i.spec, i.unit, i.qty AS cur_qty " +
+                "FROM stock_adjustment a LEFT JOIN erp_stock_items i ON i.erp_code = a.erp_code AND COALESCE(NULLIF(TRIM(i.icpno),''),'00') = COALESCE(NULLIF(TRIM(a.icpno),''),'00') " +
+                "WHERE COALESCE(NULLIF(TRIM(a.icpno),''),'00') = ? ORDER BY a.erp_code").all(icpno)) || [];
+        } catch (e) { console.error("[admin] adjustments list", e?.message || e); rows = []; }
+        const coSeg = companies.length > 1 ? `<div class="sf-seg" style="margin:0 0 14px;display:inline-flex;">${companies.map((c) => `<button type="button" class="${c === icpno ? "active" : ""}" onclick="location.href='/admin/inventory/adjustments?icpno=${c}'">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))}</button>`).join("")}</div>` : "";
+        const banner = req.query.adjok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存。</div>` : (req.query.adjerr ? `<div style="background:#fdecec;color:#b3261e;padding:10px 12px;border-radius:8px;margin-bottom:12px;">操作失敗：${escapeHtml(String(req.query.adjerr))}</div>` : "");
+        const n2 = (v) => (v == null ? "—" : String(Math.round(Number(v) * 100) / 100));
+        const rowsHtml = rows.map((r) => {
+            const hasStock = r.name != null;
+            const rawq = Number(r.cur_qty || 0);
+            const shown = hasStock ? Math.round((rawq + Number(r.delta || 0)) * 100) / 100 : null;
+            return `
+      <tr>
+        <td style="font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:600;">${escapeHtml(String(r.erp_code))}</td>
+        <td>${escapeHtml(String(r.name || "（庫存快照查無此料號）"))}${r.spec ? `<span style="margin-left:6px;font-size:11px;color:var(--notion-text-muted,#9b9a97);">${escapeHtml(String(r.spec))}</span>` : ""}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums;">${hasStock ? n2(rawq) : "—"}</td>
+        <td style="text-align:center;">
+          <form method="post" action="/admin/inventory/adjustments" style="display:inline-flex;align-items:center;gap:6px;">
+            <input type="hidden" name="action" value="update"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}"><input type="hidden" name="erp_code" value="${escapeAttr(String(r.erp_code))}"><input type="hidden" name="back" value="mgmt">
+            <input type="number" name="delta" value="${escapeAttr(n2(r.delta))}" step="any" class="sf-input" style="width:92px;text-align:right;">
+            <button type="submit" class="btn" style="font-size:12px;padding:4px 10px;">存</button>
+          </form>
+        </td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:#8250df;">${shown == null ? "—" : n2(shown)}</td>
+        <td style="font-size:12px;color:var(--notion-text-muted,#9b9a97);white-space:nowrap;">${escapeHtml(String(r.created_by_name || "—"))}</td>
+        <td style="text-align:center;">
+          <form method="post" action="/admin/inventory/adjustments" onsubmit="return confirm('刪除 ${escapeAttr(String(r.erp_code))} 的庫存調整？');" style="display:inline;">
+            <input type="hidden" name="action" value="delete"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}"><input type="hidden" name="erp_code" value="${escapeAttr(String(r.erp_code))}"><input type="hidden" name="back" value="mgmt">
+            <button type="submit" class="btn" style="font-size:12px;padding:4px 10px;color:#b3261e;">刪除</button>
+          </form>
+        </td>
+      </tr>`;
+        }).join("");
+        const emptyRow = `<tr><td colspan="7" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此公司尚無庫存調整。到「每日盤點」的盤差表，對有誤差的品項按「建立調整」即可。</td></tr>`;
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 庫存調整</div>
+      <h1 class="notion-page-title">庫存調整</h1>
+      <p class="notion-hint" style="margin:-2px 0 14px;">彌補凌越系統誤差用（免重整）。<b>顯示庫存＝凌越快照 ＋ 調整值</b>；每日盤點的「最新系統／對最新盤差」也會加上調整值（校正後盤差歸零）。<b>只影響我們內部顯示與盤差，不會寫回凌越</b>。建立方式：到<a href="/admin/inventory">每日盤點</a>盤差表按「建立調整」；日後凌越重整/校正好了，記得回這裡<b>刪除</b>對應調整，避免雙重補償。</p>
+      ${coSeg}
+      ${banner}
+      <div class="notion-card" style="padding:0;overflow:auto;">
+        <table>
+          <thead><tr><th>料號</th><th>品名</th><th style="text-align:right;">凌越量</th><th style="text-align:center;">調整值</th><th style="text-align:right;">顯示量</th><th>建立者</th><th style="text-align:center;">操作</th></tr></thead>
+          <tbody>${rowsHtml || emptyRow}</tbody>
+        </table>
+      </div>`;
+        res.type("text/html").send(notionPage("庫存調整", body, "inv-adjust", res));
+    });
+    // 複盤：每日盤點頁直接改實盤數 → 更新 stocktake_count.counted_qty ＋ 寫修改軌跡 stocktake_count_audit。
+    router.post("/inventory/count-edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const back = String(req.body?.back || "").replace(/[^\w=&%:.\-]/g, "");
+        const dest = "/admin/inventory" + (back ? ("?" + back) : "");
+        const done = (extra) => res.redirect(dest + (extra ? ((dest.indexOf("?") >= 0 ? "&" : "?") + extra) : ""));
+        try {
+            const sessionId = String(req.body?.session_id || "").trim();
+            const erpCode = String(req.body?.erp_code || "").trim();
+            if (!sessionId || !erpCode) { done("cerr=" + encodeURIComponent("缺少場次或料號")); return; }
+            const nv = Number(req.body?.counted);
+            if (!Number.isFinite(nv) || nv < 0) { done("cerr=" + encodeURIComponent("實盤數無效（要 0 或正數）")); return; }
+            const newCounted = Math.round(nv * 100) / 100;
+            const row = await db.prepare("SELECT c.counted_qty, c.name, s.icpno, s.wh_code, s.count_date FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE c.session_id = ? AND c.erp_code = ?").get(sessionId, erpCode);
+            if (!row) { done("cerr=" + encodeURIComponent("查無此盤點列")); return; }
+            const oldCounted = (row.counted_qty == null || row.counted_qty === "") ? null : Number(row.counted_qty);
+            if (oldCounted != null && Math.abs(oldCounted - newCounted) < 1e-9) { done("cok=1"); return; } // 沒變就不寫軌跡
+            const now = new Date().toISOString();
+            const who = String(res.locals.adminUser || req.adminUsername || "");
+            const actor = "admin:" + String(req.adminUsername || "");
+            const { newId } = require("../lib/id.js");
+            await db.prepare("UPDATE stocktake_count SET counted_qty = ?, edited_at = ?, edited_by = ?, edited_by_name = ? WHERE session_id = ? AND erp_code = ?").run(newCounted, now, actor, who, sessionId, erpCode);
+            await db.prepare("INSERT INTO stocktake_count_audit (id, session_id, icpno, wh_code, count_date, erp_code, name, old_counted, new_counted, actor, actor_name, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .run(newId("stca"), sessionId, (0, erp_companies_js_1.normIcpno)(row.icpno), String(row.wh_code || ""), String(row.count_date || ""), erpCode, String(row.name || ""), oldCounted, newCounted, actor, who, "複盤修正", now);
+            done("cok=1");
+        }
+        catch (e) {
+            console.error("[admin] count-edit", e?.message || e);
+            done("cerr=" + encodeURIComponent(String(e?.message || e).slice(0, 120)));
+        }
+    });
     router.get("/inventory/stocktake.csv", async (req, res) => {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
         const latestMapCsv = {};
         try { (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMapCsv[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) {}
-        const day = await loadStocktakeDay(date, latestMapCsv);
+        const adjMapCsv = {};
+        try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMapCsv[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) {}
+        const day = await loadStocktakeDay(date, latestMapCsv, adjMapCsv);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
         const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量,最新系統基準,對最新盤差,效期明細,盤點人,送出時間"];
         for (const { session: s, items, latestSource } of day) {
@@ -7352,6 +7580,9 @@ function createAdminRouter() {
         // 左欄固定列出全部四家（00 松富、01 龍港、02 松揚、03 松成），方便隨時切換
         const allCompanies = Object.keys(erp_companies_js_1.ERP_COMPANY_NAMES).sort();
         const stockRows = await db.prepare("SELECT erp_code, name, spec, unit, qty, wh_code FROM erp_stock_items WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY erp_code").all(icpno);
+        // 人工調整值：顯示庫存＝凌越快照 + delta（彌補系統誤差）。keyed by 料號（本頁已限定單一公司）。
+        const adjMap = {};
+        try { (await db.prepare("SELECT erp_code, delta FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno) || []).forEach((r) => { adjMap[String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
         const assignRows = await db.prepare(`
       SELECT p.erp_code AS code, w.name AS wh_name, w.sort_order AS wh_sort, COALESCE(iwp.safety_stock, 0) AS safety
       FROM inventory_warehouse_products iwp
@@ -7366,14 +7597,21 @@ function createAdminRouter() {
                 continue;
             (assign[code] = assign[code] || []).push({ wh: String(a.wh_name || ""), sort: Number(a.wh_sort || 0), safety: Number(a.safety || 0) });
         }
-        const items = (stockRows || []).map((r) => ({
-            c: String(r.erp_code || ""),
-            n: String(r.name || ""),
-            s: String(r.spec || ""),
-            u: String(r.unit || ""),
-            q: Number(r.qty || 0),
-            w: String(r.wh_code || ""),
-        }));
+        const items = (stockRows || []).map((r) => {
+            const c = String(r.erp_code || "");
+            const raw = Number(r.qty || 0);
+            const adj = Number(adjMap[c] || 0);
+            return {
+                c,
+                n: String(r.name || ""),
+                s: String(r.spec || ""),
+                u: String(r.unit || ""),
+                q: adj ? Math.round((raw + adj) * 100) / 100 : raw, // 顯示量＝凌越 + 調整
+                qraw: adj ? raw : undefined, // 原凌越量（有調整時給 badge/tooltip）
+                adj: adj || undefined,
+                w: String(r.wh_code || ""),
+            };
+        });
         // 倉別代號→中文名（倉庫設定頁維護），給前端把標籤/欄位顯示成「代號 中文名」
         const whRows = await db.prepare("SELECT code, name FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
         const whname = {};
@@ -7767,6 +8005,128 @@ function createAdminRouter() {
             back("&err=" + encodeURIComponent(String(e?.message || e).slice(0, 120)));
         }
     });
+    // ── 效期品設定：標記哪些料號在盤點時要填效期／批號（分公司獨立，可整倉一次帶入，例如松揚雜貨庫房）──
+    router.get("/inventory/expiry-items", async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno, "02");
+        const companies = await listStockCompanies();
+        if (companies.indexOf(icpno) < 0) companies.push(icpno);
+        companies.sort();
+        let rows = [], whs = [];
+        const whCnt = {}, whExp = {};
+        try {
+            rows = (await db.prepare(
+                "SELECT e.erp_code, e.expiry_unit, i.name, i.spec, i.unit, i.wh_code " +
+                "FROM stocktake_expiry_item e LEFT JOIN erp_stock_items i ON i.erp_code = e.erp_code AND COALESCE(NULLIF(TRIM(i.icpno),''),'00') = COALESCE(NULLIF(TRIM(e.icpno),''),'00') " +
+                "WHERE COALESCE(NULLIF(TRIM(e.icpno),''),'00') = ? ORDER BY i.wh_code, e.erp_code").all(icpno)) || [];
+        } catch (e) { console.error("[admin] expiry-items list", e?.message || e); rows = []; }
+        try { whs = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY sort_order, code").all(icpno)) || []; } catch (_) { whs = []; }
+        try { (await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? GROUP BY wh_code").all(icpno) || []).forEach((r) => { whCnt[String(r.code)] = Number(r.cnt || 0); }); } catch (_) { }
+        try { (await db.prepare("SELECT i.wh_code AS code, COUNT(*) AS cnt FROM stocktake_expiry_item e JOIN erp_stock_items i ON i.erp_code = e.erp_code AND COALESCE(NULLIF(TRIM(i.icpno),''),'00') = COALESCE(NULLIF(TRIM(e.icpno),''),'00') WHERE COALESCE(NULLIF(TRIM(e.icpno),''),'00') = ? GROUP BY i.wh_code").all(icpno) || []).forEach((r) => { whExp[String(r.code)] = Number(r.cnt || 0); }); } catch (_) { }
+        const coSeg = companies.length > 1 ? `<div class="sf-seg" style="margin:0 0 14px;display:inline-flex;">${companies.map((c) => `<button type="button" class="${c === icpno ? "active" : ""}" onclick="location.href='/admin/inventory/expiry-items?icpno=${c}'">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))}</button>`).join("")}</div>` : "";
+        const banner = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存${req.query.n ? `：新增 ${escapeHtml(String(req.query.n))} 項效期品` : ""}。</div>` : (req.query.err ? `<div style="background:#fdecec;color:#b3261e;padding:10px 12px;border-radius:8px;margin-bottom:12px;">操作失敗：${escapeHtml(String(req.query.err))}</div>` : "");
+        const whOpts = whs.map((w) => { const c = String(w.code); return `<option value="${escapeAttr(c)}">${escapeHtml(c)} ${escapeHtml(String(w.name || ""))}（已標 ${whExp[c] || 0}/${whCnt[c] || 0}）</option>`; }).join("");
+        const rowsHtml = rows.map((r) => `
+      <tr>
+        <td style="font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:600;">${escapeHtml(String(r.erp_code))}</td>
+        <td>${escapeHtml(String(r.name || "（庫存快照查無此料號）"))}${r.spec ? `<span style="margin-left:6px;font-size:11px;color:var(--notion-text-muted,#9b9a97);">${escapeHtml(String(r.spec))}</span>` : ""}</td>
+        <td style="white-space:nowrap;">${escapeHtml(String(r.wh_code || "—"))}</td>
+        <td style="text-align:center;">${escapeHtml(String(r.expiry_unit || r.unit || ""))}</td>
+        <td style="text-align:center;">
+          <form method="post" action="/admin/inventory/expiry-items" onsubmit="return confirm('取消 ${escapeAttr(String(r.erp_code))} 的效期標記？');" style="display:inline;">
+            <input type="hidden" name="action" value="delete"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}"><input type="hidden" name="erp_code" value="${escapeAttr(String(r.erp_code))}">
+            <button type="submit" class="btn" style="font-size:12px;padding:4px 10px;color:#b3261e;">移除</button>
+          </form>
+        </td>
+      </tr>`).join("");
+        const emptyRow = `<tr><td colspan="5" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此公司尚未標記任何效期品。用上方「整倉帶入」把雜貨庫房一次設好，或單筆新增料號。</td></tr>`;
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 效期品設定</div>
+      <h1 class="notion-page-title">效期品設定</h1>
+      <p class="notion-hint" style="margin:-2px 0 14px;">標記為「效期品」的料號，盤點時才會跳出<b>效期／批號</b>輸入（雜貨、有到期日的品項才需要）。可<b>整倉一次帶入</b>（例如松揚雜貨庫房），也可單筆增減。設定<b>分公司獨立</b>。</p>
+      ${coSeg}
+      ${banner}
+      <div class="notion-card" style="padding:14px 16px;margin-bottom:16px;">
+        <div style="font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px;">${SF_ICONS.box}整倉帶入 / 清除</div>
+        <form method="post" action="/admin/inventory/expiry-items" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+          <input type="hidden" name="icpno" value="${escapeAttr(icpno)}">
+          <select name="warehouse" required class="sf-input" style="min-width:280px;">
+            <option value="">選擇倉庫…</option>
+            ${whOpts}
+          </select>
+          <button type="submit" name="action" value="bulk_add" class="btn-primary">整倉設為效期品</button>
+          <button type="submit" name="action" value="bulk_remove" class="btn" onclick="return confirm('把此倉所有品項的效期標記清除？');" style="color:#b3261e;">整倉清除</button>
+        </form>
+        <p class="notion-hint" style="margin:8px 0 0;">「整倉設為效期品」會把此倉所有料號都標記；日後這些品項在盤點頁都會出現效期輸入。已標記的不會重複。</p>
+      </div>
+      <div class="notion-card" style="padding:14px 16px;margin-bottom:16px;">
+        <details>
+          <summary style="cursor:pointer;font-size:13px;color:var(--notion-text-muted,#9b9a97);">單筆新增（輸入料號）</summary>
+          <form method="post" action="/admin/inventory/expiry-items" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px;">
+            <input type="hidden" name="action" value="add"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}">
+            <input type="text" name="erp_code" placeholder="凌越料號" required class="sf-input" style="width:160px;">
+            <input type="text" name="expiry_unit" placeholder="效期單位（可留白，預設同單位）" class="sf-input" style="width:240px;">
+            <button type="submit" class="btn-primary">新增</button>
+          </form>
+        </details>
+      </div>
+      <div class="notion-card" style="padding:0;overflow:auto;">
+        <table>
+          <thead><tr><th>料號</th><th>品名</th><th>倉別</th><th style="text-align:center;">效期單位</th><th style="text-align:center;">操作</th></tr></thead>
+          <tbody>${rowsHtml || emptyRow}</tbody>
+        </table>
+      </div>`;
+        res.type("text/html").send(notionPage("效期品設定", body, "inv-expiry", res));
+    });
+    router.post("/inventory/expiry-items", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.body && req.body.icpno, "02");
+        const back = (extra) => res.redirect("/admin/inventory/expiry-items?icpno=" + encodeURIComponent(icpno) + (extra || ""));
+        try {
+            const action = String(req.body?.action || "").trim();
+            const now = new Date().toISOString();
+            if (action === "delete") {
+                const erpCode = String(req.body?.erp_code || "").trim();
+                if (!erpCode) { back("&err=" + encodeURIComponent("缺少料號")); return; }
+                await db.prepare("DELETE FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode);
+                back("&ok=1"); return;
+            }
+            if (action === "add") {
+                const erpCode = String(req.body?.erp_code || "").trim();
+                if (!erpCode) { back("&err=" + encodeURIComponent("缺少料號")); return; }
+                const item = await db.prepare("SELECT erp_code, unit FROM erp_stock_items WHERE erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(erpCode, icpno);
+                if (!item) { back("&err=" + encodeURIComponent("查無料號 " + erpCode + "（該公司庫存快照裡沒有）")); return; }
+                const eunit = String(req.body?.expiry_unit || "").trim() || String(item.unit || "");
+                await db.prepare("DELETE FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode);
+                await db.prepare("INSERT INTO stocktake_expiry_item (icpno, erp_code, expiry_unit, created_at) VALUES (?, ?, ?, ?)").run(icpno, erpCode, eunit, now);
+                back("&ok=1"); return;
+            }
+            if (action === "bulk_add" || action === "bulk_remove") {
+                const wh = String(req.body?.warehouse || "").trim();
+                if (!wh) { back("&err=" + encodeURIComponent("請先選倉庫")); return; }
+                if (action === "bulk_remove") {
+                    await db.prepare("DELETE FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code IN (SELECT erp_code FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?)").run(icpno, wh, icpno);
+                    back("&ok=1"); return;
+                }
+                // bulk_add：找出此倉尚未標記的料號，一次插入（多列 VALUES，每批 ≤200）→ 已標記的不重複
+                const toAdd = (await db.prepare("SELECT erp_code, unit FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code NOT IN (SELECT erp_code FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?) ORDER BY erp_code").all(wh, icpno, icpno)) || [];
+                let added = 0;
+                const BATCH = 200;
+                for (let i = 0; i < toAdd.length; i += BATCH) {
+                    const chunk = toAdd.slice(i, i + BATCH);
+                    const ph = chunk.map(() => "(?, ?, ?, ?)").join(", ");
+                    const params = [];
+                    for (const r of chunk) params.push(icpno, String(r.erp_code || ""), String(r.unit || ""), now);
+                    await db.prepare("INSERT INTO stocktake_expiry_item (icpno, erp_code, expiry_unit, created_at) VALUES " + ph).run(...params);
+                    added += chunk.length;
+                }
+                back("&ok=1&n=" + added); return;
+            }
+            back("&err=" + encodeURIComponent("未知動作"));
+        }
+        catch (e) {
+            console.error("[admin] expiry-items save", e?.message || e);
+            back("&err=" + encodeURIComponent(String(e?.message || e).slice(0, 120)));
+        }
+    });
     // ── 掃碼盤點「網頁版」（後台帳號登入，iPhone Safari 直接可用；與 LINE LIFF 版共用 scan.html 與同一套盤點表）──
     // 此 router 已全域要求後台登入 → 身分＝登入者。資料 API 與 /liff/api/* 同邏輯，只是改用後台 session 認證。
     const scanIc = (v) => (0, erp_companies_js_1.normIcpno)(v);
@@ -7908,6 +8268,115 @@ function createAdminRouter() {
             }
             res.json({ ok: true, counted: counts.length, total });
         } catch (e) { console.error("[admin scan submit]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    // ── 每日盤點「網站版」輸入頁（後台帳號登入，不碰 LINE/LIFF token → 無登入逾時）──
+    // 與 LINE LIFF 盤點頁共用 dist/liff/stocktake.html（WEB 模式），寫進同一套 stocktake_session/stocktake_count，
+    // 後台每日盤點直接看得到。資料 API 與 /liff/api/stocktake/* 同邏輯，改用後台 session 認證＋身分。
+    router.get("/inventory/entry", (req, res) => {
+        let tpl;
+        try { tpl = require("fs").readFileSync(require("path").join(__dirname, "..", "liff", "stocktake.html"), "utf8"); }
+        catch (_) { res.status(500).type("text/plain").send("stocktake.html 樣板缺失"); return; }
+        const who = String(res.locals.adminUser || req.adminUsername || "");
+        const cfg = `<script>window.__STK_WEB__=true;window.__STK_API__="/admin/inventory/entry";window.__STK_NAME__=${JSON.stringify(who)};</script>`;
+        // 網頁版不載 LINE LIFF SDK，直接用後台 cookie session；頁內 liff.* 全部有 WEB 判斷保護
+        const html = tpl.replace('<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>', cfg);
+        res.setHeader("Cache-Control", "no-store");
+        res.type("text/html").send(html);
+    });
+    router.get("/inventory/entry/warehouses", async (req, res) => {
+        try {
+            const icpno = scanIc(req.query.icpno);
+            const date = stkAdminTaipeiDate();
+            const whRows = await db.prepare("SELECT code, name, include_stocktake, sort_order FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
+            const cntRows = await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? GROUP BY wh_code").all(icpno);
+            const cnt = {}; (cntRows || []).forEach((r) => { cnt[String(r.code)] = Number(r.cnt || 0); });
+            const doneRows = await db.prepare("SELECT DISTINCT wh_code FROM stocktake_session WHERE count_date = ? AND status = 'submitted' AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(date, icpno);
+            const done = {}; (doneRows || []).forEach((r) => { done[String(r.wh_code)] = true; });
+            let list;
+            if ((whRows || []).length) {
+                list = whRows.filter((w) => Number(w.include_stocktake) === 1).map((w) => ({ code: String(w.code), name: String(w.name || ""), sort: Number(w.sort_order || 0), items: cnt[String(w.code)] || 0, countedToday: !!done[String(w.code)] }));
+            } else {
+                list = Object.keys(cnt).map((code) => ({ code, name: "", sort: 0, items: cnt[code], countedToday: !!done[code] }));
+            }
+            list.sort((a, b) => (a.sort - b.sort) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+            res.json({ date, warehouses: list });
+        } catch (e) { console.error("[admin entry warehouses]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    router.get("/inventory/entry/items", async (req, res) => {
+        try {
+            const code = String(req.query.warehouse || "").trim();
+            if (!code) { res.status(400).json({ error: "缺少 warehouse" }); return; }
+            const icpno = scanIc(req.query.icpno);
+            const wh = await db.prepare("SELECT code, name FROM erp_warehouse WHERE code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
+            const rows = await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY erp_code").all(code, icpno);
+            let whQtyMap = null;
+            try { const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(code); if ((wq || []).length) { whQtyMap = {}; for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0); } } catch (_) { whQtyMap = null; }
+            const sysQtySource = whQtyMap ? "warehouse" : "total";
+            const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
+            const exp = {}; (expRows || []).forEach((r) => { exp[String(r.erp_code)] = String(r.expiry_unit || ""); });
+            const photoSet = new Set();
+            try { (await db.prepare("SELECT erp_code FROM erp_stock_item_photo").all() || []).forEach((r) => photoSet.add(String(r.erp_code || ""))); } catch (_) { /* 照片表缺失不擋盤點 */ }
+            const items = (rows || []).map((r) => { const c = String(r.erp_code || ""); const isExp = Object.prototype.hasOwnProperty.call(exp, c); const sysv = whQtyMap ? Number(whQtyMap[c] || 0) : Number(r.qty || 0); return { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: sysv, exp: isExp, eunit: isExp ? (exp[c] || String(r.unit || "")) : "", hp: photoSet.has(c) ? 1 : undefined }; });
+            const date = stkAdminTaipeiDate();
+            const saved = {}; let resumed = false; let submittedAt = null;
+            const sess = await db.prepare("SELECT id, submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, date, icpno);
+            if (sess) {
+                const cRows = await db.prepare("SELECT erp_code, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ?").all(sess.id);
+                for (const r of cRows || []) { let expiry = []; try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; } const totalv = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty); const midv = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty); const goodv = totalv == null ? null : Math.round((totalv - (midv || 0)) * 100) / 100; saved[String(r.erp_code || "")] = { counted: goodv, mid: midv, expiry }; }
+                resumed = (cRows || []).length > 0; submittedAt = sess.submitted_at != null && sess.submitted_at !== "" ? String(sess.submitted_at) : null;
+            }
+            try { const mc = await (0, stock_mustcount_js_1.computeMustCount)(db, { icpno, whCode: code, today: date }); items.forEach((it) => { if (mc.set.has(it.c)) it.mc = 1; }); } catch (_) { }
+            res.json({ date, warehouse: { code, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt, sysQtySource });
+        } catch (e) { console.error("[admin entry items]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    router.get("/inventory/entry/photo/:erpCode", async (req, res) => {
+        try {
+            const code = String(req.params.erpCode || "").trim();
+            if (!code) { res.status(400).json({ error: "缺少料號" }); return; }
+            const row = await db.prepare("SELECT photo_url FROM erp_stock_item_photo WHERE erp_code = ?").get(code);
+            if (!row || !row.photo_url) { res.status(404).json({ error: "無照片" }); return; }
+            res.json({ url: String(row.photo_url) });
+        } catch (e) { console.error("[admin entry photo]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
+    router.post("/inventory/entry/submit", express_1.default.json({ limit: "2mb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const code = String(body.warehouse || "").trim();
+            const counts = Array.isArray(body.counts) ? body.counts : null;
+            if (!code || !counts) { res.status(400).json({ error: "缺少 warehouse 或 counts" }); return; }
+            const icpno = scanIc(body.icpno);
+            const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || "")) ? String(body.date) : stkAdminTaipeiDate();
+            const today = stkAdminTaipeiDate();
+            const yst = scanYesterdayTaipei();
+            if (date !== today && date !== yst) { res.status(400).json({ error: "盤點日期僅限今日或昨日（" + yst + " ～ " + today + "）" }); return; }
+            const { newId } = require("../lib/id.js");
+            const wh = await db.prepare("SELECT name FROM erp_warehouse WHERE code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
+            const totalRow = await db.prepare("SELECT COUNT(*) AS n FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
+            const total = totalRow ? Number(totalRow.n || 0) : counts.length;
+            const now = new Date().toISOString();
+            const curSess = await db.prepare("SELECT submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, date, icpno);
+            const baseSubmittedAt = (body.baseSubmittedAt == null || body.baseSubmittedAt === "") ? null : String(body.baseSubmittedAt);
+            const curSubmittedAt = (curSess && curSess.submitted_at != null && curSess.submitted_at !== "") ? String(curSess.submitted_at) : null;
+            if (curSubmittedAt !== baseSubmittedAt) { res.status(409).json({ error: "開頁後已有他人送出此倉盤點，請重載後續盤再送出", code: "conflict_stale" }); return; }
+            const sid = newId("stk");
+            const name = String(body.name || res.locals.adminUser || req.adminUsername || "").trim();
+            const createdBy = "admin:" + String(req.adminUsername || "");
+            const countRows = counts.map((c) => { const good = (c.counted == null || c.counted === "") ? null : Number(c.counted); const mid = (c.mid == null || c.mid === "") ? null : Number(c.mid); const cv = (good == null && mid == null) ? null : ((good || 0) + (mid || 0)); return [newId("stc"), sid, String(c.code || ""), String(c.name || ""), String(c.spec || ""), String(c.unit || ""), Number(c.sys || 0), cv, mid, JSON.stringify(c.expiry || []), now]; });
+            try {
+                await db.transaction(async (tx) => {
+                    await tx.prepare("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?)").run(code, date, icpno);
+                    await tx.prepare("DELETE FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").run(code, date, icpno);
+                    await tx.prepare("INSERT INTO stocktake_session (id, wh_code, wh_name, count_date, status, group_id, created_by, created_by_name, item_count, counted_count, created_at, submitted_at, icpno) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(sid, code, wh ? String(wh.name || "") : "", date, "submitted", null, createdBy, name, total, counts.length, now, now, icpno);
+                    const BATCH = 50;
+                    for (let i = 0; i < countRows.length; i += BATCH) { const chunk = countRows.slice(i, i + BATCH); const ph = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", "); const params = []; for (const row of chunk) params.push(...row); await tx.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, updated_at) VALUES " + ph).run(...params); }
+                });
+            } catch (e) {
+                const cs = String(e && e.code || ""); const isUniq = cs === "23505" || cs.indexOf("SQLITE_CONSTRAINT") === 0 || /UNIQUE constraint failed/i.test(String(e && e.message || ""));
+                if (isUniq) { res.status(409).json({ error: "此倉今日盤點已被其他人送出，請重新載入", code: "conflict_taken" }); return; }
+                throw e;
+            }
+            res.json({ ok: true, counted: counts.length, total });
+        } catch (e) { console.error("[admin entry submit]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
     // ── 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空籃」。無 group_features 列＝三項全開。 ──
     async function loadStocktakeGroupCandidates() {
@@ -11836,6 +12305,21 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         flat.push(...r);
                     await h.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
                 }
+                // 每日庫存快照（供盤點「必盤」判定：跟昨天有無變動）：同交易內，一天一份、最後一次推送為準（先刪今天這家再整批插）。
+                const dailySnapDate = stkAdminTaipeiDate();
+                await h.prepare("DELETE FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date = ?").run(icpno, dailySnapDate);
+                for (let i = 0; i < rows.length; i += CHUNK) {
+                    const chunk = rows.slice(i, i + CHUNK);
+                    const ph = chunk.map(() => "(?,?,?,?,?)").join(",");
+                    const flat = [];
+                    for (const r of chunk)
+                        flat.push(icpno, r[0], dailySnapDate, r[4], snapshotAt); // r = [code,name,spec,unit,qty,wh_code,icpno,at]；qty=r[4]
+                    await h.prepare("INSERT INTO erp_stock_daily (icpno, erp_code, snap_date, qty, updated_at) VALUES " + ph).run(...flat);
+                }
+                try { // 只留近 14 天，避免無限成長
+                    const pruneBefore = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(Date.now() - 14 * 86400000));
+                    await h.prepare("DELETE FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date < ?").run(icpno, pruneBefore);
+                } catch (_) { /* prune 失敗不影響推送 */ }
                 // 分倉快照：同交易內覆蓋（失敗整批回滾，與主表一致）；沒帶 warehouse_qty 就跳過不動。
                 // 多公司安全：只清「本批帶到的倉別」（凌越倉號屬單一公司），不整表清，否則各公司推送互相清空。
                 if (whRows) {
@@ -11877,6 +12361,1284 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             // [ops 2026-07-10] 庫存推送失敗＝後台庫存可能過期，推播告警（交易已回滾、保留上一份快照）。
             ops_notify_js_1.notifyOps(db, `凌越庫存推送（inventory-push）失敗：${String(e?.message || e).slice(0, 200)}`).catch(() => { });
             res.status(500).json({ error: "inventory-push 失敗", detail: String(e?.message || e) });
+        }
+    });
+    // ============================================================
+    //  每日帳款收款（Phase 1：取單上雲 + 銷貨單總計表）
+    //  資料源：凌越銷貨單(0000A1) 主表 + 客戶主檔(00000D) 結帳方式(CT_FKFS)，
+    //  由內網代理 scripts/ly_sales_push.py 推上雲（air-gap，雲端連不到凌越）。
+    // ============================================================
+    // 內網推當日銷貨單上雲（機器對機器，X-Writeback-Key，走上方 /lingyue-writeback/ 中介層）
+    router.post("/lingyue-writeback/cash-ingest", express_1.default.json({ limit: "16mb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const docs = Array.isArray(body.docs) ? body.docs : null;
+            if (!docs) {
+                res.status(400).json({ error: "缺少 docs 陣列" });
+                return;
+            }
+            const icpno = erp_companies_js_1.normIcpno(body.icpno, "00");
+            const date = (typeof body.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.date.trim())) ? body.date.trim() : "";
+            if (!date) {
+                res.status(400).json({ error: "缺少或格式錯誤 date (需 YYYY-MM-DD)" });
+                return;
+            }
+            const ingestedAt = new Date().toISOString();
+            const num = (v) => { const n = Number(String(v ?? "").replace(/,/g, "").trim()); return Number.isFinite(n) ? n : 0; };
+            const docRows = [];
+            for (const d of docs) {
+                const spNo = String(d?.sp_no ?? "").trim();
+                if (!spNo)
+                    continue;
+                const kind = spNo.toUpperCase().startsWith("A") ? "A" : "num";
+                docRows.push([
+                    icpno, spNo, date,
+                    String(d?.ct_no ?? "").trim(),
+                    String(d?.ct_name ?? "").trim(),
+                    String(d?.fkfs ?? "").trim(),
+                    num(d?.total), num(d?.unpaid), num(d?.paid),
+                    String(d?.nopay_fg ?? "").trim(),
+                    String(d?.sales ?? "").trim(),
+                    kind, ingestedAt, String(body.pushed_by ?? "agent").trim(),
+                ]);
+            }
+            // 收款客戶主檔 seed：name/fkfs/sales/stop 由推送覆蓋；is_cash/route_line/note 為人工維護，不覆蓋。
+            const custList = Array.isArray(body.customers) ? body.customers : [];
+            const custRows = [];
+            for (const c of custList) {
+                const ctNo = String(c?.ct_no ?? "").trim();
+                if (!ctNo)
+                    continue;
+                const fkfs = String(c?.fkfs ?? "").trim();
+                const isCashSeed = /現金|現收|cash/i.test(fkfs) ? 1 : 0; // 由結帳方式含「現金」推定；人工可覆蓋
+                const route = String(c?.route ?? "").trim(); // 由凌越送貨地址 [N] 解析而來（內網腳本送）
+                const lastTxn = String(c?.last_txn ?? "").trim().slice(0, 10); // CT_LAST_DT 最後交易日
+                custRows.push([
+                    icpno, ctNo, String(c?.name ?? "").trim(), fkfs,
+                    String(c?.sales ?? "").trim(), isCashSeed, (c?.stop ? 1 : 0), route, lastTxn, ingestedAt,
+                ]);
+            }
+            const doIngest = async (h) => {
+                // 該公司該日全表覆蓋：重新取單即反映凌越當下狀態（含新增/刪除），對應「印報表再跑一次」。
+                await h.prepare("DELETE FROM cash_sales_doc WHERE icpno = ? AND doc_date = ?").run(icpno, date);
+                const CHUNK = 100;
+                for (let i = 0; i < docRows.length; i += CHUNK) {
+                    const chunk = docRows.slice(i, i + CHUNK);
+                    const ph = chunk.map(() => "(?,?,?,?,?,?,?,?,?,?,?,?,?,?)").join(",");
+                    const flat = [];
+                    for (const r of chunk)
+                        flat.push(...r);
+                    await h.prepare("INSERT INTO cash_sales_doc (icpno, sp_no, doc_date, ct_no, ct_name, fkfs, total, unpaid, paid, nopay_fg, sales, kind, ingested_at, ingested_by) VALUES " + ph).run(...flat);
+                }
+                for (const r of custRows) {
+                    // route_line：凌越送貨地址 [N] 有解析到就更新（地址為權威來源）、沒解析到就保留原本（可能是人工/客戶管理帶入）
+                    await h.prepare("INSERT INTO cash_customer (icpno, ct_no, name, fkfs, sales, is_cash, stop, route_line, last_txn, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) " +
+                        "ON CONFLICT (icpno, ct_no) DO UPDATE SET name = excluded.name, fkfs = excluded.fkfs, sales = excluded.sales, stop = excluded.stop, " +
+                        "is_cash = COALESCE(cash_customer.is_cash, excluded.is_cash), last_txn = excluded.last_txn, " +
+                        "route_line = CASE WHEN COALESCE(excluded.route_line,'') <> '' THEN excluded.route_line ELSE cash_customer.route_line END, " +
+                        "updated_at = excluded.updated_at").run(...r);
+                }
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("cash_sales_ingested_at_" + icpno + "_" + date, ingestedAt);
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doIngest);
+            else
+                await doIngest(db);
+            console.log("[admin] cash-ingest 完成：", icpno, date, "docs", docRows.length, "customers", custRows.length);
+            res.json({ ok: true, date, icpno, docs: docRows.length, customers: custRows.length, ingested_at: ingestedAt });
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/cash-ingest", e?.message || e);
+            res.status(500).json({ error: "cash-ingest 失敗", detail: String(e?.message || e) });
+        }
+    });
+    // 讀當日銷貨單快照 + 分組加總（頁面/匯出/列印共用）
+    // 解析銷貨單號 → {series:'num'|'A', prefix:YYYYMMDD, width, seq}；不符格式回 null
+    function parseCashSeq(spNo) {
+        const s = String(spNo || "").trim().toUpperCase();
+        const m = s.match(/^(A?)(\d{8})(\d+)$/);
+        if (!m)
+            return null;
+        return { series: m[1] === "A" ? "A" : "num", prefix: m[2], width: m[3].length, seq: parseInt(m[3], 10) };
+    }
+    async function loadCashDaily(icpno, date) {
+        const rows = await db.prepare("SELECT sp_no, doc_date, ct_no, ct_name, fkfs, total, unpaid, paid, kind FROM cash_sales_doc WHERE icpno = ? AND doc_date = ? ORDER BY sp_no ASC").all(icpno, date) || [];
+        const numRows = rows.filter((r) => r.kind !== "A");
+        const aRows = rows.filter((r) => r.kind === "A");
+        const sum = (arr, f) => arr.reduce((s, r) => s + Number(r[f] || 0), 0);
+        const meta = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("cash_sales_ingested_at_" + icpno + "_" + date);
+        // 流水號斷號檢查：同 series+prefix，找 min..max 間缺的號（可能是作廢/刪單，須填原因）
+        const groups = new Map();
+        for (const r of rows) {
+            const p = parseCashSeq(r.sp_no);
+            if (!p)
+                continue;
+            const key = p.series + "|" + p.prefix;
+            if (!groups.has(key))
+                groups.set(key, { series: p.series, prefix: p.prefix, width: p.width, seqs: new Set(), min: p.seq, max: p.seq });
+            const g = groups.get(key);
+            g.seqs.add(p.seq);
+            if (p.width > g.width)
+                g.width = p.width;
+            if (p.seq < g.min)
+                g.min = p.seq;
+            if (p.seq > g.max)
+                g.max = p.seq;
+        }
+        const reasonRows = await db.prepare("SELECT series, seq, reason FROM cash_seq_gap_reason WHERE icpno = ? AND doc_date = ?").all(icpno, date) || [];
+        const reasonMap = new Map(reasonRows.map((x) => [x.series + "|" + x.seq, x.reason || ""]));
+        const gaps = [];
+        const seriesInfo = {};
+        for (const g of groups.values()) {
+            seriesInfo[g.series] = { min: g.min, max: g.max, count: g.seqs.size, width: g.width, prefix: g.prefix };
+            for (let i = g.min; i <= g.max; i++) {
+                if (g.seqs.has(i))
+                    continue;
+                const spNo = (g.series === "A" ? "A" : "") + g.prefix + String(i).padStart(g.width, "0");
+                gaps.push({ series: g.series, seq: i, spNo, reason: reasonMap.get(g.series + "|" + i) || "" });
+            }
+        }
+        gaps.sort((a, b) => a.series === b.series ? a.seq - b.seq : (a.series < b.series ? 1 : -1)); // num 在前、A 在後
+        const gapsMissingReason = gaps.filter((x) => !String(x.reason).trim()).length;
+        return {
+            rows, numRows, aRows,
+            numTotal: sum(numRows, "total"), aTotal: sum(aRows, "total"),
+            grandTotal: sum(rows, "total"), unpaidTotal: sum(rows, "unpaid"),
+            ingestedAt: meta?.value || "",
+            gaps, gapsMissingReason, seriesInfo,
+        };
+    }
+    const CASH_COMPANIES = erp_companies_js_1.ERP_COMPANY_NAMES || { "00": "松富", "01": "龍港", "02": "松揚", "03": "松成" };
+    function cashMoney(n) { return Number(n || 0).toLocaleString("en-US"); }
+    // 流水號檢查卡片：列出斷號、每個缺號要填原因（存 cash_seq_gap_reason）
+    function renderGapCard(d, icpno, date) {
+        const si = d.seriesInfo || {};
+        const range = (k) => si[k]
+            ? `${String(si[k].min).padStart(si[k].width, "0")}–${String(si[k].max).padStart(si[k].width, "0")}，共 ${si[k].count} 張`
+            : "（無資料）";
+        const numGaps = (d.gaps || []).filter((g) => g.series === "num");
+        const aGaps = (d.gaps || []).filter((g) => g.series === "A");
+        const gapRows = (arr) => arr.map((g) => `
+        <tr>
+          <td style="font-family:ui-monospace,monospace;color:#c62828;font-weight:600;">${escapeHtml(g.spNo)}</td>
+          <td><input class="sf-input cash-gap-reason" data-series="${g.series}" data-seq="${g.seq}" value="${escapeAttr(g.reason || "")}" placeholder="必填：斷號原因（作廢／跳號／退回…）" style="width:100%;${String(g.reason || "").trim() ? "" : "border-color:#c62828;"}"></td>
+          <td><button type="button" class="sf-btn cash-gap-save" data-series="${g.series}" data-seq="${g.seq}">儲存</button></td>
+        </tr>`).join("");
+        const hasGaps = (d.gaps || []).length > 0;
+        const head = hasGaps
+            ? `<strong style="color:#c62828;">⚠ 流水號有斷號 ${d.gaps.length} 個${d.gapsMissingReason ? `（其中 ${d.gapsMissingReason} 個未填原因）` : "（原因皆已填）"}</strong>`
+            : `<strong style="color:#2e7d32;">✅ 流水號連續、無斷號</strong>`;
+        const table = hasGaps ? `
+          <table style="margin-top:8px;">
+            <thead><tr><th style="width:180px;">缺號</th><th>斷號原因（必填）</th><th style="width:80px;"></th></tr></thead>
+            <tbody>
+              ${numGaps.length ? `<tr><td colspan="3" style="background:#f7f6f3;font-weight:600;">純數字（直打凌越）</td></tr>${gapRows(numGaps)}` : ""}
+              ${aGaps.length ? `<tr><td colspan="3" style="background:#f7f6f3;font-weight:600;">A 開頭（寺岡EDI）</td></tr>${gapRows(aGaps)}` : ""}
+            </tbody>
+          </table>` : "";
+        const script = hasGaps ? `<script>(function(){
+          document.querySelectorAll('.cash-gap-save').forEach(function(btn){
+            btn.addEventListener('click', function(){
+              var s=btn.getAttribute('data-series'), q=btn.getAttribute('data-seq');
+              var inp=document.querySelector('.cash-gap-reason[data-series="'+s+'"][data-seq="'+q+'"]');
+              var reason=(inp&&inp.value||'').trim();
+              if(!reason){ if(window.sfToast)sfToast('請先填斷號原因','err'); if(inp)inp.focus(); return; }
+              fetch('/admin/cash/gap-reason',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:'${icpno}',date:'${date}',series:s,seq:parseInt(q,10),reason:reason})})
+                .then(function(r){return r.json();}).then(function(j){ if(j&&j.ok){ if(inp)inp.style.borderColor=''; if(window.sfToast)sfToast('已儲存原因'); } else { if(window.sfToast)sfToast('儲存失敗','err'); } })
+                .catch(function(){ if(window.sfToast)sfToast('儲存失敗','err'); });
+            });
+          });
+        })();</script>` : "";
+        return `<div class="notion-card" style="margin-bottom:16px;">
+          <div style="margin-bottom:6px;">${head}</div>
+          <div style="font-size:13px;color:#787774;">純數字：${range("num")}　｜　A 開頭：${range("A")}</div>
+          ${table}${script}
+        </div>`;
+    }
+    // 月曆（左欄）：有資料的日子標張數、有未收標紅點；點日期切換
+    function renderCashCalendar(icpno, month, selDate, aggMap, todayStr) {
+        const y = parseInt(month.slice(0, 4), 10), m = parseInt(month.slice(5, 7), 10);
+        const firstDow = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+        const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        const prevM = m === 1 ? `${y - 1}-12-01` : `${y}-${String(m - 1).padStart(2, "0")}-01`;
+        const nextM = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+        const cells = [];
+        for (let i = 0; i < firstDow; i++)
+            cells.push(`<div class="empty"></div>`);
+        for (let day = 1; day <= daysInMonth; day++) {
+            const ds = `${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+            const a = aggMap.get(ds);
+            const isSel = ds === selDate, isToday = ds === todayStr;
+            const bg = isSel ? "background:#2383e2;color:#fff;" : (a ? "background:#eef3fb;" : "");
+            const ring = (isToday && !isSel) ? "outline:2px solid #2383e2;outline-offset:-2px;" : "";
+            const info = a
+                ? `<div style="font-size:10px;line-height:1.2;${isSel ? "color:#e8f0fe;" : "color:#787774;"}">${a.count}張</div>${a.unpaid > 0 ? `<div style="font-size:10px;line-height:1.2;${isSel ? "color:#ffd7d7;" : "color:#c62828;"}">●未收</div>` : ""}`
+                : "";
+            cells.push(`<a href="/admin/cash?icpno=${icpno}&date=${ds}" style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:4px 2px;text-decoration:none;border-radius:8px;color:#37352f;${bg}${ring}"><span style="font-weight:600;font-size:13px;">${day}</span>${info}</a>`);
+        }
+        const dow = ["日", "一", "二", "三", "四", "五", "六"].map((w) => `<div class="dow" style="text-align:center;font-size:12px;color:#9b9a97;">${w}</div>`).join("");
+        return `<div class="notion-card" style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <a class="sf-btn sf-btn-sm" href="/admin/cash?icpno=${icpno}&date=${prevM}">‹ 上月</a>
+            <strong>${y} 年 ${m} 月</strong>
+            <a class="sf-btn sf-btn-sm" href="/admin/cash?icpno=${icpno}&date=${nextM}">下月 ›</a>
+          </div>
+          <div class="cash-cal">${dow}${cells.join("")}</div>
+        </div>`;
+    }
+    // 後台頁：銷貨單總計表（左月曆＋當日摘要、右明細）
+    router.get("/cash", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
+                ? req.query.date.trim() : getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadCashDaily(icpno, date);
+            const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
+            const renderRows = (arr) => arr.length ? arr.map((r) => `
+        <tr>
+          <td style="font-family:var(--sf-mono,monospace);">${escapeHtml(r.sp_no)}</td>
+          <td>${escapeHtml(String(r.doc_date || "").slice(0, 10))}</td>
+          <td>${escapeHtml(r.ct_name || "")}</td>
+          <td>${escapeHtml(r.fkfs || "")}</td>
+          <td style="text-align:right;">${cashMoney(r.total)}</td>
+          <td style="text-align:right;${Number(r.unpaid || 0) > 0 ? "color:#c62828;font-weight:600;" : "color:#9b9a97;"}">${cashMoney(r.unpaid)}</td>
+        </tr>`).join("") : `<tr><td colspan="6" style="text-align:center;color:#9b9a97;padding:18px;">（無資料）</td></tr>`;
+            const section = (title, arr, subtotal) => `
+        <div class="notion-card" style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+            <strong>${title}</strong>
+            <span>${arr.length} 張　合計 <strong>${cashMoney(subtotal)}</strong></span>
+          </div>
+          <table>
+            <thead><tr><th>單號</th><th>單據日期</th><th>客戶名稱</th><th>結帳方式</th><th style="text-align:right;">金額</th><th style="text-align:right;">未收</th></tr></thead>
+            <tbody>${renderRows(arr)}</tbody>
+          </table>
+        </div>`;
+            // 月曆資料：該月各日彙總（張數、應收、未收）
+            const month = date.slice(0, 7);
+            const y = parseInt(month.slice(0, 4), 10), mo = parseInt(month.slice(5, 7), 10);
+            const monthStart = `${month}-01`;
+            const monthEnd = `${month}-${String(new Date(Date.UTC(y, mo, 0)).getUTCDate()).padStart(2, "0")}`;
+            const aggRows = await db.prepare("SELECT doc_date, COUNT(*) AS c, SUM(total) AS t, SUM(unpaid) AS u, SUM(CASE WHEN unpaid > 0 THEN 1 ELSE 0 END) AS uc FROM cash_sales_doc WHERE icpno = ? AND doc_date BETWEEN ? AND ? GROUP BY doc_date").all(icpno, monthStart, monthEnd) || [];
+            const aggMap = new Map(aggRows.map((r) => [String(r.doc_date).slice(0, 10), { count: Number(r.c || 0), total: Number(r.t || 0), unpaid: Number(r.u || 0), unpaidCount: Number(r.uc || 0) }]));
+            const todayStr = getTaipeiCalendarDateYYYYMMDD();
+            const selUnpaidCount = d.rows.filter((r) => Number(r.unpaid || 0) > 0).length;
+            const ingestNote = d.ingestedAt
+                ? `資料更新：${escapeHtml(new Date(d.ingestedAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }))}`
+                : `<span style="color:#c62828;">此日尚無資料——內網「凌越整合代理」按「立即取單」或執行 <code>ly_sales_push.py --date ${date}</code>。</span>`;
+            const q = `?icpno=${icpno}&date=${date}`;
+            // 左欄：月曆 + 當日摘要
+            const daySummary = `
+      <div class="notion-card">
+        <div style="font-weight:700;margin-bottom:8px;">${escapeHtml(date)}　當日摘要</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div><div style="font-size:12px;color:#9b9a97;">單數</div><strong style="font-size:20px;">${d.rows.length}</strong> 張</div>
+          <div><div style="font-size:12px;color:#9b9a97;">應收合計</div><strong style="font-size:20px;">${cashMoney(d.grandTotal)}</strong></div>
+          <div><div style="font-size:12px;color:#9b9a97;">未收筆數</div><strong style="font-size:20px;color:${selUnpaidCount ? "#c62828" : "#2e7d32"};">${selUnpaidCount}</strong> 張</div>
+          <div><div style="font-size:12px;color:#9b9a97;">未收合計</div><strong style="font-size:20px;color:#c62828;">${cashMoney(d.unpaidTotal)}</strong></div>
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:#787774;border-top:1px solid #eee;padding-top:8px;">
+          純數字 ${d.numRows.length} 張／${cashMoney(d.numTotal)}　·　A 開頭 ${d.aRows.length} 張／${cashMoney(d.aTotal)}
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:#9b9a97;">${ingestNote}</div>
+        <div style="margin-top:10px;display:flex;gap:8px;">
+          <a class="sf-btn sf-btn-sm" href="/admin/cash/export.xlsx${q}">Excel</a>
+          <a class="sf-btn sf-btn-sm" href="/admin/cash/print${q}" target="_blank">列印/PDF</a>
+        </div>
+      </div>`;
+            const body = `
+      <style>
+        .cash-2pane{display:grid;grid-template-columns:340px minmax(0,1fr);gap:16px;align-items:start;}
+        @media(max-width:900px){.cash-2pane{grid-template-columns:1fr;}}
+        .cash-cal{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+        .cash-cal a,.cash-cal .empty,.cash-cal .dow{min-height:46px;}
+        .cash-cal .dow{min-height:auto;}
+      </style>
+      <h1 class="notion-page-title">松富銷貨統計</h1>
+      <div class="notion-card" style="margin-bottom:16px;">
+        <form method="get" action="/admin/cash" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+          <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
+          <label>跳到日期<br><input type="date" name="date" value="${date}" class="sf-input"></label>
+          <button type="submit" class="btn-primary">查詢</button>
+          <span style="flex:1;"></span>
+          <a class="sf-btn" href="/admin/cash/collect?icpno=${icpno}&date=${date}">前往收款處 →</a>
+        </form>
+      </div>
+      <div class="cash-2pane">
+        <div>
+          ${renderCashCalendar(icpno, month, date, aggMap, todayStr)}
+          ${daySummary}
+        </div>
+        <div>
+          ${renderGapCard(d, icpno, date)}
+          ${section("純數字（直打凌越）", d.numRows, d.numTotal)}
+          ${section("A 開頭（訂單拋轉寺岡 EDI 回轉）", d.aRows, d.aTotal)}
+        </div>
+      </div>`;
+            res.type("text/html").send(notionPage("松富銷貨統計", body, "cash", res));
+        }
+        catch (e) {
+            console.error("[admin] /cash", e?.message || e);
+            res.status(500).type("text/html").send("讀取失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    // 儲存流水號斷號原因
+    router.post("/cash/gap-reason", requireCash, express_1.default.json({ limit: "64kb" }), async (req, res) => {
+        try {
+            const b = req.body || {};
+            const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
+            const date = (typeof b.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(b.date.trim())) ? b.date.trim() : "";
+            const series = b.series === "A" ? "A" : "num";
+            const seq = parseInt(b.seq, 10);
+            const reason = String(b.reason ?? "").trim();
+            if (!date || !Number.isInteger(seq)) {
+                res.status(400).json({ error: "參數錯誤（date/seq）" });
+                return;
+            }
+            const by = (res.locals && res.locals.adminUser) || "";
+            const at = new Date().toISOString();
+            await db.prepare("INSERT INTO cash_seq_gap_reason (icpno, doc_date, series, seq, reason, updated_by, updated_at) VALUES (?,?,?,?,?,?,?) " +
+                "ON CONFLICT (icpno, doc_date, series, seq) DO UPDATE SET reason = excluded.reason, updated_by = excluded.updated_by, updated_at = excluded.updated_at").run(icpno, date, series, seq, reason, by, at);
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/gap-reason", e?.message || e);
+            res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
+        }
+    });
+    // 匯出 Excel（銷貨單總計表）
+    router.get("/cash/export.xlsx", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
+                ? req.query.date.trim() : getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadCashDaily(icpno, date);
+            const printedBy = (res.locals && res.locals.adminUser) || "";
+            const aoa = [
+                ["松富物流股份有限公司　銷貨單總計表"],
+                [`公司：${CASH_COMPANIES[icpno] || icpno}(${icpno})`, `日期：${date}`, `列印人：${printedBy}`],
+                [],
+                ["單號", "單據日期", "客戶名稱", "結帳方式", "金額", "未收", "類型"],
+            ];
+            const pushGroup = (label, arr, subtotal) => {
+                aoa.push([label]);
+                for (const r of arr)
+                    aoa.push([r.sp_no, String(r.doc_date || "").slice(0, 10), r.ct_name || "", r.fkfs || "", Number(r.total || 0), Number(r.unpaid || 0), r.kind === "A" ? "A" : "純數字"]);
+                aoa.push(["小計", "", "", "", subtotal, "", ""]);
+                aoa.push([]);
+            };
+            pushGroup("【純數字（直打凌越）】", d.numRows, d.numTotal);
+            pushGroup("【A 開頭（寺岡EDI）】", d.aRows, d.aTotal);
+            aoa.push(["總計", "", "", "", d.grandTotal, d.unpaidTotal, ""]);
+            // 流水號斷號區
+            aoa.push([]);
+            if ((d.gaps || []).length) {
+                aoa.push([`流水號斷號（${d.gaps.length} 個）`, "缺號", "原因"]);
+                for (const g of d.gaps)
+                    aoa.push([g.series === "A" ? "A開頭" : "純數字", g.spNo, String(g.reason || "").trim() || "（未填原因）"]);
+            }
+            else {
+                aoa.push(["流水號連續、無斷號"]);
+            }
+            const ws = XLSX.utils.aoa_to_sheet(aoa);
+            ws["!cols"] = [{ wch: 16 }, { wch: 12 }, { wch: 28 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }];
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "銷貨單總計表");
+            const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+            res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            res.setHeader("Content-Disposition", `attachment; filename="sales_total_${icpno}_${date}.xlsx"`);
+            res.send(buf);
+        }
+        catch (e) {
+            console.error("[admin] /cash/export.xlsx", e?.message || e);
+            res.status(500).send("匯出失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    // 列印版（瀏覽器另存 PDF）：表頭帶公司名／日期／列印人／列印時間
+    router.get("/cash/print", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
+                ? req.query.date.trim() : getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadCashDaily(icpno, date);
+            const printedBy = (res.locals && res.locals.adminUser) || "";
+            const printedAt = new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
+            const rowHtml = (arr) => arr.map((r) => `<tr><td class="mono">${escapeHtml(r.sp_no)}</td><td>${escapeHtml(String(r.doc_date || "").slice(0, 10))}</td><td>${escapeHtml(r.ct_name || "")}</td><td>${escapeHtml(r.fkfs || "")}</td><td class="r">${cashMoney(r.total)}</td><td class="r">${cashMoney(r.unpaid)}</td></tr>`).join("");
+            const grp = (label, arr, subtotal) => `<tr class="grp"><td colspan="6">${escapeHtml(label)}（${arr.length} 張）</td></tr>${rowHtml(arr)}<tr class="sub"><td colspan="4">小計</td><td class="r">${cashMoney(subtotal)}</td><td></td></tr>`;
+            res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>銷貨單總計表 ${date}</title>
+      <style>
+        *{box-sizing:border-box;} body{font-family:'Noto Sans TC',ui-sans-serif,sans-serif;color:#111;margin:24px;}
+        h1{font-size:20px;margin:0 0 2px;text-align:center;} .sub-h{text-align:center;font-size:15px;margin:0 0 4px;}
+        .meta{display:flex;justify-content:space-between;font-size:12px;color:#333;margin:8px 0;border-bottom:1px solid #999;padding-bottom:6px;}
+        table{width:100%;border-collapse:collapse;font-size:12px;} th,td{border:1px solid #bbb;padding:4px 6px;} th{background:#f0f0f0;}
+        td.r,th.r{text-align:right;} td.mono{font-family:ui-monospace,monospace;} tr.grp td{background:#eef3fb;font-weight:700;} tr.sub td{background:#fafafa;font-weight:600;}
+        tr.total td{background:#fff3cd;font-weight:700;font-size:13px;}
+        .btns{margin:12px 0;} @media print{.btns{display:none;}}
+      </style></head><body>
+      <div class="btns"><button onclick="window.print()">列印 / 另存 PDF</button></div>
+      <h1>松富物流股份有限公司</h1>
+      <div class="sub-h">銷貨單總計表</div>
+      <div class="meta"><span>公司：${escapeHtml(CASH_COMPANIES[icpno] || icpno)}(${icpno})</span><span>日期：${date}</span><span>列印人：${escapeHtml(printedBy)}</span><span>列印時間：${escapeHtml(printedAt)}</span></div>
+      <table>
+        <thead><tr><th>單號</th><th>單據日期</th><th>客戶名稱</th><th>結帳方式</th><th class="r">金額</th><th class="r">未收</th></tr></thead>
+        <tbody>
+          ${grp("純數字（直打凌越）", d.numRows, d.numTotal)}
+          ${grp("A 開頭（訂單拋轉寺岡 EDI 回轉）", d.aRows, d.aTotal)}
+          <tr class="total"><td colspan="4">總計（${d.rows.length} 張）</td><td class="r">${cashMoney(d.grandTotal)}</td><td class="r">${cashMoney(d.unpaidTotal)}</td></tr>
+        </tbody>
+      </table>
+      ${(d.gaps || []).length
+                ? `<h3 style="font-size:14px;margin:14px 0 4px;">流水號斷號（${d.gaps.length} 個${d.gapsMissingReason ? `，${d.gapsMissingReason} 個未填原因` : ""}）</h3>
+      <table><thead><tr><th style="width:90px;">類別</th><th style="width:160px;">缺號</th><th>斷號原因</th></tr></thead><tbody>
+        ${d.gaps.map((g) => `<tr><td>${g.series === "A" ? "A開頭" : "純數字"}</td><td class="mono">${escapeHtml(g.spNo)}</td><td${String(g.reason || "").trim() ? "" : ' style="color:#c62828;font-weight:700;"'}>${escapeHtml(String(g.reason || "").trim() || "（未填原因）")}</td></tr>`).join("")}
+      </tbody></table>`
+                : `<p style="font-size:12px;color:#2e7d32;margin-top:12px;">流水號連續、無斷號。</p>`}
+      </body></html>`);
+        }
+        catch (e) {
+            console.error("[admin] /cash/print", e?.message || e);
+            res.status(500).send("列印頁失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    // ============================================================
+    //  收款處（Phase2）：一筆收款可對應一或多張銷貨單；支援現金＋票據；未收跨日；司機合計
+    // ============================================================
+    function cashNum(v) { const n = Number(String(v ?? "").replace(/,/g, "").trim()); return Number.isFinite(n) ? n : 0; }
+    function cashValidDate(v) { return (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim())) ? v.trim() : ""; }
+    async function loadCollectData(icpno, date) {
+        const dayUnits = await db.prepare(
+            "SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.fkfs, s.total, s.unpaid, s.nopay_fg, s.kind, COALESCE(c.route_line,'') AS route_line, c.is_cash AS is_cash " +
+            "FROM cash_sales_doc s LEFT JOIN cash_customer c ON c.icpno = s.icpno AND c.ct_no = s.ct_no " +
+            "WHERE s.icpno = ? AND s.doc_date = ? ORDER BY COALESCE(c.route_line,''), s.ct_name, s.sp_no").all(icpno, date) || [];
+        const allocRows = await db.prepare("SELECT a.sp_no, a.payment_id, p.collected_by, p.recorded_by, p.recorded_at FROM cash_payment_alloc a JOIN cash_payment p ON p.id = a.payment_id WHERE a.icpno = ?").all(icpno) || [];
+        const allocBySp = new Map(allocRows.map((r) => [r.sp_no, r]));
+        const driverRows = await db.prepare("SELECT COALESCE(NULLIF(TRIM(collected_by),''),'（未填）') AS who, COUNT(*) AS c, SUM(cash_amount) AS cash, SUM(check_amount) AS chk, SUM(total_amount) AS tot FROM cash_payment WHERE icpno = ? AND pay_date = ? GROUP BY COALESCE(NULLIF(TRIM(collected_by),''),'（未填）') ORDER BY SUM(total_amount) DESC").all(icpno, date) || [];
+        // 跨日未收：選定日期之前、尚未收款的單（客戶一週結一次會累積在這）
+        const priorUnpaid = await db.prepare(
+            "SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.fkfs, s.total, s.unpaid, s.nopay_fg, COALESCE(c.route_line,'') AS route_line, c.is_cash AS is_cash " +
+            "FROM cash_sales_doc s LEFT JOIN cash_customer c ON c.icpno = s.icpno AND c.ct_no = s.ct_no " +
+            "WHERE s.icpno = ? AND s.doc_date < ? AND COALESCE(s.unpaid,0) > 0 AND NOT EXISTS (SELECT 1 FROM cash_payment_alloc a WHERE a.icpno = s.icpno AND a.sp_no = s.sp_no) " +
+            "ORDER BY COALESCE(c.route_line,''), s.ct_name, s.doc_date, s.sp_no").all(icpno, date) || [];
+        return { dayUnits, allocBySp, driverRows, priorUnpaid };
+    }
+    async function cashDriverList() {
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("cash_drivers");
+        return String(row?.value || "").split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    // 收款處（列表式：左路線、右單據勾選 → 收款彈窗 → 明細彈窗 → 產生 JPG）
+    router.get("/cash/collect", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = cashValidDate(req.query.date) || getTaipeiCalendarDateYYYYMMDD();
+            const route = typeof req.query.route === "string" ? req.query.route : "all";
+            const { dayUnits, allocBySp, driverRows, priorUnpaid } = await loadCollectData(icpno, date);
+            const drivers = await cashDriverList();
+            const me = (res.locals && res.locals.adminUser) || "";
+            const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
+            const isCashRow = (u) => (u.is_cash === 1 || u.is_cash === "1") ? true : ((u.is_cash === 0 || u.is_cash === "0") ? false : /現金|現收/.test(String(u.fkfs || "")));
+            const fmtTs = (iso) => { try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+            const erpUnpaid = (u) => cashNum(u.unpaid) > 0; // 凌越未付>0＝ERP尚未沖帳；=0＝會計已沖帳(視為已收)
+            // 「未收」= 我方未登記收款 且 凌越仍未付；已沖帳(unpaid=0)不算未收
+            const isUnpaidRow = (u) => !allocBySp.has(u.sp_no) && erpUnpaid(u);
+            // 左欄計數：只算「收現金」客戶（與預設『只看收現金』一致）
+            const routeAgg = new Map();
+            for (const u of dayUnits) {
+                if (!isCashRow(u))
+                    continue;
+                const rt = String(u.route_line || "").trim();
+                if (!routeAgg.has(rt))
+                    routeAgg.set(rt, { total: 0, unpaid: 0 });
+                const a = routeAgg.get(rt);
+                a.total++;
+                if (isUnpaidRow(u))
+                    a.unpaid++;
+            }
+            const routeKeys = Array.from(routeAgg.keys()).sort((x, y) => (x === "" ? 1 : y === "" ? -1 : String(x).localeCompare(String(y), "zh-Hant", { numeric: true })));
+            const routeLabel = (rt) => rt === "" ? "未分路線" : "路線 " + rt;
+            const cashUnits = dayUnits.filter(isCashRow);
+            const allTotal = cashUnits.length;
+            const allUnpaid = cashUnits.filter(isUnpaidRow).length;
+            const rtLink = (key, label, tot, un) => `<a href="/admin/cash/collect?icpno=${icpno}&date=${date}&route=${encodeURIComponent(key)}" class="cash-rt${(route === key || (key === "all" && route === "all")) ? " on" : ""}"><span>${escapeHtml(label)}</span><span class="rt-n">${tot}${un ? `／<b style="color:#c62828;">未${un}</b>` : ""}</span></a>`;
+            const leftNav = `
+        <div class="notion-card" style="padding:8px;position:sticky;top:8px;">
+          <div style="font-weight:700;margin:2px 6px 8px;">路線</div>
+          ${rtLink("all", "全部路線", allTotal, allUnpaid)}
+          ${routeKeys.map((rt) => rtLink(rt, routeLabel(rt), routeAgg.get(rt).total, routeAgg.get(rt).unpaid)).join("")}
+          <div style="margin-top:10px;border-top:1px solid #eee;padding-top:8px;">
+            <a class="sf-btn sf-btn-sm" href="/admin/cash/customers?icpno=${icpno}" style="width:100%;text-align:center;">維護路線 / 司機</a>
+          </div>
+        </div>`;
+            const shown = route === "all" ? dayUnits : dayUnits.filter((u) => String(u.route_line || "").trim() === route);
+            // 單列（當日與跨日未收共用）；prior=true 時單號後顯示原單日期
+            const unitRow = (u, prior) => {
+                const a = allocBySp.get(u.sp_no);
+                const paid = !!a;
+                const erpPaid = !paid && !erpUnpaid(u); // 我方沒登記、但凌越已沖帳
+                const collectable = !paid && !erpPaid; // 真正未收（可收款）
+                const cashFlag = isCashRow(u);
+                const searchKey = ((u.sp_no || "") + " " + (u.ct_name || "") + " " + (u.ct_no || "")).toLowerCase();
+                const status = paid
+                    ? `<span style="color:#2e7d32;">已收${a.collected_by ? "・" + escapeHtml(a.collected_by) : ""}</span>${a.recorded_by || a.recorded_at ? `<span style="color:#9b9a97;font-size:11px;"> （${a.recorded_by ? escapeHtml(a.recorded_by) : ""}${a.recorded_at ? " " + escapeHtml(fmtTs(a.recorded_at)) : ""}）</span>` : ""} <button type="button" class="link-undo cf-undo" data-pid="${a.payment_id}">取消</button>`
+                    : (erpPaid
+                        ? `<span style="color:#2e7d32;">已收（ERP沖帳）</span>`
+                        : `<button type="button" class="btn-primary cc-payone" style="padding:2px 10px;font-size:12px;" data-sp="${escapeAttr(u.sp_no)}">收款</button> <span style="color:#c62828;font-size:12px;">未收</span>`);
+                return `<tr class="cc-tr" data-cash="${cashFlag ? 1 : 0}" data-search="${escapeAttr(searchKey)}">
+            <td style="text-align:center;">${collectable ? `<input type="checkbox" class="cc-row" value="${escapeAttr(u.sp_no)}" data-due="${cashNum(u.total)}" data-ct="${escapeAttr(u.ct_no)}" data-ctname="${escapeAttr(u.ct_name || "")}">` : ""}</td>
+            <td style="font-family:ui-monospace,monospace;">${escapeHtml(u.sp_no)}${prior ? `<span style="color:#c62828;font-size:11px;"> (${escapeHtml(String(u.doc_date || "").slice(5, 10))})</span>` : ""}</td>
+            <td>${escapeHtml(u.ct_name || "")}</td>
+            <td style="text-align:center;">${escapeHtml(String(u.route_line || "").trim() || "—")}</td>
+            <td>${escapeHtml(u.fkfs || "")}${cashFlag ? "" : ` <span style="color:#9b9a97;font-size:11px;">非現金</span>`}</td>
+            <td style="text-align:right;">${cashMoney(u.total)}</td>
+            <td>${status}</td>
+          </tr>`;
+            };
+            const rowHtml = shown.length ? shown.map((u) => unitRow(u, false)).join("") : `<tr><td colspan="7" style="text-align:center;color:#9b9a97;padding:18px;">此路線當日無單據。</td></tr>`;
+            // 跨日未收（依路線篩），下方獨立區、可勾選帶入收款
+            const priorShown = (route === "all" ? priorUnpaid : priorUnpaid.filter((u) => String(u.route_line || "").trim() === route)).filter(isCashRow);
+            const priorHtml = priorShown.map((u) => unitRow(u, true)).join("");
+            const priorDue = priorShown.reduce((s, u) => s + cashNum(u.total), 0);
+            const shownDueTotalPlaceholder = shown.reduce((s, u) => s + cashNum(u.total), 0);
+            const shownUnpaidPlaceholder = shown.filter((u) => !allocBySp.has(u.sp_no)).reduce((s, u) => s + cashNum(u.total), 0);
+            const driverBar = driverRows.length
+                ? driverRows.map((r) => `${escapeHtml(r.who)} <b>${cashMoney(r.tot)}</b>（現${cashMoney(r.cash)}／票${cashMoney(r.chk)}・${r.c}筆）`).join("　·　")
+                : "今日尚無收款";
+            const driverOpts = `<option value="">（選司機）</option>` + drivers.map((d) => `<option value="${escapeAttr(d)}">${escapeHtml(d)}</option>`).join("") + `<option value="__other__">＋自行輸入</option>`;
+            const body = `
+      <style>
+        .cash-collect{display:grid;grid-template-columns:210px minmax(0,1fr);gap:14px;align-items:start;}
+        @media(max-width:820px){.cash-collect{grid-template-columns:1fr;}}
+        .cash-rt{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:7px 9px;border-radius:8px;text-decoration:none;color:#37352f;font-size:14px;}
+        .cash-rt:hover{background:#f1f0ee;} .cash-rt.on{background:#2383e2;color:#fff;} .cash-rt .rt-n{font-size:12px;opacity:.85;}
+        .cc-table{width:100%;} .cc-table th,.cc-table td{padding:5px 8px;font-size:13px;}
+        .link-undo{background:none;border:none;color:#c62828;cursor:pointer;font-size:12px;text-decoration:underline;padding:0;}
+        .cc-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;z-index:9999;}
+        .cc-modal{background:#fff;border-radius:12px;padding:18px;max-width:560px;width:92%;max-height:88vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.2);}
+        .cc-modal h3{margin:0 0 10px;font-size:17px;} .cc-modal label{font-size:13px;display:block;margin-top:8px;}
+        .cc-check-row{display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;margin-top:6px;}
+      </style>
+      <h1 class="notion-page-title">現金收款</h1>
+      <div style="display:flex;gap:4px;margin:0 0 14px;">
+        <a href="/admin/cash/collect?icpno=${icpno}&date=${date}" style="padding:6px 16px;border-radius:8px 8px 0 0;text-decoration:none;font-weight:600;background:#2383e2;color:#fff;">收款</a>
+        <a href="/admin/cash/daily-report?icpno=${icpno}&date=${date}" style="padding:6px 16px;border-radius:8px 8px 0 0;text-decoration:none;font-weight:600;background:#f1f0ee;color:#37352f;">現金日報表</a>
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <form method="get" action="/admin/cash/collect" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+          <input type="hidden" name="route" value="${escapeAttr(route)}">
+          <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
+          <label>日期<br><input type="date" name="date" value="${date}" class="sf-input"></label>
+          <button type="submit" class="btn-primary">查詢</button>
+          <span style="flex:1;"></span>
+          <a class="sf-btn" href="/admin/cash?icpno=${icpno}&date=${date}">← 銷貨單總計表</a>
+        </form>
+        <div style="margin-top:8px;font-size:12px;color:#787774;">司機收款：${driverBar}</div>
+      </div>
+      <div class="cash-collect">
+        ${leftNav}
+        <div class="notion-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+            <div><strong>${route === "all" ? "全部路線" : escapeHtml(routeLabel(route))}</strong>　<span style="color:#787774;font-size:13px;">${escapeHtml(date)}</span></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button type="button" class="sf-btn sf-btn-sm" id="ccSelAll">全選未收</button>
+              <button type="button" class="btn-primary" id="ccPayBtn">收款（<span id="ccSelN">0</span>）</button>
+              <button type="button" class="sf-btn sf-btn-sm" id="ccJpgBtn">產生 JPG</button>
+              <button type="button" class="sf-btn sf-btn-sm" id="ccExtraBtn">手動入帳</button>
+            </div>
+          </div>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+            <label style="display:inline-flex;gap:6px;align-items:center;font-size:13px;cursor:pointer;"><input type="checkbox" id="ccCashOnly" checked> 只看收現金客戶（匯款/月結不列）</label>
+            <input type="text" id="ccSearch" class="sf-input" placeholder="🔍 打單號或客戶找單（例外收現也找得到）" style="width:280px;max-width:100%;">
+            <span style="color:#787774;font-size:12px;">顯示 <span id="ccShownN">0</span> 筆・未收 <span id="ccShownDue">0</span></span>
+          </div>
+          <table class="cc-table">
+            <thead><tr><th style="width:34px;"></th><th>單號</th><th>客戶</th><th style="width:54px;text-align:center;">路線</th><th>結帳</th><th style="text-align:right;">應收</th><th style="width:210px;">狀態</th></tr></thead>
+            <tbody id="ccBody">${rowHtml}</tbody>
+          </table>
+          ${priorShown.length ? `<details id="ccPriorDetails" style="margin-top:14px;" open>
+            <summary style="cursor:pointer;font-weight:700;color:#c62828;">此路線跨日未收（${priorShown.length} 張，${cashMoney(priorDue)}）— 可用上面搜尋框找、勾選一起收款</summary>
+            <table class="cc-table" style="margin-top:6px;">
+              <thead><tr><th style="width:34px;"></th><th>單號(原單日)</th><th>客戶</th><th style="width:54px;text-align:center;">路線</th><th>結帳</th><th style="text-align:right;">應收</th><th style="width:210px;">狀態</th></tr></thead>
+              <tbody id="ccBodyPrior">${priorHtml}</tbody>
+            </table>
+          </details>` : ""}
+        </div>
+      </div>
+      <div class="cc-modal-bg" id="ccModalBg">
+        <div class="cc-modal">
+          <h3>登記收款</h3>
+          <div id="ccSummary" style="font-size:15px;margin-bottom:6px;font-weight:600;"></div>
+          <div id="ccBreakdown" style="font-size:13px;margin-bottom:10px;border:1px solid #eee;border-radius:8px;max-height:180px;overflow:auto;"></div>
+          <label>現金金額<input type="number" step="1" id="ccCash" class="sf-input" placeholder="0" style="width:160px;"></label>
+          <div style="margin-top:8px;font-size:13px;font-weight:600;">票據（可多張）</div>
+          <div id="ccChecks"></div>
+          <button type="button" class="sf-btn sf-btn-sm" id="ccAddCheck" style="margin-top:6px;">＋加一張票</button>
+          <label>司機<select id="ccDriver" class="sf-input" style="width:200px;">${driverOpts}</select></label>
+          <input type="text" id="ccDriverOther" class="sf-input" placeholder="自行輸入司機" style="display:none;width:200px;margin-top:4px;">
+          <label>備註（自由填寫）<input type="text" id="ccNote" class="sf-input" style="width:100%;"></label>
+          <div id="ccCalc" style="margin-top:10px;font-size:14px;padding:8px;background:#f7f6f3;border-radius:8px;"></div>
+          <div style="font-size:12px;color:#787774;margin-top:6px;">收款人：${escapeHtml(me || "（未登入）")}</div>
+          <div style="margin-top:14px;text-align:right;display:flex;gap:8px;justify-content:flex-end;">
+            <button type="button" class="sf-btn" id="ccCancel">取消</button>
+            <button type="button" class="btn-primary" id="ccConfirm">確認收款</button>
+          </div>
+        </div>
+      </div>
+      <div class="cc-modal-bg" id="ccDetailBg">
+        <div class="cc-modal">
+          <h3>收款明細</h3>
+          <div id="ccDetail" style="font-size:14px;"></div>
+          <div style="margin-top:14px;text-align:right;display:flex;gap:8px;justify-content:flex-end;">
+            <button type="button" class="sf-btn" id="ccDetailJpg">存成 JPG</button>
+            <button type="button" class="btn-primary" id="ccDetailClose">關閉</button>
+          </div>
+        </div>
+      </div>
+      <div class="cc-modal-bg" id="ccExtraBg">
+        <div class="cc-modal">
+          <h3>手動入帳（非銷貨單的款）</h3>
+          <div style="font-size:13px;color:#787774;margin-bottom:6px;">找不到單、或不是銷貨單的收入（如雜項、回收）用這裡。會進「現金日報表 → 額外收入」。</div>
+          <label>項目<input type="text" id="ceItem" class="sf-input" placeholder="例：回收紙箱／臨時雜項" style="width:100%;"></label>
+          <label>金額<input type="number" id="ceAmount" class="sf-input" style="width:150px;"></label>
+          <label>司機／收款人<input type="text" id="ceBy" class="sf-input" value="${escapeAttr(me)}" style="width:180px;"></label>
+          <label>備註<input type="text" id="ceNote" class="sf-input" style="width:100%;"></label>
+          <div style="margin-top:14px;text-align:right;display:flex;gap:8px;justify-content:flex-end;">
+            <button type="button" class="sf-btn" id="ceCancel">取消</button>
+            <button type="button" class="btn-primary" id="ceConfirm">新增入帳</button>
+          </div>
+        </div>
+      </div>
+      <canvas id="ccCanvas" style="display:none;"></canvas>
+      <script>(function(){
+        var ICPNO=${JSON.stringify(icpno)}, PAYDATE=${JSON.stringify(date)}, ME=${JSON.stringify(me)}, ROUTE=${JSON.stringify(route === "all" ? "全部路線" : routeLabel(route))}, COMPANY=${JSON.stringify(CASH_COMPANIES[icpno] || icpno)};
+        function money(n){ return Number(n||0).toLocaleString(); }
+        // 篩選：只看收現金（預設）＋搜尋單號/客戶（搜尋時連非現金也顯示，供例外收現）
+        function applyFilter(){
+          var cashOnly=document.getElementById('ccCashOnly').checked;
+          var q=(document.getElementById('ccSearch').value||'').trim().toLowerCase();
+          var rows=document.querySelectorAll('.cc-tr'); var n=0, due=0;
+          rows.forEach(function(tr){
+            var isCash=tr.getAttribute('data-cash')==='1';
+            var hitQ=!q||(tr.getAttribute('data-search')||'').indexOf(q)>=0;
+            var show = hitQ && (q ? true : (cashOnly ? isCash : true));
+            tr.style.display=show?'':'none';
+            if(show){ n++; var cb=tr.querySelector('.cc-row'); if(cb){ due+=Number(cb.dataset.due||0); } if(cb&&!cb.checked){} }
+          });
+          var sn=document.getElementById('ccShownN'); if(sn)sn.textContent=n;
+          var sd=document.getElementById('ccShownDue'); if(sd)sd.textContent=money(due);
+          var det=document.getElementById('ccPriorDetails'); if(det&&q){ det.open=true; } // 搜尋時自動展開跨日未收
+        }
+        document.getElementById('ccCashOnly').addEventListener('change',applyFilter);
+        document.getElementById('ccSearch').addEventListener('input',applyFilter);
+        // 手動入帳
+        document.getElementById('ccExtraBtn').addEventListener('click',function(){ document.getElementById('ccExtraBg').style.display='flex'; });
+        document.getElementById('ceCancel').addEventListener('click',function(){ document.getElementById('ccExtraBg').style.display='none'; });
+        document.getElementById('ceConfirm').addEventListener('click',function(){
+          var item=document.getElementById('ceItem').value.trim(); var amt=document.getElementById('ceAmount').value;
+          if(!item||!amt){ if(window.sfToast)sfToast('請填項目與金額','err'); return; }
+          var b=this; b.disabled=true;
+          fetch('/admin/cash/extra-income',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:ICPNO,income_date:PAYDATE,item:item,amount:amt,collected_by:document.getElementById('ceBy').value,note:document.getElementById('ceNote').value})}).then(function(r){return r.json();}).then(function(j){ b.disabled=false; if(j&&j.ok){ if(window.sfToast)sfToast('已新增入帳'); document.getElementById('ccExtraBg').style.display='none'; document.getElementById('ceItem').value='';document.getElementById('ceAmount').value='';document.getElementById('ceNote').value=''; } else { if(window.sfToast)sfToast('新增失敗','err'); } }).catch(function(){ b.disabled=false; if(window.sfToast)sfToast('新增失敗','err'); });
+        });
+        function checked(){ return [].slice.call(document.querySelectorAll('.cc-row:checked')); }
+        function selTotal(){ var t=0; checked().forEach(function(r){ t+=Number(r.dataset.due||0); }); return t; }
+        function refreshN(showToast){ var n=checked().length; var t=selTotal(); document.getElementById('ccSelN').textContent=n+(n?('・'+money(t)):''); if(showToast&&n>0&&window.sfToast){ sfToast('已選 '+n+' 張・合計 '+money(t)); } }
+        // 兩個表（當日＋跨日未收）的勾選都要更新上面數字＋跳 toast
+        document.addEventListener('change',function(e){ if(e.target&&e.target.classList&&e.target.classList.contains('cc-row')) refreshN(true); });
+        document.getElementById('ccSelAll').addEventListener('click',function(){ var b=[].slice.call(document.querySelectorAll('.cc-row')).filter(function(x){var tr=x.closest('tr');return tr&&tr.style.display!=='none';}); var allOn=b.length&&b.every(function(x){return x.checked;}); b.forEach(function(x){x.checked=!allOn;}); refreshN(true); });
+        // 票列
+        function checkRow(){ var d=document.createElement('div'); d.className='cc-check-row';
+          d.innerHTML='<label style="margin:0;">票號<br><input class="ck-no sf-input" style="width:110px;"></label>'+
+            '<label style="margin:0;">銀行/分行<br><input class="ck-bank sf-input" style="width:120px;"></label>'+
+            '<label style="margin:0;">到期日<br><input type="date" class="ck-due sf-input"></label>'+
+            '<label style="margin:0;">金額<br><input type="number" class="ck-amt sf-input" style="width:100px;"></label>'+
+            '<button type="button" class="sf-btn sf-btn-sm ck-del">刪</button>';
+          return d; }
+        document.getElementById('ccAddCheck').addEventListener('click',function(){ document.getElementById('ccChecks').appendChild(checkRow()); recalc(); });
+        document.getElementById('ccChecks').addEventListener('click',function(e){ if(e.target.classList.contains('ck-del')){ e.target.closest('.cc-check-row').remove(); recalc(); } });
+        document.getElementById('ccChecks').addEventListener('input',recalc);
+        document.getElementById('ccCash').addEventListener('input',recalc);
+        document.getElementById('ccDriver').addEventListener('change',function(){ document.getElementById('ccDriverOther').style.display=(this.value==='__other__')?'block':'none'; });
+        function selInfo(){ var rows=checked(); var due=0, custs={}, order=[]; rows.forEach(function(r){ var d=Number(r.dataset.due||0); due+=d; var ct=r.dataset.ct; if(!custs[ct]){ custs[ct]={name:r.dataset.ctname,due:0,n:0}; order.push(ct); } custs[ct].due+=d; custs[ct].n++; }); var byCust=order.map(function(ct){return custs[ct];}); return {rows:rows, due:due, custN:order.length, byCust:byCust, custName:order.length===1?(rows[0]?rows[0].dataset.ctname:''):('多客戶('+order.length+'家)')}; }
+        function checksData(){ return [].slice.call(document.querySelectorAll('#ccChecks .cc-check-row')).map(function(r){ return {check_no:r.querySelector('.ck-no').value, bank:r.querySelector('.ck-bank').value, due_date:r.querySelector('.ck-due').value, amount:r.querySelector('.ck-amt').value}; }); }
+        function recalc(){ var i=selInfo(); var cash=Number(document.getElementById('ccCash').value||0); var chk=checksData().reduce(function(s,c){return s+Number(c.amount||0);},0); var got=cash+chk; var diff=got-i.due; var t=diff===0?'剛好':(diff>0?('溢收 '+money(diff)):('短收 '+money(-diff))); document.getElementById('ccCalc').innerHTML='應收 <b>'+money(i.due)+'</b>　實收 <b>'+money(got)+'</b>（現'+money(cash)+'／票'+money(chk)+'）　差額：<b style="color:'+(diff<0?'#c62828':'#2e7d32')+'">'+t+'</b>'; }
+        function openPayModal(){ var i=selInfo(); if(!i.rows.length){ if(window.sfToast)sfToast('請先勾要收款的單','err'); return; }
+          document.getElementById('ccSummary').innerHTML='總計：'+i.rows.length+' 張・'+i.custN+' 家・應收 <b>'+money(i.due)+'</b>';
+          var bd='<table style="width:100%;font-size:13px;"><thead><tr><th style="text-align:left;padding:4px 8px;">客戶</th><th style="text-align:right;padding:4px 8px;">張數</th><th style="text-align:right;padding:4px 8px;">應收</th></tr></thead><tbody>';
+          i.byCust.forEach(function(c){ bd+='<tr><td style="padding:3px 8px;">'+(c.name||'')+'</td><td style="text-align:right;padding:3px 8px;">'+c.n+'</td><td style="text-align:right;padding:3px 8px;">'+money(c.due)+'</td></tr>'; });
+          bd+='</tbody></table>';
+          document.getElementById('ccBreakdown').innerHTML=bd;
+          document.getElementById('ccCash').value=i.due; document.getElementById('ccChecks').innerHTML=''; document.getElementById('ccNote').value=''; recalc(); document.getElementById('ccModalBg').style.display='flex'; }
+        document.getElementById('ccPayBtn').addEventListener('click',openPayModal);
+        // 每列「收款」按鈕：直接收這一單（不用先打勾）
+        document.addEventListener('click',function(e){ if(e.target&&e.target.classList.contains('cc-payone')){ var tr=e.target.closest('tr'); var cb=tr&&tr.querySelector('.cc-row'); if(cb){ cb.checked=true; refreshN(); } openPayModal(); } });
+        document.getElementById('ccCancel').addEventListener('click',function(){ document.getElementById('ccModalBg').style.display='none'; });
+        document.getElementById('ccConfirm').addEventListener('click',function(){
+          var i=selInfo(); if(!i.rows.length) return;
+          var drvSel=document.getElementById('ccDriver').value; var driver=(drvSel==='__other__')?document.getElementById('ccDriverOther').value.trim():drvSel;
+          var cash=document.getElementById('ccCash').value; var checks=checksData(); var note=document.getElementById('ccNote').value;
+          var payload={icpno:ICPNO,pay_date:PAYDATE,collected_by:driver,cash_amount:cash,note:note,sp_nos:i.rows.map(function(r){return r.value;}),checks:checks};
+          var btn=this; btn.disabled=true;
+          fetch('/admin/cash/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){
+            btn.disabled=false;
+            if(!j||!j.ok){ if(window.sfToast)sfToast((j&&j.error)||'登記失敗','err'); return; }
+            if(window.sfToast)sfToast('✅ 收款成功，共 '+i.rows.length+' 張・實收 '+money(Number(cash||0)+checks.reduce(function(s,c){return s+Number(c.amount||0);},0)));
+            document.getElementById('ccModalBg').style.display='none';
+            var chkTot=checks.reduce(function(s,c){return s+Number(c.amount||0);},0); var cashN=Number(cash||0);
+            var rowsHtml=i.rows.map(function(r){return '<tr><td style="font-family:monospace;">'+r.value+'</td><td>'+r.dataset.ctname+'</td><td style="text-align:right;">'+money(r.dataset.due)+'</td></tr>';}).join('');
+            window.__lastDetail={company:COMPANY,route:ROUTE,date:PAYDATE,driver:driver||'（未填）',me:ME,rows:i.rows.map(function(r){return {sp:r.value,ct:r.dataset.ctname,due:Number(r.dataset.due||0)};}),cash:cashN,chk:chkTot,due:i.due,diff:j.diff};
+            document.getElementById('ccDetail').innerHTML='<div style="margin-bottom:6px;">客戶 <b>'+i.custName+'</b>　司機 <b>'+(driver||'（未填）')+'</b>　收款人 <b>'+ME+'</b></div>'+
+              '<table><thead><tr><th>單號</th><th>客戶</th><th style="text-align:right;">應收</th></tr></thead><tbody>'+rowsHtml+'</tbody></table>'+
+              '<div style="margin-top:8px;">應收 <b>'+money(i.due)+'</b>　實收 <b>'+money(cashN+chkTot)+'</b>（現'+money(cashN)+'／票'+money(chkTot)+'）　差額 <b style="color:'+((j.diff<0)?'#c62828':'#2e7d32')+'">'+money(j.diff)+'</b></div>';
+            document.getElementById('ccDetailBg').style.display='flex';
+          }).catch(function(){ btn.disabled=false; if(window.sfToast)sfToast('登記失敗','err'); });
+        });
+        document.getElementById('ccDetailClose').addEventListener('click',function(){ location.reload(); });
+        // 取消收款
+        document.querySelectorAll('.cf-undo').forEach(function(b){ b.addEventListener('click',function(){ if(!confirm('確定取消這筆收款？（相關單退回未收）'))return; fetch('/admin/cash/collect/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payment_id:b.dataset.pid})}).then(function(r){return r.json();}).then(function(j){ if(j&&j.ok){location.reload();}else{ if(window.sfToast)sfToast('取消失敗','err'); } }); }); });
+        // 產生 JPG（該路線收款清單）
+        function drawListJpg(){
+          var rows=[].slice.call(document.querySelectorAll('#ccBody tr')).filter(function(tr){ return tr.style.display!=='none'; }).map(function(tr){ var t=tr.querySelectorAll('td'); if(t.length<7) return null; return {sp:t[1].innerText.trim(),ct:t[2].innerText.trim(),rt:t[3].innerText.trim(),due:t[5].innerText.trim(),st:t[6].innerText.trim()}; }).filter(Boolean);
+          var W=760, pad=24, lh=26, top=110; var H=top+rows.length*lh+60;
+          var cv=document.getElementById('ccCanvas'); cv.width=W; cv.height=H; var g=cv.getContext('2d');
+          g.fillStyle='#fff'; g.fillRect(0,0,W,H); g.fillStyle='#111';
+          g.font='bold 20px "Microsoft JhengHei",sans-serif'; g.fillText(COMPANY+'　收款清單', pad, 34);
+          g.font='13px "Microsoft JhengHei",sans-serif'; g.fillStyle='#333';
+          g.fillText('路線：'+ROUTE+'　日期：'+PAYDATE+'　收款人：'+ME, pad, 58);
+          g.fillText('列印時間：'+new Date().toLocaleString('zh-TW',{hour12:false}), pad, 78);
+          g.strokeStyle='#999'; g.beginPath(); g.moveTo(pad,90); g.lineTo(W-pad,90); g.stroke();
+          g.font='bold 13px "Microsoft JhengHei",sans-serif'; g.fillStyle='#111';
+          g.fillText('單號',pad,top-6); g.fillText('客戶',pad+150,top-6); g.fillText('路線',pad+360,top-6); g.fillText('應收',pad+430,top-6); g.fillText('狀態',pad+560,top-6);
+          g.font='13px "Microsoft JhengHei",sans-serif';
+          rows.forEach(function(r,idx){ var y=top+idx*lh+14; g.fillStyle=(idx%2)?'#f4f4f4':'#fff'; g.fillRect(pad,y-16,W-2*pad,lh); g.fillStyle='#111';
+            g.fillText(r.sp,pad,y); g.fillText(r.ct.slice(0,14),pad+150,y); g.fillText(r.rt,pad+360,y); g.textAlign='right'; g.fillText(r.due,pad+520,y); g.textAlign='left'; g.fillStyle=(r.st.indexOf('未收')>=0)?'#c62828':'#2e7d32'; g.fillText(r.st.replace(/取消/,'').trim(),pad+560,y); g.fillStyle='#111'; });
+          var link=document.createElement('a'); link.download='收款清單_'+ROUTE+'_'+PAYDATE+'.jpg'; link.href=cv.toDataURL('image/jpeg',0.92); link.click();
+        }
+        // 收款明細 JPG：畫「這一筆剛收的款」（不是整條路線），所以不會顯示未收
+        function drawDetailJpg(){
+          var d=window.__lastDetail; if(!d){ if(window.sfToast)sfToast('無明細可存','err'); return; }
+          var W=680, pad=24, lh=26, top=132; var H=top+d.rows.length*lh+90;
+          var cv=document.getElementById('ccCanvas'); cv.width=W; cv.height=H; var g=cv.getContext('2d');
+          g.fillStyle='#fff'; g.fillRect(0,0,W,H); g.fillStyle='#111';
+          g.font='bold 20px "Microsoft JhengHei",sans-serif'; g.fillText(d.company+'　收款明細', pad, 34);
+          g.font='13px "Microsoft JhengHei",sans-serif'; g.fillStyle='#333';
+          g.fillText('日期：'+d.date+'　路線：'+d.route+'　司機：'+d.driver, pad, 58);
+          g.fillText('收款人：'+d.me+'　列印：'+new Date().toLocaleString('zh-TW',{hour12:false}), pad, 78);
+          g.strokeStyle='#999'; g.beginPath(); g.moveTo(pad,92); g.lineTo(W-pad,92); g.stroke();
+          g.font='bold 13px "Microsoft JhengHei",sans-serif'; g.fillStyle='#111';
+          g.fillText('單號',pad,top-6); g.fillText('客戶',pad+180,top-6); g.textAlign='right'; g.fillText('應收',pad+430,top-6); g.textAlign='left';
+          g.font='13px "Microsoft JhengHei",sans-serif';
+          d.rows.forEach(function(r,idx){ var y=top+idx*lh+14; g.fillStyle=(idx%2)?'#f4f4f4':'#fff'; g.fillRect(pad,y-16,W-2*pad,lh); g.fillStyle='#111'; g.fillText(r.sp,pad,y); g.fillText((r.ct||'').slice(0,14),pad+180,y); g.textAlign='right'; g.fillText(money(r.due),pad+430,y); g.textAlign='left'; });
+          var yy=top+d.rows.length*lh+24; g.font='bold 14px "Microsoft JhengHei",sans-serif';
+          g.fillText('應收 '+money(d.due)+'　實收 '+money(d.cash+d.chk)+'（現'+money(d.cash)+'／票'+money(d.chk)+'）　差額 '+money(d.diff), pad, yy);
+          var link=document.createElement('a'); link.download='收款明細_'+d.date+'.jpg'; link.href=cv.toDataURL('image/jpeg',0.92); link.click();
+        }
+        document.getElementById('ccJpgBtn').addEventListener('click',drawListJpg);
+        document.getElementById('ccDetailJpg').addEventListener('click',drawDetailJpg);
+        refreshN();
+        applyFilter();
+      })();</script>`;
+            res.type("text/html").send(notionPage("現金收款", body, "cash-collect", res));
+        }
+        catch (e) {
+            console.error("[admin] /cash/collect", e?.message || e);
+            res.status(500).type("text/html").send("讀取失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    // 登記收款
+    router.post("/cash/collect", requireCash, express_1.default.json({ limit: "256kb" }), async (req, res) => {
+        try {
+            const b = req.body || {};
+            const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
+            const payDate = cashValidDate(b.pay_date) || getTaipeiCalendarDateYYYYMMDD();
+            const collectedBy = String(b.collected_by ?? "").trim();
+            const routeLine = String(b.route_line ?? "").trim();
+            const note = String(b.note ?? "").trim();
+            const cashAmount = cashNum(b.cash_amount);
+            const spNos = Array.isArray(b.sp_nos) ? Array.from(new Set(b.sp_nos.map((x) => String(x).trim()).filter(Boolean))) : [];
+            if (!spNos.length) {
+                res.status(400).json({ error: "請至少選一張要收款的銷貨單" });
+                return;
+            }
+            const ph = spNos.map(() => "?").join(",");
+            const units = await db.prepare(`SELECT sp_no, doc_date, total, ct_no, ct_name FROM cash_sales_doc WHERE icpno = ? AND sp_no IN (${ph})`).all(icpno, ...spNos) || [];
+            const unitMap = new Map(units.map((u) => [u.sp_no, u]));
+            // 由勾選的單推客戶：全同一家＝該客戶；跨多家＝標「多客戶(N)」（明細仍逐單留客戶）
+            const ctSet = new Map();
+            for (const u of units)
+                ctSet.set(u.ct_no, u.ct_name);
+            const ctNo = ctSet.size === 1 ? (units[0]?.ct_no || "") : "";
+            const ctName = ctSet.size === 1 ? (units[0]?.ct_name || "") : `多客戶(${ctSet.size}家)`;
+            const already = await db.prepare(`SELECT sp_no FROM cash_payment_alloc WHERE icpno = ? AND sp_no IN (${ph})`).all(icpno, ...spNos) || [];
+            if (already.length) {
+                res.status(409).json({ error: "下列單已收款過，請先重整：" + already.map((a) => a.sp_no).join("、") });
+                return;
+            }
+            const checkRows = (Array.isArray(b.checks) ? b.checks : [])
+                .map((c) => ({ check_no: String(c.check_no ?? "").trim(), bank: String(c.bank ?? "").trim(), due_date: cashValidDate(c.due_date), amount: cashNum(c.amount) }))
+                .filter((c) => c.check_no || c.bank || c.amount || c.due_date);
+            const checkAmount = checkRows.reduce((s, c) => s + c.amount, 0);
+            const dueTotal = spNos.reduce((s, sp) => s + cashNum(unitMap.get(sp)?.total), 0);
+            const totalAmount = cashAmount + checkAmount;
+            const diff = Math.round((totalAmount - dueTotal) * 100) / 100; // >0 溢收、<0 短收
+            const by = (res.locals && res.locals.adminUser) || "";
+            const at = new Date().toISOString();
+            const payId = (0, id_js_1.newId)("cpay");
+            const doIns = async (h) => {
+                await h.prepare("INSERT INTO cash_payment (id,icpno,ct_no,ct_name,pay_date,collected_by,route_line,cash_amount,check_amount,total_amount,due_total,diff,note,recorded_by,recorded_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                    .run(payId, icpno, ctNo, ctName, payDate, collectedBy, routeLine, cashAmount, checkAmount, totalAmount, dueTotal, diff, note, by, at, at);
+                for (const sp of spNos) {
+                    const u = unitMap.get(sp);
+                    await h.prepare("INSERT INTO cash_payment_alloc (id,payment_id,icpno,sp_no,doc_date,due_amount,alloc_amount) VALUES (?,?,?,?,?,?,?)")
+                        .run((0, id_js_1.newId)("calc"), payId, icpno, sp, u?.doc_date || "", cashNum(u?.total), cashNum(u?.total));
+                }
+                for (const c of checkRows) {
+                    await h.prepare("INSERT INTO cash_check (id,payment_id,icpno,check_no,bank,due_date,amount,note,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+                        .run((0, id_js_1.newId)("cchk"), payId, icpno, c.check_no, c.bank, c.due_date, c.amount, "", at);
+                }
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doIns);
+            else
+                await doIns(db);
+            res.json({ ok: true, payment_id: payId, diff });
+        }
+        catch (e) {
+            const msg = String(e?.message || e);
+            // 併發防護：唯一約束擋下同一單重複收款 → 回 409（交易已回滾，不會重複入帳）
+            if (/idx_cash_alloc_sp_uniq|UNIQUE constraint failed: cash_payment_alloc|duplicate key value/i.test(msg)) {
+                res.status(409).json({ error: "這些單有的剛被收款（可能同時有人在收），請重新整理後再試" });
+                return;
+            }
+            console.error("[admin] /cash/collect POST", e?.message || e);
+            res.status(500).json({ error: "收款登記失敗", detail: msg });
+        }
+    });
+    // 取消一筆收款
+    router.post("/cash/collect/undo", requireCash, express_1.default.json({ limit: "16kb" }), async (req, res) => {
+        try {
+            const payId = String(req.body?.payment_id ?? "").trim();
+            if (!payId) {
+                res.status(400).json({ error: "缺 payment_id" });
+                return;
+            }
+            const doDel = async (h) => {
+                await h.prepare("DELETE FROM cash_check WHERE payment_id = ?").run(payId);
+                await h.prepare("DELETE FROM cash_payment_alloc WHERE payment_id = ?").run(payId);
+                await h.prepare("DELETE FROM cash_payment WHERE id = ?").run(payId);
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doDel);
+            else
+                await doDel(db);
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/collect/undo", e?.message || e);
+            res.status(500).json({ error: "取消失敗", detail: String(e?.message || e) });
+        }
+    });
+    // 收款客戶主檔（維護路線／收現金／備註）＋ 司機名單。資料源＝凌越銷貨單帶入的 cash_customer。
+    router.get("/cash/customers", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const qs = typeof req.query.q === "string" ? req.query.q.trim() : "";
+            const showAll = req.query.all === "1";
+            const cutoff = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.toISOString().slice(0, 10); })();
+            const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
+            const cols = "ct_no, name, fkfs, route_line, is_cash, note, last_txn, stop";
+            // 有效客戶：未停用 且（最後交易日未知或在一年內）。未知(NULL/空)＝尚未同步過→先顯示，不誤藏。
+            const activeCond = showAll ? "" : " AND COALESCE(stop,0)=0 AND (last_txn IS NULL OR last_txn='' OR last_txn >= ?)";
+            let rows;
+            if (qs) {
+                const like = "%" + qs.toLowerCase() + "%";
+                const sql = `SELECT ${cols} FROM cash_customer WHERE icpno = ? AND (LOWER(name) LIKE ? OR LOWER(ct_no) LIKE ? OR COALESCE(route_line,'') LIKE ?)` + activeCond + " ORDER BY COALESCE(route_line,''), name";
+                const params = showAll ? [icpno, like, like, "%" + qs + "%"] : [icpno, like, like, "%" + qs + "%", cutoff];
+                rows = await db.prepare(sql).all(...params) || [];
+            }
+            else {
+                const sql = `SELECT ${cols} FROM cash_customer WHERE icpno = ?` + activeCond + " ORDER BY COALESCE(route_line,''), name";
+                const params = showAll ? [icpno] : [icpno, cutoff];
+                rows = await db.prepare(sql).all(...params) || [];
+            }
+            const drvRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("cash_drivers");
+            const drivers = String(drvRow?.value || "");
+            const tr = (r) => `<tr data-ct="${escapeAttr(r.ct_no)}" data-search="${escapeAttr(((r.name || "") + " " + (r.ct_no || "") + " " + (r.route_line || "")).toLowerCase())}">
+          <td style="font-family:ui-monospace,monospace;">${escapeHtml(r.ct_no)}</td>
+          <td>${escapeHtml(r.name || "")}${Number(r.stop) ? ` <span style="color:#c62828;font-size:11px;">停用</span>` : ""}</td>
+          <td style="background:#fbfbfa;"><input class="cm-route sf-input" value="${escapeAttr(r.route_line || "")}" placeholder="路線" style="width:80px;"></td>
+          <td style="color:#787774;">${escapeHtml(r.fkfs || "")}</td>
+          <td style="color:#787774;font-size:12px;">${escapeHtml(r.last_txn || "—")}</td>
+          <td style="text-align:center;"><input type="checkbox" class="cm-cash" ${Number(r.is_cash) ? "checked" : ""}></td>
+          <td><input class="cm-note sf-input" value="${escapeAttr(r.note || "")}" style="width:100%;"></td>
+          <td><button type="button" class="sf-btn sf-btn-sm cm-save">存</button></td>
+        </tr>`;
+            const body = `
+      <h1 class="notion-page-title">收款客戶主檔</h1>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <div style="font-size:13px;color:#787774;margin-bottom:8px;">此主檔由凌越客戶主檔自動帶入（含停用／未綁 LINE 的客戶）。<b>路線優先取凌越送貨地址的 <code>[數字]</code></b>（每次取單自動帶入）；地址沒寫的才需在此手填。</div>
+        <form method="get" action="/admin/cash/customers" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+          <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
+          <label>搜尋<br><input type="text" name="q" value="${escapeAttr(qs)}" placeholder="客戶名／編號／路線" class="sf-input"></label>
+          <input type="hidden" name="all" value="${showAll ? "1" : ""}">
+          <button type="submit" class="btn-primary">查詢</button>
+          <a class="sf-btn" href="/admin/cash/customers?icpno=${icpno}${qs ? "&q=" + encodeURIComponent(qs) : ""}${showAll ? "" : "&all=1"}">${showAll ? "只看有效客戶" : "顯示全部（含停用/舊客戶）"}</a>
+        </form>
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;border-top:1px solid #eee;padding-top:10px;">
+          <label style="flex:1;min-width:240px;">司機名單（逗號分隔，收款彈窗會用）<br><input type="text" id="cmDrivers" class="sf-input" value="${escapeAttr(drivers)}" placeholder="例：阿明,阿華,老王" style="width:100%;"></label>
+          <button type="button" class="btn-primary" id="cmDrvSave">儲存司機名單</button>
+          <button type="button" class="sf-btn" id="cmImportRoutes" title="把 LINE 客戶管理已填的路線，依凌越客戶編號帶進這裡的空白路線">從客戶管理帶入路線</button>
+        </div>
+      </div>
+      <div class="notion-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+          <div style="color:#787774;font-size:13px;">共 <span id="cmCount">${rows.length}</span> 家${qs ? "（篩選後）" : ""}${showAll ? "（含停用/舊客戶）" : "（僅有效客戶：未停用且一年內有交易）"}${(!showAll && rows.filter((r) => !r.last_txn).length) ? `<br><span style="color:#c62828;">⚠ 其中 ${rows.filter((r) => !r.last_txn).length} 家「最後交易日」未同步（顯示為 —），需用<b>新版 ly_sales_push.py</b>「立即取單」後才能依交易日過濾舊客戶。</span>` : ""}</div>
+          <input type="text" id="cmFilter" class="sf-input" placeholder="🔍 即時搜尋（客戶名／編號／路線）" style="width:260px;max-width:100%;">
+        </div>
+        <table><thead><tr><th>客戶編號</th><th>客戶名稱</th><th style="background:#eef3fb;">路線</th><th>結帳方式</th><th>最後交易</th><th style="text-align:center;">收現金</th><th>備註</th><th></th></tr></thead>
+        <tbody id="cmBody">${rows.map(tr).join("") || `<tr><td colspan="8" style="text-align:center;color:#9b9a97;padding:16px;">尚無客戶資料——內網「立即取單」推過（新版腳本）後就會帶入。</td></tr>`}</tbody></table>
+      </div>
+      <script>(function(){
+        var ICPNO=${JSON.stringify(icpno)};
+        var flt=document.getElementById('cmFilter');
+        if(flt){ flt.addEventListener('input',function(){
+          var q=this.value.trim().toLowerCase(); var rows=document.querySelectorAll('#cmBody tr'); var n=0;
+          rows.forEach(function(tr){ var s=tr.getAttribute('data-search')||''; var hit=!q||s.indexOf(q)>=0; tr.style.display=hit?'':'none'; if(hit&&tr.dataset.ct)n++; });
+          var c=document.getElementById('cmCount'); if(c)c.textContent=n;
+        }); }
+        document.querySelectorAll('.cm-save').forEach(function(b){ b.addEventListener('click',function(){
+          var tr=b.closest('tr');
+          var payload={icpno:ICPNO,ct_no:tr.dataset.ct,route_line:tr.querySelector('.cm-route').value,is_cash:tr.querySelector('.cm-cash').checked?1:0,note:tr.querySelector('.cm-note').value};
+          b.disabled=true;
+          fetch('/admin/cash/customers/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){ b.disabled=false; if(j&&j.ok){ if(window.sfToast)sfToast('已儲存'); b.textContent='✓'; setTimeout(function(){b.textContent='存';},1200);} else { if(window.sfToast)sfToast('儲存失敗','err'); } }).catch(function(){ b.disabled=false; if(window.sfToast)sfToast('儲存失敗','err'); });
+        }); });
+        document.getElementById('cmDrvSave').addEventListener('click',function(){
+          var v=document.getElementById('cmDrivers').value;
+          fetch('/admin/cash/drivers/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({drivers:v})}).then(function(r){return r.json();}).then(function(j){ if(j&&j.ok){ if(window.sfToast)sfToast('司機名單已儲存'); } else { if(window.sfToast)sfToast('儲存失敗','err'); } });
+        });
+        document.getElementById('cmImportRoutes').addEventListener('click',function(){
+          if(!confirm('把 LINE 客戶管理已填的路線，帶進「路線空白」的收款客戶？（已填的不會被覆蓋）')) return;
+          var b=this; b.disabled=true;
+          fetch('/admin/cash/customers/import-routes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:ICPNO})}).then(function(r){return r.json();}).then(function(j){ b.disabled=false; if(j&&j.ok){ if(window.sfToast)sfToast('已帶入 '+j.updated+' 家路線'); location.reload(); } else { if(window.sfToast)sfToast((j&&j.error)||'帶入失敗','err'); } }).catch(function(){ b.disabled=false; if(window.sfToast)sfToast('帶入失敗','err'); });
+        });
+      })();</script>`;
+            res.type("text/html").send(notionPage("收款客戶主檔", body, "cash-customers", res));
+        }
+        catch (e) {
+            console.error("[admin] /cash/customers", e?.message || e);
+            res.status(500).type("text/html").send("讀取失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    router.post("/cash/customers/save", requireCash, express_1.default.json({ limit: "32kb" }), async (req, res) => {
+        try {
+            const b = req.body || {};
+            const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
+            const ctNo = String(b.ct_no ?? "").trim();
+            if (!ctNo) {
+                res.status(400).json({ error: "缺 ct_no" });
+                return;
+            }
+            const routeLine = String(b.route_line ?? "").trim();
+            const isCash = b.is_cash ? 1 : 0;
+            const note = String(b.note ?? "").trim();
+            const at = new Date().toISOString();
+            await db.prepare("INSERT INTO cash_customer (icpno, ct_no, route_line, is_cash, note, updated_at) VALUES (?,?,?,?,?,?) " +
+                "ON CONFLICT (icpno, ct_no) DO UPDATE SET route_line = excluded.route_line, is_cash = excluded.is_cash, note = excluded.note, updated_at = excluded.updated_at").run(icpno, ctNo, routeLine, isCash, note, at);
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/customers/save", e?.message || e);
+            res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
+        }
+    });
+    router.post("/cash/drivers/save", requireCash, express_1.default.json({ limit: "8kb" }), async (req, res) => {
+        try {
+            const list = String(req.body?.drivers ?? "").split(",").map((s) => s.trim()).filter(Boolean).join(",");
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("cash_drivers", list);
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/drivers/save", e?.message || e);
+            res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
+        }
+    });
+    // 從 LINE 客戶管理帶入路線：依凌越客戶編號(CT_NO)對 hq_cust_code/teraoka_code，填進路線空白的收款客戶（不覆蓋已填）
+    router.post("/cash/customers/import-routes", requireCash, express_1.default.json({ limit: "8kb" }), async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.body?.icpno, "00");
+            const r = await db.prepare("UPDATE cash_customer SET route_line = (" +
+                "SELECT CAST(c.route_line AS TEXT) FROM customers c WHERE (c.hq_cust_code = cash_customer.ct_no OR c.teraoka_code = cash_customer.ct_no) AND c.route_line IS NOT NULL LIMIT 1" +
+                ") WHERE icpno = ? AND COALESCE(route_line,'') = '' AND EXISTS (" +
+                "SELECT 1 FROM customers c WHERE (c.hq_cust_code = cash_customer.ct_no OR c.teraoka_code = cash_customer.ct_no) AND c.route_line IS NOT NULL)").run(icpno);
+            res.json({ ok: true, updated: (r && r.changes) || 0 });
+        }
+        catch (e) {
+            console.error("[admin] /cash/customers/import-routes", e?.message || e);
+            res.status(500).json({ error: "帶入失敗", detail: String(e?.message || e) });
+        }
+    });
+    // ============================================================
+    //  現金日報表（Phase2 步驟2）：當日收款（現金/票分列）＋額外收入＋應收/實收總計
+    // ============================================================
+    async function loadDailyReport(icpno, date) {
+        const payments = await db.prepare("SELECT id, ct_no, ct_name, collected_by, cash_amount, check_amount, total_amount, due_total, diff, note, recorded_by FROM cash_payment WHERE icpno = ? AND pay_date = ? ORDER BY COALESCE(collected_by,''), recorded_at").all(icpno, date) || [];
+        // 每筆收款對應的銷貨單（日期/單號/金額），供日報表逐單顯示與多筆對帳
+        const allocs = await db.prepare("SELECT a.payment_id, a.sp_no, a.doc_date, a.due_amount FROM cash_payment_alloc a JOIN cash_payment p ON p.id = a.payment_id WHERE a.icpno = ? AND p.pay_date = ? ORDER BY a.doc_date, a.sp_no").all(icpno, date) || [];
+        const allocByPay = new Map();
+        for (const al of allocs) {
+            const arr = allocByPay.get(al.payment_id) || [];
+            arr.push(al);
+            allocByPay.set(al.payment_id, arr);
+        }
+        for (const p of payments)
+            p.allocs = allocByPay.get(p.id) || [];
+        const checks = await db.prepare("SELECT ch.check_no, ch.bank, ch.due_date, ch.amount, p.ct_name, p.collected_by FROM cash_check ch JOIN cash_payment p ON p.id = ch.payment_id WHERE ch.icpno = ? AND p.pay_date = ? ORDER BY ch.due_date, ch.check_no").all(icpno, date) || [];
+        const extra = await db.prepare("SELECT id, item, amount, collected_by, note FROM cash_extra_income WHERE icpno = ? AND income_date = ? ORDER BY created_at").all(icpno, date) || [];
+        const ds = await db.prepare("SELECT COALESCE(SUM(total),0) AS t FROM cash_sales_doc WHERE icpno = ? AND doc_date = ?").get(icpno, date);
+        const sum = (arr, f) => arr.reduce((s, r) => s + Number(r[f] || 0), 0);
+        const t = {
+            due: sum(payments, "due_total"),
+            cash: sum(payments, "cash_amount"),
+            check: sum(payments, "check_amount"),
+            received: sum(payments, "total_amount"),
+            diff: sum(payments, "diff"),
+            extra: sum(extra, "amount"),
+            daySales: Number(ds?.t || 0),
+        };
+        // 司機小計
+        const byDriver = new Map();
+        for (const p of payments) {
+            const who = String(p.collected_by || "").trim() || "（未填）";
+            if (!byDriver.has(who))
+                byDriver.set(who, { cash: 0, check: 0, received: 0, c: 0 });
+            const a = byDriver.get(who);
+            a.cash += Number(p.cash_amount || 0);
+            a.check += Number(p.check_amount || 0);
+            a.received += Number(p.total_amount || 0);
+            a.c++;
+        }
+        return { payments, checks, extra, t, byDriver };
+    }
+    router.get("/cash/daily-report", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = cashValidDate(req.query.date) || getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadDailyReport(icpno, date);
+            const me = (res.locals && res.locals.adminUser) || "";
+            const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
+            const diffTxt = (n) => Number(n) === 0 ? "0" : (Number(n) > 0 ? `+${cashMoney(n)}（溢收）` : `${cashMoney(n)}（短收）`);
+            const allocLineHtml = (p) => (p.allocs || []).map((a) => `${escapeHtml(a.sp_no)} <span style="color:#9b9a97;">${escapeHtml(String(a.doc_date || "").slice(0, 10))}</span> ${cashMoney(a.due_amount)}`).join("<br>");
+            const autoNoteHtml = (p) => { const n = (p.allocs || []).length; const base = p.note ? escapeHtml(p.note) : ""; if (n > 1) { const nos = (p.allocs || []).map((a) => a.sp_no).join("、"); return (base ? base + "　" : "") + `<span style="color:#787774;">共 ${n} 筆：${escapeHtml(nos)}</span>`; } return base; };
+            const payRows = d.payments.length ? d.payments.map((p) => `<tr>
+          <td>${escapeHtml(p.ct_name || p.ct_no || "")}<div style="color:#787774;font-size:11px;margin-top:2px;">${allocLineHtml(p)}</div></td>
+          <td>${escapeHtml(p.collected_by || "")}</td>
+          <td style="text-align:right;">${cashMoney(p.due_total)}</td>
+          <td style="text-align:right;">${cashMoney(p.cash_amount)}</td>
+          <td style="text-align:right;">${cashMoney(p.check_amount)}</td>
+          <td style="text-align:right;font-weight:600;">${cashMoney(p.total_amount)}</td>
+          <td style="text-align:right;color:${Number(p.diff) < 0 ? "#c62828" : "#2e7d32"};">${Number(p.diff) === 0 ? "" : diffTxt(p.diff)}</td>
+          <td>${autoNoteHtml(p)}</td>
+        </tr>`).join("") : `<tr><td colspan="8" style="text-align:center;color:#9b9a97;padding:16px;">當日尚無收款紀錄。</td></tr>`;
+            const checkRows = d.checks.length ? d.checks.map((c) => `<tr>
+          <td style="font-family:ui-monospace,monospace;">${escapeHtml(c.check_no || "")}</td>
+          <td>${escapeHtml(c.bank || "")}</td>
+          <td>${escapeHtml(String(c.due_date || "").slice(0, 10))}</td>
+          <td style="text-align:right;">${cashMoney(c.amount)}</td>
+          <td>${escapeHtml(c.ct_name || "")}</td>
+        </tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#9b9a97;padding:12px;">當日無票據。</td></tr>`;
+            const extraRows = d.extra.length ? d.extra.map((e) => `<tr data-id="${escapeAttr(e.id)}">
+          <td>${escapeHtml(e.item || "")}</td>
+          <td style="text-align:right;">${cashMoney(e.amount)}</td>
+          <td>${escapeHtml(e.collected_by || "")}</td>
+          <td>${escapeHtml(e.note || "")}</td>
+          <td><button type="button" class="link-undo ei-del" data-id="${escapeAttr(e.id)}">刪</button></td>
+        </tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#9b9a97;padding:12px;">無額外收入。</td></tr>`;
+            const driverRows = Array.from(d.byDriver.entries()).map(([who, a]) => `<tr><td>${escapeHtml(who)}</td><td style="text-align:right;">${cashMoney(a.cash)}</td><td style="text-align:right;">${cashMoney(a.check)}</td><td style="text-align:right;font-weight:600;">${cashMoney(a.received)}</td><td style="text-align:right;">${a.c}</td></tr>`).join("");
+            const q = `?icpno=${icpno}&date=${date}`;
+            const body = `
+      <style>.link-undo{background:none;border:none;color:#c62828;cursor:pointer;text-decoration:underline;padding:0;font-size:12px;}</style>
+      <h1 class="notion-page-title">現金收款</h1>
+      <div style="display:flex;gap:4px;margin:0 0 14px;">
+        <a href="/admin/cash/collect?icpno=${icpno}&date=${date}" style="padding:6px 16px;border-radius:8px 8px 0 0;text-decoration:none;font-weight:600;background:#f1f0ee;color:#37352f;">收款</a>
+        <a href="/admin/cash/daily-report?icpno=${icpno}&date=${date}" style="padding:6px 16px;border-radius:8px 8px 0 0;text-decoration:none;font-weight:600;background:#2383e2;color:#fff;">現金日報表</a>
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <form method="get" action="/admin/cash/daily-report" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+          <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
+          <label>日期<br><input type="date" name="date" value="${date}" class="sf-input"></label>
+          <button type="submit" class="btn-primary">查詢</button>
+          <span style="flex:1;"></span>
+          <a class="sf-btn" href="/admin/cash/collect?icpno=${icpno}&date=${date}">← 收款處</a>
+          <a class="sf-btn" href="/admin/cash/daily-report/export.xlsx${q}">下載 Excel</a>
+          <a class="sf-btn" href="/admin/cash/daily-report/print${q}" target="_blank">列印 / PDF</a>
+        </form>
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;display:flex;gap:20px;flex-wrap:wrap;">
+        <div>應收合計<br><strong style="font-size:20px;">${cashMoney(d.t.due)}</strong></div>
+        <div>現金<br><strong style="font-size:20px;">${cashMoney(d.t.cash)}</strong></div>
+        <div>票<br><strong style="font-size:20px;">${cashMoney(d.t.check)}</strong></div>
+        <div>額外收入<br><strong style="font-size:20px;">${cashMoney(d.t.extra)}</strong></div>
+        <div>實收合計（現金+票+額外）<br><strong style="font-size:20px;color:#2383e2;">${cashMoney(d.t.received + d.t.extra)}</strong></div>
+        <div>短收／溢收<br><strong style="font-size:20px;color:${d.t.diff < 0 ? "#c62828" : "#2e7d32"};">${diffTxt(d.t.diff)}</strong></div>
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <strong>司機小計</strong>
+        ${driverRows ? `<table style="margin-top:6px;"><thead><tr><th>收款人/司機</th><th style="text-align:right;">現金</th><th style="text-align:right;">票</th><th style="text-align:right;">合計</th><th style="text-align:right;">筆數</th></tr></thead><tbody>${driverRows}</tbody></table>` : `<div style="color:#9b9a97;margin-top:6px;">今日尚無收款。</div>`}
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <strong>收款明細</strong>
+        <table style="margin-top:6px;"><thead><tr><th>客戶</th><th>收款人</th><th style="text-align:right;">應收</th><th style="text-align:right;">現金</th><th style="text-align:right;">票</th><th style="text-align:right;">實收</th><th style="text-align:right;">短溢收</th><th>備註</th></tr></thead><tbody>${payRows}</tbody></table>
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <strong>票據明細</strong>
+        <table style="margin-top:6px;"><thead><tr><th>票號</th><th>銀行/分行</th><th>到期日</th><th style="text-align:right;">金額</th><th>客戶</th></tr></thead><tbody>${checkRows}</tbody></table>
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;"><strong>額外收入（非銷貨單的款）</strong><span style="color:#787774;">合計 ${cashMoney(d.t.extra)}</span></div>
+        <table style="margin-top:6px;"><thead><tr><th>項目</th><th style="text-align:right;">金額</th><th>收款人</th><th>備註</th><th></th></tr></thead><tbody id="eiBody">${extraRows}</tbody></table>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;border-top:1px dashed #ddd;padding-top:8px;">
+          <label>項目<br><input type="text" id="eiItem" class="sf-input" style="width:160px;"></label>
+          <label>金額<br><input type="number" id="eiAmount" class="sf-input" style="width:110px;"></label>
+          <label>收款人<br><input type="text" id="eiBy" class="sf-input" value="${escapeAttr(me)}" style="width:110px;"></label>
+          <label style="flex:1;min-width:140px;">備註<br><input type="text" id="eiNote" class="sf-input" style="width:100%;"></label>
+          <button type="button" class="btn-primary" id="eiAdd">新增額外收入</button>
+        </div>
+      </div>
+      <div style="color:#787774;font-size:12px;margin-bottom:20px;">列印人：${escapeHtml(me)}</div>
+      <script>(function(){
+        var ICPNO=${JSON.stringify(icpno)}, DATE=${JSON.stringify(date)};
+        document.getElementById('eiAdd').addEventListener('click',function(){
+          var item=document.getElementById('eiItem').value.trim(); var amt=document.getElementById('eiAmount').value;
+          if(!item||!amt){ if(window.sfToast)sfToast('請填項目與金額','err'); return; }
+          var b=this; b.disabled=true;
+          fetch('/admin/cash/extra-income',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:ICPNO,income_date:DATE,item:item,amount:amt,collected_by:document.getElementById('eiBy').value,note:document.getElementById('eiNote').value})}).then(function(r){return r.json();}).then(function(j){ b.disabled=false; if(j&&j.ok){ location.reload(); } else { if(window.sfToast)sfToast('新增失敗','err'); } }).catch(function(){ b.disabled=false; if(window.sfToast)sfToast('新增失敗','err'); });
+        });
+        document.querySelectorAll('.ei-del').forEach(function(b){ b.addEventListener('click',function(){ if(!confirm('刪除這筆額外收入？'))return; fetch('/admin/cash/extra-income/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:b.dataset.id})}).then(function(r){return r.json();}).then(function(j){ if(j&&j.ok){location.reload();}else{ if(window.sfToast)sfToast('刪除失敗','err'); } }); }); });
+      })();</script>`;
+            res.type("text/html").send(notionPage("現金日報表", body, "cash-collect", res));
+        }
+        catch (e) {
+            console.error("[admin] /cash/daily-report", e?.message || e);
+            res.status(500).type("text/html").send("讀取失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    router.post("/cash/extra-income", requireCash, express_1.default.json({ limit: "16kb" }), async (req, res) => {
+        try {
+            const b = req.body || {};
+            const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
+            const date = cashValidDate(b.income_date) || getTaipeiCalendarDateYYYYMMDD();
+            const item = String(b.item ?? "").trim();
+            const amount = cashNum(b.amount);
+            if (!item || !amount) {
+                res.status(400).json({ error: "請填項目與金額" });
+                return;
+            }
+            await db.prepare("INSERT INTO cash_extra_income (id, icpno, income_date, item, amount, collected_by, note, recorded_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+                .run((0, id_js_1.newId)("cei"), icpno, date, item, amount, String(b.collected_by ?? "").trim(), String(b.note ?? "").trim(), (res.locals && res.locals.adminUser) || "", new Date().toISOString());
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/extra-income", e?.message || e);
+            res.status(500).json({ error: "新增失敗", detail: String(e?.message || e) });
+        }
+    });
+    router.post("/cash/extra-income/delete", requireCash, express_1.default.json({ limit: "8kb" }), async (req, res) => {
+        try {
+            const id = String(req.body?.id ?? "").trim();
+            if (!id) {
+                res.status(400).json({ error: "缺 id" });
+                return;
+            }
+            await db.prepare("DELETE FROM cash_extra_income WHERE id = ?").run(id);
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/extra-income/delete", e?.message || e);
+            res.status(500).json({ error: "刪除失敗", detail: String(e?.message || e) });
+        }
+    });
+    router.get("/cash/daily-report/export.xlsx", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = cashValidDate(req.query.date) || getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadDailyReport(icpno, date);
+            const printedBy = (res.locals && res.locals.adminUser) || "";
+            const aoa = [
+                ["松富物流股份有限公司　現金日報表"],
+                [`公司：${CASH_COMPANIES[icpno] || icpno}(${icpno})`, `日期：${date}`, `列印人：${printedBy}`],
+                [],
+                ["客戶", "收款人", "應收", "現金", "票", "實收", "短溢收", "備註", "銷貨單明細（單號 日期 金額）"],
+            ];
+            for (const p of d.payments) {
+                const detail = (p.allocs || []).map((a) => `${a.sp_no} ${String(a.doc_date || "").slice(0, 10)} ${Number(a.due_amount || 0)}`).join(" ; ");
+                const noteN = (p.allocs || []).length > 1 ? ((p.note ? p.note + " " : "") + "共" + (p.allocs || []).length + "筆") : (p.note || "");
+                aoa.push([p.ct_name || p.ct_no || "", p.collected_by || "", Number(p.due_total || 0), Number(p.cash_amount || 0), Number(p.check_amount || 0), Number(p.total_amount || 0), Number(p.diff || 0), noteN, detail]);
+            }
+            aoa.push(["合計", "", d.t.due, d.t.cash, d.t.check, d.t.received, d.t.diff, "", ""]);
+            aoa.push([]);
+            aoa.push(["票據明細", "票號", "銀行/分行", "到期日", "金額", "客戶"]);
+            for (const c of d.checks)
+                aoa.push(["", c.check_no || "", c.bank || "", String(c.due_date || "").slice(0, 10), Number(c.amount || 0), c.ct_name || ""]);
+            aoa.push([]);
+            aoa.push(["額外收入", "項目", "金額", "收款人", "備註"]);
+            for (const e of d.extra)
+                aoa.push(["", e.item || "", Number(e.amount || 0), e.collected_by || "", e.note || ""]);
+            aoa.push(["額外收入合計", "", d.t.extra]);
+            aoa.push([]);
+            aoa.push(["實收合計（現金+票+額外）", d.t.received + d.t.extra]);
+            const ws = XLSX.utils.aoa_to_sheet(aoa);
+            ws["!cols"] = [{ wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 16 }];
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "現金日報表");
+            const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+            res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            res.setHeader("Content-Disposition", `attachment; filename="cash_daily_${icpno}_${date}.xlsx"`);
+            res.send(buf);
+        }
+        catch (e) {
+            console.error("[admin] /cash/daily-report/export.xlsx", e?.message || e);
+            res.status(500).send("匯出失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    router.get("/cash/daily-report/print", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = cashValidDate(req.query.date) || getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadDailyReport(icpno, date);
+            const printedBy = (res.locals && res.locals.adminUser) || "";
+            const printedAt = new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
+            const diffTxt = (n) => Number(n) === 0 ? "0" : (Number(n) > 0 ? `+${cashMoney(n)}` : `${cashMoney(n)}`);
+            const pAllocs = (p) => (p.allocs || []).map((a) => `${escapeHtml(a.sp_no)} ${escapeHtml(String(a.doc_date || "").slice(0, 10))} ${cashMoney(a.due_amount)}`).join("<br>");
+            const pNote = (p) => { const n = (p.allocs || []).length; const base = p.note ? escapeHtml(p.note) : ""; if (n > 1) return (base ? base + "　" : "") + "共 " + n + " 筆"; return base; };
+            const payRows = d.payments.map((p) => `<tr><td>${escapeHtml(p.ct_name || p.ct_no || "")}<div style="color:#666;font-size:10px;">${pAllocs(p)}</div></td><td>${escapeHtml(p.collected_by || "")}</td><td class="r">${cashMoney(p.due_total)}</td><td class="r">${cashMoney(p.cash_amount)}</td><td class="r">${cashMoney(p.check_amount)}</td><td class="r">${cashMoney(p.total_amount)}</td><td class="r">${Number(p.diff) === 0 ? "" : diffTxt(p.diff)}</td><td>${pNote(p)}</td></tr>`).join("");
+            const checkRows = d.checks.map((c) => `<tr><td class="mono">${escapeHtml(c.check_no || "")}</td><td>${escapeHtml(c.bank || "")}</td><td>${escapeHtml(String(c.due_date || "").slice(0, 10))}</td><td class="r">${cashMoney(c.amount)}</td><td>${escapeHtml(c.ct_name || "")}</td></tr>`).join("");
+            const extraRows = d.extra.map((e) => `<tr><td>${escapeHtml(e.item || "")}</td><td class="r">${cashMoney(e.amount)}</td><td>${escapeHtml(e.collected_by || "")}</td><td>${escapeHtml(e.note || "")}</td></tr>`).join("");
+            res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>現金日報表 ${date}</title>
+      <style>*{box-sizing:border-box;}body{font-family:'Noto Sans TC',ui-sans-serif,sans-serif;color:#111;margin:24px;}
+      h1{font-size:20px;margin:0 0 2px;text-align:center;}.sub-h{text-align:center;font-size:15px;margin:0 0 4px;}
+      .meta{display:flex;justify-content:space-between;font-size:12px;color:#333;margin:8px 0;border-bottom:1px solid #999;padding-bottom:6px;}
+      h3{font-size:14px;margin:14px 0 4px;}
+      table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:6px;}th,td{border:1px solid #bbb;padding:4px 6px;}th{background:#f0f0f0;}
+      td.r,th.r{text-align:right;}td.mono{font-family:ui-monospace,monospace;}
+      .tot{background:#fff3cd;font-weight:700;}.btns{margin:12px 0;}@media print{.btns{display:none;}}</style></head><body>
+      <div class="btns"><button onclick="window.print()">列印 / 另存 PDF</button></div>
+      <h1>松富物流股份有限公司</h1><div class="sub-h">現金日報表</div>
+      <div class="meta"><span>公司：${escapeHtml(CASH_COMPANIES[icpno] || icpno)}(${icpno})</span><span>日期：${date}</span><span>列印人：${escapeHtml(printedBy)}</span><span>列印時間：${escapeHtml(printedAt)}</span></div>
+      <h3>收款明細</h3>
+      <table><thead><tr><th>客戶</th><th>收款人</th><th class="r">應收</th><th class="r">現金</th><th class="r">票</th><th class="r">實收</th><th class="r">短溢收</th><th>備註</th></tr></thead>
+      <tbody>${payRows || `<tr><td colspan="8" style="text-align:center;">無</td></tr>`}
+      <tr class="tot"><td colspan="2">合計</td><td class="r">${cashMoney(d.t.due)}</td><td class="r">${cashMoney(d.t.cash)}</td><td class="r">${cashMoney(d.t.check)}</td><td class="r">${cashMoney(d.t.received)}</td><td class="r">${diffTxt(d.t.diff)}</td><td></td></tr></tbody></table>
+      <h3>票據明細</h3>
+      <table><thead><tr><th>票號</th><th>銀行/分行</th><th>到期日</th><th class="r">金額</th><th>客戶</th></tr></thead><tbody>${checkRows || `<tr><td colspan="5" style="text-align:center;">無</td></tr>`}</tbody></table>
+      <h3>額外收入</h3>
+      <table><thead><tr><th>項目</th><th class="r">金額</th><th>收款人</th><th>備註</th></tr></thead><tbody>${extraRows || `<tr><td colspan="4" style="text-align:center;">無</td></tr>`}
+      <tr class="tot"><td>合計</td><td class="r">${cashMoney(d.t.extra)}</td><td colspan="2"></td></tr></tbody></table>
+      <h3>總計</h3>
+      <table><tbody><tr class="tot"><td>實收合計（現金＋票＋額外收入）</td><td class="r">${cashMoney(d.t.received + d.t.extra)}</td></tr>
+      <tr><td>其中現金</td><td class="r">${cashMoney(d.t.cash)}</td></tr><tr><td>其中票</td><td class="r">${cashMoney(d.t.check)}</td></tr>
+      <tr><td>額外收入</td><td class="r">${cashMoney(d.t.extra)}</td></tr><tr><td>應收合計／短溢收</td><td class="r">${cashMoney(d.t.due)}　/　${diffTxt(d.t.diff)}</td></tr></tbody></table>
+      </body></html>`);
+        }
+        catch (e) {
+            console.error("[admin] /cash/daily-report/print", e?.message || e);
+            res.status(500).send("列印頁失敗：" + escapeHtml(String(e?.message || e)));
         }
     });
     /**

@@ -171,6 +171,10 @@ function initSqlite(dbPath) {
         "ALTER TABLE orders ADD COLUMN lingyue_queued_by TEXT",
         // 盤點：中價貨（品質較差）數量，與上貨合計為 counted_qty；mid_qty 單獨保留供品質標注
         "ALTER TABLE stocktake_count ADD COLUMN mid_qty REAL",
+        // [2026-07-13] 每日盤點頁「複盤直接改實盤」：記最後修改時間/人（完整軌跡另存 stocktake_count_audit）
+        "ALTER TABLE stocktake_count ADD COLUMN edited_at TEXT",
+        "ALTER TABLE stocktake_count ADD COLUMN edited_by TEXT",
+        "ALTER TABLE stocktake_count ADD COLUMN edited_by_name TEXT",
         // [fix 2026-07-08] 凌越 /wait 認領租約：agent 撿走時蓋時間戳，其他 agent／同一 agent 重啟在租約內不會重撿→防重複開單
         "ALTER TABLE orders ADD COLUMN lingyue_claimed_at TEXT",
         // [fix 2026-07-08] 凌越寫入失敗出口：累計嘗試次數與最後錯誤；permanent 或超過上限即移出佇列並顯示原因
@@ -282,6 +286,12 @@ function initSqlite(dbPath) {
         // [fix 2026-07-10] 品項照片：以 erp_code 為鍵獨立存放（不放 erp_stock_items——該表每次庫存推送
         // 全表覆蓋會清掉）。盤點頁縮圖用（對語言不通的員工照片比文字更直觀）。photo_url 存後台上傳後的可存取路徑。
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_item_photo (erp_code TEXT PRIMARY KEY, photo_url TEXT, updated_by TEXT, updated_at TEXT)");
+        // 庫存人工調整值（彌補凌越系統誤差，免重整）：每公司每料號一個總調整值 delta；
+        // 顯示庫存＝凌越快照 + delta（獨立表，庫存推送覆蓋 erp_stock_items 不會洗掉）；只影響內部顯示/盤差，不流入凌越回寫。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stock_adjustment (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, delta REAL NOT NULL DEFAULT 0, name TEXT, spec TEXT, unit TEXT, base_qty REAL, counted_qty REAL, note TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
+        // 每日庫存快照（供盤點「必盤」判定：跟昨天/上次有無變動）：庫存推送時一天存一份（最後一次為準）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_daily (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, snap_date))");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_daily_date ON erp_stock_daily(icpno, snap_date)");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -316,7 +326,10 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_session_date ON stocktake_session(count_date, wh_code)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_count (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, erp_code TEXT, name TEXT, spec TEXT, unit TEXT, sys_qty REAL, counted_qty REAL, expiry_json TEXT, updated_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
-        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (erp_code TEXT PRIMARY KEY, expiry_unit TEXT, created_at TEXT)");
+        // 每日盤點「複盤直接改實盤」的修改軌跡（audit）：每次修改一列，保留舊/新值與修改人時間。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_count_audit (id TEXT PRIMARY KEY, session_id TEXT, icpno TEXT, wh_code TEXT, count_date TEXT, erp_code TEXT, name TEXT, old_counted REAL, new_counted REAL, actor TEXT, actor_name TEXT, note TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_count_audit_session ON stocktake_count_audit(session_id)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
         // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
         sqlite.exec("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
         // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。
@@ -325,6 +338,19 @@ function initSqlite(dbPath) {
         sqlite.exec("INSERT INTO group_features (group_id, feat_order, feat_stocktake, feat_basket, updated_at) SELECT sg.group_id, CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.line_group_id IS NOT NULL AND c.line_group_id <> '' AND LOWER(REPLACE(c.line_group_id,' ','')) = LOWER(REPLACE(sg.group_id,' ',''))) THEN 1 ELSE 0 END, 1, 1, datetime('now') FROM stocktake_group sg WHERE NOT EXISTS (SELECT 1 FROM group_features gf WHERE gf.group_id = sg.group_id)");
     }
     catch (_) { /* tables may already exist */ }
+    // [migration 2026-07-13] 效期品也按公司：主鍵 erp_code → (icpno, erp_code)；舊資料補 icpno='00'（松富）。
+    try {
+        const hasIcpno = sqlite.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('stocktake_expiry_item') WHERE name='icpno'").get().n > 0;
+        const pkCols = sqlite.prepare("SELECT name FROM pragma_table_info('stocktake_expiry_item') WHERE pk > 0 ORDER BY pk").all().map((r) => String(r.name));
+        if (!hasIcpno || pkCols.length < 2) {
+            sqlite.exec("CREATE TABLE stocktake_expiry_item_v2 (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
+            sqlite.exec("INSERT OR IGNORE INTO stocktake_expiry_item_v2 (icpno, erp_code, expiry_unit, created_at) SELECT '00', erp_code, expiry_unit, created_at FROM stocktake_expiry_item");
+            sqlite.exec("DROP TABLE stocktake_expiry_item");
+            sqlite.exec("ALTER TABLE stocktake_expiry_item_v2 RENAME TO stocktake_expiry_item");
+            console.log("[migration] stocktake_expiry_item 主鍵改為 (icpno, erp_code)");
+        }
+    }
+    catch (e) { console.warn("[migration] stocktake_expiry_item 多公司主鍵遷移失敗:", e?.message || e); }
     try {
         // [fix 2026-07-10] 盤點「一倉一日一筆」補真正的 UNIQUE 約束（原 idx_stk_session_date 只是普通索引，
         // 併發送出可打破唯一性）。先冪等去重：同倉同日保留最後送出（submitted_at/created_at 最大者，再以 id 決勝），
@@ -342,6 +368,43 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_order_item_edits_order ON order_item_edits(order_id)");
     }
     catch (_) { /* table may already exist */ }
+    try {
+        // 每日帳款收款：凌越銷貨單當日快照（由內網代理推上雲，見 scripts/ly_sales_push.py）。
+        // kind：'num'=純數字(直打凌越)、'A'=A開頭(訂單拋轉寺岡EDI回轉)。金額欄皆取自凌越 SP_*。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_sales_doc (icpno TEXT NOT NULL DEFAULT '00', sp_no TEXT NOT NULL, doc_date TEXT NOT NULL, ct_no TEXT, ct_name TEXT, fkfs TEXT, total REAL NOT NULL DEFAULT 0, unpaid REAL NOT NULL DEFAULT 0, paid REAL NOT NULL DEFAULT 0, nopay_fg TEXT, sales TEXT, kind TEXT, ingested_at TEXT, ingested_by TEXT, PRIMARY KEY (icpno, sp_no))");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_sales_date ON cash_sales_doc(icpno, doc_date)");
+        // 收款客戶主檔：以凌越客戶編號(CT_NO=SP_CTNO)為鍵。name/fkfs/sales/stop 由推送覆蓋；
+        // is_cash（是否當日收現金）、route_line（路線/司機）、note 為後台人工維護，推送不覆蓋。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_customer (icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT NOT NULL, name TEXT, fkfs TEXT, sales TEXT, is_cash INTEGER, route_line TEXT, stop INTEGER NOT NULL DEFAULT 0, note TEXT, updated_at TEXT, PRIMARY KEY (icpno, ct_no))");
+        // 流水號斷號原因：series='num'(純數字)|'A'(寺岡EDI)，seq＝缺的流水號。斷號一定要填原因。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_seq_gap_reason (icpno TEXT NOT NULL DEFAULT '00', doc_date TEXT NOT NULL, series TEXT NOT NULL, seq INTEGER NOT NULL, reason TEXT, updated_by TEXT, updated_at TEXT, PRIMARY KEY (icpno, doc_date, series, seq))");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        // 收款（Phase2）：一筆收款可對應一或多張銷貨單（一張一筆＝一筆對一張；一次付多筆＝一筆對多張）。
+        // cash_payment＝一次收款（現金＋票合計）；cash_payment_alloc＝分配到哪些銷貨單；cash_check＝票據明細。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_payment (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT, ct_name TEXT, pay_date TEXT NOT NULL, collected_by TEXT, route_line TEXT, cash_amount REAL NOT NULL DEFAULT 0, check_amount REAL NOT NULL DEFAULT 0, total_amount REAL NOT NULL DEFAULT 0, due_total REAL NOT NULL DEFAULT 0, diff REAL NOT NULL DEFAULT 0, note TEXT, recorded_by TEXT, recorded_at TEXT, updated_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_payment_date ON cash_payment(icpno, pay_date)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_payment_alloc (id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, icpno TEXT NOT NULL DEFAULT '00', sp_no TEXT NOT NULL, doc_date TEXT, due_amount REAL NOT NULL DEFAULT 0, alloc_amount REAL NOT NULL DEFAULT 0)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_alloc_sp ON cash_payment_alloc(icpno, sp_no)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_alloc_pay ON cash_payment_alloc(payment_id)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_check (id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, icpno TEXT NOT NULL DEFAULT '00', check_no TEXT, bank TEXT, due_date TEXT, amount REAL NOT NULL DEFAULT 0, note TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_check_pay ON cash_check(payment_id)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_check_due ON cash_check(icpno, due_date)");
+        // 額外收入（非銷貨單的款，列現金日報表最後）
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_extra_income (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', income_date TEXT NOT NULL, item TEXT, amount REAL NOT NULL DEFAULT 0, collected_by TEXT, note TEXT, recorded_by TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_extra_date ON cash_extra_income(icpno, income_date)");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
+        // 錢的原子性：一張銷貨單只能被收款一次。唯一約束擋併發重複收款（第二筆 INSERT 直接失敗→交易回滾）。
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_alloc_sp_uniq ON cash_payment_alloc(icpno, sp_no)");
+    }
+    catch (_) { /* 若既有重複資料先不建唯一索引（避免擋啟動）；重複需人工檢查 */ }
+    try {
+        sqlite.exec("ALTER TABLE cash_customer ADD COLUMN last_txn TEXT"); // 凌越最後交易日 CT_LAST_DT，用來分辨舊客戶
+    }
+    catch (_) { /* column exists */ }
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TEXT)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT, raw_name TEXT, quantity REAL NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (order_id) REFERENCES logistics_orders(id), FOREIGN KEY (product_id) REFERENCES products(id))");
@@ -953,6 +1016,11 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
                 // [fix 2026-07-10] 品項照片（與 initSqlite 對應）：獨立表，跨庫存全表覆蓋保留
                 await client.query("CREATE TABLE IF NOT EXISTS erp_stock_item_photo (erp_code TEXT PRIMARY KEY, photo_url TEXT, updated_by TEXT, updated_at TEXT)");
+                // 庫存人工調整值（彌補凌越系統誤差，免重整）：每公司每料號一個總調整值 delta（獨立表，庫存推送不會洗掉）。
+                await client.query("CREATE TABLE IF NOT EXISTS stock_adjustment (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, delta DOUBLE PRECISION NOT NULL DEFAULT 0, name TEXT, spec TEXT, unit TEXT, base_qty DOUBLE PRECISION, counted_qty DOUBLE PRECISION, note TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
+                // 每日庫存快照（供盤點「必盤」判定：跟昨天/上次有無變動）：庫存推送時一天存一份（最後一次為準）。
+                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_daily (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, snap_date))");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_daily_date ON erp_stock_daily(icpno, snap_date)");
             }
             catch (_) { /* table may already exist */ }
             try {
@@ -987,10 +1055,30 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_session_date ON stocktake_session(count_date, wh_code)");
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_count (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, erp_code TEXT, name TEXT, spec TEXT, unit TEXT, sys_qty DOUBLE PRECISION, counted_qty DOUBLE PRECISION, expiry_json TEXT, updated_at TEXT)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
-                await client.query("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (erp_code TEXT PRIMARY KEY, expiry_unit TEXT, created_at TEXT)");
+                await client.query("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS mid_qty DOUBLE PRECISION");
+                // [2026-07-13] 每日盤點「複盤直接改實盤」：最後修改時間/人 + 完整軌跡表
+                await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_at TEXT");
+                await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_by TEXT");
+                await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_by_name TEXT");
+                await client.query("CREATE TABLE IF NOT EXISTS stocktake_count_audit (id TEXT PRIMARY KEY, session_id TEXT, icpno TEXT, wh_code TEXT, count_date TEXT, erp_code TEXT, name TEXT, old_counted DOUBLE PRECISION, new_counted DOUBLE PRECISION, actor TEXT, actor_name TEXT, note TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_audit_session ON stocktake_count_audit(session_id)");
                 // 多公司盤點（松富00＋松揚02…）：場次記公司代碼，NULL 視為 '00'
                 await client.query("ALTER TABLE stocktake_session ADD COLUMN IF NOT EXISTS icpno TEXT");
+                // [migration 2026-07-13] 效期品也按公司：erp_code 單一主鍵 → (icpno, erp_code)；舊資料補 icpno='00'。
+                try {
+                    await client.query("ALTER TABLE stocktake_expiry_item ADD COLUMN IF NOT EXISTS icpno TEXT");
+                    const eiPk = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'stocktake_expiry_item'::regclass AND i.indisprimary");
+                    if (!eiPk.rows.some((r) => r.attname === "icpno")) {
+                        await client.query("UPDATE stocktake_expiry_item SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
+                        await client.query("ALTER TABLE stocktake_expiry_item DROP CONSTRAINT IF EXISTS stocktake_expiry_item_pkey");
+                        await client.query("ALTER TABLE stocktake_expiry_item ALTER COLUMN icpno SET NOT NULL");
+                        await client.query("ALTER TABLE stocktake_expiry_item ALTER COLUMN icpno SET DEFAULT '00'");
+                        await client.query("ALTER TABLE stocktake_expiry_item ADD PRIMARY KEY (icpno, erp_code)");
+                        console.log("[migration] stocktake_expiry_item 主鍵改為 (icpno, erp_code)");
+                    }
+                }
+                catch (e) { console.warn("[migration] stocktake_expiry_item 多公司主鍵遷移失敗:", e?.message || e); }
                 // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
                 await client.query("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
                 // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。
@@ -1013,6 +1101,31 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_order_item_edits_order ON order_item_edits(order_id)");
             }
             catch (_) { /* table may already exist */ }
+            try {
+                // 每日帳款收款（與 initSqlite 對應）：凌越銷貨單當日快照 + 收款客戶主檔。
+                await client.query("CREATE TABLE IF NOT EXISTS cash_sales_doc (icpno TEXT NOT NULL DEFAULT '00', sp_no TEXT NOT NULL, doc_date TEXT NOT NULL, ct_no TEXT, ct_name TEXT, fkfs TEXT, total DOUBLE PRECISION NOT NULL DEFAULT 0, unpaid DOUBLE PRECISION NOT NULL DEFAULT 0, paid DOUBLE PRECISION NOT NULL DEFAULT 0, nopay_fg TEXT, sales TEXT, kind TEXT, ingested_at TEXT, ingested_by TEXT, PRIMARY KEY (icpno, sp_no))");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_sales_date ON cash_sales_doc(icpno, doc_date)");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_customer (icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT NOT NULL, name TEXT, fkfs TEXT, sales TEXT, is_cash INTEGER, route_line TEXT, stop INTEGER NOT NULL DEFAULT 0, note TEXT, updated_at TEXT, PRIMARY KEY (icpno, ct_no))");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_seq_gap_reason (icpno TEXT NOT NULL DEFAULT '00', doc_date TEXT NOT NULL, series TEXT NOT NULL, seq INTEGER NOT NULL, reason TEXT, updated_by TEXT, updated_at TEXT, PRIMARY KEY (icpno, doc_date, series, seq))");
+                // 收款（Phase2）
+                await client.query("CREATE TABLE IF NOT EXISTS cash_payment (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT, ct_name TEXT, pay_date TEXT NOT NULL, collected_by TEXT, route_line TEXT, cash_amount DOUBLE PRECISION NOT NULL DEFAULT 0, check_amount DOUBLE PRECISION NOT NULL DEFAULT 0, total_amount DOUBLE PRECISION NOT NULL DEFAULT 0, due_total DOUBLE PRECISION NOT NULL DEFAULT 0, diff DOUBLE PRECISION NOT NULL DEFAULT 0, note TEXT, recorded_by TEXT, recorded_at TEXT, updated_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_payment_date ON cash_payment(icpno, pay_date)");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_payment_alloc (id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, icpno TEXT NOT NULL DEFAULT '00', sp_no TEXT NOT NULL, doc_date TEXT, due_amount DOUBLE PRECISION NOT NULL DEFAULT 0, alloc_amount DOUBLE PRECISION NOT NULL DEFAULT 0)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_alloc_sp ON cash_payment_alloc(icpno, sp_no)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_alloc_pay ON cash_payment_alloc(payment_id)");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_check (id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, icpno TEXT NOT NULL DEFAULT '00', check_no TEXT, bank TEXT, due_date TEXT, amount DOUBLE PRECISION NOT NULL DEFAULT 0, note TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_check_pay ON cash_check(payment_id)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_check_due ON cash_check(icpno, due_date)");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_extra_income (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', income_date TEXT NOT NULL, item TEXT, amount DOUBLE PRECISION NOT NULL DEFAULT 0, collected_by TEXT, note TEXT, recorded_by TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_extra_date ON cash_extra_income(icpno, income_date)");
+                await client.query("ALTER TABLE cash_customer ADD COLUMN IF NOT EXISTS last_txn TEXT");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                // 錢的原子性：一張銷貨單只能被收款一次（擋併發重複收款）
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_alloc_sp_uniq ON cash_payment_alloc(icpno, sp_no)");
+            }
+            catch (_) { /* 既有重複資料先不建，需人工檢查 */ }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TIMESTAMPTZ)");
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES logistics_orders(id), product_id TEXT REFERENCES products(id), raw_name TEXT, quantity DOUBLE PRECISION NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0)");
