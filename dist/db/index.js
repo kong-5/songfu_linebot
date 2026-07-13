@@ -171,6 +171,10 @@ function initSqlite(dbPath) {
         "ALTER TABLE orders ADD COLUMN lingyue_queued_by TEXT",
         // 盤點：中價貨（品質較差）數量，與上貨合計為 counted_qty；mid_qty 單獨保留供品質標注
         "ALTER TABLE stocktake_count ADD COLUMN mid_qty REAL",
+        // [2026-07-13] 每日盤點頁「複盤直接改實盤」：記最後修改時間/人（完整軌跡另存 stocktake_count_audit）
+        "ALTER TABLE stocktake_count ADD COLUMN edited_at TEXT",
+        "ALTER TABLE stocktake_count ADD COLUMN edited_by TEXT",
+        "ALTER TABLE stocktake_count ADD COLUMN edited_by_name TEXT",
         // [fix 2026-07-08] 凌越 /wait 認領租約：agent 撿走時蓋時間戳，其他 agent／同一 agent 重啟在租約內不會重撿→防重複開單
         "ALTER TABLE orders ADD COLUMN lingyue_claimed_at TEXT",
         // [fix 2026-07-08] 凌越寫入失敗出口：累計嘗試次數與最後錯誤；permanent 或超過上限即移出佇列並顯示原因
@@ -319,6 +323,9 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_session_date ON stocktake_session(count_date, wh_code)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_count (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, erp_code TEXT, name TEXT, spec TEXT, unit TEXT, sys_qty REAL, counted_qty REAL, expiry_json TEXT, updated_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
+        // 每日盤點「複盤直接改實盤」的修改軌跡（audit）：每次修改一列，保留舊/新值與修改人時間。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_count_audit (id TEXT PRIMARY KEY, session_id TEXT, icpno TEXT, wh_code TEXT, count_date TEXT, erp_code TEXT, name TEXT, old_counted REAL, new_counted REAL, actor TEXT, actor_name TEXT, note TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_count_audit_session ON stocktake_count_audit(session_id)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
         // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
         sqlite.exec("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
@@ -1024,6 +1031,12 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS mid_qty DOUBLE PRECISION");
+                // [2026-07-13] 每日盤點「複盤直接改實盤」：最後修改時間/人 + 完整軌跡表
+                await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_at TEXT");
+                await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_by TEXT");
+                await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_by_name TEXT");
+                await client.query("CREATE TABLE IF NOT EXISTS stocktake_count_audit (id TEXT PRIMARY KEY, session_id TEXT, icpno TEXT, wh_code TEXT, count_date TEXT, erp_code TEXT, name TEXT, old_counted DOUBLE PRECISION, new_counted DOUBLE PRECISION, actor TEXT, actor_name TEXT, note TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_audit_session ON stocktake_count_audit(session_id)");
                 // 多公司盤點（松富00＋松揚02…）：場次記公司代碼，NULL 視為 '00'
                 await client.query("ALTER TABLE stocktake_session ADD COLUMN IF NOT EXISTS icpno TEXT");
                 // [migration 2026-07-13] 效期品也按公司：erp_code 單一主鍵 → (icpno, erp_code)；舊資料補 icpno='00'。
