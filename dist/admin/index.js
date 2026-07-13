@@ -12667,12 +12667,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             }
             const drvRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("cash_drivers");
             const drivers = String(drvRow?.value || "");
-            const tr = (r) => `<tr data-ct="${escapeAttr(r.ct_no)}">
+            const tr = (r) => `<tr data-ct="${escapeAttr(r.ct_no)}" data-search="${escapeAttr(((r.name || "") + " " + (r.ct_no || "") + " " + (r.route_line || "")).toLowerCase())}">
           <td style="font-family:ui-monospace,monospace;">${escapeHtml(r.ct_no)}</td>
           <td>${escapeHtml(r.name || "")}${Number(r.stop) ? ` <span style="color:#c62828;font-size:11px;">停用</span>` : ""}</td>
+          <td style="background:#fbfbfa;"><input class="cm-route sf-input" value="${escapeAttr(r.route_line || "")}" placeholder="路線" style="width:80px;"></td>
           <td style="color:#787774;">${escapeHtml(r.fkfs || "")}</td>
           <td style="color:#787774;font-size:12px;">${escapeHtml(r.last_txn || "—")}</td>
-          <td><input class="cm-route sf-input" value="${escapeAttr(r.route_line || "")}" style="width:80px;"></td>
           <td style="text-align:center;"><input type="checkbox" class="cm-cash" ${Number(r.is_cash) ? "checked" : ""}></td>
           <td><input class="cm-note sf-input" value="${escapeAttr(r.note || "")}" style="width:100%;"></td>
           <td><button type="button" class="sf-btn sf-btn-sm cm-save">存</button></td>
@@ -12695,12 +12695,21 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         </div>
       </div>
       <div class="notion-card">
-        <div style="margin-bottom:6px;color:#787774;font-size:13px;">共 ${rows.length} 家${qs ? "（篩選後）" : ""}${showAll ? "（含停用/舊客戶）" : "（僅有效客戶：未停用且一年內有交易）"}</div>
-        <table><thead><tr><th>客戶編號</th><th>客戶名稱</th><th>結帳方式</th><th>最後交易</th><th>路線</th><th style="text-align:center;">收現金</th><th>備註</th><th></th></tr></thead>
-        <tbody>${rows.map(tr).join("") || `<tr><td colspan="8" style="text-align:center;color:#9b9a97;padding:16px;">尚無客戶資料——內網「立即取單」推過（新版腳本）後就會帶入。</td></tr>`}</tbody></table>
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+          <div style="color:#787774;font-size:13px;">共 <span id="cmCount">${rows.length}</span> 家${qs ? "（篩選後）" : ""}${showAll ? "（含停用/舊客戶）" : "（僅有效客戶：未停用且一年內有交易）"}</div>
+          <input type="text" id="cmFilter" class="sf-input" placeholder="🔍 即時搜尋（客戶名／編號／路線）" style="width:260px;max-width:100%;">
+        </div>
+        <table><thead><tr><th>客戶編號</th><th>客戶名稱</th><th style="background:#eef3fb;">路線</th><th>結帳方式</th><th>最後交易</th><th style="text-align:center;">收現金</th><th>備註</th><th></th></tr></thead>
+        <tbody id="cmBody">${rows.map(tr).join("") || `<tr><td colspan="8" style="text-align:center;color:#9b9a97;padding:16px;">尚無客戶資料——內網「立即取單」推過（新版腳本）後就會帶入。</td></tr>`}</tbody></table>
       </div>
       <script>(function(){
         var ICPNO=${JSON.stringify(icpno)};
+        var flt=document.getElementById('cmFilter');
+        if(flt){ flt.addEventListener('input',function(){
+          var q=this.value.trim().toLowerCase(); var rows=document.querySelectorAll('#cmBody tr'); var n=0;
+          rows.forEach(function(tr){ var s=tr.getAttribute('data-search')||''; var hit=!q||s.indexOf(q)>=0; tr.style.display=hit?'':'none'; if(hit&&tr.dataset.ct)n++; });
+          var c=document.getElementById('cmCount'); if(c)c.textContent=n;
+        }); }
         document.querySelectorAll('.cm-save').forEach(function(b){ b.addEventListener('click',function(){
           var tr=b.closest('tr');
           var payload={icpno:ICPNO,ct_no:tr.dataset.ct,route_line:tr.querySelector('.cm-route').value,is_cash:tr.querySelector('.cm-cash').checked?1:0,note:tr.querySelector('.cm-note').value};
