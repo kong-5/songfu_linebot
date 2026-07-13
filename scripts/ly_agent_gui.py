@@ -1233,98 +1233,132 @@ class SettingsDialog(tk.Toplevel):
         self.on_save = on_save
         self.title("設定")
         self.configure(bg=BG)
-        self.geometry("580x680")
+        # 可調整大小＋較大預設，避免內容多時看不到「儲存」
+        self.geometry("640x760")
+        self.minsize(560, 480)
+        self.resizable(True, True)
         self.transient(master)
         self.grab_set()
 
         self.vars = {}
+
+        # ── 底部固定按鈕列（先建、永遠可見，不被內容擠掉）──────────
+        btns = tk.Frame(self, bg=PANEL)
+        btns.pack(fill="x", side="bottom")
+        inner_btns = tk.Frame(btns, bg=PANEL)
+        inner_btns.pack(fill="x", padx=16, pady=12)
+        tk.Button(inner_btns, text="儲存設定", command=self._save, bg=GREEN, fg="white", relief="flat",
+                  padx=24, pady=8, font=("Microsoft JhengHei UI", 11, "bold"),
+                  activebackground="#2ea043", cursor="hand2").pack(side="right", padx=(8, 0))
+        tk.Button(inner_btns, text="取消", command=self.destroy, bg=PANEL2, fg=FG, relief="flat",
+                  padx=16, pady=8, font=("Microsoft JhengHei UI", 10),
+                  activebackground=GREY, cursor="hand2").pack(side="right")
+        tk.Button(inner_btns, text="測試連線", command=self._test, bg=BLUE, fg="#0b1220", relief="flat",
+                  padx=16, pady=8, font=("Microsoft JhengHei UI", 10, "bold"),
+                  activebackground="#4899f0", cursor="hand2").pack(side="left")
+        # 連線測試結果（在按鈕列上方，也固定可見）
+        self.test_result = tk.Label(self, text="", fg=MUTED, bg=BG, anchor="w", justify="left",
+                                    wraplength=600, font=("Microsoft JhengHei UI", 9))
+        self.test_result.pack(fill="x", side="bottom", padx=16, pady=(6, 4))
+
+        # ── 可捲動的表單區（Canvas + Scrollbar；內容再多都能捲到）──
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(fill="both", expand=True, side="top")
+        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        vsb = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        form = tk.Frame(canvas, bg=BG)
+        form_id = canvas.create_window((0, 0), window=form, anchor="nw")
+
+        def _on_form_config(_e=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        form.bind("<Configure>", _on_form_config)
+        # 讓內層表單寬度跟著 canvas（欄位才會撐滿）
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(form_id, width=e.width))
+        # 滑鼠滾輪捲動（Windows / macOS 用 MouseWheel，Linux 用 Button-4/5）
+        def _wheel(e):
+            delta = -1 if getattr(e, "num", None) == 5 else (1 if getattr(e, "num", None) == 4 else (-1 if e.delta < 0 else 1))
+            canvas.yview_scroll(-delta, "units")
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            canvas.bind_all(seq, _wheel)
+        self._wheel_canvas = canvas
+        self.bind("<Destroy>", self._unbind_wheel)
+
         pad = {"padx": 16, "pady": 4}
 
+        def section(title):
+            tk.Label(form, text=title, fg=BLUE, bg=BG, anchor="w",
+                     font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(14, 2))
+
         def row(label, key, hint="", show=None):
-            tk.Label(self, text=label, fg=FG, bg=BG, anchor="w",
+            tk.Label(form, text=label, fg=FG, bg=BG, anchor="w",
                      font=("Microsoft JhengHei UI", 10, "bold")).pack(fill="x", **pad)
             v = tk.StringVar(value=str(cfg.get(key, "")))
-            e = tk.Entry(self, textvariable=v, bg=PANEL2, fg=FG, relief="flat",
+            e = tk.Entry(form, textvariable=v, bg=PANEL2, fg=FG, relief="flat",
                          insertbackground=FG, font=("Consolas", 10), show=show)
-            e.pack(fill="x", padx=16)
+            e.pack(fill="x", padx=16, ipady=4)
             if hint:
-                tk.Label(self, text=hint, fg=MUTED, bg=BG, anchor="w",
+                tk.Label(form, text=hint, fg=MUTED, bg=BG, anchor="w", justify="left", wraplength=580,
                          font=("Microsoft JhengHei UI", 8)).pack(fill="x", padx=16, pady=(0, 2))
             self.vars[key] = v
             return e
 
-        tk.Label(self, text="連線設定", fg=BLUE, bg=BG, anchor="w",
-                 font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(14, 2))
+        def checkbox(text, key, default=True):
+            var = tk.BooleanVar(value=bool(cfg.get(key, default)))
+            tk.Checkbutton(form, text=text, variable=var, wraplength=560, justify="left",
+                           bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG,
+                           font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16, pady=(2, 0))
+            self.vars[key] = var
+            return var
+
+        section("連線設定")
         row("雲端後台網址 (LY_CLOUD_BASE)", "cloud_base", "例：https://xxxx.run.app")
         key_entry = row("回寫金鑰 (LINGYUE_WRITEBACK_KEY)", "writeback_key",
                         "與後台環境變數相同那把", show="*")
         show_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(self, text="顯示金鑰", variable=show_var, bg=BG, fg=MUTED,
+        tk.Checkbutton(form, text="顯示金鑰", variable=show_var, bg=BG, fg=MUTED,
                        selectcolor=PANEL, activebackground=BG, activeforeground=FG,
                        command=lambda: key_entry.config(show="" if show_var.get() else "*"),
                        font=("Microsoft JhengHei UI", 8)).pack(anchor="w", padx=16)
         row("公司代碼 (LY_ICPNO)", "icpno", "00松富/01龍港/02松揚/03松成；庫存推送填 all＝全推（各公司分開存），回寫固定用第一家(00)")
 
-        tk.Label(self, text="庫存代理", fg=BLUE, bg=BG, anchor="w",
-                 font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(12, 2))
+        section("庫存代理")
         row("每日定時推送 (LY_STOCK_TIMES)", "stock_times",
             "24小時制、逗號分隔，如 06:00,12:00；清空＝只靠按鈕/即時")
 
-        tk.Label(self, text="銷貨代理（每日帳款收款：取當日銷貨單推上雲）", fg=BLUE, bg=BG, anchor="w",
-                 font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(12, 2))
-        sales_auto_var = tk.BooleanVar(value=bool(cfg.get("sales_auto", True)))
-        tk.Checkbutton(self, text="自動取當日銷貨單推上雲（後台『松富銷貨統計/現金收款』會用到；並掛長連線等網站『重新取單』）",
-                       variable=sales_auto_var, wraplength=500, justify="left",
-                       bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG,
-                       font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16)
-        self.vars["sales_auto"] = sales_auto_var
+        section("銷貨代理（每日帳款收款：取當日銷貨單推上雲）")
+        checkbox("自動取當日銷貨單推上雲（後台『松富銷貨統計/現金收款』會用到；並掛長連線等網站『重新取單』）",
+                 "sales_auto", True)
         row("每日取單時間 (LY_SALES_TIMES)", "sales_times",
             "24小時制、逗號分隔，如 08:30；清空＝只靠『立即取單』按鈕或網站『重新取單』。客戶改單後網站按『重新取單』會即時重撈")
 
-        tk.Label(self, text="訂單回寫（只寫你在網站按過『上傳凌越』的單）", fg=BLUE, bg=BG, anchor="w",
-                 font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(12, 2))
-        auto_var = tk.BooleanVar(value=bool(cfg.get("wb_auto", True)))
-        tk.Checkbutton(self, text="掛著自動處理『上傳凌越』佇列（只寫你在網站按過上傳的單，不會動其他訂單）",
-                       variable=auto_var, wraplength=500, justify="left",
-                       bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG,
-                       font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16)
-        self.vars["wb_auto"] = auto_var
-
-        tk.Label(self, text="倉別/單位規則固定：每品項帶凌越貨品主檔預設倉(SK_RKWHNO)與正規單位(SK_UNIT)；"
+        section("訂單回寫（只寫你在網站按過『上傳凌越』的單）")
+        checkbox("掛著自動處理『上傳凌越』佇列（只寫你在網站按過上傳的單，不會動其他訂單）", "wb_auto", True)
+        tk.Label(form, text="倉別/單位規則固定：每品項帶凌越貨品主檔預設倉(SK_RKWHNO)與正規單位(SK_UNIT)；"
                             "付款方式/業務員自動從客戶主檔帶入（拋轉必備）",
-                 fg=MUTED, bg=BG, anchor="w", justify="left", wraplength=520,
+                 fg=MUTED, bg=BG, anchor="w", justify="left", wraplength=580,
                  font=("Microsoft JhengHei UI", 8)).pack(fill="x", padx=16, pady=(2, 0))
-
-        chk_var = tk.BooleanVar(value=bool(cfg.get("wb_mark_checked", True)))
-        tk.Checkbutton(self, text="寫入即標記「已審核」(OR_CHECK=1)——拋轉需要；取消勾＝未審核（好刪、但拋轉抓不到）",
-                       variable=chk_var, wraplength=500, justify="left",
-                       bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG,
-                       font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16)
-        self.vars["wb_mark_checked"] = chk_var
-
+        checkbox("寫入即標記「已審核」(OR_CHECK=1)——拋轉需要；取消勾＝未審核（好刪、但拋轉抓不到）",
+                 "wb_mark_checked", True)
         row("固定倉別 (LY_DEFAULT_WHNO)", "wb_default_whno",
             "後備：品項在凌越貨品主檔查不到預設倉時用這個補")
         row("建立人代碼 (LY_CREATE_NAME)", "wb_create_name",
             "帶入 OR_MAKER/OR_CREATENAME 的操作員代碼，預設 052（拋轉依建立日期/人抓單）")
         row("預設單價 (LY_DEFAULT_PRICE)", "wb_default_price", "留空＝讓凌越依客戶售價表帶價")
+        # 底部留白，最後一欄不被按鈕列貼住
+        tk.Frame(form, bg=BG, height=8).pack(fill="x")
 
-        # 連線測試結果
-        self.test_result = tk.Label(self, text="", fg=MUTED, bg=BG, anchor="w", justify="left",
-                                    wraplength=520, font=("Microsoft JhengHei UI", 9))
-        self.test_result.pack(fill="x", side="bottom", padx=16, pady=(0, 2))
-
-        # 底部按鈕
-        btns = tk.Frame(self, bg=BG)
-        btns.pack(fill="x", side="bottom", pady=12)
-        tk.Button(btns, text="儲存", command=self._save, bg=GREEN, fg="white", relief="flat",
-                  padx=20, pady=6, font=("Microsoft JhengHei UI", 10, "bold"),
-                  activebackground="#2ea043", cursor="hand2").pack(side="right", padx=16)
-        tk.Button(btns, text="取消", command=self.destroy, bg=PANEL2, fg=FG, relief="flat",
-                  padx=16, pady=6, font=("Microsoft JhengHei UI", 10),
-                  activebackground=GREY, cursor="hand2").pack(side="right")
-        tk.Button(btns, text="測試連線", command=self._test, bg=BLUE, fg="#0b1220", relief="flat",
-                  padx=16, pady=6, font=("Microsoft JhengHei UI", 10, "bold"),
-                  activebackground="#4899f0", cursor="hand2").pack(side="left", padx=16)
+    def _unbind_wheel(self, event=None):
+        # 視窗關閉時解除全域滾輪綁定，避免影響主視窗
+        if event is not None and event.widget is not self:
+            return
+        try:
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                self._wheel_canvas.unbind_all(seq)
+        except Exception:
+            pass
 
     def _test(self):
         self.test_result.config(text="測試中 …", fg=MUTED)
