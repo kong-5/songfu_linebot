@@ -12343,7 +12343,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
     function cashValidDate(v) { return (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim())) ? v.trim() : ""; }
     async function loadCollectData(icpno, date) {
         const dayUnits = await db.prepare(
-            "SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.fkfs, s.total, s.kind, COALESCE(c.route_line,'') AS route_line " +
+            "SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.fkfs, s.total, s.kind, COALESCE(c.route_line,'') AS route_line, c.is_cash AS is_cash " +
             "FROM cash_sales_doc s LEFT JOIN cash_customer c ON c.icpno = s.icpno AND c.ct_no = s.ct_no " +
             "WHERE s.icpno = ? AND s.doc_date = ? ORDER BY COALESCE(c.route_line,''), s.ct_name, s.sp_no").all(icpno, date) || [];
         const allocRows = await db.prepare("SELECT a.sp_no, a.payment_id, p.collected_by FROM cash_payment_alloc a JOIN cash_payment p ON p.id = a.payment_id WHERE a.icpno = ?").all(icpno) || [];
@@ -12389,15 +12389,18 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           </div>
         </div>`;
             const shown = route === "all" ? dayUnits : dayUnits.filter((u) => String(u.route_line || "").trim() === route);
+            const isCashRow = (u) => (u.is_cash === 1 || u.is_cash === "1") ? true : ((u.is_cash === 0 || u.is_cash === "0") ? false : /現金|現收/.test(String(u.fkfs || "")));
             const rowHtml = shown.length ? shown.map((u) => {
                 const a = allocBySp.get(u.sp_no);
                 const paid = !!a;
-                return `<tr>
+                const cashFlag = isCashRow(u);
+                const searchKey = ((u.sp_no || "") + " " + (u.ct_name || "") + " " + (u.ct_no || "")).toLowerCase();
+                return `<tr class="cc-tr" data-cash="${cashFlag ? 1 : 0}" data-search="${escapeAttr(searchKey)}">
             <td style="text-align:center;">${paid ? "" : `<input type="checkbox" class="cc-row" value="${escapeAttr(u.sp_no)}" data-due="${cashNum(u.total)}" data-ct="${escapeAttr(u.ct_no)}" data-ctname="${escapeAttr(u.ct_name || "")}">`}</td>
             <td style="font-family:ui-monospace,monospace;">${escapeHtml(u.sp_no)}</td>
             <td>${escapeHtml(u.ct_name || "")}</td>
             <td style="text-align:center;">${escapeHtml(String(u.route_line || "").trim() || "—")}</td>
-            <td>${escapeHtml(u.fkfs || "")}</td>
+            <td>${escapeHtml(u.fkfs || "")}${cashFlag ? "" : ` <span style="color:#9b9a97;font-size:11px;">非現金</span>`}</td>
             <td style="text-align:right;">${cashMoney(u.total)}</td>
             <td>${paid ? `<span style="color:#2e7d32;">已收${a.collected_by ? "・" + escapeHtml(a.collected_by) : ""}</span> <button type="button" class="link-undo cf-undo" data-pid="${a.payment_id}">取消</button>` : `<span style="color:#c62828;">未收</span>`}</td>
           </tr>`;
@@ -12437,12 +12440,18 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         ${leftNav}
         <div class="notion-card">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
-            <div><strong>${route === "all" ? "全部路線" : escapeHtml(routeLabel(route))}</strong>　<span style="color:#787774;font-size:13px;">${escapeHtml(date)}　應收 ${cashMoney(shownDueTotalPlaceholder)}（未收 ${cashMoney(shownUnpaidPlaceholder)}）</span></div>
-            <div style="display:flex;gap:8px;">
+            <div><strong>${route === "all" ? "全部路線" : escapeHtml(routeLabel(route))}</strong>　<span style="color:#787774;font-size:13px;">${escapeHtml(date)}</span></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <button type="button" class="sf-btn sf-btn-sm" id="ccSelAll">全選未收</button>
               <button type="button" class="btn-primary" id="ccPayBtn">收款（<span id="ccSelN">0</span>）</button>
               <button type="button" class="sf-btn sf-btn-sm" id="ccJpgBtn">產生 JPG</button>
+              <button type="button" class="sf-btn sf-btn-sm" id="ccExtraBtn">手動入帳</button>
             </div>
+          </div>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+            <label style="display:inline-flex;gap:6px;align-items:center;font-size:13px;cursor:pointer;"><input type="checkbox" id="ccCashOnly" checked> 只看收現金客戶（匯款/月結不列）</label>
+            <input type="text" id="ccSearch" class="sf-input" placeholder="🔍 打單號或客戶找單（例外收現也找得到）" style="width:280px;max-width:100%;">
+            <span style="color:#787774;font-size:12px;">顯示 <span id="ccShownN">0</span> 筆・未收 <span id="ccShownDue">0</span></span>
           </div>
           <table class="cc-table">
             <thead><tr><th style="width:34px;"></th><th>單號</th><th>客戶</th><th style="width:54px;text-align:center;">路線</th><th>結帳</th><th style="text-align:right;">應收</th><th>狀態</th></tr></thead>
@@ -12479,10 +12488,50 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           </div>
         </div>
       </div>
+      <div class="cc-modal-bg" id="ccExtraBg">
+        <div class="cc-modal">
+          <h3>手動入帳（非銷貨單的款）</h3>
+          <div style="font-size:13px;color:#787774;margin-bottom:6px;">找不到單、或不是銷貨單的收入（如雜項、回收）用這裡。會進「現金日報表 → 額外收入」。</div>
+          <label>項目<input type="text" id="ceItem" class="sf-input" placeholder="例：回收紙箱／臨時雜項" style="width:100%;"></label>
+          <label>金額<input type="number" id="ceAmount" class="sf-input" style="width:150px;"></label>
+          <label>司機／收款人<input type="text" id="ceBy" class="sf-input" value="${escapeAttr(me)}" style="width:180px;"></label>
+          <label>備註<input type="text" id="ceNote" class="sf-input" style="width:100%;"></label>
+          <div style="margin-top:14px;text-align:right;display:flex;gap:8px;justify-content:flex-end;">
+            <button type="button" class="sf-btn" id="ceCancel">取消</button>
+            <button type="button" class="btn-primary" id="ceConfirm">新增入帳</button>
+          </div>
+        </div>
+      </div>
       <canvas id="ccCanvas" style="display:none;"></canvas>
       <script>(function(){
         var ICPNO=${JSON.stringify(icpno)}, PAYDATE=${JSON.stringify(date)}, ME=${JSON.stringify(me)}, ROUTE=${JSON.stringify(route === "all" ? "全部路線" : routeLabel(route))}, COMPANY=${JSON.stringify(CASH_COMPANIES[icpno] || icpno)};
         function money(n){ return Number(n||0).toLocaleString(); }
+        // 篩選：只看收現金（預設）＋搜尋單號/客戶（搜尋時連非現金也顯示，供例外收現）
+        function applyFilter(){
+          var cashOnly=document.getElementById('ccCashOnly').checked;
+          var q=(document.getElementById('ccSearch').value||'').trim().toLowerCase();
+          var rows=document.querySelectorAll('#ccBody tr.cc-tr'); var n=0, due=0;
+          rows.forEach(function(tr){
+            var isCash=tr.getAttribute('data-cash')==='1';
+            var hitQ=!q||(tr.getAttribute('data-search')||'').indexOf(q)>=0;
+            var show = hitQ && (q ? true : (cashOnly ? isCash : true));
+            tr.style.display=show?'':'none';
+            if(show){ n++; var cb=tr.querySelector('.cc-row'); if(cb){ due+=Number(cb.dataset.due||0); } if(cb&&!cb.checked){} }
+          });
+          var sn=document.getElementById('ccShownN'); if(sn)sn.textContent=n;
+          var sd=document.getElementById('ccShownDue'); if(sd)sd.textContent=money(due);
+        }
+        document.getElementById('ccCashOnly').addEventListener('change',applyFilter);
+        document.getElementById('ccSearch').addEventListener('input',applyFilter);
+        // 手動入帳
+        document.getElementById('ccExtraBtn').addEventListener('click',function(){ document.getElementById('ccExtraBg').style.display='flex'; });
+        document.getElementById('ceCancel').addEventListener('click',function(){ document.getElementById('ccExtraBg').style.display='none'; });
+        document.getElementById('ceConfirm').addEventListener('click',function(){
+          var item=document.getElementById('ceItem').value.trim(); var amt=document.getElementById('ceAmount').value;
+          if(!item||!amt){ if(window.sfToast)sfToast('請填項目與金額','err'); return; }
+          var b=this; b.disabled=true;
+          fetch('/admin/cash/extra-income',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:ICPNO,income_date:PAYDATE,item:item,amount:amt,collected_by:document.getElementById('ceBy').value,note:document.getElementById('ceNote').value})}).then(function(r){return r.json();}).then(function(j){ b.disabled=false; if(j&&j.ok){ if(window.sfToast)sfToast('已新增入帳'); document.getElementById('ccExtraBg').style.display='none'; document.getElementById('ceItem').value='';document.getElementById('ceAmount').value='';document.getElementById('ceNote').value=''; } else { if(window.sfToast)sfToast('新增失敗','err'); } }).catch(function(){ b.disabled=false; if(window.sfToast)sfToast('新增失敗','err'); });
+        });
         function checked(){ return [].slice.call(document.querySelectorAll('.cc-row:checked')); }
         function refreshN(){ var n=checked().length; document.getElementById('ccSelN').textContent=n; }
         document.getElementById('ccBody').addEventListener('change',function(e){ if(e.target.classList.contains('cc-row')) refreshN(); });
@@ -12529,7 +12578,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         document.querySelectorAll('.cf-undo').forEach(function(b){ b.addEventListener('click',function(){ if(!confirm('確定取消這筆收款？（相關單退回未收）'))return; fetch('/admin/cash/collect/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payment_id:b.dataset.pid})}).then(function(r){return r.json();}).then(function(j){ if(j&&j.ok){location.reload();}else{ if(window.sfToast)sfToast('取消失敗','err'); } }); }); });
         // 產生 JPG（該路線收款清單）
         function drawListJpg(){
-          var rows=[].slice.call(document.querySelectorAll('#ccBody tr')).map(function(tr){ var t=tr.querySelectorAll('td'); if(t.length<7) return null; return {sp:t[1].innerText.trim(),ct:t[2].innerText.trim(),rt:t[3].innerText.trim(),due:t[5].innerText.trim(),st:t[6].innerText.trim()}; }).filter(Boolean);
+          var rows=[].slice.call(document.querySelectorAll('#ccBody tr')).filter(function(tr){ return tr.style.display!=='none'; }).map(function(tr){ var t=tr.querySelectorAll('td'); if(t.length<7) return null; return {sp:t[1].innerText.trim(),ct:t[2].innerText.trim(),rt:t[3].innerText.trim(),due:t[5].innerText.trim(),st:t[6].innerText.trim()}; }).filter(Boolean);
           var W=760, pad=24, lh=26, top=110; var H=top+rows.length*lh+60;
           var cv=document.getElementById('ccCanvas'); cv.width=W; cv.height=H; var g=cv.getContext('2d');
           g.fillStyle='#fff'; g.fillRect(0,0,W,H); g.fillStyle='#111';
@@ -12548,6 +12597,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         document.getElementById('ccJpgBtn').addEventListener('click',drawListJpg);
         document.getElementById('ccDetailJpg').addEventListener('click',drawListJpg);
         refreshN();
+        applyFilter();
       })();</script>`;
             res.type("text/html").send(notionPage("收款處", body, "cash-collect", res));
         }
