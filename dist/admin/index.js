@@ -1881,6 +1881,7 @@ function sfSidebar(active) {
         ${item("/admin/logistics/market", "logistics-reports", "chartLine", "行情報表")}
         ${item("/admin/cash", "cash", "money", "每日帳款收款")}
         ${item("/admin/cash/collect", "cash-collect", "check", "收款處")}
+        ${item("/admin/cash/customers", "cash-customers", "users", "收款客戶主檔")}
       </details>
       <details class="sf-nav-group" ${["inventory","inv-scan","inv-stock","inv-wh-settings","inv-barcodes"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
@@ -12305,143 +12306,212 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
     function cashNum(v) { const n = Number(String(v ?? "").replace(/,/g, "").trim()); return Number.isFinite(n) ? n : 0; }
     function cashValidDate(v) { return (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim())) ? v.trim() : ""; }
     async function loadCollectData(icpno, date) {
-        const dayUnits = await db.prepare("SELECT sp_no, doc_date, ct_no, ct_name, fkfs, total, kind FROM cash_sales_doc WHERE icpno = ? AND doc_date = ? ORDER BY ct_name, sp_no").all(icpno, date) || [];
-        const allocRows = await db.prepare("SELECT a.sp_no, a.payment_id, p.collected_by, p.total_amount, p.pay_date FROM cash_payment_alloc a JOIN cash_payment p ON p.id = a.payment_id WHERE a.icpno = ?").all(icpno) || [];
+        const dayUnits = await db.prepare(
+            "SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.fkfs, s.total, s.kind, COALESCE(c.route_line,'') AS route_line " +
+            "FROM cash_sales_doc s LEFT JOIN cash_customer c ON c.icpno = s.icpno AND c.ct_no = s.ct_no " +
+            "WHERE s.icpno = ? AND s.doc_date = ? ORDER BY COALESCE(c.route_line,''), s.ct_name, s.sp_no").all(icpno, date) || [];
+        const allocRows = await db.prepare("SELECT a.sp_no, a.payment_id, p.collected_by FROM cash_payment_alloc a JOIN cash_payment p ON p.id = a.payment_id WHERE a.icpno = ?").all(icpno) || [];
         const allocBySp = new Map(allocRows.map((r) => [r.sp_no, r]));
-        const custRows = await db.prepare("SELECT ct_no, route_line, is_cash FROM cash_customer WHERE icpno = ?").all(icpno) || [];
-        const custMap = new Map(custRows.map((c) => [c.ct_no, c]));
-        const driverRows = await db.prepare("SELECT COALESCE(NULLIF(TRIM(collected_by),''),'（未填收款人）') AS who, COUNT(*) AS c, SUM(cash_amount) AS cash, SUM(check_amount) AS chk, SUM(total_amount) AS tot FROM cash_payment WHERE icpno = ? AND pay_date = ? GROUP BY COALESCE(NULLIF(TRIM(collected_by),''),'（未填收款人）') ORDER BY SUM(total_amount) DESC").all(icpno, date) || [];
-        const unpaidRows = await db.prepare("SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.total FROM cash_sales_doc s WHERE s.icpno = ? AND s.doc_date <= ? AND NOT EXISTS (SELECT 1 FROM cash_payment_alloc a WHERE a.icpno = s.icpno AND a.sp_no = s.sp_no) ORDER BY s.ct_name, s.doc_date, s.sp_no").all(icpno, date) || [];
-        return { dayUnits, allocBySp, custMap, driverRows, unpaidRows };
+        const driverRows = await db.prepare("SELECT COALESCE(NULLIF(TRIM(collected_by),''),'（未填）') AS who, COUNT(*) AS c, SUM(cash_amount) AS cash, SUM(check_amount) AS chk, SUM(total_amount) AS tot FROM cash_payment WHERE icpno = ? AND pay_date = ? GROUP BY COALESCE(NULLIF(TRIM(collected_by),''),'（未填）') ORDER BY SUM(total_amount) DESC").all(icpno, date) || [];
+        return { dayUnits, allocBySp, driverRows };
     }
-    // 收款處頁面
+    async function cashDriverList() {
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("cash_drivers");
+        return String(row?.value || "").split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    // 收款處（列表式：左路線、右單據勾選 → 收款彈窗 → 明細彈窗 → 產生 JPG）
     router.get("/cash/collect", async (req, res) => {
         try {
             const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
             const date = cashValidDate(req.query.date) || getTaipeiCalendarDateYYYYMMDD();
-            const { dayUnits, allocBySp, custMap, driverRows, unpaidRows } = await loadCollectData(icpno, date);
+            const route = typeof req.query.route === "string" ? req.query.route : "all";
+            const { dayUnits, allocBySp, driverRows } = await loadCollectData(icpno, date);
+            const drivers = await cashDriverList();
+            const me = (res.locals && res.locals.adminUser) || "";
             const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
-            // 當日單依客戶分組
-            const groups = new Map();
+            const routeAgg = new Map();
             for (const u of dayUnits) {
-                if (!groups.has(u.ct_no))
-                    groups.set(u.ct_no, { ct_no: u.ct_no, name: u.ct_name, units: [] });
-                groups.get(u.ct_no).units.push(u);
+                const rt = String(u.route_line || "").trim();
+                if (!routeAgg.has(rt))
+                    routeAgg.set(rt, { total: 0, unpaid: 0 });
+                const a = routeAgg.get(rt);
+                a.total++;
+                if (!allocBySp.has(u.sp_no))
+                    a.unpaid++;
             }
-            const custCard = (g) => {
-                const dueSum = g.units.reduce((s, u) => s + cashNum(u.total), 0);
-                const unpaid = g.units.filter((u) => !allocBySp.has(u.sp_no));
-                const paid = g.units.filter((u) => allocBySp.has(u.sp_no));
-                const route = (custMap.get(g.ct_no)?.route_line) || "";
-                const unitRow = (u) => {
-                    const a = allocBySp.get(u.sp_no);
-                    const badge = a
-                        ? `<span style="color:#2e7d32;">已收${a.collected_by ? "・" + escapeHtml(a.collected_by) : ""}</span> <button type="button" class="sf-btn sf-btn-sm cf-undo" data-pid="${a.payment_id}">取消</button>`
-                        : `<span style="color:#c62828;">未收</span>`;
-                    return `<tr><td style="font-family:ui-monospace,monospace;">${escapeHtml(u.sp_no)}</td><td>${escapeHtml(u.fkfs || "")}</td><td style="text-align:right;">${cashMoney(u.total)}</td><td>${badge}</td></tr>`;
-                };
-                const form = unpaid.length ? `
-          <form class="collect-form" data-ctno="${escapeAttr(g.ct_no)}" data-ctname="${escapeAttr(g.name || "")}" data-route="${escapeAttr(route)}" style="margin-top:8px;border-top:1px dashed #ddd;padding-top:8px;">
-            <div style="font-size:13px;color:#787774;margin-bottom:4px;">勾選要收款的單（預設全勾）：</div>
-            <div style="display:flex;flex-wrap:wrap;gap:8px 14px;">
-              ${unpaid.map((u) => `<label style="display:inline-flex;gap:4px;align-items:center;"><input type="checkbox" class="cf-sp" value="${escapeAttr(u.sp_no)}" data-due="${cashNum(u.total)}" checked> ${escapeHtml(u.sp_no)}（${cashMoney(u.total)}）</label>`).join("")}
-            </div>
-            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;align-items:flex-end;">
-              <label>現金金額<br><input type="number" step="1" class="cf-cash sf-input" placeholder="0" style="width:120px;"></label>
-              <label>收款人/司機<br><input type="text" class="cf-by sf-input" value="${escapeAttr(route)}" style="width:130px;"></label>
-              <label style="flex:1;min-width:160px;">備註（短收/溢收原因）<br><input type="text" class="cf-note sf-input" style="width:100%;"></label>
-            </div>
-            <div class="cf-checks" style="margin-top:8px;"></div>
-            <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
-              <button type="button" class="sf-btn sf-btn-sm cf-addcheck">＋加一張票</button>
-              <button type="button" class="btn-primary cf-submit">登記收款</button>
-              <span class="cf-hint" style="color:#787774;font-size:13px;"></span>
-            </div>
-          </form>` : `<div style="margin-top:6px;color:#2e7d32;font-size:13px;">✅ 此客戶當日單全部已收</div>`;
-                return `
-        <div class="notion-card" style="margin-bottom:12px;">
-          <div style="display:flex;justify-content:space-between;align-items:baseline;">
-            <strong>${escapeHtml(g.name || g.ct_no)}</strong>
-            <span style="color:#787774;">應收 ${cashMoney(dueSum)}　·　${paid.length}/${g.units.length} 已收</span>
+            const routeKeys = Array.from(routeAgg.keys()).sort((x, y) => (x === "" ? 1 : y === "" ? -1 : String(x).localeCompare(String(y), "zh-Hant", { numeric: true })));
+            const routeLabel = (rt) => rt === "" ? "未分路線" : "路線 " + rt;
+            const allUnpaid = dayUnits.filter((u) => !allocBySp.has(u.sp_no)).length;
+            const rtLink = (key, label, tot, un) => `<a href="/admin/cash/collect?icpno=${icpno}&date=${date}&route=${encodeURIComponent(key)}" class="cash-rt${(route === key || (key === "all" && route === "all")) ? " on" : ""}"><span>${escapeHtml(label)}</span><span class="rt-n">${tot}${un ? `／<b style="color:#c62828;">未${un}</b>` : ""}</span></a>`;
+            const leftNav = `
+        <div class="notion-card" style="padding:8px;position:sticky;top:8px;">
+          <div style="font-weight:700;margin:2px 6px 8px;">路線</div>
+          ${rtLink("all", "全部路線", dayUnits.length, allUnpaid)}
+          ${routeKeys.map((rt) => rtLink(rt, routeLabel(rt), routeAgg.get(rt).total, routeAgg.get(rt).unpaid)).join("")}
+          <div style="margin-top:10px;border-top:1px solid #eee;padding-top:8px;">
+            <a class="sf-btn sf-btn-sm" href="/admin/cash/customers?icpno=${icpno}" style="width:100%;text-align:center;">維護路線 / 司機</a>
           </div>
-          <table style="margin-top:6px;"><thead><tr><th>單號</th><th>結帳方式</th><th style="text-align:right;">應收</th><th>狀態</th></tr></thead>
-          <tbody>${g.units.map(unitRow).join("")}</tbody></table>
-          ${form}
         </div>`;
-            };
-            const driverCard = `
-        <div class="notion-card" style="margin-bottom:16px;">
-          <strong>司機當日收款合計（${escapeHtml(date)}）</strong>
-          ${driverRows.length ? `<table style="margin-top:6px;"><thead><tr><th>收款人/司機</th><th style="text-align:right;">現金</th><th style="text-align:right;">票</th><th style="text-align:right;">合計</th><th style="text-align:right;">筆數</th></tr></thead><tbody>
-            ${driverRows.map((r) => `<tr><td>${escapeHtml(r.who)}</td><td style="text-align:right;">${cashMoney(r.cash)}</td><td style="text-align:right;">${cashMoney(r.chk)}</td><td style="text-align:right;font-weight:600;">${cashMoney(r.tot)}</td><td style="text-align:right;">${r.c}</td></tr>`).join("")}
-          </tbody></table>` : `<div style="color:#9b9a97;margin-top:6px;">今日尚無收款紀錄。</div>`}
-        </div>`;
-            // 未收區（跨日）依客戶收合
-            const unpaidByCust = new Map();
-            for (const u of unpaidRows) {
-                if (!unpaidByCust.has(u.ct_no))
-                    unpaidByCust.set(u.ct_no, { name: u.ct_name, units: [] });
-                unpaidByCust.get(u.ct_no).units.push(u);
-            }
-            const unpaidTotal = unpaidRows.reduce((s, u) => s + cashNum(u.total), 0);
-            const unpaidSection = `
-        <details class="notion-card" style="margin-bottom:16px;" ${unpaidRows.length ? "" : ""}>
-          <summary style="cursor:pointer;font-weight:700;color:#c62828;">未收區（截至 ${escapeHtml(date)}）：${unpaidByCust.size} 家、${unpaidRows.length} 張，合計 ${cashMoney(unpaidTotal)}</summary>
-          <div style="margin-top:8px;">
-          ${unpaidByCust.size ? Array.from(unpaidByCust.values()).map((c) => {
-                const sub = c.units.reduce((s, u) => s + cashNum(u.total), 0);
-                return `<details style="margin:4px 0;"><summary style="cursor:pointer;">${escapeHtml(c.name)}　<span style="color:#c62828;">${c.units.length} 張／${cashMoney(sub)}</span></summary>
-              <table style="margin:4px 0 10px;"><tbody>${c.units.map((u) => `<tr><td style="font-family:ui-monospace,monospace;">${escapeHtml(u.sp_no)}</td><td>${escapeHtml(String(u.doc_date).slice(0, 10))}</td><td style="text-align:right;">${cashMoney(u.total)}</td></tr>`).join("")}</tbody></table></details>`;
-            }).join("") : `<div style="color:#2e7d32;">目前沒有未收單。</div>`}
-          </div>
-        </details>`;
+            const shown = route === "all" ? dayUnits : dayUnits.filter((u) => String(u.route_line || "").trim() === route);
+            const rowHtml = shown.length ? shown.map((u) => {
+                const a = allocBySp.get(u.sp_no);
+                const paid = !!a;
+                return `<tr>
+            <td style="text-align:center;">${paid ? "" : `<input type="checkbox" class="cc-row" value="${escapeAttr(u.sp_no)}" data-due="${cashNum(u.total)}" data-ct="${escapeAttr(u.ct_no)}" data-ctname="${escapeAttr(u.ct_name || "")}">`}</td>
+            <td style="font-family:ui-monospace,monospace;">${escapeHtml(u.sp_no)}</td>
+            <td>${escapeHtml(u.ct_name || "")}</td>
+            <td style="text-align:center;">${escapeHtml(String(u.route_line || "").trim() || "—")}</td>
+            <td>${escapeHtml(u.fkfs || "")}</td>
+            <td style="text-align:right;">${cashMoney(u.total)}</td>
+            <td>${paid ? `<span style="color:#2e7d32;">已收${a.collected_by ? "・" + escapeHtml(a.collected_by) : ""}</span> <button type="button" class="link-undo cf-undo" data-pid="${a.payment_id}">取消</button>` : `<span style="color:#c62828;">未收</span>`}</td>
+          </tr>`;
+            }).join("") : `<tr><td colspan="7" style="text-align:center;color:#9b9a97;padding:18px;">此路線當日無單據。</td></tr>`;
+            const shownDueTotalPlaceholder = shown.reduce((s, u) => s + cashNum(u.total), 0);
+            const shownUnpaidPlaceholder = shown.filter((u) => !allocBySp.has(u.sp_no)).reduce((s, u) => s + cashNum(u.total), 0);
+            const driverBar = driverRows.length
+                ? driverRows.map((r) => `${escapeHtml(r.who)} <b>${cashMoney(r.tot)}</b>（現${cashMoney(r.cash)}／票${cashMoney(r.chk)}・${r.c}筆）`).join("　·　")
+                : "今日尚無收款";
+            const driverOpts = `<option value="">（選司機）</option>` + drivers.map((d) => `<option value="${escapeAttr(d)}">${escapeHtml(d)}</option>`).join("") + `<option value="__other__">＋自行輸入</option>`;
             const body = `
+      <style>
+        .cash-collect{display:grid;grid-template-columns:210px minmax(0,1fr);gap:14px;align-items:start;}
+        @media(max-width:820px){.cash-collect{grid-template-columns:1fr;}}
+        .cash-rt{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:7px 9px;border-radius:8px;text-decoration:none;color:#37352f;font-size:14px;}
+        .cash-rt:hover{background:#f1f0ee;} .cash-rt.on{background:#2383e2;color:#fff;} .cash-rt .rt-n{font-size:12px;opacity:.85;}
+        .cc-table{width:100%;} .cc-table th,.cc-table td{padding:5px 8px;font-size:13px;}
+        .link-undo{background:none;border:none;color:#c62828;cursor:pointer;font-size:12px;text-decoration:underline;padding:0;}
+        .cc-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;z-index:9999;}
+        .cc-modal{background:#fff;border-radius:12px;padding:18px;max-width:560px;width:92%;max-height:88vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.2);}
+        .cc-modal h3{margin:0 0 10px;font-size:17px;} .cc-modal label{font-size:13px;display:block;margin-top:8px;}
+        .cc-check-row{display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;margin-top:6px;}
+      </style>
       <h1 class="notion-page-title">收款處</h1>
-      <div class="notion-card" style="margin-bottom:16px;">
+      <div class="notion-card" style="margin-bottom:12px;">
         <form method="get" action="/admin/cash/collect" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+          <input type="hidden" name="route" value="${escapeAttr(route)}">
           <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
           <label>日期<br><input type="date" name="date" value="${date}" class="sf-input"></label>
           <button type="submit" class="btn-primary">查詢</button>
           <span style="flex:1;"></span>
-          <a class="sf-btn" href="/admin/cash?icpno=${icpno}&date=${date}">← 回銷貨單總計表</a>
+          <a class="sf-btn" href="/admin/cash?icpno=${icpno}&date=${date}">← 銷貨單總計表</a>
         </form>
+        <div style="margin-top:8px;font-size:12px;color:#787774;">司機收款：${driverBar}</div>
       </div>
-      ${driverCard}
-      ${unpaidSection}
-      <h2 style="font-size:16px;margin:8px 0;">當日客戶收款（${escapeHtml(date)}）</h2>
-      ${groups.size ? Array.from(groups.values()).map(custCard).join("") : `<div class="notion-card">此日無銷貨單。內網「立即取單」後再來收款。</div>`}
+      <div class="cash-collect">
+        ${leftNav}
+        <div class="notion-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+            <div><strong>${route === "all" ? "全部路線" : escapeHtml(routeLabel(route))}</strong>　<span style="color:#787774;font-size:13px;">${escapeHtml(date)}　應收 ${cashMoney(shownDueTotalPlaceholder)}（未收 ${cashMoney(shownUnpaidPlaceholder)}）</span></div>
+            <div style="display:flex;gap:8px;">
+              <button type="button" class="sf-btn sf-btn-sm" id="ccSelAll">全選未收</button>
+              <button type="button" class="btn-primary" id="ccPayBtn">收款（<span id="ccSelN">0</span>）</button>
+              <button type="button" class="sf-btn sf-btn-sm" id="ccJpgBtn">產生 JPG</button>
+            </div>
+          </div>
+          <table class="cc-table">
+            <thead><tr><th style="width:34px;"></th><th>單號</th><th>客戶</th><th style="width:54px;text-align:center;">路線</th><th>結帳</th><th style="text-align:right;">應收</th><th>狀態</th></tr></thead>
+            <tbody id="ccBody">${rowHtml}</tbody>
+          </table>
+        </div>
+      </div>
+      <div class="cc-modal-bg" id="ccModalBg">
+        <div class="cc-modal">
+          <h3>登記收款</h3>
+          <div id="ccSummary" style="font-size:14px;margin-bottom:6px;"></div>
+          <label>現金金額<input type="number" step="1" id="ccCash" class="sf-input" placeholder="0" style="width:160px;"></label>
+          <div style="margin-top:8px;font-size:13px;font-weight:600;">票據（可多張）</div>
+          <div id="ccChecks"></div>
+          <button type="button" class="sf-btn sf-btn-sm" id="ccAddCheck" style="margin-top:6px;">＋加一張票</button>
+          <label>司機<select id="ccDriver" class="sf-input" style="width:200px;">${driverOpts}</select></label>
+          <input type="text" id="ccDriverOther" class="sf-input" placeholder="自行輸入司機" style="display:none;width:200px;margin-top:4px;">
+          <label>備註（短收／溢收原因）<input type="text" id="ccNote" class="sf-input" style="width:100%;"></label>
+          <div id="ccCalc" style="margin-top:10px;font-size:14px;padding:8px;background:#f7f6f3;border-radius:8px;"></div>
+          <div style="font-size:12px;color:#787774;margin-top:6px;">收款人：${escapeHtml(me || "（未登入）")}</div>
+          <div style="margin-top:14px;text-align:right;display:flex;gap:8px;justify-content:flex-end;">
+            <button type="button" class="sf-btn" id="ccCancel">取消</button>
+            <button type="button" class="btn-primary" id="ccConfirm">確認收款</button>
+          </div>
+        </div>
+      </div>
+      <div class="cc-modal-bg" id="ccDetailBg">
+        <div class="cc-modal">
+          <h3>收款明細</h3>
+          <div id="ccDetail" style="font-size:14px;"></div>
+          <div style="margin-top:14px;text-align:right;display:flex;gap:8px;justify-content:flex-end;">
+            <button type="button" class="sf-btn" id="ccDetailJpg">存成 JPG</button>
+            <button type="button" class="btn-primary" id="ccDetailClose">關閉</button>
+          </div>
+        </div>
+      </div>
+      <canvas id="ccCanvas" style="display:none;"></canvas>
       <script>(function(){
-        var ICPNO=${JSON.stringify(icpno)}, PAYDATE=${JSON.stringify(date)};
-        function checkRow(){
-          var d=document.createElement('div'); d.className='cf-check';
-          d.style.cssText='display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;margin-top:6px;';
-          d.innerHTML='<label style="font-size:12px;">票號<br><input class="ck-no sf-input" style="width:120px;"></label>'+
-            '<label style="font-size:12px;">銀行/分行<br><input class="ck-bank sf-input" style="width:130px;"></label>'+
-            '<label style="font-size:12px;">到期日<br><input type="date" class="ck-due sf-input"></label>'+
-            '<label style="font-size:12px;">金額<br><input type="number" class="ck-amt sf-input" style="width:110px;"></label>'+
+        var ICPNO=${JSON.stringify(icpno)}, PAYDATE=${JSON.stringify(date)}, ME=${JSON.stringify(me)}, ROUTE=${JSON.stringify(route === "all" ? "全部路線" : routeLabel(route))}, COMPANY=${JSON.stringify(CASH_COMPANIES[icpno] || icpno)};
+        function money(n){ return Number(n||0).toLocaleString(); }
+        function checked(){ return [].slice.call(document.querySelectorAll('.cc-row:checked')); }
+        function refreshN(){ var n=checked().length; document.getElementById('ccSelN').textContent=n; }
+        document.getElementById('ccBody').addEventListener('change',function(e){ if(e.target.classList.contains('cc-row')) refreshN(); });
+        document.getElementById('ccSelAll').addEventListener('click',function(){ var b=document.querySelectorAll('.cc-row'); var allOn=[].every.call(b,function(x){return x.checked;}); [].forEach.call(b,function(x){x.checked=!allOn;}); refreshN(); });
+        // 票列
+        function checkRow(){ var d=document.createElement('div'); d.className='cc-check-row';
+          d.innerHTML='<label style="margin:0;">票號<br><input class="ck-no sf-input" style="width:110px;"></label>'+
+            '<label style="margin:0;">銀行/分行<br><input class="ck-bank sf-input" style="width:120px;"></label>'+
+            '<label style="margin:0;">到期日<br><input type="date" class="ck-due sf-input"></label>'+
+            '<label style="margin:0;">金額<br><input type="number" class="ck-amt sf-input" style="width:100px;"></label>'+
             '<button type="button" class="sf-btn sf-btn-sm ck-del">刪</button>';
-          return d;
-        }
-        document.querySelectorAll('.cf-addcheck').forEach(function(b){ b.addEventListener('click',function(){ b.closest('form').querySelector('.cf-checks').appendChild(checkRow()); }); });
-        document.addEventListener('click',function(e){ if(e.target && e.target.classList.contains('ck-del')){ var r=e.target.closest('.cf-check'); if(r) r.remove(); } });
-        document.querySelectorAll('.cf-submit').forEach(function(b){ b.addEventListener('click',function(){
-          var f=b.closest('form');
-          var sps=[].slice.call(f.querySelectorAll('.cf-sp:checked')).map(function(x){return x.value;});
-          if(!sps.length){ if(window.sfToast)sfToast('請至少勾一張要收款的單','err'); return; }
-          var checks=[].slice.call(f.querySelectorAll('.cf-check')).map(function(r){return {check_no:r.querySelector('.ck-no').value,bank:r.querySelector('.ck-bank').value,due_date:r.querySelector('.ck-due').value,amount:r.querySelector('.ck-amt').value};});
-          var payload={icpno:ICPNO,pay_date:PAYDATE,ct_no:f.dataset.ctno,ct_name:f.dataset.ctname,route_line:f.dataset.route,collected_by:f.querySelector('.cf-by').value,cash_amount:f.querySelector('.cf-cash').value,note:f.querySelector('.cf-note').value,sp_nos:sps,checks:checks};
-          b.disabled=true;
+          return d; }
+        document.getElementById('ccAddCheck').addEventListener('click',function(){ document.getElementById('ccChecks').appendChild(checkRow()); recalc(); });
+        document.getElementById('ccChecks').addEventListener('click',function(e){ if(e.target.classList.contains('ck-del')){ e.target.closest('.cc-check-row').remove(); recalc(); } });
+        document.getElementById('ccChecks').addEventListener('input',recalc);
+        document.getElementById('ccCash').addEventListener('input',recalc);
+        document.getElementById('ccDriver').addEventListener('change',function(){ document.getElementById('ccDriverOther').style.display=(this.value==='__other__')?'block':'none'; });
+        function selInfo(){ var rows=checked(); var due=0, custs={}; rows.forEach(function(r){ due+=Number(r.dataset.due||0); custs[r.dataset.ct]=r.dataset.ctname; }); return {rows:rows, due:due, custN:Object.keys(custs).length, custName:Object.keys(custs).length===1?rows[0].dataset.ctname:('多客戶('+Object.keys(custs).length+'家)')}; }
+        function checksData(){ return [].slice.call(document.querySelectorAll('#ccChecks .cc-check-row')).map(function(r){ return {check_no:r.querySelector('.ck-no').value, bank:r.querySelector('.ck-bank').value, due_date:r.querySelector('.ck-due').value, amount:r.querySelector('.ck-amt').value}; }); }
+        function recalc(){ var i=selInfo(); var cash=Number(document.getElementById('ccCash').value||0); var chk=checksData().reduce(function(s,c){return s+Number(c.amount||0);},0); var got=cash+chk; var diff=got-i.due; var t=diff===0?'剛好':(diff>0?('溢收 '+money(diff)):('短收 '+money(-diff))); document.getElementById('ccCalc').innerHTML='應收 <b>'+money(i.due)+'</b>　實收 <b>'+money(got)+'</b>（現'+money(cash)+'／票'+money(chk)+'）　差額：<b style="color:'+(diff<0?'#c62828':'#2e7d32')+'">'+t+'</b>'; }
+        document.getElementById('ccPayBtn').addEventListener('click',function(){ var i=selInfo(); if(!i.rows.length){ if(window.sfToast)sfToast('請先勾要收款的單','err'); return; } document.getElementById('ccSummary').innerHTML='客戶：<b>'+i.custName+'</b>　選取 <b>'+i.rows.length+'</b> 張　應收 <b>'+money(i.due)+'</b>'; document.getElementById('ccCash').value=i.due; document.getElementById('ccChecks').innerHTML=''; document.getElementById('ccNote').value=''; recalc(); document.getElementById('ccModalBg').style.display='flex'; });
+        document.getElementById('ccCancel').addEventListener('click',function(){ document.getElementById('ccModalBg').style.display='none'; });
+        document.getElementById('ccConfirm').addEventListener('click',function(){
+          var i=selInfo(); if(!i.rows.length) return;
+          var drvSel=document.getElementById('ccDriver').value; var driver=(drvSel==='__other__')?document.getElementById('ccDriverOther').value.trim():drvSel;
+          var cash=document.getElementById('ccCash').value; var checks=checksData(); var note=document.getElementById('ccNote').value;
+          var payload={icpno:ICPNO,pay_date:PAYDATE,collected_by:driver,cash_amount:cash,note:note,sp_nos:i.rows.map(function(r){return r.value;}),checks:checks};
+          var btn=this; btn.disabled=true;
           fetch('/admin/cash/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){
-            if(j&&j.ok){ if(window.sfToast)sfToast('已登記收款'+(j.diff?('，差額 '+Number(j.diff).toLocaleString()):'')); location.reload(); }
-            else { if(window.sfToast)sfToast((j&&j.error)||'登記失敗','err'); b.disabled=false; }
-          }).catch(function(){ if(window.sfToast)sfToast('登記失敗','err'); b.disabled=false; });
-        }); });
-        document.querySelectorAll('.cf-undo').forEach(function(b){ b.addEventListener('click',function(){
-          if(!confirm('確定取消這筆收款？（會把相關單退回未收）')) return;
-          fetch('/admin/cash/collect/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payment_id:b.dataset.pid})}).then(function(r){return r.json();}).then(function(j){
-            if(j&&j.ok){ if(window.sfToast)sfToast('已取消收款'); location.reload(); } else { if(window.sfToast)sfToast('取消失敗','err'); }
-          }).catch(function(){ if(window.sfToast)sfToast('取消失敗','err'); });
-        }); });
+            btn.disabled=false;
+            if(!j||!j.ok){ if(window.sfToast)sfToast((j&&j.error)||'登記失敗','err'); return; }
+            document.getElementById('ccModalBg').style.display='none';
+            var chkTot=checks.reduce(function(s,c){return s+Number(c.amount||0);},0); var cashN=Number(cash||0);
+            var rowsHtml=i.rows.map(function(r){return '<tr><td style="font-family:monospace;">'+r.value+'</td><td>'+r.dataset.ctname+'</td><td style="text-align:right;">'+money(r.dataset.due)+'</td></tr>';}).join('');
+            window.__lastDetail={company:COMPANY,route:ROUTE,date:PAYDATE,driver:driver||'（未填）',me:ME,rows:i.rows.map(function(r){return {sp:r.value,ct:r.dataset.ctname,due:Number(r.dataset.due||0)};}),cash:cashN,chk:chkTot,due:i.due,diff:j.diff};
+            document.getElementById('ccDetail').innerHTML='<div style="margin-bottom:6px;">客戶 <b>'+i.custName+'</b>　司機 <b>'+(driver||'（未填）')+'</b>　收款人 <b>'+ME+'</b></div>'+
+              '<table><thead><tr><th>單號</th><th>客戶</th><th style="text-align:right;">應收</th></tr></thead><tbody>'+rowsHtml+'</tbody></table>'+
+              '<div style="margin-top:8px;">應收 <b>'+money(i.due)+'</b>　實收 <b>'+money(cashN+chkTot)+'</b>（現'+money(cashN)+'／票'+money(chkTot)+'）　差額 <b style="color:'+((j.diff<0)?'#c62828':'#2e7d32')+'">'+money(j.diff)+'</b></div>';
+            document.getElementById('ccDetailBg').style.display='flex';
+          }).catch(function(){ btn.disabled=false; if(window.sfToast)sfToast('登記失敗','err'); });
+        });
+        document.getElementById('ccDetailClose').addEventListener('click',function(){ location.reload(); });
+        // 取消收款
+        document.querySelectorAll('.cf-undo').forEach(function(b){ b.addEventListener('click',function(){ if(!confirm('確定取消這筆收款？（相關單退回未收）'))return; fetch('/admin/cash/collect/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payment_id:b.dataset.pid})}).then(function(r){return r.json();}).then(function(j){ if(j&&j.ok){location.reload();}else{ if(window.sfToast)sfToast('取消失敗','err'); } }); }); });
+        // 產生 JPG（該路線收款清單）
+        function drawListJpg(){
+          var rows=[].slice.call(document.querySelectorAll('#ccBody tr')).map(function(tr){ var t=tr.querySelectorAll('td'); if(t.length<7) return null; return {sp:t[1].innerText.trim(),ct:t[2].innerText.trim(),rt:t[3].innerText.trim(),due:t[5].innerText.trim(),st:t[6].innerText.trim()}; }).filter(Boolean);
+          var W=760, pad=24, lh=26, top=110; var H=top+rows.length*lh+60;
+          var cv=document.getElementById('ccCanvas'); cv.width=W; cv.height=H; var g=cv.getContext('2d');
+          g.fillStyle='#fff'; g.fillRect(0,0,W,H); g.fillStyle='#111';
+          g.font='bold 20px "Microsoft JhengHei",sans-serif'; g.fillText(COMPANY+'　收款清單', pad, 34);
+          g.font='13px "Microsoft JhengHei",sans-serif'; g.fillStyle='#333';
+          g.fillText('路線：'+ROUTE+'　日期：'+PAYDATE+'　收款人：'+ME, pad, 58);
+          g.fillText('列印時間：'+new Date().toLocaleString('zh-TW',{hour12:false}), pad, 78);
+          g.strokeStyle='#999'; g.beginPath(); g.moveTo(pad,90); g.lineTo(W-pad,90); g.stroke();
+          g.font='bold 13px "Microsoft JhengHei",sans-serif'; g.fillStyle='#111';
+          g.fillText('單號',pad,top-6); g.fillText('客戶',pad+150,top-6); g.fillText('路線',pad+360,top-6); g.fillText('應收',pad+430,top-6); g.fillText('狀態',pad+560,top-6);
+          g.font='13px "Microsoft JhengHei",sans-serif';
+          rows.forEach(function(r,idx){ var y=top+idx*lh+14; g.fillStyle=(idx%2)?'#f4f4f4':'#fff'; g.fillRect(pad,y-16,W-2*pad,lh); g.fillStyle='#111';
+            g.fillText(r.sp,pad,y); g.fillText(r.ct.slice(0,14),pad+150,y); g.fillText(r.rt,pad+360,y); g.textAlign='right'; g.fillText(r.due,pad+520,y); g.textAlign='left'; g.fillStyle=(r.st.indexOf('未收')>=0)?'#c62828':'#2e7d32'; g.fillText(r.st.replace(/取消/,'').trim(),pad+560,y); g.fillStyle='#111'; });
+          var link=document.createElement('a'); link.download='收款清單_'+ROUTE+'_'+PAYDATE+'.jpg'; link.href=cv.toDataURL('image/jpeg',0.92); link.click();
+        }
+        document.getElementById('ccJpgBtn').addEventListener('click',drawListJpg);
+        document.getElementById('ccDetailJpg').addEventListener('click',drawListJpg);
+        refreshN();
       })();</script>`;
             res.type("text/html").send(notionPage("收款處", body, "cash-collect", res));
         }
@@ -12456,8 +12526,6 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const b = req.body || {};
             const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
             const payDate = cashValidDate(b.pay_date) || getTaipeiCalendarDateYYYYMMDD();
-            const ctNo = String(b.ct_no ?? "").trim();
-            const ctName = String(b.ct_name ?? "").trim();
             const collectedBy = String(b.collected_by ?? "").trim();
             const routeLine = String(b.route_line ?? "").trim();
             const note = String(b.note ?? "").trim();
@@ -12468,8 +12536,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const ph = spNos.map(() => "?").join(",");
-            const units = await db.prepare(`SELECT sp_no, doc_date, total FROM cash_sales_doc WHERE icpno = ? AND sp_no IN (${ph})`).all(icpno, ...spNos) || [];
+            const units = await db.prepare(`SELECT sp_no, doc_date, total, ct_no, ct_name FROM cash_sales_doc WHERE icpno = ? AND sp_no IN (${ph})`).all(icpno, ...spNos) || [];
             const unitMap = new Map(units.map((u) => [u.sp_no, u]));
+            // 由勾選的單推客戶：全同一家＝該客戶；跨多家＝標「多客戶(N)」（明細仍逐單留客戶）
+            const ctSet = new Map();
+            for (const u of units)
+                ctSet.set(u.ct_no, u.ct_name);
+            const ctNo = ctSet.size === 1 ? (units[0]?.ct_no || "") : "";
+            const ctName = ctSet.size === 1 ? (units[0]?.ct_name || "") : `多客戶(${ctSet.size}家)`;
             const already = await db.prepare(`SELECT sp_no FROM cash_payment_alloc WHERE icpno = ? AND sp_no IN (${ph})`).all(icpno, ...spNos) || [];
             if (already.length) {
                 res.status(409).json({ error: "下列單已收款過，請先重整：" + already.map((a) => a.sp_no).join("、") });
@@ -12531,6 +12605,103 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         catch (e) {
             console.error("[admin] /cash/collect/undo", e?.message || e);
             res.status(500).json({ error: "取消失敗", detail: String(e?.message || e) });
+        }
+    });
+    // 收款客戶主檔（維護路線／收現金／備註）＋ 司機名單。資料源＝凌越銷貨單帶入的 cash_customer。
+    router.get("/cash/customers", async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const qs = typeof req.query.q === "string" ? req.query.q.trim() : "";
+            const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
+            let rows;
+            if (qs) {
+                const like = "%" + qs.toLowerCase() + "%";
+                rows = await db.prepare("SELECT ct_no, name, fkfs, route_line, is_cash, note FROM cash_customer WHERE icpno = ? AND (LOWER(name) LIKE ? OR LOWER(ct_no) LIKE ? OR COALESCE(route_line,'') LIKE ?) ORDER BY COALESCE(route_line,''), name").all(icpno, like, like, "%" + qs + "%") || [];
+            }
+            else {
+                rows = await db.prepare("SELECT ct_no, name, fkfs, route_line, is_cash, note FROM cash_customer WHERE icpno = ? ORDER BY COALESCE(route_line,''), name").all(icpno) || [];
+            }
+            const drvRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("cash_drivers");
+            const drivers = String(drvRow?.value || "");
+            const tr = (r) => `<tr data-ct="${escapeAttr(r.ct_no)}">
+          <td style="font-family:ui-monospace,monospace;">${escapeHtml(r.ct_no)}</td>
+          <td>${escapeHtml(r.name || "")}</td>
+          <td style="color:#787774;">${escapeHtml(r.fkfs || "")}</td>
+          <td><input class="cm-route sf-input" value="${escapeAttr(r.route_line || "")}" style="width:90px;"></td>
+          <td style="text-align:center;"><input type="checkbox" class="cm-cash" ${Number(r.is_cash) ? "checked" : ""}></td>
+          <td><input class="cm-note sf-input" value="${escapeAttr(r.note || "")}" style="width:100%;"></td>
+          <td><button type="button" class="sf-btn sf-btn-sm cm-save">存</button></td>
+        </tr>`;
+            const body = `
+      <h1 class="notion-page-title">收款客戶主檔</h1>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <div style="font-size:13px;color:#787774;margin-bottom:8px;">此主檔由凌越銷貨單自動帶入（含停用／未綁 LINE 的客戶），在這裡填「路線」與是否收現金即可。收款處左欄的路線就是讀這裡。</div>
+        <form method="get" action="/admin/cash/customers" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+          <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
+          <label>搜尋<br><input type="text" name="q" value="${escapeAttr(qs)}" placeholder="客戶名／編號／路線" class="sf-input"></label>
+          <button type="submit" class="btn-primary">查詢</button>
+        </form>
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;border-top:1px solid #eee;padding-top:10px;">
+          <label style="flex:1;min-width:240px;">司機名單（逗號分隔，收款彈窗會用）<br><input type="text" id="cmDrivers" class="sf-input" value="${escapeAttr(drivers)}" placeholder="例：阿明,阿華,老王" style="width:100%;"></label>
+          <button type="button" class="btn-primary" id="cmDrvSave">儲存司機名單</button>
+        </div>
+      </div>
+      <div class="notion-card">
+        <div style="margin-bottom:6px;color:#787774;font-size:13px;">共 ${rows.length} 家${qs ? "（篩選後）" : ""}</div>
+        <table><thead><tr><th>客戶編號</th><th>客戶名稱</th><th>結帳方式</th><th>路線</th><th style="text-align:center;">收現金</th><th>備註</th><th></th></tr></thead>
+        <tbody>${rows.map(tr).join("") || `<tr><td colspan="7" style="text-align:center;color:#9b9a97;padding:16px;">尚無客戶資料——內網「立即取單」推過銷貨單後就會帶入。</td></tr>`}</tbody></table>
+      </div>
+      <script>(function(){
+        var ICPNO=${JSON.stringify(icpno)};
+        document.querySelectorAll('.cm-save').forEach(function(b){ b.addEventListener('click',function(){
+          var tr=b.closest('tr');
+          var payload={icpno:ICPNO,ct_no:tr.dataset.ct,route_line:tr.querySelector('.cm-route').value,is_cash:tr.querySelector('.cm-cash').checked?1:0,note:tr.querySelector('.cm-note').value};
+          b.disabled=true;
+          fetch('/admin/cash/customers/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){ b.disabled=false; if(j&&j.ok){ if(window.sfToast)sfToast('已儲存'); b.textContent='✓'; setTimeout(function(){b.textContent='存';},1200);} else { if(window.sfToast)sfToast('儲存失敗','err'); } }).catch(function(){ b.disabled=false; if(window.sfToast)sfToast('儲存失敗','err'); });
+        }); });
+        document.getElementById('cmDrvSave').addEventListener('click',function(){
+          var v=document.getElementById('cmDrivers').value;
+          fetch('/admin/cash/drivers/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({drivers:v})}).then(function(r){return r.json();}).then(function(j){ if(j&&j.ok){ if(window.sfToast)sfToast('司機名單已儲存'); } else { if(window.sfToast)sfToast('儲存失敗','err'); } });
+        });
+      })();</script>`;
+            res.type("text/html").send(notionPage("收款客戶主檔", body, "cash-customers", res));
+        }
+        catch (e) {
+            console.error("[admin] /cash/customers", e?.message || e);
+            res.status(500).type("text/html").send("讀取失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    router.post("/cash/customers/save", express_1.default.json({ limit: "32kb" }), async (req, res) => {
+        try {
+            const b = req.body || {};
+            const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
+            const ctNo = String(b.ct_no ?? "").trim();
+            if (!ctNo) {
+                res.status(400).json({ error: "缺 ct_no" });
+                return;
+            }
+            const routeLine = String(b.route_line ?? "").trim();
+            const isCash = b.is_cash ? 1 : 0;
+            const note = String(b.note ?? "").trim();
+            const at = new Date().toISOString();
+            await db.prepare("INSERT INTO cash_customer (icpno, ct_no, route_line, is_cash, note, updated_at) VALUES (?,?,?,?,?,?) " +
+                "ON CONFLICT (icpno, ct_no) DO UPDATE SET route_line = excluded.route_line, is_cash = excluded.is_cash, note = excluded.note, updated_at = excluded.updated_at").run(icpno, ctNo, routeLine, isCash, note, at);
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/customers/save", e?.message || e);
+            res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
+        }
+    });
+    router.post("/cash/drivers/save", express_1.default.json({ limit: "8kb" }), async (req, res) => {
+        try {
+            const list = String(req.body?.drivers ?? "").split(",").map((s) => s.trim()).filter(Boolean).join(",");
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("cash_drivers", list);
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/drivers/save", e?.message || e);
+            res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
         }
     });
     /**
