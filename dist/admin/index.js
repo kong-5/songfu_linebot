@@ -1881,11 +1881,12 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
         ${item("/admin/logistics/market", "logistics-reports", "chartLine", "行情報表")}
       </details>
-      ${opts.canCash ? `<details class="sf-nav-group" ${["cash","cash-collect","cash-customers","cash-report"].includes(active) ? "open" : ""}>
+      ${opts.canCash ? `<details class="sf-nav-group" ${["cash","cash-collect","cash-customers","cash-report","cash-audit"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">收款作業</div></summary>
         ${item("/admin/cash", "cash", "money", "松富銷貨統計")}
         ${item("/admin/cash/collect", "cash-collect", "check", "現金收款")}
         ${item("/admin/cash/customers", "cash-customers", "users", "收款客戶主檔")}
+        ${item("/admin/cash/audit-log", "cash-audit", "history", "操作紀錄")}
       </details>` : ""}
       <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-wh-settings","inv-barcodes","inv-expiry","inv-adjust"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
@@ -12860,6 +12861,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
     // ============================================================
     function cashNum(v) { const n = Number(String(v ?? "").replace(/,/g, "").trim()); return Number.isFinite(n) ? n : 0; }
     function cashValidDate(v) { return (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim())) ? v.trim() : ""; }
+    // 操作紀錄（錢的稽核軌跡）：在同一交易 handle 內寫一筆，money 操作回滾時稽核也回滾（一致）。
+    const CASH_AUDIT_LABEL = { collect: "登記收款", undo: "取消收款", extra_add: "新增額外收入", extra_delete: "刪除額外收入" };
+    async function cashAudit(h, a) {
+        await h.prepare("INSERT INTO cash_audit_log (id, icpno, action, ref_id, pay_date, ct_name, amount, detail, actor, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+            .run((0, id_js_1.newId)("caud"), erp_companies_js_1.normIcpno(a.icpno, "00"), String(a.action || ""), String(a.ref_id || ""), String(a.pay_date || ""), String(a.ct_name || ""), cashNum(a.amount), (a.detail == null ? "" : (typeof a.detail === "string" ? a.detail : JSON.stringify(a.detail))), String(a.actor || ""), new Date().toISOString());
+    }
     async function loadCollectData(icpno, date) {
         const dayUnits = await db.prepare(
             "SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.fkfs, s.total, s.unpaid, s.nopay_fg, s.kind, COALESCE(c.route_line,'') AS route_line, c.is_cash AS is_cash " +
@@ -13220,9 +13227,20 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.status(400).json({ error: "請至少選一張要收款的銷貨單" });
                 return;
             }
+            // 金額不可為負（收款/退款一律走正常流程；負值多半是輸入錯誤）
+            if (cashAmount < 0 || transferAmount < 0) {
+                res.status(400).json({ error: "金額不可為負數" });
+                return;
+            }
             const ph = spNos.map(() => "?").join(",");
             const units = await db.prepare(`SELECT sp_no, doc_date, total, ct_no, ct_name FROM cash_sales_doc WHERE icpno = ? AND sp_no IN (${ph})`).all(icpno, ...spNos) || [];
             const unitMap = new Map(units.map((u) => [u.sp_no, u]));
+            // 選到的單必須都還存在於當前銷貨單快照；缺的多半是改單/刪單後的殘影（頁面沒重整）→ 擋下避免收到不存在的單
+            const missing = spNos.filter((sp) => !unitMap.has(sp));
+            if (missing.length) {
+                res.status(409).json({ error: "下列單已不存在（可能已被改單/刪單），請重新整理後再收：" + missing.join("、") });
+                return;
+            }
             // 由勾選的單推客戶：全同一家＝該客戶；跨多家＝標「多客戶(N)」（明細仍逐單留客戶）
             const ctSet = new Map();
             for (const u of units)
@@ -13256,6 +13274,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     await h.prepare("INSERT INTO cash_check (id,payment_id,icpno,check_no,bank,due_date,amount,note,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
                         .run((0, id_js_1.newId)("cchk"), payId, icpno, c.check_no, c.bank, c.due_date, c.amount, "", at);
                 }
+                await cashAudit(h, { icpno, action: "collect", ref_id: payId, pay_date: payDate, ct_name: ctName, amount: totalAmount,
+                    detail: { sp_nos: spNos, cash: cashAmount, transfer: transferAmount, check: checkAmount, due: dueTotal, diff, driver: collectedBy }, actor: by });
             };
             if (typeof db.transaction === "function")
                 await db.transaction(doIns);
@@ -13282,7 +13302,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.status(400).json({ error: "缺 payment_id" });
                 return;
             }
+            // 取消前先撈快照（取消＝硬刪 cash_payment，稽核紀錄是唯一能還原「取消了什麼」的依據）
+            const pay = await db.prepare("SELECT icpno, pay_date, ct_name, total_amount, cash_amount, transfer_amount, check_amount, collected_by, recorded_by FROM cash_payment WHERE id = ?").get(payId);
+            if (!pay) {
+                res.status(404).json({ error: "找不到這筆收款（可能已被取消）" });
+                return;
+            }
+            const undoAllocs = await db.prepare("SELECT sp_no, doc_date, due_amount FROM cash_payment_alloc WHERE payment_id = ?").all(payId) || [];
+            const by = (res.locals && res.locals.adminUser) || "";
             const doDel = async (h) => {
+                await cashAudit(h, { icpno: pay.icpno, action: "undo", ref_id: payId, pay_date: pay.pay_date, ct_name: pay.ct_name, amount: pay.total_amount,
+                    detail: { sp_nos: undoAllocs.map((a) => a.sp_no), cash: pay.cash_amount, transfer: pay.transfer_amount, check: pay.check_amount, driver: pay.collected_by, recorded_by: pay.recorded_by }, actor: by });
                 await h.prepare("DELETE FROM cash_check WHERE payment_id = ?").run(payId);
                 await h.prepare("DELETE FROM cash_payment_alloc WHERE payment_id = ?").run(payId);
                 await h.prepare("DELETE FROM cash_payment WHERE id = ?").run(payId);
@@ -13599,9 +13629,24 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.status(400).json({ error: "請填項目與金額" });
                 return;
             }
+            if (amount < 0) {
+                res.status(400).json({ error: "金額不可為負數" });
+                return;
+            }
             const method = (["cash", "transfer", "check"].includes(String(b.method ?? "").trim()) ? String(b.method).trim() : "cash");
-            await db.prepare("INSERT INTO cash_extra_income (id, icpno, income_date, item, amount, method, collected_by, note, recorded_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
-                .run((0, id_js_1.newId)("cei"), icpno, date, item, amount, method, String(b.collected_by ?? "").trim(), String(b.note ?? "").trim(), (res.locals && res.locals.adminUser) || "", new Date().toISOString());
+            const eiId = (0, id_js_1.newId)("cei");
+            const by = (res.locals && res.locals.adminUser) || "";
+            const collectedBy = String(b.collected_by ?? "").trim();
+            const eiNote = String(b.note ?? "").trim();
+            const doIns = async (h) => {
+                await h.prepare("INSERT INTO cash_extra_income (id, icpno, income_date, item, amount, method, collected_by, note, recorded_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+                    .run(eiId, icpno, date, item, amount, method, collectedBy, eiNote, by, new Date().toISOString());
+                await cashAudit(h, { icpno, action: "extra_add", ref_id: eiId, pay_date: date, ct_name: item, amount, detail: { method, collected_by: collectedBy, note: eiNote }, actor: by });
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doIns);
+            else
+                await doIns(db);
             res.json({ ok: true });
         }
         catch (e) {
@@ -13616,12 +13661,106 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.status(400).json({ error: "缺 id" });
                 return;
             }
-            await db.prepare("DELETE FROM cash_extra_income WHERE id = ?").run(id);
+            const ei = await db.prepare("SELECT icpno, income_date, item, amount, method, collected_by FROM cash_extra_income WHERE id = ?").get(id);
+            if (!ei) {
+                res.status(404).json({ error: "找不到這筆額外收入（可能已刪除）" });
+                return;
+            }
+            const by = (res.locals && res.locals.adminUser) || "";
+            const doDel = async (h) => {
+                await cashAudit(h, { icpno: ei.icpno, action: "extra_delete", ref_id: id, pay_date: ei.income_date, ct_name: ei.item, amount: ei.amount, detail: { method: ei.method, collected_by: ei.collected_by }, actor: by });
+                await h.prepare("DELETE FROM cash_extra_income WHERE id = ?").run(id);
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doDel);
+            else
+                await doDel(db);
             res.json({ ok: true });
         }
         catch (e) {
             console.error("[admin] /cash/extra-income/delete", e?.message || e);
             res.status(500).json({ error: "刪除失敗", detail: String(e?.message || e) });
+        }
+    });
+    // 操作紀錄（錢的稽核軌跡）：收款/取消收款/額外收入新增刪除，含操作人＋當下快照。
+    router.get("/cash/audit-log", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const today = getTaipeiCalendarDateYYYYMMDD();
+            const to = cashValidDate(req.query.to) || today;
+            const from = cashValidDate(req.query.from) || (() => { const d = new Date(to + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() - 6); return d.toISOString().slice(0, 10); })();
+            const actionFilter = String(req.query.action || "").trim();
+            const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
+            let sql = "SELECT action, ref_id, pay_date, ct_name, amount, detail, actor, created_at FROM cash_audit_log WHERE icpno = ? AND substr(created_at,1,10) BETWEEN ? AND ?";
+            const params = [icpno, from, to];
+            if (["collect", "undo", "extra_add", "extra_delete"].includes(actionFilter)) {
+                sql += " AND action = ?";
+                params.push(actionFilter);
+            }
+            sql += " ORDER BY created_at DESC";
+            const rows = await db.prepare(sql).all(...params) || [];
+            const actLabel = (a) => CASH_AUDIT_LABEL[a] || a;
+            const actColor = (a) => (a === "undo" || a === "extra_delete") ? "#c62828" : (a === "collect" ? "#2e7d32" : "#37352f");
+            const fmtTime = (iso) => { try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }); } catch (_) { return iso || ""; } };
+            const detailText = (a, raw) => {
+                let d = {};
+                try { d = raw ? JSON.parse(raw) : {}; } catch (_) { return escapeHtml(String(raw || "")); }
+                const parts = [];
+                if (Array.isArray(d.sp_nos) && d.sp_nos.length)
+                    parts.push("單：" + d.sp_nos.join("、"));
+                const mix = [];
+                if (d.cash)
+                    mix.push("現" + cashMoney(d.cash));
+                if (d.transfer)
+                    mix.push("匯" + cashMoney(d.transfer));
+                if (d.check)
+                    mix.push("票" + cashMoney(d.check));
+                if (mix.length)
+                    parts.push(mix.join("／"));
+                if (d.method && !mix.length)
+                    parts.push(cashMethodLabel(d.method));
+                if (d.driver)
+                    parts.push("司機:" + d.driver);
+                if (d.collected_by)
+                    parts.push("收款人:" + d.collected_by);
+                if (typeof d.diff === "number" && d.diff !== 0)
+                    parts.push((d.diff > 0 ? "溢收" : "短收") + cashMoney(Math.abs(d.diff)));
+                if (d.note)
+                    parts.push("備註:" + d.note);
+                return escapeHtml(parts.join("　"));
+            };
+            const bodyRows = rows.length ? rows.map((r) => `<tr>
+          <td style="white-space:nowrap;color:#787774;">${escapeHtml(fmtTime(r.created_at))}</td>
+          <td><span style="color:${actColor(r.action)};font-weight:600;">${escapeHtml(actLabel(r.action))}</span></td>
+          <td>${escapeHtml(r.ct_name || "")}</td>
+          <td style="text-align:right;font-weight:600;">${cashMoney(r.amount)}</td>
+          <td>${escapeHtml(r.actor || "（未登入）")}</td>
+          <td style="color:#787774;font-size:12px;">${detailText(r.action, r.detail)}</td>
+        </tr>`).join("") : `<tr><td colspan="6" style="text-align:center;color:#9b9a97;padding:16px;">此區間無操作紀錄。</td></tr>`;
+            const segBtn = (val, label) => `<a href="/admin/cash/audit-log?icpno=${icpno}&from=${from}&to=${to}${val ? "&action=" + val : ""}" class="sf-btn sf-btn-sm" style="${actionFilter === val ? "background:#2383e2;color:#fff;" : ""}">${escapeHtml(label)}</a>`;
+            const body = `
+      <h1 class="notion-page-title">收款操作紀錄</h1>
+      <div style="color:#787774;font-size:13px;margin:-6px 0 12px;">收款、取消收款、額外收入的完整軌跡（誰、何時、多少錢）。<b>取消收款</b>會刪掉收款單，這裡是唯一留存的憑據。</div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <form method="get" action="/admin/cash/audit-log" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+          <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
+          <label>起<br><input type="date" name="from" value="${from}" class="sf-input"></label>
+          <label>迄<br><input type="date" name="to" value="${to}" class="sf-input"></label>
+          <button type="submit" class="btn-primary">查詢</button>
+          <span style="flex:1;"></span>
+          <div style="display:flex;gap:6px;align-items:center;">${segBtn("", "全部")}${segBtn("collect", "收款")}${segBtn("undo", "取消")}${segBtn("extra_add", "額外收入")}${segBtn("extra_delete", "刪額外")}</div>
+        </form>
+      </div>
+      <div class="notion-card">
+        <div style="color:#787774;font-size:13px;margin-bottom:6px;">共 ${rows.length} 筆</div>
+        <table><thead><tr><th>時間</th><th>動作</th><th>客戶／項目</th><th style="text-align:right;">金額</th><th>操作人</th><th>明細</th></tr></thead>
+        <tbody>${bodyRows}</tbody></table>
+      </div>`;
+            res.type("text/html").send(notionPage("收款操作紀錄", body, "cash-audit", res));
+        }
+        catch (e) {
+            console.error("[admin] /cash/audit-log", e?.message || e);
+            res.status(500).type("text/html").send("讀取失敗：" + escapeHtml(String(e?.message || e)));
         }
     });
     router.get("/cash/daily-report/export.xlsx", requireCash, async (req, res) => {
