@@ -238,7 +238,7 @@
   var initHz=false; try{ if(localStorage.getItem('stk_hz')==='1') initHz=true; }catch(_){}  // 預設不隱藏，0 排最後；可切成隱藏0
   var COMPANY={'00':'松富','01':'龍港','02':'松揚','03':'松成'};
   var CO_ORDER=['00','01','02','03'];
-  var S={idToken:null,name:"",wh:null,date:"",icpno:'00',items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:initHz,lang:initLang,baseSubmittedAt:null};
+  var S={idToken:null,name:"",wh:null,date:"",icpno:'00',items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:false,lang:initLang,baseSubmittedAt:null};
   function coName(){return COMPANY[S.icpno]||('公司'+S.icpno);}
   // 公司主題色:松揚(02)橘、其餘藍。改 :root --accent 讓整頁換色。
   function applyCoTheme(){var o=(S.icpno==='02');var r=document.documentElement.style;r.setProperty('--accent',o?'#e8730c':'#2383e2');r.setProperty('--accent-soft',o?'#fdecd9':'#e8f1fd');}
@@ -637,29 +637,22 @@
     var arr=S.items.filter(function(it){
       if(S.f==='todo'&&isCounted(it)) return false;
       if(S.f==='exp'&&!it.exp) return false;
-      if(S.hz&&!searching&&isZeroIdle(it)) return false;   // 選用：完全隱藏0
       if(q&&it.c.toLowerCase().indexOf(q)<0&&it.n.toLowerCase().indexOf(q)<0) return false;
       return true;
     });
     if(!arr.length) return '<div class="list"><div class="empty">'+esc(t('noMatch'))+'</div></div>';
     var body;
-    if(searching||S.hz){
+    if(searching){
       body='<div class="list">'+arr.map(rowHtml).join('')+'</div>';
     } else {
-      // 預設：有量/已盤的排上面，帳上0未盤的沉到最後，中間放分隔
+      // 帳上0一律顯示、沉到最後（系統0但現場有的誤差才不會漏盤），中間放分隔
       var top=[],zeros=[];
       for(var i=0;i<arr.length;i++){ (isZeroIdle(arr[i])?zeros:top).push(arr[i]); }
       var html=top.map(rowHtml).join('');
       if(zeros.length) html+='<div class="zsep">'+esc(t('zeroSep')(zeros.length))+'</div>'+zeros.map(rowHtml).join('');
       body='<div class="list">'+html+'</div>';
     }
-    // 隱藏0 模式的提示：告知還有多少 0 被藏起來，一鍵顯示
-    var hint='';
-    if(S.hz&&!searching){
-      var hidden=0; for(var j=0;j<S.items.length;j++){ if(isZeroIdle(S.items[j])) hidden++; }
-      if(hidden) hint='<div class="hz-hint">'+esc(t('hiddenN')(hidden))+'<button class="hz-show" data-showzero>'+esc(t('showZero'))+'</button></div>';
-    }
-    return body+hint;
+    return body;
   }
   function renderCount(){
     var done=S.items.filter(isCounted).length, all=S.items.length;
@@ -670,7 +663,7 @@
         +'<div class="prog"><div class="prog-bar"><div class="prog-fill" id="stFill"></div></div><div class="prog-num"><span id="stProgTxt"></span></div></div>'
         +'<div class="tools"><div class="search"><input id="stQ" type="search" enterkeyhint="search" placeholder="'+esc(t('searchPh'))+'" autocomplete="off" value="'+esc(S.q)+'"></div>'
           +'<div class="seg" id="stFilter"><button data-f="all" class="'+(S.f==='all'?'on':'')+'">'+esc(t('fAll'))+'</button><button data-f="todo" class="'+(S.f==='todo'?'on':'')+'">'+esc(t('fTodo'))+'</button><button data-f="exp" class="'+(S.f==='exp'?'on':'')+'">'+esc(t('fExp'))+'</button></div>'
-          +'<button class="tog'+(S.hz?' on':'')+'" id="stHideZero">'+esc(t('hideZero'))+'</button></div>'
+          +'</div>'
       +'</header>'
       +'<div class="pad" id="stListWrap">'+listHtml()+'</div>'
       +'<div class="bar"><div class="bar-in"><div class="s" id="stBarTxt"></div>'
@@ -687,7 +680,6 @@
   function bindCount(){
     document.getElementById('stBack').addEventListener('click',showPicker);
     document.getElementById('stLang').addEventListener('click',toggleLang);
-    document.getElementById('stHideZero').addEventListener('click',function(){ S.hz=!S.hz; this.classList.toggle('on',S.hz); try{localStorage.setItem('stk_hz',S.hz?'1':'0');}catch(_){} relist(); });
     var t2=null, qEl=document.getElementById('stQ');
     qEl.addEventListener('input',function(e){ if(t2)clearTimeout(t2); t2=setTimeout(function(){ S.q=e.target.value.trim(); relist(); },120); });
     qEl.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); e.target.blur(); } }); // Enter 收鍵盤
@@ -722,8 +714,7 @@
       var th=e.target.closest('.stk-thumb');
       if(th){ openLightbox(th.getAttribute('data-pc')); return; }
       var add=e.target.closest('[data-add]'),del=e.target.closest('[data-del]'),done=e.target.closest('[data-done]'),tg=e.target.closest('[data-toggle]');
-      var midtg=e.target.closest('[data-midtoggle]'),middone=e.target.closest('[data-middone]'),showzero=e.target.closest('[data-showzero]');
-      if(showzero){ S.hz=false; try{localStorage.setItem('stk_hz','0');}catch(_){} var hzb=document.getElementById('stHideZero'); if(hzb) hzb.classList.remove('on'); relist(); return; }
+      var midtg=e.target.closest('[data-midtoggle]'),middone=e.target.closest('[data-middone]');
       if(add){ var c=e.target.closest('.item').getAttribute('data-c'); S.expanded[c]=true; S.batches[c].push({date:'',qty:''}); relist(); }
       else if(del){ var item=e.target.closest('.item'),c=item.getAttribute('data-c'); S.expanded[c]=true; S.batches[c].splice(+del.getAttribute('data-del'),1); relist(); }
       else if(done){ var c=e.target.closest('.item').getAttribute('data-c'); S.expanded[c]=false; relist(); }

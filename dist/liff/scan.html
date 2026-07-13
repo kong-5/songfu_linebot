@@ -350,6 +350,14 @@
     else if(S.engine==='zxing'){S.scanning=true;}
     else if(S.engine==='scanv2'){S.scanning=true;}
   }
+  // 切到背景（切 App、鎖屏）就整個關掉相機與解碼，回前景再自動重啟——長時間盤點時最省電、避免手機一直發燙
+  document.addEventListener('visibilitychange',function(){
+    if(document.visibilityState==='hidden'){
+      if(S.scanning&&(S.engine==='native'||S.engine==='zxing')){ S._resumeOnShow=true; stopScan(); }
+    } else if(S._resumeOnShow){
+      S._resumeOnShow=false; startScan();
+    }
+  });
   function startScan(){
     var video=document.getElementById('scVideo');
     if(!video)return;
@@ -364,7 +372,8 @@
     });
   }
   function startNative(video){
-    navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}},audio:false})
+    // 解析度降到 960×540（省電/降溫，1D 條碼仍夠清）
+    navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:960},height:{ideal:540}},audio:false})
     .then(function(stream){
       S.stream=stream;S.engine='native';video.srcObject=stream;
       return video.play().then(function(){
@@ -391,7 +400,7 @@
         var raw=String(codes[0].rawValue||'').trim();
         if(raw)hitBarcode(raw);
       }
-    }).catch(function(){}).then(function(){if(S.scanning)setTimeout(nativeLoop,220);});
+    }).catch(function(){}).then(function(){if(S.scanning)setTimeout(nativeLoop,380);});
   }
   function loadZxing(cb){
     if(window.ZXing){cb(true);return;}
@@ -408,9 +417,10 @@
       var hints=new Map();
       hints.set(Z.DecodeHintType.POSSIBLE_FORMATS,[Z.BarcodeFormat.EAN_13,Z.BarcodeFormat.EAN_8,Z.BarcodeFormat.UPC_A,Z.BarcodeFormat.UPC_E,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.ITF,Z.BarcodeFormat.QR_CODE]);
       hints.set(Z.DecodeHintType.TRY_HARDER,true);
-      S.zreader=new Z.BrowserMultiFormatReader(hints,300);
+      S.zreader=new Z.BrowserMultiFormatReader(hints,500); // 解碼間隔 300→500ms，降 CPU/降溫
       S.engine='zxing';S.scanning=true;
-      S.zreader.decodeFromConstraints({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}},audio:false},video,function(result){
+      // 解析度降到 960×540（純 JS 解碼最吃資源，降解析度顯著降溫）
+      S.zreader.decodeFromConstraints({video:{facingMode:'environment',width:{ideal:960},height:{ideal:540}},audio:false},video,function(result){
         if(result&&S.scanning){
           var raw=String(result.getText()||'').trim();
           if(raw)hitBarcode(raw);
