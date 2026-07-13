@@ -11946,9 +11946,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     continue;
                 const fkfs = String(c?.fkfs ?? "").trim();
                 const isCashSeed = /現金|現收|cash/i.test(fkfs) ? 1 : 0; // 由結帳方式含「現金」推定；人工可覆蓋
+                const route = String(c?.route ?? "").trim(); // 由凌越送貨地址 [N] 解析而來（內網腳本送）
+                const lastTxn = String(c?.last_txn ?? "").trim().slice(0, 10); // CT_LAST_DT 最後交易日
                 custRows.push([
                     icpno, ctNo, String(c?.name ?? "").trim(), fkfs,
-                    String(c?.sales ?? "").trim(), isCashSeed, (c?.stop ? 1 : 0), ingestedAt,
+                    String(c?.sales ?? "").trim(), isCashSeed, (c?.stop ? 1 : 0), route, lastTxn, ingestedAt,
                 ]);
             }
             const doIngest = async (h) => {
@@ -11964,9 +11966,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     await h.prepare("INSERT INTO cash_sales_doc (icpno, sp_no, doc_date, ct_no, ct_name, fkfs, total, unpaid, paid, nopay_fg, sales, kind, ingested_at, ingested_by) VALUES " + ph).run(...flat);
                 }
                 for (const r of custRows) {
-                    await h.prepare("INSERT INTO cash_customer (icpno, ct_no, name, fkfs, sales, is_cash, stop, updated_at) VALUES (?,?,?,?,?,?,?,?) " +
+                    // route_line：凌越送貨地址 [N] 有解析到就更新（地址為權威來源）、沒解析到就保留原本（可能是人工/客戶管理帶入）
+                    await h.prepare("INSERT INTO cash_customer (icpno, ct_no, name, fkfs, sales, is_cash, stop, route_line, last_txn, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) " +
                         "ON CONFLICT (icpno, ct_no) DO UPDATE SET name = excluded.name, fkfs = excluded.fkfs, sales = excluded.sales, stop = excluded.stop, " +
-                        "is_cash = COALESCE(cash_customer.is_cash, excluded.is_cash), updated_at = excluded.updated_at").run(...r);
+                        "is_cash = COALESCE(cash_customer.is_cash, excluded.is_cash), last_txn = excluded.last_txn, " +
+                        "route_line = CASE WHEN COALESCE(excluded.route_line,'') <> '' THEN excluded.route_line ELSE cash_customer.route_line END, " +
+                        "updated_at = excluded.updated_at").run(...r);
                 }
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("cash_sales_ingested_at_" + icpno + "_" + date, ingestedAt);
             };
@@ -12642,22 +12647,32 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         try {
             const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
             const qs = typeof req.query.q === "string" ? req.query.q.trim() : "";
+            const showAll = req.query.all === "1";
+            const cutoff = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.toISOString().slice(0, 10); })();
             const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
+            const cols = "ct_no, name, fkfs, route_line, is_cash, note, last_txn, stop";
+            // 有效客戶：未停用 且（最後交易日未知或在一年內）。未知(NULL/空)＝尚未同步過→先顯示，不誤藏。
+            const activeCond = showAll ? "" : " AND COALESCE(stop,0)=0 AND (last_txn IS NULL OR last_txn='' OR last_txn >= ?)";
             let rows;
             if (qs) {
                 const like = "%" + qs.toLowerCase() + "%";
-                rows = await db.prepare("SELECT ct_no, name, fkfs, route_line, is_cash, note FROM cash_customer WHERE icpno = ? AND (LOWER(name) LIKE ? OR LOWER(ct_no) LIKE ? OR COALESCE(route_line,'') LIKE ?) ORDER BY COALESCE(route_line,''), name").all(icpno, like, like, "%" + qs + "%") || [];
+                const sql = `SELECT ${cols} FROM cash_customer WHERE icpno = ? AND (LOWER(name) LIKE ? OR LOWER(ct_no) LIKE ? OR COALESCE(route_line,'') LIKE ?)` + activeCond + " ORDER BY COALESCE(route_line,''), name";
+                const params = showAll ? [icpno, like, like, "%" + qs + "%"] : [icpno, like, like, "%" + qs + "%", cutoff];
+                rows = await db.prepare(sql).all(...params) || [];
             }
             else {
-                rows = await db.prepare("SELECT ct_no, name, fkfs, route_line, is_cash, note FROM cash_customer WHERE icpno = ? ORDER BY COALESCE(route_line,''), name").all(icpno) || [];
+                const sql = `SELECT ${cols} FROM cash_customer WHERE icpno = ?` + activeCond + " ORDER BY COALESCE(route_line,''), name";
+                const params = showAll ? [icpno] : [icpno, cutoff];
+                rows = await db.prepare(sql).all(...params) || [];
             }
             const drvRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("cash_drivers");
             const drivers = String(drvRow?.value || "");
             const tr = (r) => `<tr data-ct="${escapeAttr(r.ct_no)}">
           <td style="font-family:ui-monospace,monospace;">${escapeHtml(r.ct_no)}</td>
-          <td>${escapeHtml(r.name || "")}</td>
+          <td>${escapeHtml(r.name || "")}${Number(r.stop) ? ` <span style="color:#c62828;font-size:11px;">停用</span>` : ""}</td>
           <td style="color:#787774;">${escapeHtml(r.fkfs || "")}</td>
-          <td><input class="cm-route sf-input" value="${escapeAttr(r.route_line || "")}" style="width:90px;"></td>
+          <td style="color:#787774;font-size:12px;">${escapeHtml(r.last_txn || "—")}</td>
+          <td><input class="cm-route sf-input" value="${escapeAttr(r.route_line || "")}" style="width:80px;"></td>
           <td style="text-align:center;"><input type="checkbox" class="cm-cash" ${Number(r.is_cash) ? "checked" : ""}></td>
           <td><input class="cm-note sf-input" value="${escapeAttr(r.note || "")}" style="width:100%;"></td>
           <td><button type="button" class="sf-btn sf-btn-sm cm-save">存</button></td>
@@ -12665,11 +12680,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const body = `
       <h1 class="notion-page-title">收款客戶主檔</h1>
       <div class="notion-card" style="margin-bottom:12px;">
-        <div style="font-size:13px;color:#787774;margin-bottom:8px;">此主檔由凌越銷貨單自動帶入（含停用／未綁 LINE 的客戶），在這裡填「路線」與是否收現金即可。收款處左欄的路線就是讀這裡。</div>
+        <div style="font-size:13px;color:#787774;margin-bottom:8px;">此主檔由凌越客戶主檔自動帶入（含停用／未綁 LINE 的客戶）。<b>路線優先取凌越送貨地址的 <code>[數字]</code></b>（每次取單自動帶入）；地址沒寫的才需在此手填。</div>
         <form method="get" action="/admin/cash/customers" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
           <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
           <label>搜尋<br><input type="text" name="q" value="${escapeAttr(qs)}" placeholder="客戶名／編號／路線" class="sf-input"></label>
+          <input type="hidden" name="all" value="${showAll ? "1" : ""}">
           <button type="submit" class="btn-primary">查詢</button>
+          <a class="sf-btn" href="/admin/cash/customers?icpno=${icpno}${qs ? "&q=" + encodeURIComponent(qs) : ""}${showAll ? "" : "&all=1"}">${showAll ? "只看有效客戶" : "顯示全部（含停用/舊客戶）"}</a>
         </form>
         <div style="margin-top:10px;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;border-top:1px solid #eee;padding-top:10px;">
           <label style="flex:1;min-width:240px;">司機名單（逗號分隔，收款彈窗會用）<br><input type="text" id="cmDrivers" class="sf-input" value="${escapeAttr(drivers)}" placeholder="例：阿明,阿華,老王" style="width:100%;"></label>
@@ -12678,9 +12695,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         </div>
       </div>
       <div class="notion-card">
-        <div style="margin-bottom:6px;color:#787774;font-size:13px;">共 ${rows.length} 家${qs ? "（篩選後）" : ""}</div>
-        <table><thead><tr><th>客戶編號</th><th>客戶名稱</th><th>結帳方式</th><th>路線</th><th style="text-align:center;">收現金</th><th>備註</th><th></th></tr></thead>
-        <tbody>${rows.map(tr).join("") || `<tr><td colspan="7" style="text-align:center;color:#9b9a97;padding:16px;">尚無客戶資料——內網「立即取單」推過銷貨單後就會帶入。</td></tr>`}</tbody></table>
+        <div style="margin-bottom:6px;color:#787774;font-size:13px;">共 ${rows.length} 家${qs ? "（篩選後）" : ""}${showAll ? "（含停用/舊客戶）" : "（僅有效客戶：未停用且一年內有交易）"}</div>
+        <table><thead><tr><th>客戶編號</th><th>客戶名稱</th><th>結帳方式</th><th>最後交易</th><th>路線</th><th style="text-align:center;">收現金</th><th>備註</th><th></th></tr></thead>
+        <tbody>${rows.map(tr).join("") || `<tr><td colspan="8" style="text-align:center;color:#9b9a97;padding:16px;">尚無客戶資料——內網「立即取單」推過（新版腳本）後就會帶入。</td></tr>`}</tbody></table>
       </div>
       <script>(function(){
         var ICPNO=${JSON.stringify(icpno)};
