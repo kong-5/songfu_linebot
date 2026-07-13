@@ -198,9 +198,37 @@ def push_once(base: str, key: str, icpno: str, date=None, timeout: int = 90, ver
 
 def run(args) -> int:
     icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
+    ensure_timeout_client(args.timeout)
+
+    # 日期區間：--start ~ --end 逐日推（補歷史資料用，如 7/1~7/12）
+    if getattr(args, "start", None) and getattr(args, "end", None):
+        base = (args.base or os.environ.get("LY_CLOUD_BASE") or "").strip()
+        key = (args.key or os.environ.get("LY_WRITEBACK_KEY") or "").strip()
+        if not base or not key:
+            print("❌ 請設定 LY_CLOUD_BASE 與 LY_WRITEBACK_KEY（或用 --base / --key）", file=sys.stderr)
+            return 2
+        d0 = datetime.date.fromisoformat(args.start.strip())
+        d1 = datetime.date.fromisoformat(args.end.strip())
+        if d1 < d0:
+            d0, d1 = d1, d0
+        grand = 0
+        d = d0
+        while d <= d1:
+            ds = d.isoformat()
+            try:
+                n = push_once(base, key, icpno, ds, timeout=args.timeout, verbose=True)
+                grand += n
+            except Exception as e:
+                print(f"⚠ {ds} 推送失敗：{e}", flush=True)
+            d += datetime.timedelta(days=1)
+        print(f"✅ 區間完成 {args.start} ~ {args.end}：共推 {grand} 張", flush=True)
+        return 0
+
+    if not getattr(args, "date", None):
+        print("❌ 請給 --date，或用 --start ~ --end 推區間", file=sys.stderr)
+        return 2
     date = datetime.date.fromisoformat(args.date.strip()).isoformat()
     company = lystk.COMPANIES.get(icpno, icpno)
-    ensure_timeout_client(args.timeout)
 
     print(f"▶ 取單 {date}  ICPNO={icpno}（{company}）…", flush=True)
     body = build_payload(icpno, date, verbose=True)
@@ -231,7 +259,9 @@ def run(args) -> int:
 
 def build_parser():
     p = argparse.ArgumentParser(description="把一天的銷貨單推上雲端（每日帳款收款）")
-    p.add_argument("--date", required=True, help="日期 YYYY-MM-DD（只推這一天）")
+    p.add_argument("--date", help="日期 YYYY-MM-DD（只推這一天）")
+    p.add_argument("--start", help="區間起日 YYYY-MM-DD（搭配 --end 逐日推，補歷史用）")
+    p.add_argument("--end", help="區間迄日 YYYY-MM-DD")
     p.add_argument("--icpno", help="公司代碼（預設 00 松富，或 LY_ICPNO）")
     p.add_argument("--base", help="雲端後台網址（預設讀 LY_CLOUD_BASE）")
     p.add_argument("--key", help="回寫金鑰（預設讀 LY_WRITEBACK_KEY）")
