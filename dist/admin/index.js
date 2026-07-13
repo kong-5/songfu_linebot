@@ -13129,8 +13129,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.json({ ok: true, payment_id: payId, diff });
         }
         catch (e) {
+            const msg = String(e?.message || e);
+            // 併發防護：唯一約束擋下同一單重複收款 → 回 409（交易已回滾，不會重複入帳）
+            if (/idx_cash_alloc_sp_uniq|UNIQUE constraint failed: cash_payment_alloc|duplicate key value/i.test(msg)) {
+                res.status(409).json({ error: "這些單有的剛被收款（可能同時有人在收），請重新整理後再試" });
+                return;
+            }
             console.error("[admin] /cash/collect POST", e?.message || e);
-            res.status(500).json({ error: "收款登記失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "收款登記失敗", detail: msg });
         }
     });
     // 取消一筆收款
