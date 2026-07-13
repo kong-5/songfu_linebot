@@ -182,6 +182,10 @@
       reloginStuckTitle:'登入一直逾時',
       reloginStuck:'登入一直過期（在 LINE App 以外的瀏覽器較容易發生）。你已盤的數量都安全存在這台裝置，沒有遺失。請點下方按鈕重新登入一次，登入後會自動帶回你剛剛盤的資料。',
       reloginRetry:'重新登入一次',
+      draftDumpTitle:'你已盤的內容（暫存本機，料號：數量）',
+      draftCopy:'複製全部盤點內容',
+      draftCopied:'已複製 ✓',
+      draftMid:'中',
       invalidQty:'⚠ 以下品項數量無效（僅能填 0 或正數），請修正後再送出：',
       close:'關閉',retry:'重試',photoFail:'照片載入失敗',photoRetry:'載入失敗，點擊重試',
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
@@ -208,6 +212,10 @@
       reloginStuckTitle:'Đăng nhập liên tục hết hạn',
       reloginStuck:'Đăng nhập liên tục hết hạn (thường xảy ra trên trình duyệt ngoài LINE). Số lượng bạn đã kiểm được lưu an toàn trên thiết bị này, không bị mất. Vui lòng nhấn nút bên dưới để đăng nhập lại; sau khi đăng nhập sẽ tự động khôi phục dữ liệu vừa kiểm.',
       reloginRetry:'Đăng nhập lại',
+      draftDumpTitle:'Nội dung bạn đã kiểm (lưu tạm trên máy, mã hàng : SL)',
+      draftCopy:'Sao chép toàn bộ nội dung kiểm kê',
+      draftCopied:'Đã sao chép ✓',
+      draftMid:'Loại B',
       invalidQty:'⚠ Số lượng không hợp lệ (chỉ nhập 0 hoặc số dương), vui lòng sửa rồi gửi lại:',
       close:'Đóng',retry:'Thử lại',photoFail:'Tải ảnh thất bại',photoRetry:'Tải thất bại, nhấn để thử lại',
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
@@ -256,15 +264,62 @@
   function reloginCount(){ try{ var a=JSON.parse(sessionStorage.getItem(RELOGIN_KEY)||'[]'); if(!Array.isArray(a)) return 0; var now=Date.now(); return a.filter(function(ts){return now-ts<60000;}).length; }catch(_){ return 0; } }
   function markRelogin(){ try{ var a; try{a=JSON.parse(sessionStorage.getItem(RELOGIN_KEY)||'[]');}catch(_){a=[];} if(!Array.isArray(a)) a=[]; var now=Date.now(); a.push(now); a=a.filter(function(ts){return now-ts<60000;}); sessionStorage.setItem(RELOGIN_KEY,JSON.stringify(a)); }catch(_){} }
   function clearRelogin(){ try{ sessionStorage.removeItem(RELOGIN_KEY); }catch(_){} }
+  // 離線保險：外部瀏覽器登入完全卡死時，仍能從本機草稿讀回今日已盤數量（料號→數量），
+  // 直接顯示＋一鍵複製，資料永遠不會被登入迴圈困住（就算 token 一直救不回也能手抄／貼進 LINE）。
+  function todayTpe(){ try{ return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); }catch(_){ return ''; } }
+  function currentDrafts(){ // 掃出本機所有「今日」盤點草稿
+    var out=[];
+    try{
+      var today=todayTpe();
+      for(var i=0;i<localStorage.length;i++){
+        var k=localStorage.key(i);
+        if(!k||k.indexOf('stk_draft_')!==0||k.length<21) continue;
+        if(k.slice(-10)!==today) continue;                     // 尾端 _YYYY-MM-DD（11 字）中的日期
+        var code=k.slice(10,k.length-11);                      // 去掉前綴 'stk_draft_'（10 字）與尾端 '_'+日期（11 字）
+        var d=null; try{ d=JSON.parse(localStorage.getItem(k)); }catch(_){ d=null; }
+        if(d) out.push({wh:code,date:today,d:d});
+      }
+    }catch(_){}
+    return out;
+  }
+  function draftToText(entry){ // 一倉草稿→純文字（料號 : 上貨數量 (中 中貨數量)）
+    var d=entry.d||{},counts=d.counts||{},mid=d.mid||{},keys={},lines=[];
+    Object.keys(counts).forEach(function(k){keys[k]=1;}); Object.keys(mid).forEach(function(k){keys[k]=1;});
+    Object.keys(keys).forEach(function(code){
+      var g=counts[code],m=mid[code];
+      var hasG=(g!=null&&g!==''),hasM=(m!=null&&m!=='');
+      if(!hasG&&!hasM) return;
+      lines.push(code+' : '+(hasG?g:'-')+(hasM?(' ('+t('draftMid')+' '+m+')'):''));
+    });
+    return (entry.wh||'')+' / '+entry.date+'\n'+(lines.length?lines.join('\n'):'—');
+  }
+  function copyText(txt,cb){
+    try{ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(function(){cb&&cb();},function(){fallbackCopy(txt,cb);}); return; } }catch(_){}
+    fallbackCopy(txt,cb);
+  }
+  function fallbackCopy(txt,cb){ try{ var ta=document.createElement('textarea'); ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.focus(); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); cb&&cb(); }catch(_){} }
   function showReloginStuck(){ // 打破迴圈：停在穩定畫面，按鈕強制登出後重新互動登入，取得全新 ID Token
+    var drafts=currentDrafts();
+    var dumpHtml='';
+    if(drafts.length){
+      var txt=drafts.map(draftToText).join('\n\n');
+      dumpHtml='<div style="margin-top:16px;text-align:left;width:100%;max-width:320px;background:var(--card,#fff);border:1px solid var(--line,#eaeaea);border-radius:12px;padding:12px 14px;box-sizing:border-box">'
+        +'<div style="font-size:12px;color:var(--txt-3);margin-bottom:8px">'+esc(t('draftDumpTitle'))+'</div>'
+        +'<pre style="white-space:pre-wrap;word-break:break-all;font-size:13px;line-height:1.6;color:var(--txt);margin:0;max-height:44vh;overflow:auto;font-family:inherit">'+esc(txt)+'</pre>'
+        +'<button class="btn-primary" id="stCopyDraft" style="margin-top:10px;width:100%">'+esc(t('draftCopy'))+'</button>'
+        +'</div>';
+    }
     showCenter('<div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(t('reloginStuckTitle'))+'</div>'
       +'<div style="font-size:14px;color:var(--txt-2);line-height:1.7;max-width:300px;margin:4px auto 0">'+esc(t('reloginStuck'))+'</div>'
-      +'<button class="btn-primary" id="stReloginRetry" style="margin-top:14px">'+esc(t('reloginRetry'))+'</button>');
+      +'<button class="btn-primary" id="stReloginRetry" style="margin-top:14px">'+esc(t('reloginRetry'))+'</button>'
+      +dumpHtml);
     document.getElementById('stReloginRetry').addEventListener('click',function(){
       clearRelogin();
       try{ if(liff.logout) liff.logout(); }catch(_){}          // 登出後下一次 login 會強制互動登入，拿到全新 token（打破過期迴圈）
       try{ liff.login({redirectUri:location.href}); }catch(_){ try{location.reload();}catch(_2){} }
     });
+    var cp=document.getElementById('stCopyDraft');
+    if(cp) cp.addEventListener('click',function(){ copyText(drafts.map(draftToText).join('\n\n'),function(){ cp.textContent=t('draftCopied'); }); });
   }
   function relogin(){ // ID Token 過期：先立即存草稿再重新登入，登入後帶原網址回來、草稿自動接回
     flushDraft();
