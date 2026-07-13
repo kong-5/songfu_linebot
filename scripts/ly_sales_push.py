@@ -117,9 +117,19 @@ def build_payload(icpno: str, date: str, verbose: bool) -> dict:
                 "ct_no": ct_no, "name": ct_name, "fkfs": fkfs,
                 "sales": sales, "stop": cinfo.get("stop", 0),
             }
+    # 送「全部客戶主檔」而非只當天有單的（收款客戶主檔要能看到所有客戶去填路線）；
+    # 客戶主檔查失敗（cmap 空）才退回只送當天出現過的客戶。
+    if cmap:
+        customers = [{"ct_no": ct, "name": info.get("name", ""), "fkfs": info.get("fkfs", ""),
+                      "sales": info.get("sales", ""), "stop": info.get("stop", 0)}
+                     for ct, info in cmap.items()]
+    else:
+        customers = list(seen_cust.values())
+    if verbose:
+        print(f"  客戶主檔送出：{len(customers)} 家", flush=True)
     return {
         "date": date, "icpno": icpno,
-        "docs": docs, "customers": list(seen_cust.values()),
+        "docs": docs, "customers": customers,
         "pushed_by": "ly_sales_push",
     }
 

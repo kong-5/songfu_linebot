@@ -1858,7 +1858,7 @@ function barcodeAddModalHtml(icpno, coName) {
 }
 
 /** SF 側邊欄（新版視覺，URL 沿用既有路由） */
-function sfSidebar(active) {
+function sfSidebar(active, opts = {}) {
   const item = (href, key, icon, label, badge) => `
     <a href="${href}" class="${active === key ? "active" : ""}">
       <span class="sf-nav-icon">${SF_ICONS[icon] || ""}</span>
@@ -1879,10 +1879,13 @@ function sfSidebar(active) {
         ${item("/admin/freezer-fridge", "env", "thermo", "冷凍／冷藏")}
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
         ${item("/admin/logistics/market", "logistics-reports", "chartLine", "行情報表")}
+      </details>
+      ${opts.canCash ? `<details class="sf-nav-group" ${["cash","cash-collect","cash-customers"].includes(active) ? "open" : ""}>
+        <summary><div class="sf-nav-group-title">收款作業</div></summary>
         ${item("/admin/cash", "cash", "money", "每日帳款收款")}
         ${item("/admin/cash/collect", "cash-collect", "check", "收款處")}
         ${item("/admin/cash/customers", "cash-customers", "users", "收款客戶主檔")}
-      </details>
+      </details>` : ""}
       <details class="sf-nav-group" ${["inventory","inv-scan","inv-stock","inv-wh-settings","inv-barcodes"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/scan", "inv-scan", "scale", "掃碼盤點")}
@@ -2000,6 +2003,7 @@ function normalizeAdminUserRecord(raw) {
         passwordHash,
         title,
         status,
+        canCash: raw.canCash === true || raw.canCash === 1 || raw.canCash === "1",
         approvedBy: raw.approvedBy != null ? String(raw.approvedBy) : null,
         approvedAt: raw.approvedAt != null ? String(raw.approvedAt) : null,
         createdAt: raw.createdAt != null ? String(raw.createdAt) : null,
@@ -2507,6 +2511,7 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
     let sfTheme = "light";
     let adminUserName = "";
     let adminTitle = "";
+    let sidebarOpts = { canCash: true };
     if (topBarOrRes && typeof topBarOrRes === "object" && topBarOrRes.locals) {
         const res = topBarOrRes;
         topBar = res.locals.topBarHtml || "";
@@ -2514,6 +2519,7 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
         sfTheme = res.locals.sfTheme === "dark" ? "dark" : "light";
         adminUserName = res.locals.adminUser || "";
         adminTitle = res.locals.adminTitle || "";
+        sidebarOpts = { canCash: res.locals.canCash === true };
         headerOpts = {
             canManageUsers: res.locals.canManageUsers === true,
             adminTitle: res.locals.adminTitle || "",
@@ -2530,8 +2536,8 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
     const mainWrap = `<div class="notion-main-wrap">${tb}<main class="notion-main">${body}</main></div>`;
     // 使用新 SF 側邊欄，但容器仍維持既有 .notion-app / .notion-layout 以利不破壞既有 layout JS
     const shell = headerHtml
-        ? `<div class="notion-app" id="notionAppRoot">${headerHtml}<div class="notion-layout">${sfSidebar(active)}<div class="notion-sidebar-overlay" id="sidebarOverlay"></div>${mainWrap}</div></div>`
-        : `<div class="notion-layout">${sfSidebar(active)}${mainWrap}</div>`;
+        ? `<div class="notion-app" id="notionAppRoot">${headerHtml}<div class="notion-layout">${sfSidebar(active, sidebarOpts)}<div class="notion-sidebar-overlay" id="sidebarOverlay"></div>${mainWrap}</div></div>`
+        : `<div class="notion-layout">${sfSidebar(active, sidebarOpts)}${mainWrap}</div>`;
     const uiScript = `<script>(function(){
       // 全域 toast（shell 級共用實作）：固定畫面下方中央，捲到哪都看得到。
       // 訂單頁與庫存頁共用同一份實作與時長，避免兩套 toast 尺寸／動畫／時長不一致。
@@ -3095,6 +3101,7 @@ function createAdminRouter() {
         res.locals.adminUser = profile.name || uname;
         res.locals.adminTitle = profile.title;
         res.locals.canManageUsers = profile.title === "經理";
+        res.locals.canCash = profile.title === "經理" || profile.canCash === true; // 收款作業權限（經理天生有）
         res.locals.isOwner = isAdminOwnerUsername(uname);
         // SF 主題：從 cookie sf_theme=dark|light 讀取（預設淺色）
         res.locals.sfTheme = (cookies.sf_theme === "dark") ? "dark" : "light";
@@ -3207,6 +3214,20 @@ function createAdminRouter() {
         }
         next();
     }
+    // 收款作業權限：經理天生有；其他人需在人員管理勾「收款權限」
+    function requireCash(req, res, next) {
+        const p = req.adminProfile;
+        if (p && (p.title === "經理" || p.canCash === true)) {
+            next();
+            return;
+        }
+        const wantsJson = req.method === "POST" || (req.headers.accept || "").includes("application/json");
+        if (wantsJson) {
+            res.status(403).json({ error: "無收款作業權限（請聯絡經理開通）" });
+            return;
+        }
+        res.status(403).type("text/html").send("<!DOCTYPE html><html lang=\"zh-TW\"><head><meta charset=\"utf-8\"><title>權限不足</title></head><body style=\"font-family:sans-serif;padding:24px;\"><p><strong>收款作業</strong>僅限有權限的人員使用，請聯絡經理開通。</p><p><a href=\"/admin\">返回儀表板</a></p></body></html>");
+    }
     router.get("/users", requireManager, async (req, res) => {
         const users = await loadAdminUsers();
         const msg = req.query.ok === "add" ? "<p class=\"notion-msg ok\">已新增帳號（待審核）。</p>"
@@ -3232,7 +3253,7 @@ function createAdminRouter() {
         const activeRows = activeList.map((u) => {
             const ownerMark = isAdminOwnerUsername(u.username) ? ` <span class="sf-pill accent" style="font-size:10px;">負責人</span>` : "";
             const ops = [];
-            ops.push(`<button type="button" class="sf-btn sm" onclick='openUserEdit(${JSON.stringify({u:u.username,n:u.name||"",t:u.title||"",owner:isAdminOwnerUsername(u.username)})})'>${SF_ICONS.edit}<span>編輯</span></button>`);
+            ops.push(`<button type="button" class="sf-btn sm" onclick='openUserEdit(${JSON.stringify({u:u.username,n:u.name||"",t:u.title||"",owner:isAdminOwnerUsername(u.username),c:!!u.canCash})})'>${SF_ICONS.edit}<span>編輯</span></button>`);
             if (!isAdminOwnerUsername(u.username)) {
                 ops.push(`<form method="post" action="/admin/users/set-status" style="display:inline;margin:0;"><input type="hidden" name="username" value="${escapeAttr(u.username)}"><input type="hidden" name="status" value="disabled"><button type="submit" class="sf-btn sm" onclick="return confirm('確定停用此帳號？');">停用</button></form>`);
             }
@@ -3463,6 +3484,12 @@ function createAdminRouter() {
                 <select class="sf-select" name="title" id="ue-title">${titleOptsAll}</select>
                 <p style="margin-top:6px;font-size:11px;color:var(--txt-3);">負責人帳號無法變更職稱。<strong>移工</strong>無法刪除任何資料（系統限制）。</p>
               </div>
+              <div>
+                <label class="sf-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                  <input type="checkbox" name="can_cash" id="ue-cancash" value="1"> 收款作業權限（可進入每日帳款收款／收款處／收款客戶主檔）
+                </label>
+                <p style="margin-top:6px;font-size:11px;color:var(--txt-3);">經理天生具備此權限，無需勾選。</p>
+              </div>
               <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:6px;border-top:var(--hairline);">
                 <button type="button" class="sf-btn ghost" onclick="document.getElementById('userEditModal').style.display='none'">取消</button>
                 <button type="submit" class="sf-btn primary">${SF_ICONS.check}<span>儲存</span></button>
@@ -3517,6 +3544,8 @@ function createAdminRouter() {
             titleSel.disabled = false;
             titleSel.value = info.t || '行政';
           }
+          var cc = document.getElementById('ue-cancash');
+          if (cc) { cc.checked = !!info.c; cc.disabled = !!info.owner; }
           document.getElementById('userEditModal').style.display = 'flex';
         }
         </script>`;
@@ -3608,6 +3637,7 @@ function createAdminRouter() {
         }
         users[ix].title = title;
         if (name) users[ix].name = name;
+        users[ix].canCash = (req.body.can_cash === "1" || req.body.can_cash === "on");
         await saveAdminUsers(users);
         res.redirect("/admin/users?ok=status");
     });
@@ -12087,7 +12117,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         </div>`;
     }
     // 後台頁：銷貨單總計表（左月曆＋當日摘要、右明細）
-    router.get("/cash", async (req, res) => {
+    router.get("/cash", requireCash, async (req, res) => {
         try {
             const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
             const date = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
@@ -12183,7 +12213,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     // 儲存流水號斷號原因
-    router.post("/cash/gap-reason", express_1.default.json({ limit: "64kb" }), async (req, res) => {
+    router.post("/cash/gap-reason", requireCash, express_1.default.json({ limit: "64kb" }), async (req, res) => {
         try {
             const b = req.body || {};
             const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
@@ -12207,7 +12237,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     // 匯出 Excel（銷貨單總計表）
-    router.get("/cash/export.xlsx", async (req, res) => {
+    router.get("/cash/export.xlsx", requireCash, async (req, res) => {
         try {
             const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
             const date = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
@@ -12255,7 +12285,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     // 列印版（瀏覽器另存 PDF）：表頭帶公司名／日期／列印人／列印時間
-    router.get("/cash/print", async (req, res) => {
+    router.get("/cash/print", requireCash, async (req, res) => {
         try {
             const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
             const date = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
@@ -12320,7 +12350,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         return String(row?.value || "").split(",").map((s) => s.trim()).filter(Boolean);
     }
     // 收款處（列表式：左路線、右單據勾選 → 收款彈窗 → 明細彈窗 → 產生 JPG）
-    router.get("/cash/collect", async (req, res) => {
+    router.get("/cash/collect", requireCash, async (req, res) => {
         try {
             const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
             const date = cashValidDate(req.query.date) || getTaipeiCalendarDateYYYYMMDD();
@@ -12521,7 +12551,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     // 登記收款
-    router.post("/cash/collect", express_1.default.json({ limit: "256kb" }), async (req, res) => {
+    router.post("/cash/collect", requireCash, express_1.default.json({ limit: "256kb" }), async (req, res) => {
         try {
             const b = req.body || {};
             const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
@@ -12584,7 +12614,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     // 取消一筆收款
-    router.post("/cash/collect/undo", express_1.default.json({ limit: "16kb" }), async (req, res) => {
+    router.post("/cash/collect/undo", requireCash, express_1.default.json({ limit: "16kb" }), async (req, res) => {
         try {
             const payId = String(req.body?.payment_id ?? "").trim();
             if (!payId) {
@@ -12608,7 +12638,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     // 收款客戶主檔（維護路線／收現金／備註）＋ 司機名單。資料源＝凌越銷貨單帶入的 cash_customer。
-    router.get("/cash/customers", async (req, res) => {
+    router.get("/cash/customers", requireCash, async (req, res) => {
         try {
             const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
             const qs = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -12644,6 +12674,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div style="margin-top:10px;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;border-top:1px solid #eee;padding-top:10px;">
           <label style="flex:1;min-width:240px;">司機名單（逗號分隔，收款彈窗會用）<br><input type="text" id="cmDrivers" class="sf-input" value="${escapeAttr(drivers)}" placeholder="例：阿明,阿華,老王" style="width:100%;"></label>
           <button type="button" class="btn-primary" id="cmDrvSave">儲存司機名單</button>
+          <button type="button" class="sf-btn" id="cmImportRoutes" title="把 LINE 客戶管理已填的路線，依凌越客戶編號帶進這裡的空白路線">從客戶管理帶入路線</button>
         </div>
       </div>
       <div class="notion-card">
@@ -12663,6 +12694,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           var v=document.getElementById('cmDrivers').value;
           fetch('/admin/cash/drivers/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({drivers:v})}).then(function(r){return r.json();}).then(function(j){ if(j&&j.ok){ if(window.sfToast)sfToast('司機名單已儲存'); } else { if(window.sfToast)sfToast('儲存失敗','err'); } });
         });
+        document.getElementById('cmImportRoutes').addEventListener('click',function(){
+          if(!confirm('把 LINE 客戶管理已填的路線，帶進「路線空白」的收款客戶？（已填的不會被覆蓋）')) return;
+          var b=this; b.disabled=true;
+          fetch('/admin/cash/customers/import-routes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:ICPNO})}).then(function(r){return r.json();}).then(function(j){ b.disabled=false; if(j&&j.ok){ if(window.sfToast)sfToast('已帶入 '+j.updated+' 家路線'); location.reload(); } else { if(window.sfToast)sfToast((j&&j.error)||'帶入失敗','err'); } }).catch(function(){ b.disabled=false; if(window.sfToast)sfToast('帶入失敗','err'); });
+        });
       })();</script>`;
             res.type("text/html").send(notionPage("收款客戶主檔", body, "cash-customers", res));
         }
@@ -12671,7 +12707,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.status(500).type("text/html").send("讀取失敗：" + escapeHtml(String(e?.message || e)));
         }
     });
-    router.post("/cash/customers/save", express_1.default.json({ limit: "32kb" }), async (req, res) => {
+    router.post("/cash/customers/save", requireCash, express_1.default.json({ limit: "32kb" }), async (req, res) => {
         try {
             const b = req.body || {};
             const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
@@ -12693,7 +12729,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
         }
     });
-    router.post("/cash/drivers/save", express_1.default.json({ limit: "8kb" }), async (req, res) => {
+    router.post("/cash/drivers/save", requireCash, express_1.default.json({ limit: "8kb" }), async (req, res) => {
         try {
             const list = String(req.body?.drivers ?? "").split(",").map((s) => s.trim()).filter(Boolean).join(",");
             await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("cash_drivers", list);
@@ -12702,6 +12738,21 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         catch (e) {
             console.error("[admin] /cash/drivers/save", e?.message || e);
             res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
+        }
+    });
+    // 從 LINE 客戶管理帶入路線：依凌越客戶編號(CT_NO)對 hq_cust_code/teraoka_code，填進路線空白的收款客戶（不覆蓋已填）
+    router.post("/cash/customers/import-routes", requireCash, express_1.default.json({ limit: "8kb" }), async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.body?.icpno, "00");
+            const r = await db.prepare("UPDATE cash_customer SET route_line = (" +
+                "SELECT CAST(c.route_line AS TEXT) FROM customers c WHERE (c.hq_cust_code = cash_customer.ct_no OR c.teraoka_code = cash_customer.ct_no) AND c.route_line IS NOT NULL LIMIT 1" +
+                ") WHERE icpno = ? AND COALESCE(route_line,'') = '' AND EXISTS (" +
+                "SELECT 1 FROM customers c WHERE (c.hq_cust_code = cash_customer.ct_no OR c.teraoka_code = cash_customer.ct_no) AND c.route_line IS NOT NULL)").run(icpno);
+            res.json({ ok: true, updated: (r && r.changes) || 0 });
+        }
+        catch (e) {
+            console.error("[admin] /cash/customers/import-routes", e?.message || e);
+            res.status(500).json({ error: "帶入失敗", detail: String(e?.message || e) });
         }
     });
     /**
