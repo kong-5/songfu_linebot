@@ -44,6 +44,11 @@
   .pk-done{font-size:11px;font-weight:700;color:var(--pos);background:var(--pos-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
   .pk-draft{font-size:11px;font-weight:700;color:var(--warn);background:var(--warn-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
   .pk-arrow{color:var(--txt-3);font-size:20px;flex:none;}
+  /* 網站版頂列（後台帳號登入時才出現，給一條明確的返回路徑，不然全螢幕頁不知怎麼回去） */
+  .web-topbar{position:sticky;top:0;z-index:30;height:46px;box-sizing:border-box;display:flex;align-items:center;gap:12px;padding:0 14px;background:var(--card);border-bottom:1px solid var(--line);}
+  .web-topbar a.wt-back{color:var(--accent);font-weight:700;text-decoration:none;font-size:15px;display:inline-flex;align-items:center;gap:4px;flex:none;}
+  .web-topbar .wt-t{font-size:14px;font-weight:700;color:var(--txt);}
+  body.web header{top:46px;} /* 盤點清單的 sticky 表頭讓出頂列高度，兩條不重疊 */
   /* count header */
   header{position:sticky;top:0;z-index:20;background:var(--card);border-bottom:1px solid var(--line);}
   .head-main{display:flex;align-items:center;gap:10px;padding:10px 14px 6px;}
@@ -153,6 +158,7 @@
 </style>
 </head>
 <body>
+<div class="web-topbar" id="webTop" style="display:none"><a class="wt-back" href="/admin/inventory">‹ 返回後台</a><span class="wt-t">網站盤點</span></div>
 <div class="wrap"><div id="app"><div class="center"><div class="spin"></div><div>載入中… / Đang tải…</div></div></div></div>
 
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
@@ -473,6 +479,8 @@
   function boot(){
     cleanOldDrafts();
     if(WEB){ // 網站版：跳過 LINE 登入，身分＝後台登入者，直接進盤點
+      document.body.classList.add('web');
+      var wt=document.getElementById('webTop'); if(wt) wt.style.display='flex';
       S.name=WEB_NAME;
       var icw=getParam('icpno'); if(icw&&/^\d{2}$/.test(icw)) S.icpno=icw;
       applyCoTheme();
