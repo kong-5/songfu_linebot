@@ -1886,7 +1886,7 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/cash/collect", "cash-collect", "check", "現金收款")}
         ${item("/admin/cash/customers", "cash-customers", "users", "收款客戶主檔")}
       </details>` : ""}
-      <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-wh-settings","inv-barcodes"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-wh-settings","inv-barcodes","inv-expiry"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory/entry", "inv-entry", "edit", "網站盤點")}
         ${item("/admin/scan", "inv-scan", "scale", "掃碼盤點")}
@@ -1894,6 +1894,7 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "pin", "倉庫設定")}
         ${item("/admin/inventory/barcodes", "inv-barcodes", "tag", "條碼對照")}
+        ${item("/admin/inventory/expiry-items", "inv-expiry", "calendar", "效期品設定")}
       </details>
       <details class="sf-nav-group" ${["customers","cust-groups","products","ai-examples"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">主檔管理</div></summary>
@@ -7787,6 +7788,128 @@ function createAdminRouter() {
             back("&err=" + encodeURIComponent(String(e?.message || e).slice(0, 120)));
         }
     });
+    // ── 效期品設定：標記哪些料號在盤點時要填效期／批號（分公司獨立，可整倉一次帶入，例如松揚雜貨庫房）──
+    router.get("/inventory/expiry-items", async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno, "02");
+        const companies = await listStockCompanies();
+        if (companies.indexOf(icpno) < 0) companies.push(icpno);
+        companies.sort();
+        let rows = [], whs = [];
+        const whCnt = {}, whExp = {};
+        try {
+            rows = (await db.prepare(
+                "SELECT e.erp_code, e.expiry_unit, i.name, i.spec, i.unit, i.wh_code " +
+                "FROM stocktake_expiry_item e LEFT JOIN erp_stock_items i ON i.erp_code = e.erp_code AND COALESCE(NULLIF(TRIM(i.icpno),''),'00') = COALESCE(NULLIF(TRIM(e.icpno),''),'00') " +
+                "WHERE COALESCE(NULLIF(TRIM(e.icpno),''),'00') = ? ORDER BY i.wh_code, e.erp_code").all(icpno)) || [];
+        } catch (e) { console.error("[admin] expiry-items list", e?.message || e); rows = []; }
+        try { whs = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY sort_order, code").all(icpno)) || []; } catch (_) { whs = []; }
+        try { (await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? GROUP BY wh_code").all(icpno) || []).forEach((r) => { whCnt[String(r.code)] = Number(r.cnt || 0); }); } catch (_) { }
+        try { (await db.prepare("SELECT i.wh_code AS code, COUNT(*) AS cnt FROM stocktake_expiry_item e JOIN erp_stock_items i ON i.erp_code = e.erp_code AND COALESCE(NULLIF(TRIM(i.icpno),''),'00') = COALESCE(NULLIF(TRIM(e.icpno),''),'00') WHERE COALESCE(NULLIF(TRIM(e.icpno),''),'00') = ? GROUP BY i.wh_code").all(icpno) || []).forEach((r) => { whExp[String(r.code)] = Number(r.cnt || 0); }); } catch (_) { }
+        const coSeg = companies.length > 1 ? `<div class="sf-seg" style="margin:0 0 14px;display:inline-flex;">${companies.map((c) => `<button type="button" class="${c === icpno ? "active" : ""}" onclick="location.href='/admin/inventory/expiry-items?icpno=${c}'">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))}</button>`).join("")}</div>` : "";
+        const banner = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存${req.query.n ? `：新增 ${escapeHtml(String(req.query.n))} 項效期品` : ""}。</div>` : (req.query.err ? `<div style="background:#fdecec;color:#b3261e;padding:10px 12px;border-radius:8px;margin-bottom:12px;">操作失敗：${escapeHtml(String(req.query.err))}</div>` : "");
+        const whOpts = whs.map((w) => { const c = String(w.code); return `<option value="${escapeAttr(c)}">${escapeHtml(c)} ${escapeHtml(String(w.name || ""))}（已標 ${whExp[c] || 0}/${whCnt[c] || 0}）</option>`; }).join("");
+        const rowsHtml = rows.map((r) => `
+      <tr>
+        <td style="font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:600;">${escapeHtml(String(r.erp_code))}</td>
+        <td>${escapeHtml(String(r.name || "（庫存快照查無此料號）"))}${r.spec ? `<span style="margin-left:6px;font-size:11px;color:var(--notion-text-muted,#9b9a97);">${escapeHtml(String(r.spec))}</span>` : ""}</td>
+        <td style="white-space:nowrap;">${escapeHtml(String(r.wh_code || "—"))}</td>
+        <td style="text-align:center;">${escapeHtml(String(r.expiry_unit || r.unit || ""))}</td>
+        <td style="text-align:center;">
+          <form method="post" action="/admin/inventory/expiry-items" onsubmit="return confirm('取消 ${escapeAttr(String(r.erp_code))} 的效期標記？');" style="display:inline;">
+            <input type="hidden" name="action" value="delete"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}"><input type="hidden" name="erp_code" value="${escapeAttr(String(r.erp_code))}">
+            <button type="submit" class="btn" style="font-size:12px;padding:4px 10px;color:#b3261e;">移除</button>
+          </form>
+        </td>
+      </tr>`).join("");
+        const emptyRow = `<tr><td colspan="5" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此公司尚未標記任何效期品。用上方「整倉帶入」把雜貨庫房一次設好，或單筆新增料號。</td></tr>`;
+        const body = `
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 效期品設定</div>
+      <h1 class="notion-page-title">效期品設定</h1>
+      <p class="notion-hint" style="margin:-2px 0 14px;">標記為「效期品」的料號，盤點時才會跳出<b>效期／批號</b>輸入（雜貨、有到期日的品項才需要）。可<b>整倉一次帶入</b>（例如松揚雜貨庫房），也可單筆增減。設定<b>分公司獨立</b>。</p>
+      ${coSeg}
+      ${banner}
+      <div class="notion-card" style="padding:14px 16px;margin-bottom:16px;">
+        <div style="font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px;">${SF_ICONS.box}整倉帶入 / 清除</div>
+        <form method="post" action="/admin/inventory/expiry-items" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+          <input type="hidden" name="icpno" value="${escapeAttr(icpno)}">
+          <select name="warehouse" required class="sf-input" style="min-width:280px;">
+            <option value="">選擇倉庫…</option>
+            ${whOpts}
+          </select>
+          <button type="submit" name="action" value="bulk_add" class="btn-primary">整倉設為效期品</button>
+          <button type="submit" name="action" value="bulk_remove" class="btn" onclick="return confirm('把此倉所有品項的效期標記清除？');" style="color:#b3261e;">整倉清除</button>
+        </form>
+        <p class="notion-hint" style="margin:8px 0 0;">「整倉設為效期品」會把此倉所有料號都標記；日後這些品項在盤點頁都會出現效期輸入。已標記的不會重複。</p>
+      </div>
+      <div class="notion-card" style="padding:14px 16px;margin-bottom:16px;">
+        <details>
+          <summary style="cursor:pointer;font-size:13px;color:var(--notion-text-muted,#9b9a97);">單筆新增（輸入料號）</summary>
+          <form method="post" action="/admin/inventory/expiry-items" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px;">
+            <input type="hidden" name="action" value="add"><input type="hidden" name="icpno" value="${escapeAttr(icpno)}">
+            <input type="text" name="erp_code" placeholder="凌越料號" required class="sf-input" style="width:160px;">
+            <input type="text" name="expiry_unit" placeholder="效期單位（可留白，預設同單位）" class="sf-input" style="width:240px;">
+            <button type="submit" class="btn-primary">新增</button>
+          </form>
+        </details>
+      </div>
+      <div class="notion-card" style="padding:0;overflow:auto;">
+        <table>
+          <thead><tr><th>料號</th><th>品名</th><th>倉別</th><th style="text-align:center;">效期單位</th><th style="text-align:center;">操作</th></tr></thead>
+          <tbody>${rowsHtml || emptyRow}</tbody>
+        </table>
+      </div>`;
+        res.type("text/html").send(notionPage("效期品設定", body, "inv-expiry", res));
+    });
+    router.post("/inventory/expiry-items", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.body && req.body.icpno, "02");
+        const back = (extra) => res.redirect("/admin/inventory/expiry-items?icpno=" + encodeURIComponent(icpno) + (extra || ""));
+        try {
+            const action = String(req.body?.action || "").trim();
+            const now = new Date().toISOString();
+            if (action === "delete") {
+                const erpCode = String(req.body?.erp_code || "").trim();
+                if (!erpCode) { back("&err=" + encodeURIComponent("缺少料號")); return; }
+                await db.prepare("DELETE FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode);
+                back("&ok=1"); return;
+            }
+            if (action === "add") {
+                const erpCode = String(req.body?.erp_code || "").trim();
+                if (!erpCode) { back("&err=" + encodeURIComponent("缺少料號")); return; }
+                const item = await db.prepare("SELECT erp_code, unit FROM erp_stock_items WHERE erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(erpCode, icpno);
+                if (!item) { back("&err=" + encodeURIComponent("查無料號 " + erpCode + "（該公司庫存快照裡沒有）")); return; }
+                const eunit = String(req.body?.expiry_unit || "").trim() || String(item.unit || "");
+                await db.prepare("DELETE FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode);
+                await db.prepare("INSERT INTO stocktake_expiry_item (icpno, erp_code, expiry_unit, created_at) VALUES (?, ?, ?, ?)").run(icpno, erpCode, eunit, now);
+                back("&ok=1"); return;
+            }
+            if (action === "bulk_add" || action === "bulk_remove") {
+                const wh = String(req.body?.warehouse || "").trim();
+                if (!wh) { back("&err=" + encodeURIComponent("請先選倉庫")); return; }
+                if (action === "bulk_remove") {
+                    await db.prepare("DELETE FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code IN (SELECT erp_code FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?)").run(icpno, wh, icpno);
+                    back("&ok=1"); return;
+                }
+                // bulk_add：找出此倉尚未標記的料號，一次插入（多列 VALUES，每批 ≤200）→ 已標記的不重複
+                const toAdd = (await db.prepare("SELECT erp_code, unit FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code NOT IN (SELECT erp_code FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?) ORDER BY erp_code").all(wh, icpno, icpno)) || [];
+                let added = 0;
+                const BATCH = 200;
+                for (let i = 0; i < toAdd.length; i += BATCH) {
+                    const chunk = toAdd.slice(i, i + BATCH);
+                    const ph = chunk.map(() => "(?, ?, ?, ?)").join(", ");
+                    const params = [];
+                    for (const r of chunk) params.push(icpno, String(r.erp_code || ""), String(r.unit || ""), now);
+                    await db.prepare("INSERT INTO stocktake_expiry_item (icpno, erp_code, expiry_unit, created_at) VALUES " + ph).run(...params);
+                    added += chunk.length;
+                }
+                back("&ok=1&n=" + added); return;
+            }
+            back("&err=" + encodeURIComponent("未知動作"));
+        }
+        catch (e) {
+            console.error("[admin] expiry-items save", e?.message || e);
+            back("&err=" + encodeURIComponent(String(e?.message || e).slice(0, 120)));
+        }
+    });
     // ── 掃碼盤點「網頁版」（後台帳號登入，iPhone Safari 直接可用；與 LINE LIFF 版共用 scan.html 與同一套盤點表）──
     // 此 router 已全域要求後台登入 → 身分＝登入者。資料 API 與 /liff/api/* 同邏輯，只是改用後台 session 認證。
     const scanIc = (v) => (0, erp_companies_js_1.normIcpno)(v);
@@ -7972,7 +8095,7 @@ function createAdminRouter() {
             let whQtyMap = null;
             try { const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(code); if ((wq || []).length) { whQtyMap = {}; for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0); } } catch (_) { whQtyMap = null; }
             const sysQtySource = whQtyMap ? "warehouse" : "total";
-            const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item").all();
+            const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
             const exp = {}; (expRows || []).forEach((r) => { exp[String(r.erp_code)] = String(r.expiry_unit || ""); });
             const photoSet = new Set();
             try { (await db.prepare("SELECT erp_code FROM erp_stock_item_photo").all() || []).forEach((r) => photoSet.add(String(r.erp_code || ""))); } catch (_) { /* 照片表缺失不擋盤點 */ }
