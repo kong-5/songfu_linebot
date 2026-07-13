@@ -343,6 +343,18 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        // 每日帳款收款：凌越銷貨單當日快照（由內網代理推上雲，見 scripts/ly_sales_push.py）。
+        // kind：'num'=純數字(直打凌越)、'A'=A開頭(訂單拋轉寺岡EDI回轉)。金額欄皆取自凌越 SP_*。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_sales_doc (icpno TEXT NOT NULL DEFAULT '00', sp_no TEXT NOT NULL, doc_date TEXT NOT NULL, ct_no TEXT, ct_name TEXT, fkfs TEXT, total REAL NOT NULL DEFAULT 0, unpaid REAL NOT NULL DEFAULT 0, paid REAL NOT NULL DEFAULT 0, nopay_fg TEXT, sales TEXT, kind TEXT, ingested_at TEXT, ingested_by TEXT, PRIMARY KEY (icpno, sp_no))");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_sales_date ON cash_sales_doc(icpno, doc_date)");
+        // 收款客戶主檔：以凌越客戶編號(CT_NO=SP_CTNO)為鍵。name/fkfs/sales/stop 由推送覆蓋；
+        // is_cash（是否當日收現金）、route_line（路線/司機）、note 為後台人工維護，推送不覆蓋。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_customer (icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT NOT NULL, name TEXT, fkfs TEXT, sales TEXT, is_cash INTEGER, route_line TEXT, stop INTEGER NOT NULL DEFAULT 0, note TEXT, updated_at TEXT, PRIMARY KEY (icpno, ct_no))");
+        // 流水號斷號原因：series='num'(純數字)|'A'(寺岡EDI)，seq＝缺的流水號。斷號一定要填原因。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_seq_gap_reason (icpno TEXT NOT NULL DEFAULT '00', doc_date TEXT NOT NULL, series TEXT NOT NULL, seq INTEGER NOT NULL, reason TEXT, updated_by TEXT, updated_at TEXT, PRIMARY KEY (icpno, doc_date, series, seq))");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TEXT)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT, raw_name TEXT, quantity REAL NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (order_id) REFERENCES logistics_orders(id), FOREIGN KEY (product_id) REFERENCES products(id))");
     }
@@ -991,6 +1003,14 @@ async function initPg() {
                 // [fix 2026-07-10] 訂單品項「人工修改軌跡」（與 initSqlite 對應）：rebuild 後重放，防覆寫人工修正。
                 await client.query("CREATE TABLE IF NOT EXISTS order_item_edits (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, action TEXT NOT NULL, match_key TEXT, raw_name TEXT, quantity DOUBLE PRECISION, unit TEXT, remark TEXT, edited_by TEXT, created_at TEXT)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_order_item_edits_order ON order_item_edits(order_id)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                // 每日帳款收款（與 initSqlite 對應）：凌越銷貨單當日快照 + 收款客戶主檔。
+                await client.query("CREATE TABLE IF NOT EXISTS cash_sales_doc (icpno TEXT NOT NULL DEFAULT '00', sp_no TEXT NOT NULL, doc_date TEXT NOT NULL, ct_no TEXT, ct_name TEXT, fkfs TEXT, total DOUBLE PRECISION NOT NULL DEFAULT 0, unpaid DOUBLE PRECISION NOT NULL DEFAULT 0, paid DOUBLE PRECISION NOT NULL DEFAULT 0, nopay_fg TEXT, sales TEXT, kind TEXT, ingested_at TEXT, ingested_by TEXT, PRIMARY KEY (icpno, sp_no))");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_sales_date ON cash_sales_doc(icpno, doc_date)");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_customer (icpno TEXT NOT NULL DEFAULT '00', ct_no TEXT NOT NULL, name TEXT, fkfs TEXT, sales TEXT, is_cash INTEGER, route_line TEXT, stop INTEGER NOT NULL DEFAULT 0, note TEXT, updated_at TEXT, PRIMARY KEY (icpno, ct_no))");
+                await client.query("CREATE TABLE IF NOT EXISTS cash_seq_gap_reason (icpno TEXT NOT NULL DEFAULT '00', doc_date TEXT NOT NULL, series TEXT NOT NULL, seq INTEGER NOT NULL, reason TEXT, updated_by TEXT, updated_at TEXT, PRIMARY KEY (icpno, doc_date, series, seq))");
             }
             catch (_) { /* table may already exist */ }
             try {
