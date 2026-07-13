@@ -289,6 +289,9 @@ function initSqlite(dbPath) {
         // 庫存人工調整值（彌補凌越系統誤差，免重整）：每公司每料號一個總調整值 delta；
         // 顯示庫存＝凌越快照 + delta（獨立表，庫存推送覆蓋 erp_stock_items 不會洗掉）；只影響內部顯示/盤差，不流入凌越回寫。
         sqlite.exec("CREATE TABLE IF NOT EXISTS stock_adjustment (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, delta REAL NOT NULL DEFAULT 0, name TEXT, spec TEXT, unit TEXT, base_qty REAL, counted_qty REAL, note TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
+        // 每日庫存快照（供盤點「必盤」判定：跟昨天/上次有無變動）：庫存推送時一天存一份（最後一次為準）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_daily (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, snap_date))");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_daily_date ON erp_stock_daily(icpno, snap_date)");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -995,6 +998,9 @@ async function initPg() {
                 await client.query("CREATE TABLE IF NOT EXISTS erp_stock_item_photo (erp_code TEXT PRIMARY KEY, photo_url TEXT, updated_by TEXT, updated_at TEXT)");
                 // 庫存人工調整值（彌補凌越系統誤差，免重整）：每公司每料號一個總調整值 delta（獨立表，庫存推送不會洗掉）。
                 await client.query("CREATE TABLE IF NOT EXISTS stock_adjustment (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, delta DOUBLE PRECISION NOT NULL DEFAULT 0, name TEXT, spec TEXT, unit TEXT, base_qty DOUBLE PRECISION, counted_qty DOUBLE PRECISION, note TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
+                // 每日庫存快照（供盤點「必盤」判定：跟昨天/上次有無變動）：庫存推送時一天存一份（最後一次為準）。
+                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_daily (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, snap_date))");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_daily_date ON erp_stock_daily(icpno, snap_date)");
             }
             catch (_) { /* table may already exist */ }
             try {

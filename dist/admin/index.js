@@ -72,6 +72,7 @@ const basket_log_js_1 = require("../lib/basket-log.js");
 const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
+const stock_mustcount_js_1 = require("../lib/stock-mustcount.js");
 const line_conversation_js_1 = require("../lib/line-conversation.js");
 const announcement_templates_js_1 = require("../lib/announcement-templates.js");
 const announcement_image_js_1 = require("../lib/announcement-image.js");
@@ -8310,6 +8311,7 @@ function createAdminRouter() {
                 for (const r of cRows || []) { let expiry = []; try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; } const totalv = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty); const midv = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty); const goodv = totalv == null ? null : Math.round((totalv - (midv || 0)) * 100) / 100; saved[String(r.erp_code || "")] = { counted: goodv, mid: midv, expiry }; }
                 resumed = (cRows || []).length > 0; submittedAt = sess.submitted_at != null && sess.submitted_at !== "" ? String(sess.submitted_at) : null;
             }
+            try { const mc = await (0, stock_mustcount_js_1.computeMustCount)(db, { icpno, whCode: code, today: date }); items.forEach((it) => { if (mc.set.has(it.c)) it.mc = 1; }); } catch (_) { }
             res.json({ date, warehouse: { code, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt, sysQtySource });
         } catch (e) { console.error("[admin entry items]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
@@ -12289,6 +12291,21 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         flat.push(...r);
                     await h.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
                 }
+                // 每日庫存快照（供盤點「必盤」判定：跟昨天有無變動）：同交易內，一天一份、最後一次推送為準（先刪今天這家再整批插）。
+                const dailySnapDate = stkAdminTaipeiDate();
+                await h.prepare("DELETE FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date = ?").run(icpno, dailySnapDate);
+                for (let i = 0; i < rows.length; i += CHUNK) {
+                    const chunk = rows.slice(i, i + CHUNK);
+                    const ph = chunk.map(() => "(?,?,?,?,?)").join(",");
+                    const flat = [];
+                    for (const r of chunk)
+                        flat.push(icpno, r[0], dailySnapDate, r[4], snapshotAt); // r = [code,name,spec,unit,qty,wh_code,icpno,at]；qty=r[4]
+                    await h.prepare("INSERT INTO erp_stock_daily (icpno, erp_code, snap_date, qty, updated_at) VALUES " + ph).run(...flat);
+                }
+                try { // 只留近 14 天，避免無限成長
+                    const pruneBefore = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(Date.now() - 14 * 86400000));
+                    await h.prepare("DELETE FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date < ?").run(icpno, pruneBefore);
+                } catch (_) { /* prune 失敗不影響推送 */ }
                 // 分倉快照：同交易內覆蓋（失敗整批回滾，與主表一致）；沒帶 warehouse_qty 就跳過不動。
                 // 多公司安全：只清「本批帶到的倉別」（凌越倉號屬單一公司），不整表清，否則各公司推送互相清空。
                 if (whRows) {
