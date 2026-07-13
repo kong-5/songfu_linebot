@@ -6580,7 +6580,7 @@ function createAdminRouter() {
         for (const s of sessions || []) {
             const sIcp = (0, erp_companies_js_1.normIcpno)(s.icpno);
             const whm = await getWhLatest(String(s.wh_code || ""));
-            const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
+            const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, edited_at, edited_by_name FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
             const items = (rows || []).map((r) => {
                 const sys = Number(r.sys_qty || 0);
                 const counted = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty);
@@ -6602,7 +6602,7 @@ function createAdminRouter() {
                 const diffLatest = (counted == null || latest == null) ? null : Math.round((counted - latest) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
-                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, latestRaw, adj, diffLatest, expiry };
+                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, latestRaw, adj, diffLatest, expiry, editedAt: r.edited_at || null, editedBy: r.edited_by_name || null };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
             out.push({ session: s, items, diffCount, latestSource: whm ? "warehouse" : "total" });
@@ -6639,6 +6639,11 @@ function createAdminRouter() {
             if (it.diff == null) return "—";
             if (it.sys === 0) return it.diff === 0 ? "0%" : "—";
             return ((it.diff / it.sys) * 100).toFixed(1) + "%";
+        };
+        const latestPct = (it) => {
+            if (it.diffLatest == null || it.latest == null) return "—";
+            if (it.latest === 0) return it.diffLatest === 0 ? "0%" : "—";
+            return ((it.diffLatest / it.latest) * 100).toFixed(1) + "%";
         };
         const diffCls = (it) => (it.diff == null ? "" : it.diff === 0 ? "stk-z" : it.diff > 0 ? "stk-p" : "stk-n");
         const expiryTxt = (arr) => (arr || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"} × ${b.qty || "?"}`).join("、");
@@ -6694,16 +6699,17 @@ function createAdminRouter() {
                 }
                 return it.counted == null ? "—" : setForm(it, "建立調整");
             };
+            // 複盤：實盤可直接改（confirm 確認、寫修改軌跡）；盤差／對最新盤差把 % 用括號併進同一欄。
+            const countForm = (it) => `<form method="post" action="/admin/inventory/count-edit" style="display:inline-flex;gap:3px;align-items:center;justify-content:flex-end;" onsubmit="return confirm('複盤修正 ${escapeAttr(it.code)}：實盤改為 '+this.counted.value+'？（會留下修改軌跡）');"><input type="hidden" name="session_id" value="${escapeAttr(s.id)}"><input type="hidden" name="erp_code" value="${escapeAttr(it.code)}"><input type="hidden" name="back" value="${escapeAttr(backQ)}"><input type="number" name="counted" value="${it.counted == null ? "" : escapeAttr(String(it.counted))}" step="any" class="stk-editqty" title="複盤：直接改實盤數"><button type="submit" class="stk-adjbtn" title="送出複盤修正（會留修改軌跡）">改</button></form>`;
             const rowsHtml = sel.items.map((it) => `
               <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
                 <td>${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
                 <td class="stk-num">${fmtN(it.sys)}</td>
-                <td class="stk-num">${fmtN(it.counted)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}</td>
-                <td class="stk-num stk-diff">${it.diff == null ? "—" : (it.diff > 0 ? "+" : "") + it.diff}</td>
-                <td class="stk-num">${diffPct(it)}</td>
+                <td class="stk-num">${countForm(it)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}${it.editedAt ? `<span class="stk-edited" title="複盤修正 ${escapeAttr(stkAdminTwTime(it.editedAt))}${it.editedBy ? " · " + escapeAttr(it.editedBy) : ""}">✎ ${escapeHtml(stkAdminTwTime(it.editedAt))}</span>` : ""}</td>
+                <td class="stk-num stk-diff">${it.diff == null ? "—" : `${(it.diff > 0 ? "+" : "") + it.diff}<span class="stk-pctp">(${diffPct(it)})</span>`}</td>
                 <td class="stk-num stk-latest">${fmtN(it.latest)}</td>
-                <td class="stk-num ${dLatestCls(it.diffLatest)}"><b>${it.diffLatest == null ? "—" : (it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b></td>
+                <td class="stk-num ${dLatestCls(it.diffLatest)}">${it.diffLatest == null ? "—" : `<b>${(it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b><span class="stk-pctp">(${latestPct(it)})</span>`}</td>
                 <td class="stk-adj">${adjCell(it)}</td>
                 <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
               </tr>`).join("");
@@ -6723,8 +6729,8 @@ function createAdminRouter() {
             <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
-              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下</span></th><th class="stk-num">實盤<br><span class="stk-th2">含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下</span></th><th class="stk-num">盤差%</th><th class="stk-num">最新<br><span class="stk-th2">系統+調整</span></th><th class="stk-num">對最新<br><span class="stk-th2">盤差</span></th><th>調整<br><span class="stk-th2">誤差補償</span></th><th>效期</th></tr></thead>
-              <tbody>${rowsHtml || `<tr><td colspan="10" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
+              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下 ${escapeHtml(stkAdminTwTime(s.submitted_at) || "—")}</span></th><th class="stk-num">實盤<br><span class="stk-th2">可改·含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下(%)</span></th><th class="stk-num">最新系統<br><span class="stk-th2">+調整 ${escapeHtml(stkAdminTwTime(sel.latestSource === "warehouse" ? stockMeta.wh_snapshot_at : stockMeta.snapshot_at) || "—")}</span></th><th class="stk-num">對最新盤差<br><span class="stk-th2">(%)</span></th><th>調整<br><span class="stk-th2">誤差補償</span></th><th>效期</th></tr></thead>
+              <tbody>${rowsHtml || `<tr><td colspan="9" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
             </table>
             </div>
           </div>`;
@@ -6794,6 +6800,9 @@ function createAdminRouter() {
         .stk-adjbtn:hover{background:#f3eefd;border-color:#c9b6f0;color:#6a3fc0;}
         .stk-adjbtn.del{color:#b3261e;}
         .stk-adjbtn.del:hover{background:#fdecec;border-color:#e8b4b0;color:#8f1d17;}
+        .stk-editqty{width:58px;text-align:right;font-variant-numeric:tabular-nums;font-size:12.5px;padding:2px 5px;border:1px solid var(--notion-border,#e3e2e0);border-radius:6px;background:var(--notion-card,#fff);color:inherit;}
+        .stk-pctp{margin-left:4px;font-size:10.5px;color:#9b9a97;font-weight:400;}
+        .stk-edited{display:block;font-size:10px;color:#8250df;margin-top:1px;white-space:nowrap;}
       </style>
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 每日盤點</div>
       <h1 class="notion-page-title" style="margin-bottom:14px;">每日盤點</h1>
@@ -6806,6 +6815,8 @@ function createAdminRouter() {
         <span style="flex:1"></span>
         <a href="/admin/inventory/legacy" style="font-size:12px;color:#9b9a97;">舊版盤點作業 →</a>
       </form>
+      ${(req.query.cok || req.query.adjok) ? `<div style="background:#e7f5e9;color:#2e7d32;padding:8px 12px;border-radius:8px;margin:0 0 12px;font-size:13px;">已更新。</div>` : ""}
+      ${(req.query.cerr || req.query.adjerr) ? `<div style="background:#fdecec;color:#b3261e;padding:8px 12px;border-radius:8px;margin:0 0 12px;font-size:13px;">操作失敗：${escapeHtml(String(req.query.cerr || req.query.adjerr))}</div>` : ""}
       <div class="stk-sum">
         <span class="stk-pill">本日已盤 <b>${day.length}</b> / 納入盤點 <b>${includedWh.length}</b> 倉（${pct(day.length, includedWh.length)}%）</span>
         <span class="stk-pill ${totalDiff ? "warn" : "ok"}">盤差品項 <b>${totalDiff}</b> 項</span>
@@ -6967,6 +6978,36 @@ function createAdminRouter() {
         </table>
       </div>`;
         res.type("text/html").send(notionPage("庫存調整", body, "inv-adjust", res));
+    });
+    // 複盤：每日盤點頁直接改實盤數 → 更新 stocktake_count.counted_qty ＋ 寫修改軌跡 stocktake_count_audit。
+    router.post("/inventory/count-edit", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const back = String(req.body?.back || "").replace(/[^\w=&%:.\-]/g, "");
+        const dest = "/admin/inventory" + (back ? ("?" + back) : "");
+        const done = (extra) => res.redirect(dest + (extra ? ((dest.indexOf("?") >= 0 ? "&" : "?") + extra) : ""));
+        try {
+            const sessionId = String(req.body?.session_id || "").trim();
+            const erpCode = String(req.body?.erp_code || "").trim();
+            if (!sessionId || !erpCode) { done("cerr=" + encodeURIComponent("缺少場次或料號")); return; }
+            const nv = Number(req.body?.counted);
+            if (!Number.isFinite(nv) || nv < 0) { done("cerr=" + encodeURIComponent("實盤數無效（要 0 或正數）")); return; }
+            const newCounted = Math.round(nv * 100) / 100;
+            const row = await db.prepare("SELECT c.counted_qty, c.name, s.icpno, s.wh_code, s.count_date FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE c.session_id = ? AND c.erp_code = ?").get(sessionId, erpCode);
+            if (!row) { done("cerr=" + encodeURIComponent("查無此盤點列")); return; }
+            const oldCounted = (row.counted_qty == null || row.counted_qty === "") ? null : Number(row.counted_qty);
+            if (oldCounted != null && Math.abs(oldCounted - newCounted) < 1e-9) { done("cok=1"); return; } // 沒變就不寫軌跡
+            const now = new Date().toISOString();
+            const who = String(res.locals.adminUser || req.adminUsername || "");
+            const actor = "admin:" + String(req.adminUsername || "");
+            const { newId } = require("../lib/id.js");
+            await db.prepare("UPDATE stocktake_count SET counted_qty = ?, edited_at = ?, edited_by = ?, edited_by_name = ? WHERE session_id = ? AND erp_code = ?").run(newCounted, now, actor, who, sessionId, erpCode);
+            await db.prepare("INSERT INTO stocktake_count_audit (id, session_id, icpno, wh_code, count_date, erp_code, name, old_counted, new_counted, actor, actor_name, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .run(newId("stca"), sessionId, (0, erp_companies_js_1.normIcpno)(row.icpno), String(row.wh_code || ""), String(row.count_date || ""), erpCode, String(row.name || ""), oldCounted, newCounted, actor, who, "複盤修正", now);
+            done("cok=1");
+        }
+        catch (e) {
+            console.error("[admin] count-edit", e?.message || e);
+            done("cerr=" + encodeURIComponent(String(e?.message || e).slice(0, 120)));
+        }
     });
     router.get("/inventory/stocktake.csv", async (req, res) => {
         const qd = String(req.query.date || "").trim();
