@@ -387,6 +387,11 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        // 錢的原子性：一張銷貨單只能被收款一次。唯一約束擋併發重複收款（第二筆 INSERT 直接失敗→交易回滾）。
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_alloc_sp_uniq ON cash_payment_alloc(icpno, sp_no)");
+    }
+    catch (_) { /* 若既有重複資料先不建唯一索引（避免擋啟動）；重複需人工檢查 */ }
+    try {
         sqlite.exec("ALTER TABLE cash_customer ADD COLUMN last_txn TEXT"); // 凌越最後交易日 CT_LAST_DT，用來分辨舊客戶
     }
     catch (_) { /* column exists */ }
@@ -1077,6 +1082,11 @@ async function initPg() {
                 await client.query("ALTER TABLE cash_customer ADD COLUMN IF NOT EXISTS last_txn TEXT");
             }
             catch (_) { /* table may already exist */ }
+            try {
+                // 錢的原子性：一張銷貨單只能被收款一次（擋併發重複收款）
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_alloc_sp_uniq ON cash_payment_alloc(icpno, sp_no)");
+            }
+            catch (_) { /* 既有重複資料先不建，需人工檢查 */ }
             try {
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_orders (id TEXT PRIMARY KEY, order_date TEXT NOT NULL, raw_message TEXT, memo TEXT, created_at TIMESTAMPTZ)");
                 await client.query("CREATE TABLE IF NOT EXISTS logistics_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES logistics_orders(id), product_id TEXT REFERENCES products(id), raw_name TEXT, quantity DOUBLE PRECISION NOT NULL DEFAULT 0, unit TEXT, remark TEXT, amount TEXT, need_review INTEGER NOT NULL DEFAULT 0)");
