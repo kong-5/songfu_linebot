@@ -12342,7 +12342,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
     function cashValidDate(v) { return (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim())) ? v.trim() : ""; }
     async function loadCollectData(icpno, date) {
         const dayUnits = await db.prepare(
-            "SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.fkfs, s.total, s.kind, COALESCE(c.route_line,'') AS route_line, c.is_cash AS is_cash " +
+            "SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.fkfs, s.total, s.unpaid, s.nopay_fg, s.kind, COALESCE(c.route_line,'') AS route_line, c.is_cash AS is_cash " +
             "FROM cash_sales_doc s LEFT JOIN cash_customer c ON c.icpno = s.icpno AND c.ct_no = s.ct_no " +
             "WHERE s.icpno = ? AND s.doc_date = ? ORDER BY COALESCE(c.route_line,''), s.ct_name, s.sp_no").all(icpno, date) || [];
         const allocRows = await db.prepare("SELECT a.sp_no, a.payment_id, p.collected_by, p.recorded_by, p.recorded_at FROM cash_payment_alloc a JOIN cash_payment p ON p.id = a.payment_id WHERE a.icpno = ?").all(icpno) || [];
@@ -12350,9 +12350,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const driverRows = await db.prepare("SELECT COALESCE(NULLIF(TRIM(collected_by),''),'（未填）') AS who, COUNT(*) AS c, SUM(cash_amount) AS cash, SUM(check_amount) AS chk, SUM(total_amount) AS tot FROM cash_payment WHERE icpno = ? AND pay_date = ? GROUP BY COALESCE(NULLIF(TRIM(collected_by),''),'（未填）') ORDER BY SUM(total_amount) DESC").all(icpno, date) || [];
         // 跨日未收：選定日期之前、尚未收款的單（客戶一週結一次會累積在這）
         const priorUnpaid = await db.prepare(
-            "SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.fkfs, s.total, COALESCE(c.route_line,'') AS route_line, c.is_cash AS is_cash " +
+            "SELECT s.sp_no, s.doc_date, s.ct_no, s.ct_name, s.fkfs, s.total, s.unpaid, s.nopay_fg, COALESCE(c.route_line,'') AS route_line, c.is_cash AS is_cash " +
             "FROM cash_sales_doc s LEFT JOIN cash_customer c ON c.icpno = s.icpno AND c.ct_no = s.ct_no " +
-            "WHERE s.icpno = ? AND s.doc_date < ? AND NOT EXISTS (SELECT 1 FROM cash_payment_alloc a WHERE a.icpno = s.icpno AND a.sp_no = s.sp_no) " +
+            "WHERE s.icpno = ? AND s.doc_date < ? AND COALESCE(s.unpaid,0) > 0 AND NOT EXISTS (SELECT 1 FROM cash_payment_alloc a WHERE a.icpno = s.icpno AND a.sp_no = s.sp_no) " +
             "ORDER BY COALESCE(c.route_line,''), s.ct_name, s.doc_date, s.sp_no").all(icpno, date) || [];
         return { dayUnits, allocBySp, driverRows, priorUnpaid };
     }
@@ -12372,7 +12372,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
             const isCashRow = (u) => (u.is_cash === 1 || u.is_cash === "1") ? true : ((u.is_cash === 0 || u.is_cash === "0") ? false : /現金|現收/.test(String(u.fkfs || "")));
             const fmtTs = (iso) => { try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
-            // 左欄計數：只算「收現金」客戶（與預設『只看收現金』一致，避免數字對不上）
+            const erpUnpaid = (u) => cashNum(u.unpaid) > 0; // 凌越未付>0＝ERP尚未沖帳；=0＝會計已沖帳(視為已收)
+            // 「未收」= 我方未登記收款 且 凌越仍未付；已沖帳(unpaid=0)不算未收
+            const isUnpaidRow = (u) => !allocBySp.has(u.sp_no) && erpUnpaid(u);
+            // 左欄計數：只算「收現金」客戶（與預設『只看收現金』一致）
             const routeAgg = new Map();
             for (const u of dayUnits) {
                 if (!isCashRow(u))
@@ -12382,14 +12385,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     routeAgg.set(rt, { total: 0, unpaid: 0 });
                 const a = routeAgg.get(rt);
                 a.total++;
-                if (!allocBySp.has(u.sp_no))
+                if (isUnpaidRow(u))
                     a.unpaid++;
             }
             const routeKeys = Array.from(routeAgg.keys()).sort((x, y) => (x === "" ? 1 : y === "" ? -1 : String(x).localeCompare(String(y), "zh-Hant", { numeric: true })));
             const routeLabel = (rt) => rt === "" ? "未分路線" : "路線 " + rt;
             const cashUnits = dayUnits.filter(isCashRow);
             const allTotal = cashUnits.length;
-            const allUnpaid = cashUnits.filter((u) => !allocBySp.has(u.sp_no)).length;
+            const allUnpaid = cashUnits.filter(isUnpaidRow).length;
             const rtLink = (key, label, tot, un) => `<a href="/admin/cash/collect?icpno=${icpno}&date=${date}&route=${encodeURIComponent(key)}" class="cash-rt${(route === key || (key === "all" && route === "all")) ? " on" : ""}"><span>${escapeHtml(label)}</span><span class="rt-n">${tot}${un ? `／<b style="color:#c62828;">未${un}</b>` : ""}</span></a>`;
             const leftNav = `
         <div class="notion-card" style="padding:8px;position:sticky;top:8px;">
@@ -12405,13 +12408,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const unitRow = (u, prior) => {
                 const a = allocBySp.get(u.sp_no);
                 const paid = !!a;
+                const erpPaid = !paid && !erpUnpaid(u); // 我方沒登記、但凌越已沖帳
+                const collectable = !paid && !erpPaid; // 真正未收（可收款）
                 const cashFlag = isCashRow(u);
                 const searchKey = ((u.sp_no || "") + " " + (u.ct_name || "") + " " + (u.ct_no || "")).toLowerCase();
                 const status = paid
                     ? `<span style="color:#2e7d32;">已收${a.collected_by ? "・" + escapeHtml(a.collected_by) : ""}</span>${a.recorded_by || a.recorded_at ? `<span style="color:#9b9a97;font-size:11px;"> （${a.recorded_by ? escapeHtml(a.recorded_by) : ""}${a.recorded_at ? " " + escapeHtml(fmtTs(a.recorded_at)) : ""}）</span>` : ""} <button type="button" class="link-undo cf-undo" data-pid="${a.payment_id}">取消</button>`
-                    : `<button type="button" class="btn-primary cc-payone" style="padding:2px 10px;font-size:12px;" data-sp="${escapeAttr(u.sp_no)}">收款</button> <span style="color:#c62828;font-size:12px;">未收</span>`;
+                    : (erpPaid
+                        ? `<span style="color:#2e7d32;">已收（ERP沖帳）</span>`
+                        : `<button type="button" class="btn-primary cc-payone" style="padding:2px 10px;font-size:12px;" data-sp="${escapeAttr(u.sp_no)}">收款</button> <span style="color:#c62828;font-size:12px;">未收</span>`);
                 return `<tr class="cc-tr" data-cash="${cashFlag ? 1 : 0}" data-search="${escapeAttr(searchKey)}">
-            <td style="text-align:center;">${paid ? "" : `<input type="checkbox" class="cc-row" value="${escapeAttr(u.sp_no)}" data-due="${cashNum(u.total)}" data-ct="${escapeAttr(u.ct_no)}" data-ctname="${escapeAttr(u.ct_name || "")}">`}</td>
+            <td style="text-align:center;">${collectable ? `<input type="checkbox" class="cc-row" value="${escapeAttr(u.sp_no)}" data-due="${cashNum(u.total)}" data-ct="${escapeAttr(u.ct_no)}" data-ctname="${escapeAttr(u.ct_name || "")}">` : ""}</td>
             <td style="font-family:ui-monospace,monospace;">${escapeHtml(u.sp_no)}${prior ? `<span style="color:#c62828;font-size:11px;"> (${escapeHtml(String(u.doc_date || "").slice(5, 10))})</span>` : ""}</td>
             <td>${escapeHtml(u.ct_name || "")}</td>
             <td style="text-align:center;">${escapeHtml(String(u.route_line || "").trim() || "—")}</td>
