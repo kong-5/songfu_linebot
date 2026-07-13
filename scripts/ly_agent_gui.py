@@ -13,9 +13,13 @@ ly_agent_gui.py — 凌越整合代理（視窗版）
   2. 訂單回寫（原 ly_writeback_bridge.py）
      - 每隔一段時間自動檢查雲端「待回寫訂單」→ 寫進凌越訂貨單 → 回填單號。
      - 也可用視窗上的按鈕手動「試跑 / 測一張 / 立即回寫」。
+  3. 銷貨代理（每日帳款收款；ly_sales_push.py）
+     - 每天在指定時間（預設 08:30）自動取當日銷貨單推上雲端（後台「松富銷貨統計/現金收款」用）。
+     - 掛長連線 cash-refresh-wait：使用者在網站按『重新取單』（客戶改單後）→ 立刻重撈該日該公司。
+  另有進銷存查詢（txn-wait）長連線：庫存頁點品項即時查凌越近期進銷交易。
 
 視窗會即時顯示：
-  ● 雲端連線狀態、● 凌越模組狀態、● 庫存代理、● 訂單回寫
+  ● 雲端連線狀態、● 凌越模組狀態、● 庫存代理、● 訂單回寫、● 銷貨代理（帳款收款）
   ＋ 一塊「即時訊息記錄」（原本黑視窗的所有輸出都會顯示在這）
   ＋ 手動按鈕與「⚙ 設定」（網址／金鑰／公司別／定時／回寫間隔，存成設定檔）
 
@@ -81,7 +85,7 @@ def local_import(modname: str):
 # 這些子模組會在載入時 import lystk / ly_order；在沒有凌越環境的機器上會失敗，
 # 因此改成「用到時才載入」（lazy import），視窗照樣能開、能改設定。
 APP_TITLE = "凌越整合代理"
-APP_VER = "1.0"
+APP_VER = "1.1"
 
 
 # ======================================================================
@@ -95,6 +99,8 @@ DEFAULT_CONFIG = {
     "writeback_key": os.environ.get("LY_WRITEBACK_KEY", ""),
     "icpno": os.environ.get("LY_ICPNO", "all"),  # 庫存推送預設全公司（00,01,02,03）；回寫仍固定第一家=00
     "stock_times": os.environ.get("LY_STOCK_TIMES", "06:00,12:00"),
+    "sales_auto": True,         # 是否自動取當日銷貨單推上雲（每日帳款收款）＋掛長連線等網站「重新取單」
+    "sales_times": os.environ.get("LY_SALES_TIMES", "08:30"),  # 每日定時取單時間（清空＝只靠按鈕/網站重新取單）
     "wb_auto": True,            # 是否掛著自動處理『上傳凌越』佇列（只寫使用者按過上傳的單）
     # 倉別規則固定為：每品項帶凌越貨品主檔預設倉(SK_RKWHNO)、查不到用固定倉別補（bridge 內建）
     "wb_mark_checked": True,      # 寫入即標「已審核」OR_CHECK=1（拋轉需要；關閉=未審核）
@@ -336,6 +342,33 @@ def cloud_txn_callback(base: str, key: str, results: list) -> dict:
         return json.loads(resp.read().decode("utf-8") or "{}")
 
 
+def cloud_sales_refresh_wait(base: str, key: str, timeout_sec: int = 25) -> dict:
+    """長連線等後台『重新取單』（使用者在銷貨統計/收款頁按了按鈕）。
+    回 {refresh: bool, icpno, date}；沒有就 hold 到 timeout 回 {refresh:false}。連線失敗丟例外。"""
+    url = base.rstrip("/") + f"/admin/lingyue-writeback/cash-refresh-wait?timeout={timeout_sec}"
+    req = urllib.request.Request(
+        url, method="GET",
+        headers={"X-Writeback-Key": key, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout_sec + 15) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+
+def cloud_sales_refresh_report(base: str, key: str, ok: bool, error: str = "") -> None:
+    """回報『重新取單』結果給後台（失敗時讓網站顯示原因、不會一直卡在 running）。"""
+    url = base.rstrip("/") + "/admin/lingyue-writeback/cash-refresh-report"
+    body = json.dumps({"ok": bool(ok), "error": error or ""}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json", "X-Writeback-Key": key, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+    except Exception:
+        pass  # 回報失敗不致命；cash-ingest 成功時也會自行標記 done
+
+
 def cloud_test(base: str, key: str, timeout: int = 8) -> tuple:
     """一次性連線測試。回 (ok, 訊息)。用『待回寫訂單 pending』當探針，因為
     即使後台是舊版、沒有庫存端點，pending 仍在 → 可分辨『網址/金鑰對不對』與
@@ -413,6 +446,7 @@ class AgentEngine:
         self.erp_lock = threading.Lock()  # 序列化所有「碰凌越」的操作
         self._threads = []
         self._realtime_off = False        # 後台若無 inventory-wait 端點，改定時模式
+        self._sales_realtime_off = False  # 後台若無 cash-refresh-wait 端點，銷貨改純定時模式
 
     # ── 記錄去重：同一則訊息只印一次，狀態改變再印 ──────────────
     def _log_once(self, tag: str, msg):
@@ -440,15 +474,33 @@ class AgentEngine:
             pushed.clear()
             pushed.update(leftover)
 
+    def _scheduled_sales_push(self, pushed: set):
+        """到達每日定時點就自動取當日銷貨單推一次（每個時間點每天只推一次）。"""
+        now = datetime.datetime.now()
+        today = now.date().isoformat()
+        for (h, m) in parse_times(self.cfg.get("sales_times", "")):
+            slot = (today, h, m)
+            if slot in pushed:
+                continue
+            if (now.hour, now.minute) >= (h, m):
+                self.do_sales_push(reason=f"定時 {h:02d}:{m:02d}")
+                pushed.add(slot)
+        if len(pushed) > 8:
+            leftover = {k for k in pushed if k[0] == today}
+            pushed.clear()
+            pushed.update(leftover)
+
     # ── 生命週期 ───────────────────────────────────────────────
     def start(self):
         self.stop_event.clear()
         self.state["stock_running"] = True
         self.state["wb_running"] = bool(self.cfg.get("wb_auto"))
+        self.state["sales_running"] = bool(self.cfg.get("sales_auto", True))
         self._threads = [
             threading.Thread(target=self._stock_loop, name="stock", daemon=True),
             threading.Thread(target=self._writeback_loop, name="writeback", daemon=True),
             threading.Thread(target=self._txn_loop, name="txn", daemon=True),
+            threading.Thread(target=self._sales_loop, name="sales", daemon=True),
         ]
         for t in self._threads:
             t.start()
@@ -458,6 +510,7 @@ class AgentEngine:
         self.stop_event.set()
         self.state["stock_running"] = False
         self.state["wb_running"] = False
+        self.state["sales_running"] = False
         self.log("■ 代理已停止（背景連線會在下個週期收掉）")
 
     # ── 碰凌越的實際動作（都要拿 erp_lock）─────────────────────
@@ -486,6 +539,39 @@ class AgentEngine:
                     f"❌ 推庫存失敗（後台 inventory-push）：{_short(e)}"
                     "；可能後台版本較舊或該端點異常，需更新後台版本。",
                 )
+
+    # ── 每日帳款收款：取當日銷貨單推上雲（供定時、手動、網站『重新取單』共用）──
+    def do_sales_push(self, date=None, icpno=None, reason: str = "") -> bool:
+        """撈凌越某日銷貨單並推上雲端 cash-ingest。回 True=成功、False=失敗。
+        icpno 省略＝用設定（可為 all/多家）；網站『重新取單』會帶當頁公司。"""
+        base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
+        icp = (icpno or self.cfg["icpno"] or "00")
+        if not base or not key:
+            self.log("⚠ 尚未設定網址/金鑰，無法取單（請按⚙設定）")
+            return False
+        try:
+            ly_sales_push = local_import("ly_sales_push")  # 強制用隨附版本
+        except Exception as e:
+            self.state["erp"] = "missing"
+            self.log(f"⚠ 載入銷貨推送模組失敗（此機無凌越環境或缺 ly_sales_push.py？）：{_short(e)}")
+            return False
+        with self.erp_lock:
+            tag = f"（{reason}）" if reason else ""
+            d = date or datetime.date.today().isoformat()
+            self.log(f"🧾 取凌越銷貨單 {d} ICPNO={icp} 並推送{tag} …")
+            try:
+                n = ly_sales_push.push_once(base, key, icp, d)
+                self.state["erp"] = "ok"
+                self.state["sales_last_push"] = f"{now_full()}（{n} 張）"
+                self._log_once("salespush", None)
+                return True
+            except Exception as e:
+                self._log_once(
+                    "salespush",
+                    f"❌ 取單推送失敗（後台 cash-ingest）：{_short(e)}"
+                    "；可能後台版本較舊或該端點異常，需更新後台版本。",
+                )
+                return False
 
     def write_orders(self, orders: list, *, dry_run: bool = False):
         """只寫「傳入的這批訂單」（來自 /wait 佇列＝使用者在網站按過『上傳凌越』的單）。
@@ -802,6 +888,72 @@ class AgentEngine:
             except Exception as e:
                 self.log(f"⚠ 進銷存回填失敗：{_short(e)}")
 
+    # ── 背景迴圈：每日帳款收款（定時取單 ＋ 長連線等網站『重新取單』）──────
+    #   定時：到 sales_times 就取當日銷貨單推一次。
+    #   即時：長連線 cash-refresh-wait，使用者在網站按『重新取單』就立刻重撈該日該公司。
+    def _sales_loop(self):
+        self.stop_event.wait(12)  # 啟動後稍等，避開和庫存/回寫同時打凌越
+        pushed = set()
+        now = datetime.datetime.now()
+        today = now.date().isoformat()
+        for (h, m) in parse_times(self.cfg.get("sales_times", "")):
+            if (now.hour, now.minute) >= (h, m):
+                pushed.add((today, h, m))
+        # 啟動先取一次今天，讓後台立刻有當日銷貨單
+        if self.cfg.get("sales_auto", True) and self.cfg["cloud_base"] and self.cfg["writeback_key"]:
+            self.do_sales_push(reason="啟動取單")
+        while not self.stop_event.is_set():
+            if not self.cfg.get("sales_auto", True):
+                self.state["sales_running"] = False
+                self.stop_event.wait(10)
+                continue
+            self.state["sales_running"] = True
+            base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
+            if not base or not key:
+                self.stop_event.wait(10)
+                continue
+            self.state["sales_next"] = next_time_label(parse_times(self.cfg.get("sales_times", "")))
+            # 先做定時取單
+            try:
+                self._scheduled_sales_push(pushed)
+            except Exception as e:
+                self._log_once("salesloop", f"⚠ 取單定時錯誤：{_short(e)}")
+            # 後台無 cash-refresh-wait 端點（舊版）：純定時模式，不長輪詢
+            if self._sales_realtime_off:
+                self.stop_event.wait(30)
+                continue
+            # 長連線等網站『重新取單』
+            try:
+                res = cloud_sales_refresh_wait(base, key, 25)
+                self._log_once("saleswait", None)
+                if res.get("refresh"):
+                    d = (res.get("date") or "").strip() or None
+                    icp = (res.get("icpno") or "").strip() or None
+                    self.log(f"🔁 收到網站『重新取單』請求（{icp or self.cfg['icpno']} {d or '今日'}），重撈中 …")
+                    ok = self.do_sales_push(date=d, icpno=icp, reason="網站重新取單")
+                    if not ok:
+                        try:
+                            cloud_sales_refresh_report(base, key, False, "內網代理重撈凌越失敗")
+                        except Exception:
+                            pass
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    self._sales_realtime_off = True
+                    self._log_once("saleswait", "ℹ 後台沒有『重新取單』端點（cash-refresh-wait 404）——"
+                                                 "後台版本較舊。已改為純定時取單；要即時同步改單請更新後台版本。")
+                elif e.code in (401, 503):
+                    self._log_once("saleswait", f"⚠ 重新取單端點 HTTP {e.code}（金鑰或後台設定問題）。")
+                    self.stop_event.wait(20)
+                else:
+                    self._log_once("saleswait", f"⚠ 重新取單端點 HTTP {e.code} {e.reason}；重試中。")
+                    self.stop_event.wait(10)
+            except urllib.error.URLError as e:
+                self._log_once("saleswait", f"⚠ 重新取單連線問題：{_short(getattr(e, 'reason', e), 80)}")
+                self.stop_event.wait(5)
+            except Exception as e:
+                self._log_once("salesloop", f"⚠ 取單迴圈錯誤：{_short(e)}")
+                self.stop_event.wait(5)
+
 
 # ======================================================================
 #  視窗（深色現代風；模組化卡片方便日後加功能）
@@ -857,6 +1009,7 @@ class App(tk.Tk):
             "erp": "unknown",
             "stock_running": False, "stock_last_push": "—", "stock_next": "—",
             "wb_running": False, "wb_last": "—", "wb_last_result": "—", "wb_last_check": "—",
+            "sales_running": False, "sales_last_push": "—", "sales_next": "—",
         }
         self.log_queue: "queue.Queue" = queue.Queue()
         self.engine = AgentEngine(self.cfg, self.state_data, self.log)
@@ -879,8 +1032,8 @@ class App(tk.Tk):
     # ── 版面 ───────────────────────────────────────────────────
     def _build_ui(self):
         self.title(f"{APP_TITLE}  v{APP_VER}")
-        self.geometry("860x620")
-        self.minsize(760, 560)
+        self.geometry("860x720")
+        self.minsize(760, 620)
         self.configure(bg=BG)
 
         # 頂部標題列
@@ -888,7 +1041,7 @@ class App(tk.Tk):
         header.pack(fill="x", padx=18, pady=(16, 8))
         tk.Label(header, text="凌越整合代理", fg=FG, bg=BG,
                  font=("Microsoft JhengHei UI", 18, "bold")).pack(side="left")
-        tk.Label(header, text="庫存即時推送 ＋ 訂單自動回寫", fg=MUTED, bg=BG,
+        tk.Label(header, text="庫存即時推送 ＋ 訂單自動回寫 ＋ 帳款取單", fg=MUTED, bg=BG,
                  font=("Microsoft JhengHei UI", 10)).pack(side="left", padx=(12, 0), pady=(8, 0))
 
         self.btn_toggle = tk.Button(header, text="啟動代理", command=self.toggle_engine,
@@ -910,10 +1063,12 @@ class App(tk.Tk):
         self.card_erp = StatusCard(cards, "凌越模組")
         self.card_stock = StatusCard(cards, "庫存代理")
         self.card_wb = StatusCard(cards, "訂單回寫")
+        self.card_sales = StatusCard(cards, "銷貨代理（帳款收款）")
         self.card_cloud.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=6)
         self.card_erp.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=6)
         self.card_stock.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=6)
         self.card_wb.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=6)
+        self.card_sales.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=6)
 
         # 手動操作列
         ops = tk.Frame(self, bg=BG)
@@ -930,6 +1085,7 @@ class App(tk.Tk):
 
         opbtn("測試連線", self.test_connection, GREEN)
         opbtn("立即推庫存", lambda: self._async(self.engine.do_stock_push, reason="手動"), BLUE)
+        opbtn("立即取單（帳款）", lambda: self._async(self.engine.do_sales_push, reason="手動"), BLUE)
         opbtn("檢查上傳佇列(試跑)", lambda: self._async(self.engine.check_queue, dry_run=True))
         opbtn("立即處理上傳佇列", lambda: self._async(self.engine.check_queue), AMBER)
 
@@ -1000,10 +1156,22 @@ class App(tk.Tk):
             "等候『上傳凌越』佇列（只寫你按過上傳的單）" if s["wb_running"] else "自動處理：關閉",
             f"最後回寫：{s['wb_last']} {s['wb_last_result']}",
         )
+        sales_off = getattr(self.engine, "_sales_realtime_off", False)
+        if not s.get("sales_running"):
+            sales_l1 = "自動取單：關閉"
+        elif sales_off:
+            sales_l1 = "運作中（定時取單；後台無重新取單端點）"
+        else:
+            sales_l1 = "運作中（定時取單＋等候網站『重新取單』）"
+        self.card_sales.set(
+            s.get("sales_running", False),
+            sales_l1,
+            f"最後取單：{s.get('sales_last_push', '—')}   下次定時：{s.get('sales_next', '—')}",
+        )
 
     # ── 啟停 ────────────────────────────────────────────────────
     def toggle_engine(self):
-        if self.state_data["stock_running"] or self.state_data["wb_running"]:
+        if self.state_data["stock_running"] or self.state_data["wb_running"] or self.state_data.get("sales_running"):
             self.stop_engine()
         else:
             self.start_engine()
@@ -1065,87 +1233,132 @@ class SettingsDialog(tk.Toplevel):
         self.on_save = on_save
         self.title("設定")
         self.configure(bg=BG)
-        self.geometry("580x680")
+        # 可調整大小＋較大預設，避免內容多時看不到「儲存」
+        self.geometry("640x760")
+        self.minsize(560, 480)
+        self.resizable(True, True)
         self.transient(master)
         self.grab_set()
 
         self.vars = {}
+
+        # ── 底部固定按鈕列（先建、永遠可見，不被內容擠掉）──────────
+        btns = tk.Frame(self, bg=PANEL)
+        btns.pack(fill="x", side="bottom")
+        inner_btns = tk.Frame(btns, bg=PANEL)
+        inner_btns.pack(fill="x", padx=16, pady=12)
+        tk.Button(inner_btns, text="儲存設定", command=self._save, bg=GREEN, fg="white", relief="flat",
+                  padx=24, pady=8, font=("Microsoft JhengHei UI", 11, "bold"),
+                  activebackground="#2ea043", cursor="hand2").pack(side="right", padx=(8, 0))
+        tk.Button(inner_btns, text="取消", command=self.destroy, bg=PANEL2, fg=FG, relief="flat",
+                  padx=16, pady=8, font=("Microsoft JhengHei UI", 10),
+                  activebackground=GREY, cursor="hand2").pack(side="right")
+        tk.Button(inner_btns, text="測試連線", command=self._test, bg=BLUE, fg="#0b1220", relief="flat",
+                  padx=16, pady=8, font=("Microsoft JhengHei UI", 10, "bold"),
+                  activebackground="#4899f0", cursor="hand2").pack(side="left")
+        # 連線測試結果（在按鈕列上方，也固定可見）
+        self.test_result = tk.Label(self, text="", fg=MUTED, bg=BG, anchor="w", justify="left",
+                                    wraplength=600, font=("Microsoft JhengHei UI", 9))
+        self.test_result.pack(fill="x", side="bottom", padx=16, pady=(6, 4))
+
+        # ── 可捲動的表單區（Canvas + Scrollbar；內容再多都能捲到）──
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(fill="both", expand=True, side="top")
+        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        vsb = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        form = tk.Frame(canvas, bg=BG)
+        form_id = canvas.create_window((0, 0), window=form, anchor="nw")
+
+        def _on_form_config(_e=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        form.bind("<Configure>", _on_form_config)
+        # 讓內層表單寬度跟著 canvas（欄位才會撐滿）
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(form_id, width=e.width))
+        # 滑鼠滾輪捲動（Windows / macOS 用 MouseWheel，Linux 用 Button-4/5）
+        def _wheel(e):
+            delta = -1 if getattr(e, "num", None) == 5 else (1 if getattr(e, "num", None) == 4 else (-1 if e.delta < 0 else 1))
+            canvas.yview_scroll(-delta, "units")
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            canvas.bind_all(seq, _wheel)
+        self._wheel_canvas = canvas
+        self.bind("<Destroy>", self._unbind_wheel)
+
         pad = {"padx": 16, "pady": 4}
 
+        def section(title):
+            tk.Label(form, text=title, fg=BLUE, bg=BG, anchor="w",
+                     font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(14, 2))
+
         def row(label, key, hint="", show=None):
-            tk.Label(self, text=label, fg=FG, bg=BG, anchor="w",
+            tk.Label(form, text=label, fg=FG, bg=BG, anchor="w",
                      font=("Microsoft JhengHei UI", 10, "bold")).pack(fill="x", **pad)
             v = tk.StringVar(value=str(cfg.get(key, "")))
-            e = tk.Entry(self, textvariable=v, bg=PANEL2, fg=FG, relief="flat",
+            e = tk.Entry(form, textvariable=v, bg=PANEL2, fg=FG, relief="flat",
                          insertbackground=FG, font=("Consolas", 10), show=show)
-            e.pack(fill="x", padx=16)
+            e.pack(fill="x", padx=16, ipady=4)
             if hint:
-                tk.Label(self, text=hint, fg=MUTED, bg=BG, anchor="w",
+                tk.Label(form, text=hint, fg=MUTED, bg=BG, anchor="w", justify="left", wraplength=580,
                          font=("Microsoft JhengHei UI", 8)).pack(fill="x", padx=16, pady=(0, 2))
             self.vars[key] = v
             return e
 
-        tk.Label(self, text="連線設定", fg=BLUE, bg=BG, anchor="w",
-                 font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(14, 2))
+        def checkbox(text, key, default=True):
+            var = tk.BooleanVar(value=bool(cfg.get(key, default)))
+            tk.Checkbutton(form, text=text, variable=var, wraplength=560, justify="left",
+                           bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG,
+                           font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16, pady=(2, 0))
+            self.vars[key] = var
+            return var
+
+        section("連線設定")
         row("雲端後台網址 (LY_CLOUD_BASE)", "cloud_base", "例：https://xxxx.run.app")
         key_entry = row("回寫金鑰 (LINGYUE_WRITEBACK_KEY)", "writeback_key",
                         "與後台環境變數相同那把", show="*")
         show_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(self, text="顯示金鑰", variable=show_var, bg=BG, fg=MUTED,
+        tk.Checkbutton(form, text="顯示金鑰", variable=show_var, bg=BG, fg=MUTED,
                        selectcolor=PANEL, activebackground=BG, activeforeground=FG,
                        command=lambda: key_entry.config(show="" if show_var.get() else "*"),
                        font=("Microsoft JhengHei UI", 8)).pack(anchor="w", padx=16)
         row("公司代碼 (LY_ICPNO)", "icpno", "00松富/01龍港/02松揚/03松成；庫存推送填 all＝全推（各公司分開存），回寫固定用第一家(00)")
 
-        tk.Label(self, text="庫存代理", fg=BLUE, bg=BG, anchor="w",
-                 font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(12, 2))
+        section("庫存代理")
         row("每日定時推送 (LY_STOCK_TIMES)", "stock_times",
             "24小時制、逗號分隔，如 06:00,12:00；清空＝只靠按鈕/即時")
 
-        tk.Label(self, text="訂單回寫（只寫你在網站按過『上傳凌越』的單）", fg=BLUE, bg=BG, anchor="w",
-                 font=("Microsoft JhengHei UI", 12, "bold")).pack(fill="x", padx=16, pady=(12, 2))
-        auto_var = tk.BooleanVar(value=bool(cfg.get("wb_auto", True)))
-        tk.Checkbutton(self, text="掛著自動處理『上傳凌越』佇列（只寫你在網站按過上傳的單，不會動其他訂單）",
-                       variable=auto_var, wraplength=500, justify="left",
-                       bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG,
-                       font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16)
-        self.vars["wb_auto"] = auto_var
+        section("銷貨代理（每日帳款收款：取當日銷貨單推上雲）")
+        checkbox("自動取當日銷貨單推上雲（後台『松富銷貨統計/現金收款』會用到；並掛長連線等網站『重新取單』）",
+                 "sales_auto", True)
+        row("每日取單時間 (LY_SALES_TIMES)", "sales_times",
+            "24小時制、逗號分隔，如 08:30；清空＝只靠『立即取單』按鈕或網站『重新取單』。客戶改單後網站按『重新取單』會即時重撈")
 
-        tk.Label(self, text="倉別/單位規則固定：每品項帶凌越貨品主檔預設倉(SK_RKWHNO)與正規單位(SK_UNIT)；"
+        section("訂單回寫（只寫你在網站按過『上傳凌越』的單）")
+        checkbox("掛著自動處理『上傳凌越』佇列（只寫你在網站按過上傳的單，不會動其他訂單）", "wb_auto", True)
+        tk.Label(form, text="倉別/單位規則固定：每品項帶凌越貨品主檔預設倉(SK_RKWHNO)與正規單位(SK_UNIT)；"
                             "付款方式/業務員自動從客戶主檔帶入（拋轉必備）",
-                 fg=MUTED, bg=BG, anchor="w", justify="left", wraplength=520,
+                 fg=MUTED, bg=BG, anchor="w", justify="left", wraplength=580,
                  font=("Microsoft JhengHei UI", 8)).pack(fill="x", padx=16, pady=(2, 0))
-
-        chk_var = tk.BooleanVar(value=bool(cfg.get("wb_mark_checked", True)))
-        tk.Checkbutton(self, text="寫入即標記「已審核」(OR_CHECK=1)——拋轉需要；取消勾＝未審核（好刪、但拋轉抓不到）",
-                       variable=chk_var, wraplength=500, justify="left",
-                       bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG,
-                       font=("Microsoft JhengHei UI", 10)).pack(anchor="w", padx=16)
-        self.vars["wb_mark_checked"] = chk_var
-
+        checkbox("寫入即標記「已審核」(OR_CHECK=1)——拋轉需要；取消勾＝未審核（好刪、但拋轉抓不到）",
+                 "wb_mark_checked", True)
         row("固定倉別 (LY_DEFAULT_WHNO)", "wb_default_whno",
             "後備：品項在凌越貨品主檔查不到預設倉時用這個補")
         row("建立人代碼 (LY_CREATE_NAME)", "wb_create_name",
             "帶入 OR_MAKER/OR_CREATENAME 的操作員代碼，預設 052（拋轉依建立日期/人抓單）")
         row("預設單價 (LY_DEFAULT_PRICE)", "wb_default_price", "留空＝讓凌越依客戶售價表帶價")
+        # 底部留白，最後一欄不被按鈕列貼住
+        tk.Frame(form, bg=BG, height=8).pack(fill="x")
 
-        # 連線測試結果
-        self.test_result = tk.Label(self, text="", fg=MUTED, bg=BG, anchor="w", justify="left",
-                                    wraplength=520, font=("Microsoft JhengHei UI", 9))
-        self.test_result.pack(fill="x", side="bottom", padx=16, pady=(0, 2))
-
-        # 底部按鈕
-        btns = tk.Frame(self, bg=BG)
-        btns.pack(fill="x", side="bottom", pady=12)
-        tk.Button(btns, text="儲存", command=self._save, bg=GREEN, fg="white", relief="flat",
-                  padx=20, pady=6, font=("Microsoft JhengHei UI", 10, "bold"),
-                  activebackground="#2ea043", cursor="hand2").pack(side="right", padx=16)
-        tk.Button(btns, text="取消", command=self.destroy, bg=PANEL2, fg=FG, relief="flat",
-                  padx=16, pady=6, font=("Microsoft JhengHei UI", 10),
-                  activebackground=GREY, cursor="hand2").pack(side="right")
-        tk.Button(btns, text="測試連線", command=self._test, bg=BLUE, fg="#0b1220", relief="flat",
-                  padx=16, pady=6, font=("Microsoft JhengHei UI", 10, "bold"),
-                  activebackground="#4899f0", cursor="hand2").pack(side="left", padx=16)
+    def _unbind_wheel(self, event=None):
+        # 視窗關閉時解除全域滾輪綁定，避免影響主視窗
+        if event is not None and event.widget is not self:
+            return
+        try:
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                self._wheel_canvas.unbind_all(seq)
+        except Exception:
+            pass
 
     def _test(self):
         self.test_result.config(text="測試中 …", fg=MUTED)
