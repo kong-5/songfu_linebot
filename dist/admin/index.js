@@ -1880,10 +1880,11 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
         ${item("/admin/logistics/market", "logistics-reports", "chartLine", "行情報表")}
       </details>
-      ${opts.canCash ? `<details class="sf-nav-group" ${["cash","cash-collect","cash-customers"].includes(active) ? "open" : ""}>
+      ${opts.canCash ? `<details class="sf-nav-group" ${["cash","cash-collect","cash-customers","cash-report"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">收款作業</div></summary>
         ${item("/admin/cash", "cash", "money", "每日帳款收款")}
         ${item("/admin/cash/collect", "cash-collect", "check", "收款處")}
+        ${item("/admin/cash/daily-report", "cash-report", "chartBar", "現金日報表")}
         ${item("/admin/cash/customers", "cash-customers", "users", "收款客戶主檔")}
       </details>` : ""}
       <details class="sf-nav-group" ${["inventory","inv-scan","inv-stock","inv-wh-settings","inv-barcodes"].includes(active) ? "open" : ""}>
@@ -12667,12 +12668,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             }
             const drvRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("cash_drivers");
             const drivers = String(drvRow?.value || "");
-            const tr = (r) => `<tr data-ct="${escapeAttr(r.ct_no)}">
+            const tr = (r) => `<tr data-ct="${escapeAttr(r.ct_no)}" data-search="${escapeAttr(((r.name || "") + " " + (r.ct_no || "") + " " + (r.route_line || "")).toLowerCase())}">
           <td style="font-family:ui-monospace,monospace;">${escapeHtml(r.ct_no)}</td>
           <td>${escapeHtml(r.name || "")}${Number(r.stop) ? ` <span style="color:#c62828;font-size:11px;">停用</span>` : ""}</td>
+          <td style="background:#fbfbfa;"><input class="cm-route sf-input" value="${escapeAttr(r.route_line || "")}" placeholder="路線" style="width:80px;"></td>
           <td style="color:#787774;">${escapeHtml(r.fkfs || "")}</td>
           <td style="color:#787774;font-size:12px;">${escapeHtml(r.last_txn || "—")}</td>
-          <td><input class="cm-route sf-input" value="${escapeAttr(r.route_line || "")}" style="width:80px;"></td>
           <td style="text-align:center;"><input type="checkbox" class="cm-cash" ${Number(r.is_cash) ? "checked" : ""}></td>
           <td><input class="cm-note sf-input" value="${escapeAttr(r.note || "")}" style="width:100%;"></td>
           <td><button type="button" class="sf-btn sf-btn-sm cm-save">存</button></td>
@@ -12695,12 +12696,21 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         </div>
       </div>
       <div class="notion-card">
-        <div style="margin-bottom:6px;color:#787774;font-size:13px;">共 ${rows.length} 家${qs ? "（篩選後）" : ""}${showAll ? "（含停用/舊客戶）" : "（僅有效客戶：未停用且一年內有交易）"}</div>
-        <table><thead><tr><th>客戶編號</th><th>客戶名稱</th><th>結帳方式</th><th>最後交易</th><th>路線</th><th style="text-align:center;">收現金</th><th>備註</th><th></th></tr></thead>
-        <tbody>${rows.map(tr).join("") || `<tr><td colspan="8" style="text-align:center;color:#9b9a97;padding:16px;">尚無客戶資料——內網「立即取單」推過（新版腳本）後就會帶入。</td></tr>`}</tbody></table>
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+          <div style="color:#787774;font-size:13px;">共 <span id="cmCount">${rows.length}</span> 家${qs ? "（篩選後）" : ""}${showAll ? "（含停用/舊客戶）" : "（僅有效客戶：未停用且一年內有交易）"}${(!showAll && rows.filter((r) => !r.last_txn).length) ? `<br><span style="color:#c62828;">⚠ 其中 ${rows.filter((r) => !r.last_txn).length} 家「最後交易日」未同步（顯示為 —），需用<b>新版 ly_sales_push.py</b>「立即取單」後才能依交易日過濾舊客戶。</span>` : ""}</div>
+          <input type="text" id="cmFilter" class="sf-input" placeholder="🔍 即時搜尋（客戶名／編號／路線）" style="width:260px;max-width:100%;">
+        </div>
+        <table><thead><tr><th>客戶編號</th><th>客戶名稱</th><th style="background:#eef3fb;">路線</th><th>結帳方式</th><th>最後交易</th><th style="text-align:center;">收現金</th><th>備註</th><th></th></tr></thead>
+        <tbody id="cmBody">${rows.map(tr).join("") || `<tr><td colspan="8" style="text-align:center;color:#9b9a97;padding:16px;">尚無客戶資料——內網「立即取單」推過（新版腳本）後就會帶入。</td></tr>`}</tbody></table>
       </div>
       <script>(function(){
         var ICPNO=${JSON.stringify(icpno)};
+        var flt=document.getElementById('cmFilter');
+        if(flt){ flt.addEventListener('input',function(){
+          var q=this.value.trim().toLowerCase(); var rows=document.querySelectorAll('#cmBody tr'); var n=0;
+          rows.forEach(function(tr){ var s=tr.getAttribute('data-search')||''; var hit=!q||s.indexOf(q)>=0; tr.style.display=hit?'':'none'; if(hit&&tr.dataset.ct)n++; });
+          var c=document.getElementById('cmCount'); if(c)c.textContent=n;
+        }); }
         document.querySelectorAll('.cm-save').forEach(function(b){ b.addEventListener('click',function(){
           var tr=b.closest('tr');
           var payload={icpno:ICPNO,ct_no:tr.dataset.ct,route_line:tr.querySelector('.cm-route').value,is_cash:tr.querySelector('.cm-cash').checked?1:0,note:tr.querySelector('.cm-note').value};
@@ -12770,6 +12780,252 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         catch (e) {
             console.error("[admin] /cash/customers/import-routes", e?.message || e);
             res.status(500).json({ error: "帶入失敗", detail: String(e?.message || e) });
+        }
+    });
+    // ============================================================
+    //  現金日報表（Phase2 步驟2）：當日收款（現金/票分列）＋額外收入＋應收/實收總計
+    // ============================================================
+    async function loadDailyReport(icpno, date) {
+        const payments = await db.prepare("SELECT id, ct_no, ct_name, collected_by, cash_amount, check_amount, total_amount, due_total, diff, note, recorded_by FROM cash_payment WHERE icpno = ? AND pay_date = ? ORDER BY COALESCE(collected_by,''), recorded_at").all(icpno, date) || [];
+        const checks = await db.prepare("SELECT ch.check_no, ch.bank, ch.due_date, ch.amount, p.ct_name, p.collected_by FROM cash_check ch JOIN cash_payment p ON p.id = ch.payment_id WHERE ch.icpno = ? AND p.pay_date = ? ORDER BY ch.due_date, ch.check_no").all(icpno, date) || [];
+        const extra = await db.prepare("SELECT id, item, amount, collected_by, note FROM cash_extra_income WHERE icpno = ? AND income_date = ? ORDER BY created_at").all(icpno, date) || [];
+        const ds = await db.prepare("SELECT COALESCE(SUM(total),0) AS t FROM cash_sales_doc WHERE icpno = ? AND doc_date = ?").get(icpno, date);
+        const sum = (arr, f) => arr.reduce((s, r) => s + Number(r[f] || 0), 0);
+        const t = {
+            due: sum(payments, "due_total"),
+            cash: sum(payments, "cash_amount"),
+            check: sum(payments, "check_amount"),
+            received: sum(payments, "total_amount"),
+            diff: sum(payments, "diff"),
+            extra: sum(extra, "amount"),
+            daySales: Number(ds?.t || 0),
+        };
+        // 司機小計
+        const byDriver = new Map();
+        for (const p of payments) {
+            const who = String(p.collected_by || "").trim() || "（未填）";
+            if (!byDriver.has(who))
+                byDriver.set(who, { cash: 0, check: 0, received: 0, c: 0 });
+            const a = byDriver.get(who);
+            a.cash += Number(p.cash_amount || 0);
+            a.check += Number(p.check_amount || 0);
+            a.received += Number(p.total_amount || 0);
+            a.c++;
+        }
+        return { payments, checks, extra, t, byDriver };
+    }
+    router.get("/cash/daily-report", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = cashValidDate(req.query.date) || getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadDailyReport(icpno, date);
+            const me = (res.locals && res.locals.adminUser) || "";
+            const companyOpts = Object.keys(CASH_COMPANIES).map((k) => `<option value="${k}" ${k === icpno ? "selected" : ""}>${escapeHtml(CASH_COMPANIES[k])}(${k})</option>`).join("");
+            const diffTxt = (n) => Number(n) === 0 ? "0" : (Number(n) > 0 ? `+${cashMoney(n)}（溢收）` : `${cashMoney(n)}（短收）`);
+            const payRows = d.payments.length ? d.payments.map((p) => `<tr>
+          <td>${escapeHtml(p.ct_name || p.ct_no || "")}</td>
+          <td>${escapeHtml(p.collected_by || "")}</td>
+          <td style="text-align:right;">${cashMoney(p.due_total)}</td>
+          <td style="text-align:right;">${cashMoney(p.cash_amount)}</td>
+          <td style="text-align:right;">${cashMoney(p.check_amount)}</td>
+          <td style="text-align:right;font-weight:600;">${cashMoney(p.total_amount)}</td>
+          <td style="text-align:right;color:${Number(p.diff) < 0 ? "#c62828" : "#2e7d32"};">${Number(p.diff) === 0 ? "" : diffTxt(p.diff)}</td>
+          <td>${escapeHtml(p.note || "")}</td>
+        </tr>`).join("") : `<tr><td colspan="8" style="text-align:center;color:#9b9a97;padding:16px;">當日尚無收款紀錄。</td></tr>`;
+            const checkRows = d.checks.length ? d.checks.map((c) => `<tr>
+          <td style="font-family:ui-monospace,monospace;">${escapeHtml(c.check_no || "")}</td>
+          <td>${escapeHtml(c.bank || "")}</td>
+          <td>${escapeHtml(String(c.due_date || "").slice(0, 10))}</td>
+          <td style="text-align:right;">${cashMoney(c.amount)}</td>
+          <td>${escapeHtml(c.ct_name || "")}</td>
+        </tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#9b9a97;padding:12px;">當日無票據。</td></tr>`;
+            const extraRows = d.extra.length ? d.extra.map((e) => `<tr data-id="${escapeAttr(e.id)}">
+          <td>${escapeHtml(e.item || "")}</td>
+          <td style="text-align:right;">${cashMoney(e.amount)}</td>
+          <td>${escapeHtml(e.collected_by || "")}</td>
+          <td>${escapeHtml(e.note || "")}</td>
+          <td><button type="button" class="link-undo ei-del" data-id="${escapeAttr(e.id)}">刪</button></td>
+        </tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#9b9a97;padding:12px;">無額外收入。</td></tr>`;
+            const driverRows = Array.from(d.byDriver.entries()).map(([who, a]) => `<tr><td>${escapeHtml(who)}</td><td style="text-align:right;">${cashMoney(a.cash)}</td><td style="text-align:right;">${cashMoney(a.check)}</td><td style="text-align:right;font-weight:600;">${cashMoney(a.received)}</td><td style="text-align:right;">${a.c}</td></tr>`).join("");
+            const q = `?icpno=${icpno}&date=${date}`;
+            const body = `
+      <style>.link-undo{background:none;border:none;color:#c62828;cursor:pointer;text-decoration:underline;padding:0;font-size:12px;}</style>
+      <h1 class="notion-page-title">現金日報表</h1>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <form method="get" action="/admin/cash/daily-report" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+          <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
+          <label>日期<br><input type="date" name="date" value="${date}" class="sf-input"></label>
+          <button type="submit" class="btn-primary">查詢</button>
+          <span style="flex:1;"></span>
+          <a class="sf-btn" href="/admin/cash/collect?icpno=${icpno}&date=${date}">← 收款處</a>
+          <a class="sf-btn" href="/admin/cash/daily-report/export.xlsx${q}">下載 Excel</a>
+          <a class="sf-btn" href="/admin/cash/daily-report/print${q}" target="_blank">列印 / PDF</a>
+        </form>
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;display:flex;gap:20px;flex-wrap:wrap;">
+        <div>應收合計<br><strong style="font-size:20px;">${cashMoney(d.t.due)}</strong></div>
+        <div>現金<br><strong style="font-size:20px;">${cashMoney(d.t.cash)}</strong></div>
+        <div>票<br><strong style="font-size:20px;">${cashMoney(d.t.check)}</strong></div>
+        <div>額外收入<br><strong style="font-size:20px;">${cashMoney(d.t.extra)}</strong></div>
+        <div>實收合計（現金+票+額外）<br><strong style="font-size:20px;color:#2383e2;">${cashMoney(d.t.received + d.t.extra)}</strong></div>
+        <div>短收／溢收<br><strong style="font-size:20px;color:${d.t.diff < 0 ? "#c62828" : "#2e7d32"};">${diffTxt(d.t.diff)}</strong></div>
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <strong>司機小計</strong>
+        ${driverRows ? `<table style="margin-top:6px;"><thead><tr><th>收款人/司機</th><th style="text-align:right;">現金</th><th style="text-align:right;">票</th><th style="text-align:right;">合計</th><th style="text-align:right;">筆數</th></tr></thead><tbody>${driverRows}</tbody></table>` : `<div style="color:#9b9a97;margin-top:6px;">今日尚無收款。</div>`}
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <strong>收款明細</strong>
+        <table style="margin-top:6px;"><thead><tr><th>客戶</th><th>收款人</th><th style="text-align:right;">應收</th><th style="text-align:right;">現金</th><th style="text-align:right;">票</th><th style="text-align:right;">實收</th><th style="text-align:right;">短溢收</th><th>備註</th></tr></thead><tbody>${payRows}</tbody></table>
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <strong>票據明細</strong>
+        <table style="margin-top:6px;"><thead><tr><th>票號</th><th>銀行/分行</th><th>到期日</th><th style="text-align:right;">金額</th><th>客戶</th></tr></thead><tbody>${checkRows}</tbody></table>
+      </div>
+      <div class="notion-card" style="margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;"><strong>額外收入（非銷貨單的款）</strong><span style="color:#787774;">合計 ${cashMoney(d.t.extra)}</span></div>
+        <table style="margin-top:6px;"><thead><tr><th>項目</th><th style="text-align:right;">金額</th><th>收款人</th><th>備註</th><th></th></tr></thead><tbody id="eiBody">${extraRows}</tbody></table>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;border-top:1px dashed #ddd;padding-top:8px;">
+          <label>項目<br><input type="text" id="eiItem" class="sf-input" style="width:160px;"></label>
+          <label>金額<br><input type="number" id="eiAmount" class="sf-input" style="width:110px;"></label>
+          <label>收款人<br><input type="text" id="eiBy" class="sf-input" value="${escapeAttr(me)}" style="width:110px;"></label>
+          <label style="flex:1;min-width:140px;">備註<br><input type="text" id="eiNote" class="sf-input" style="width:100%;"></label>
+          <button type="button" class="btn-primary" id="eiAdd">新增額外收入</button>
+        </div>
+      </div>
+      <div style="color:#787774;font-size:12px;margin-bottom:20px;">列印人：${escapeHtml(me)}</div>
+      <script>(function(){
+        var ICPNO=${JSON.stringify(icpno)}, DATE=${JSON.stringify(date)};
+        document.getElementById('eiAdd').addEventListener('click',function(){
+          var item=document.getElementById('eiItem').value.trim(); var amt=document.getElementById('eiAmount').value;
+          if(!item||!amt){ if(window.sfToast)sfToast('請填項目與金額','err'); return; }
+          var b=this; b.disabled=true;
+          fetch('/admin/cash/extra-income',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:ICPNO,income_date:DATE,item:item,amount:amt,collected_by:document.getElementById('eiBy').value,note:document.getElementById('eiNote').value})}).then(function(r){return r.json();}).then(function(j){ b.disabled=false; if(j&&j.ok){ location.reload(); } else { if(window.sfToast)sfToast('新增失敗','err'); } }).catch(function(){ b.disabled=false; if(window.sfToast)sfToast('新增失敗','err'); });
+        });
+        document.querySelectorAll('.ei-del').forEach(function(b){ b.addEventListener('click',function(){ if(!confirm('刪除這筆額外收入？'))return; fetch('/admin/cash/extra-income/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:b.dataset.id})}).then(function(r){return r.json();}).then(function(j){ if(j&&j.ok){location.reload();}else{ if(window.sfToast)sfToast('刪除失敗','err'); } }); }); });
+      })();</script>`;
+            res.type("text/html").send(notionPage("現金日報表", body, "cash-report", res));
+        }
+        catch (e) {
+            console.error("[admin] /cash/daily-report", e?.message || e);
+            res.status(500).type("text/html").send("讀取失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    router.post("/cash/extra-income", requireCash, express_1.default.json({ limit: "16kb" }), async (req, res) => {
+        try {
+            const b = req.body || {};
+            const icpno = erp_companies_js_1.normIcpno(b.icpno, "00");
+            const date = cashValidDate(b.income_date) || getTaipeiCalendarDateYYYYMMDD();
+            const item = String(b.item ?? "").trim();
+            const amount = cashNum(b.amount);
+            if (!item || !amount) {
+                res.status(400).json({ error: "請填項目與金額" });
+                return;
+            }
+            await db.prepare("INSERT INTO cash_extra_income (id, icpno, income_date, item, amount, collected_by, note, recorded_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+                .run((0, id_js_1.newId)("cei"), icpno, date, item, amount, String(b.collected_by ?? "").trim(), String(b.note ?? "").trim(), (res.locals && res.locals.adminUser) || "", new Date().toISOString());
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/extra-income", e?.message || e);
+            res.status(500).json({ error: "新增失敗", detail: String(e?.message || e) });
+        }
+    });
+    router.post("/cash/extra-income/delete", requireCash, express_1.default.json({ limit: "8kb" }), async (req, res) => {
+        try {
+            const id = String(req.body?.id ?? "").trim();
+            if (!id) {
+                res.status(400).json({ error: "缺 id" });
+                return;
+            }
+            await db.prepare("DELETE FROM cash_extra_income WHERE id = ?").run(id);
+            res.json({ ok: true });
+        }
+        catch (e) {
+            console.error("[admin] /cash/extra-income/delete", e?.message || e);
+            res.status(500).json({ error: "刪除失敗", detail: String(e?.message || e) });
+        }
+    });
+    router.get("/cash/daily-report/export.xlsx", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = cashValidDate(req.query.date) || getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadDailyReport(icpno, date);
+            const printedBy = (res.locals && res.locals.adminUser) || "";
+            const aoa = [
+                ["松富物流股份有限公司　現金日報表"],
+                [`公司：${CASH_COMPANIES[icpno] || icpno}(${icpno})`, `日期：${date}`, `列印人：${printedBy}`],
+                [],
+                ["客戶", "收款人", "應收", "現金", "票", "實收", "短溢收", "備註"],
+            ];
+            for (const p of d.payments)
+                aoa.push([p.ct_name || p.ct_no || "", p.collected_by || "", Number(p.due_total || 0), Number(p.cash_amount || 0), Number(p.check_amount || 0), Number(p.total_amount || 0), Number(p.diff || 0), p.note || ""]);
+            aoa.push(["合計", "", d.t.due, d.t.cash, d.t.check, d.t.received, d.t.diff, ""]);
+            aoa.push([]);
+            aoa.push(["票據明細", "票號", "銀行/分行", "到期日", "金額", "客戶"]);
+            for (const c of d.checks)
+                aoa.push(["", c.check_no || "", c.bank || "", String(c.due_date || "").slice(0, 10), Number(c.amount || 0), c.ct_name || ""]);
+            aoa.push([]);
+            aoa.push(["額外收入", "項目", "金額", "收款人", "備註"]);
+            for (const e of d.extra)
+                aoa.push(["", e.item || "", Number(e.amount || 0), e.collected_by || "", e.note || ""]);
+            aoa.push(["額外收入合計", "", d.t.extra]);
+            aoa.push([]);
+            aoa.push(["實收合計（現金+票+額外）", d.t.received + d.t.extra]);
+            const ws = XLSX.utils.aoa_to_sheet(aoa);
+            ws["!cols"] = [{ wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 16 }];
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "現金日報表");
+            const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+            res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            res.setHeader("Content-Disposition", `attachment; filename="cash_daily_${icpno}_${date}.xlsx"`);
+            res.send(buf);
+        }
+        catch (e) {
+            console.error("[admin] /cash/daily-report/export.xlsx", e?.message || e);
+            res.status(500).send("匯出失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
+    router.get("/cash/daily-report/print", requireCash, async (req, res) => {
+        try {
+            const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
+            const date = cashValidDate(req.query.date) || getTaipeiCalendarDateYYYYMMDD();
+            const d = await loadDailyReport(icpno, date);
+            const printedBy = (res.locals && res.locals.adminUser) || "";
+            const printedAt = new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
+            const diffTxt = (n) => Number(n) === 0 ? "0" : (Number(n) > 0 ? `+${cashMoney(n)}` : `${cashMoney(n)}`);
+            const payRows = d.payments.map((p) => `<tr><td>${escapeHtml(p.ct_name || p.ct_no || "")}</td><td>${escapeHtml(p.collected_by || "")}</td><td class="r">${cashMoney(p.due_total)}</td><td class="r">${cashMoney(p.cash_amount)}</td><td class="r">${cashMoney(p.check_amount)}</td><td class="r">${cashMoney(p.total_amount)}</td><td class="r">${Number(p.diff) === 0 ? "" : diffTxt(p.diff)}</td><td>${escapeHtml(p.note || "")}</td></tr>`).join("");
+            const checkRows = d.checks.map((c) => `<tr><td class="mono">${escapeHtml(c.check_no || "")}</td><td>${escapeHtml(c.bank || "")}</td><td>${escapeHtml(String(c.due_date || "").slice(0, 10))}</td><td class="r">${cashMoney(c.amount)}</td><td>${escapeHtml(c.ct_name || "")}</td></tr>`).join("");
+            const extraRows = d.extra.map((e) => `<tr><td>${escapeHtml(e.item || "")}</td><td class="r">${cashMoney(e.amount)}</td><td>${escapeHtml(e.collected_by || "")}</td><td>${escapeHtml(e.note || "")}</td></tr>`).join("");
+            res.type("text/html").send(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8"><title>現金日報表 ${date}</title>
+      <style>*{box-sizing:border-box;}body{font-family:'Noto Sans TC',ui-sans-serif,sans-serif;color:#111;margin:24px;}
+      h1{font-size:20px;margin:0 0 2px;text-align:center;}.sub-h{text-align:center;font-size:15px;margin:0 0 4px;}
+      .meta{display:flex;justify-content:space-between;font-size:12px;color:#333;margin:8px 0;border-bottom:1px solid #999;padding-bottom:6px;}
+      h3{font-size:14px;margin:14px 0 4px;}
+      table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:6px;}th,td{border:1px solid #bbb;padding:4px 6px;}th{background:#f0f0f0;}
+      td.r,th.r{text-align:right;}td.mono{font-family:ui-monospace,monospace;}
+      .tot{background:#fff3cd;font-weight:700;}.btns{margin:12px 0;}@media print{.btns{display:none;}}</style></head><body>
+      <div class="btns"><button onclick="window.print()">列印 / 另存 PDF</button></div>
+      <h1>松富物流股份有限公司</h1><div class="sub-h">現金日報表</div>
+      <div class="meta"><span>公司：${escapeHtml(CASH_COMPANIES[icpno] || icpno)}(${icpno})</span><span>日期：${date}</span><span>列印人：${escapeHtml(printedBy)}</span><span>列印時間：${escapeHtml(printedAt)}</span></div>
+      <h3>收款明細</h3>
+      <table><thead><tr><th>客戶</th><th>收款人</th><th class="r">應收</th><th class="r">現金</th><th class="r">票</th><th class="r">實收</th><th class="r">短溢收</th><th>備註</th></tr></thead>
+      <tbody>${payRows || `<tr><td colspan="8" style="text-align:center;">無</td></tr>`}
+      <tr class="tot"><td colspan="2">合計</td><td class="r">${cashMoney(d.t.due)}</td><td class="r">${cashMoney(d.t.cash)}</td><td class="r">${cashMoney(d.t.check)}</td><td class="r">${cashMoney(d.t.received)}</td><td class="r">${diffTxt(d.t.diff)}</td><td></td></tr></tbody></table>
+      <h3>票據明細</h3>
+      <table><thead><tr><th>票號</th><th>銀行/分行</th><th>到期日</th><th class="r">金額</th><th>客戶</th></tr></thead><tbody>${checkRows || `<tr><td colspan="5" style="text-align:center;">無</td></tr>`}</tbody></table>
+      <h3>額外收入</h3>
+      <table><thead><tr><th>項目</th><th class="r">金額</th><th>收款人</th><th>備註</th></tr></thead><tbody>${extraRows || `<tr><td colspan="4" style="text-align:center;">無</td></tr>`}
+      <tr class="tot"><td>合計</td><td class="r">${cashMoney(d.t.extra)}</td><td colspan="2"></td></tr></tbody></table>
+      <h3>總計</h3>
+      <table><tbody><tr class="tot"><td>實收合計（現金＋票＋額外收入）</td><td class="r">${cashMoney(d.t.received + d.t.extra)}</td></tr>
+      <tr><td>其中現金</td><td class="r">${cashMoney(d.t.cash)}</td></tr><tr><td>其中票</td><td class="r">${cashMoney(d.t.check)}</td></tr>
+      <tr><td>額外收入</td><td class="r">${cashMoney(d.t.extra)}</td></tr><tr><td>應收合計／短溢收</td><td class="r">${cashMoney(d.t.due)}　/　${diffTxt(d.t.diff)}</td></tr></tbody></table>
+      </body></html>`);
+        }
+        catch (e) {
+            console.error("[admin] /cash/daily-report/print", e?.message || e);
+            res.status(500).send("列印頁失敗：" + escapeHtml(String(e?.message || e)));
         }
     });
     /**
