@@ -12053,7 +12053,38 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           ${table}${script}
         </div>`;
     }
-    // 後台頁：銷貨單總計表
+    // 月曆（左欄）：有資料的日子標張數、有未收標紅點；點日期切換
+    function renderCashCalendar(icpno, month, selDate, aggMap, todayStr) {
+        const y = parseInt(month.slice(0, 4), 10), m = parseInt(month.slice(5, 7), 10);
+        const firstDow = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+        const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        const prevM = m === 1 ? `${y - 1}-12-01` : `${y}-${String(m - 1).padStart(2, "0")}-01`;
+        const nextM = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+        const cells = [];
+        for (let i = 0; i < firstDow; i++)
+            cells.push(`<div class="empty"></div>`);
+        for (let day = 1; day <= daysInMonth; day++) {
+            const ds = `${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+            const a = aggMap.get(ds);
+            const isSel = ds === selDate, isToday = ds === todayStr;
+            const bg = isSel ? "background:#2383e2;color:#fff;" : (a ? "background:#eef3fb;" : "");
+            const ring = (isToday && !isSel) ? "outline:2px solid #2383e2;outline-offset:-2px;" : "";
+            const info = a
+                ? `<div style="font-size:10px;line-height:1.2;${isSel ? "color:#e8f0fe;" : "color:#787774;"}">${a.count}張</div>${a.unpaid > 0 ? `<div style="font-size:10px;line-height:1.2;${isSel ? "color:#ffd7d7;" : "color:#c62828;"}">●未收</div>` : ""}`
+                : "";
+            cells.push(`<a href="/admin/cash?icpno=${icpno}&date=${ds}" style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:4px 2px;text-decoration:none;border-radius:8px;color:#37352f;${bg}${ring}"><span style="font-weight:600;font-size:13px;">${day}</span>${info}</a>`);
+        }
+        const dow = ["日", "一", "二", "三", "四", "五", "六"].map((w) => `<div class="dow" style="text-align:center;font-size:12px;color:#9b9a97;">${w}</div>`).join("");
+        return `<div class="notion-card" style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <a class="sf-btn sf-btn-sm" href="/admin/cash?icpno=${icpno}&date=${prevM}">‹ 上月</a>
+            <strong>${y} 年 ${m} 月</strong>
+            <a class="sf-btn sf-btn-sm" href="/admin/cash?icpno=${icpno}&date=${nextM}">下月 ›</a>
+          </div>
+          <div class="cash-cal">${dow}${cells.join("")}</div>
+        </div>`;
+    }
+    // 後台頁：銷貨單總計表（左月曆＋當日摘要、右明細）
     router.get("/cash", async (req, res) => {
         try {
             const icpno = erp_companies_js_1.normIcpno(req.query.icpno, "00");
@@ -12081,32 +12112,65 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <tbody>${renderRows(arr)}</tbody>
           </table>
         </div>`;
+            // 月曆資料：該月各日彙總（張數、應收、未收）
+            const month = date.slice(0, 7);
+            const y = parseInt(month.slice(0, 4), 10), mo = parseInt(month.slice(5, 7), 10);
+            const monthStart = `${month}-01`;
+            const monthEnd = `${month}-${String(new Date(Date.UTC(y, mo, 0)).getUTCDate()).padStart(2, "0")}`;
+            const aggRows = await db.prepare("SELECT doc_date, COUNT(*) AS c, SUM(total) AS t, SUM(unpaid) AS u, SUM(CASE WHEN unpaid > 0 THEN 1 ELSE 0 END) AS uc FROM cash_sales_doc WHERE icpno = ? AND doc_date BETWEEN ? AND ? GROUP BY doc_date").all(icpno, monthStart, monthEnd) || [];
+            const aggMap = new Map(aggRows.map((r) => [String(r.doc_date).slice(0, 10), { count: Number(r.c || 0), total: Number(r.t || 0), unpaid: Number(r.u || 0), unpaidCount: Number(r.uc || 0) }]));
+            const todayStr = getTaipeiCalendarDateYYYYMMDD();
+            const selUnpaidCount = d.rows.filter((r) => Number(r.unpaid || 0) > 0).length;
             const ingestNote = d.ingestedAt
-                ? `資料更新時間：${escapeHtml(new Date(d.ingestedAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }))}`
-                : `<span style="color:#c62828;">尚無當日資料——請於內網那台執行 <code>ly_sales_push.py --date ${date}</code> 取單上雲。</span>`;
+                ? `資料更新：${escapeHtml(new Date(d.ingestedAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }))}`
+                : `<span style="color:#c62828;">此日尚無資料——內網「凌越整合代理」按「立即取單」或執行 <code>ly_sales_push.py --date ${date}</code>。</span>`;
             const q = `?icpno=${icpno}&date=${date}`;
+            // 左欄：月曆 + 當日摘要
+            const daySummary = `
+      <div class="notion-card">
+        <div style="font-weight:700;margin-bottom:8px;">${escapeHtml(date)}　當日摘要</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div><div style="font-size:12px;color:#9b9a97;">單數</div><strong style="font-size:20px;">${d.rows.length}</strong> 張</div>
+          <div><div style="font-size:12px;color:#9b9a97;">應收合計</div><strong style="font-size:20px;">${cashMoney(d.grandTotal)}</strong></div>
+          <div><div style="font-size:12px;color:#9b9a97;">未收筆數</div><strong style="font-size:20px;color:${selUnpaidCount ? "#c62828" : "#2e7d32"};">${selUnpaidCount}</strong> 張</div>
+          <div><div style="font-size:12px;color:#9b9a97;">未收合計</div><strong style="font-size:20px;color:#c62828;">${cashMoney(d.unpaidTotal)}</strong></div>
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:#787774;border-top:1px solid #eee;padding-top:8px;">
+          純數字 ${d.numRows.length} 張／${cashMoney(d.numTotal)}　·　A 開頭 ${d.aRows.length} 張／${cashMoney(d.aTotal)}
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:#9b9a97;">${ingestNote}</div>
+        <div style="margin-top:10px;display:flex;gap:8px;">
+          <a class="sf-btn sf-btn-sm" href="/admin/cash/export.xlsx${q}">Excel</a>
+          <a class="sf-btn sf-btn-sm" href="/admin/cash/print${q}" target="_blank">列印/PDF</a>
+        </div>
+      </div>`;
             const body = `
+      <style>
+        .cash-2pane{display:grid;grid-template-columns:340px minmax(0,1fr);gap:16px;align-items:start;}
+        @media(max-width:900px){.cash-2pane{grid-template-columns:1fr;}}
+        .cash-cal{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+        .cash-cal a,.cash-cal .empty,.cash-cal .dow{min-height:46px;}
+        .cash-cal .dow{min-height:auto;}
+      </style>
       <h1 class="notion-page-title">每日帳款收款</h1>
       <div class="notion-card" style="margin-bottom:16px;">
         <form method="get" action="/admin/cash" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
           <label>公司<br><select name="icpno" class="sf-input">${companyOpts}</select></label>
-          <label>日期<br><input type="date" name="date" value="${date}" class="sf-input"></label>
+          <label>跳到日期<br><input type="date" name="date" value="${date}" class="sf-input"></label>
           <button type="submit" class="btn-primary">查詢</button>
-          <span style="flex:1;"></span>
-          <a class="sf-btn" href="/admin/cash/export.xlsx${q}">下載 Excel</a>
-          <a class="sf-btn" href="/admin/cash/print${q}" target="_blank">列印 / PDF</a>
         </form>
-        <div style="margin-top:10px;font-size:13px;">${ingestNote}</div>
       </div>
-      <div class="notion-card" style="margin-bottom:16px;display:flex;gap:24px;flex-wrap:wrap;">
-        <div>純數字（直打凌越）<br><strong style="font-size:20px;">${cashMoney(d.numTotal)}</strong> <span style="color:#9b9a97;">/ ${d.numRows.length} 張</span></div>
-        <div>A 開頭（寺岡EDI）<br><strong style="font-size:20px;">${cashMoney(d.aTotal)}</strong> <span style="color:#9b9a97;">/ ${d.aRows.length} 張</span></div>
-        <div>合計<br><strong style="font-size:20px;">${cashMoney(d.grandTotal)}</strong> <span style="color:#9b9a97;">/ ${d.rows.length} 張</span></div>
-        <div>當日未收<br><strong style="font-size:20px;color:#c62828;">${cashMoney(d.unpaidTotal)}</strong></div>
-      </div>
-      ${renderGapCard(d, icpno, date)}
-      ${section("純數字（直打凌越）", d.numRows, d.numTotal)}
-      ${section("A 開頭（訂單拋轉寺岡 EDI 回轉）", d.aRows, d.aTotal)}`;
+      <div class="cash-2pane">
+        <div>
+          ${renderCashCalendar(icpno, month, date, aggMap, todayStr)}
+          ${daySummary}
+        </div>
+        <div>
+          ${renderGapCard(d, icpno, date)}
+          ${section("純數字（直打凌越）", d.numRows, d.numTotal)}
+          ${section("A 開頭（訂單拋轉寺岡 EDI 回轉）", d.aRows, d.aTotal)}
+        </div>
+      </div>`;
             res.type("text/html").send(notionPage("每日帳款收款", body, "cash", res));
         }
         catch (e) {
