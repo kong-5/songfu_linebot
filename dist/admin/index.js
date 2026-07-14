@@ -11636,6 +11636,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         for (const oid of ids.slice(0, 200)) {
             try {
                 const before = await db.prepare("SELECT order_no, status FROM orders WHERE id = ?").get(oid);
+                // [fix 2026-07-14] 與單筆 approve 相同的狀態機守衛：作廢單／客訴單不可被批次確認復活
+                // （復活後會回到 /wait 回寫候選，已在凌越人工刪掉的單可能再次寫入）。
+                const beforeStatus = String(before?.status || "").toLowerCase().trim();
+                if (!before || beforeStatus === "deleted" || beforeStatus === "complaint") {
+                    console.warn("[admin] batch-approve 略過（%s）: %s", beforeStatus || "not-found", oid);
+                    continue;
+                }
                 await db.prepare("UPDATE orders SET status = ?, approved_by = ?, approved_at = " + nowSql + " WHERE id = ?").run("approved", actor, oid);
                 await logDataChange(req, {
                     entityType: "order",
@@ -14032,6 +14039,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         try {
             const order = await db.prepare(`
         SELECT o.id, o.order_no, o.order_date, o.remark, o.lingyue_doc_no,
+               o.lingyue_claimed_at, o.lingyue_written_at,
                c.name AS customer_name, c.hq_cust_code, c.teraoka_code
         FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
       `).get(req.params.orderId);
@@ -14048,6 +14056,19 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     message: `此單已轉入凌越（單號 ${order.lingyue_doc_no}）。\n\n重新轉入會在凌越「產生一張新單」，舊單 ${order.lingyue_doc_no} 不會自動刪除。\n請先到凌越把舊單 ${order.lingyue_doc_no} 刪除，再按「確定」重新轉入。\n\n確定要重新轉入嗎？`,
                 });
                 return;
+            }
+            // [fix 2026-07-14] 內網 agent 正在寫入中（已認領、租約未過、單號尚未回填）時，重按「轉入凌越」
+            // 會清掉 claimed_at 重新排隊 → 第二條 /wait 再認領再寫 → 凌越兩張單。改成先要求確認。
+            // 租約時長與 /wait 的 LEASE_MS 一致（10 分鐘）。
+            if (!force && !order.lingyue_doc_no && !order.lingyue_written_at && order.lingyue_claimed_at) {
+                const claimedMs = Date.parse(String(order.lingyue_claimed_at));
+                if (Number.isFinite(claimedMs) && Date.now() - claimedMs < 600000) {
+                    res.json({
+                        ok: false, needConfirm: true,
+                        message: "內網小幫手已認領此單、正在寫入凌越（通常數十秒內回填單號）。\n\n現在重新排隊可能造成凌越「重複開單」。\n建議稍等 1～2 分鐘再重整頁面確認；若確定內網代理已中斷，再按「確定」重新排隊。",
+                    });
+                    return;
+                }
             }
             const preview = await buildLingyuePreview(order);
             if (!preview.items.length) {
@@ -16881,6 +16902,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.status(404).send("訂單不存在");
             return;
         }
+        // [fix 2026-07-14] 狀態機守衛：取消確認只適用 approved 之後的單；作廢／客訴單不可經此路徑
+        // 復活成 pending（復活後會回到 /wait 回寫候選，已在凌越刪掉的單可能再次寫入）。
+        const curStatusUnapprove = String(order.status || "").toLowerCase().trim();
+        if (curStatusUnapprove === "deleted" || curStatusUnapprove === "complaint") {
+            const msg = curStatusUnapprove === "deleted" ? "此訂單已作廢，請先『取消作廢』" : "此訂單為客訴狀態，請由客訴頁還原";
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent(msg) + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+            return;
+        }
         await db.prepare("UPDATE orders SET status = ?, approved_by = NULL, approved_at = NULL WHERE id = ?").run("pending", orderId);
         await logDataChange(req, {
             entityType: "order",
@@ -16930,6 +16959,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const order = await db.prepare("SELECT id, order_no, status FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
+            return;
+        }
+        // [fix 2026-07-14] 狀態機守衛：只有客訴單能「還原為訂單」；其他狀態（尤其 deleted）
+        // 不可經此路徑被改成 pending 復活。
+        if (String(order.status || "").toLowerCase().trim() !== "complaint") {
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent("此訂單不是客訴狀態，無法還原"));
             return;
         }
         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
