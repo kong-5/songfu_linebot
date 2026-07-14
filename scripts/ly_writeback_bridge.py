@@ -124,6 +124,18 @@ def _timeout_client():
     return lystk._client
 
 
+def first_icpno(s) -> str:
+    """[fix 2026-07-14] 防呆下沉到權威層：公司代碼設定可為逗號多家或 "all"（那是庫存推送的
+    語意）；訂單回寫/主檔查詢只能單一公司 → 取第一家非 all 代碼，"all"／留空一律視為 00。
+    沒有這層時 LY_ICPNO=all 會被原封不動傳進凌越——product_info/customer_record 吞例外只印
+    警告，單「照寫」但倉別/付款/業務員全空＝拋轉不過的壞單，比直接失敗更難察覺。"""
+    for p in str(s or "").split(","):
+        p = p.strip()
+        if p and p.lower() != "all":
+            return p
+    return "00"
+
+
 def _norm_dt(v) -> str:
     """時間字串正規化供比對：去空白、'/'→'-'、'T'→空格。"""
     return str(v or "").strip().replace("/", "-").replace("T", " ")
@@ -294,7 +306,8 @@ def map_order(order: dict, *, icpno: str = "", whno: str = "", price: str = "",
       wh_map（料號→預設倉別對照）當倉別備援，其餘未知參數忽略並警示。
     """
     # ── 舊版 exe 相容 ───────────────────────────────────────────
-    icpno = (icpno or os.environ.get("LY_ICPNO") or "00").strip()
+    # first_icpno：LY_ICPNO 可能是 "all"/"00,02"（庫存推送語意），回寫只能單一公司
+    icpno = first_icpno(icpno or os.environ.get("LY_ICPNO") or "00")
     if or_check is not None:
         check = or_check
     wh_map = wh_map or {}
@@ -413,7 +426,7 @@ def run_test_ctno(args, *, icpno, whno, price, create_name, check, maker, date_s
 def run(args) -> int:
     base = (args.base or os.environ.get("LY_CLOUD_BASE") or "").strip()
     key = (args.key or os.environ.get("LY_WRITEBACK_KEY") or "").strip()
-    icpno = (args.icpno or os.environ.get("LY_ICPNO") or "00").strip()
+    icpno = first_icpno(args.icpno or os.environ.get("LY_ICPNO") or "00")
     whno = args.warehouse if args.warehouse is not None else os.environ.get("LY_DEFAULT_WHNO", "")
     price = args.price if args.price is not None else os.environ.get("LY_DEFAULT_PRICE", "")
     create_name = (args.create_name or os.environ.get("LY_CREATE_NAME") or "052").strip()

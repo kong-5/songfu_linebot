@@ -183,16 +183,27 @@ def push_once(base: str, key: str, icpno: str, date=None, timeout: int = 90, ver
     ensure_timeout_client(timeout)
     d = datetime.date.fromisoformat(date).isoformat() if date else datetime.date.today().isoformat()
     total = 0
-    for one in _expand_icpnos(icpno):
+    codes = _expand_icpnos(icpno)
+    errors = []
+    # [fix 2026-07-14] 逐家隔離：一家失敗記錄後續推其餘家（同 ly_stock_push.push_once）。
+    for one in codes:
         company = lystk.COMPANIES.get(one, one)
         if verbose:
             print(f"🧾 取單 {d}  ICPNO={one}（{company}）…", flush=True)
-        body = build_payload(one, d, verbose=verbose)
-        res = post_cloud(base, key, body, timeout)
-        n = int(res.get("docs", len(body["docs"]))) if isinstance(res, dict) else len(body["docs"])
-        if verbose:
-            print(f"✅ 已推 {n} 張（{one} {d}）", flush=True)
-        total += n
+        try:
+            body = build_payload(one, d, verbose=verbose)
+            res = post_cloud(base, key, body, timeout)
+            n = int(res.get("docs", len(body["docs"]))) if isinstance(res, dict) else len(body["docs"])
+            if verbose:
+                print(f"✅ 已推 {n} 張（{one} {d}）", flush=True)
+            total += n
+        except Exception as e:
+            errors.append(f"{one}: {e}")
+            print(f"❌ 公司 {one} 取單/推送失敗（續推其餘公司）：{e}", flush=True)
+    if errors and len(errors) == len(codes):
+        raise RuntimeError("全部公司取單/推送失敗：" + "；".join(errors))
+    if errors:
+        print(f"⚠ 本輪 {len(errors)}/{len(codes)} 家失敗：{'；'.join(errors)}", flush=True)
     return total
 
 
