@@ -3006,21 +3006,44 @@ function createAdminRouter() {
         await saveAdminUsers([{ username, name: "系統管理者", passwordHash: hashAdminPassword(password), title: "經理", status: "active", createdAt: now }]);
         res.redirect("/admin/login?ok=1");
     });
+    // [fix 2026-07-14] 登入節流：同帳號（或同 IP）10 分鐘內失敗 10 次 → 暫停 10 分鐘。
+    // in-memory 即可（單實例為主；多實例下每實例各自計數，仍有上限效果）。pbkdf2 100k 次已減速，
+    // 這層擋的是無腦線上爆破。成功登入即清零。
+    const loginFails = new Map(); // key → { n, until }
+    const LOGIN_FAIL_MAX = 10, LOGIN_FAIL_WINDOW_MS = 10 * 60 * 1000;
+    function loginThrottleKey(req, username) {
+        const ip = String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim();
+        return username + "|" + ip;
+    }
     router.post("/login", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const users = await loadAdminUsers();
         const username = (req.body.username || "").trim();
         const password = (req.body.password || "").toString();
+        const tkey = loginThrottleKey(req, username);
+        const rec = loginFails.get(tkey);
+        if (rec && rec.n >= LOGIN_FAIL_MAX && Date.now() < rec.until) {
+            res.redirect("/admin/login?err=throttled");
+            return;
+        }
         const u = users.find((x) => x.username === username);
         if (!u || !verifyAdminPassword(password, u.passwordHash)) {
+            const cur = loginFails.get(tkey) || { n: 0, until: 0 };
+            cur.n += 1;
+            cur.until = Date.now() + LOGIN_FAIL_WINDOW_MS;
+            loginFails.set(tkey, cur);
+            if (loginFails.size > 1000) loginFails.clear(); // 簡單上限防記憶體累積
             res.redirect("/admin/login?err=1");
             return;
         }
+        loginFails.delete(tkey);
         if (u.status === "disabled") {
             res.redirect("/admin/login?disabled=1");
             return;
         }
         const token = signAdminSession(username);
-        res.setHeader("Set-Cookie", `sf_admin_session=${encodeURIComponent(token)}; Path=/admin; HttpOnly; Max-Age=${7 * 24 * 3600}; SameSite=Lax`);
+        // [fix 2026-07-14] 正式環境（Cloud Run 全 HTTPS）補 Secure 旗標；本機 http 開發不加
+        const secureFlag = process.env.DATABASE_URL ? "; Secure" : "";
+        res.setHeader("Set-Cookie", `sf_admin_session=${encodeURIComponent(token)}; Path=/admin; HttpOnly; Max-Age=${7 * 24 * 3600}; SameSite=Lax${secureFlag}`);
         let nextUrl = (req.body.next || "/admin").toString();
         if (!nextUrl.startsWith("/admin"))
             nextUrl = "/admin";
@@ -8344,6 +8367,7 @@ function createAdminRouter() {
         <td style="text-align:center;">${sw("order", g.group_id, g.feats.order)}</td>
         <td style="text-align:center;">${sw("stk", g.group_id, g.feats.stocktake)}</td>
         <td style="text-align:center;">${sw("bsk", g.group_id, g.feats.basket)}</td>
+        <input type="hidden" name="orig[${escapeAttr(g.group_id)}]" value="${(g.feats.order ? 1 : 0)}${(g.feats.stocktake ? 1 : 0)}${(g.feats.basket ? 1 : 0)}">
       </tr>`;
         }).join("");
         const knownIds = list.map((g) => g.group_id).join(",");
@@ -8395,13 +8419,20 @@ function createAdminRouter() {
             const orderMap = (req.body && typeof req.body.order === "object" && req.body.order) ? req.body.order : {};
             const stkMap = (req.body && typeof req.body.stk === "object" && req.body.stk) ? req.body.stk : {};
             const bskMap = (req.body && typeof req.body.bsk === "object" && req.body.bsk) ? req.body.bsk : {};
+            const origMap = (req.body && typeof req.body.orig === "object" && req.body.orig) ? req.body.orig : {};
             const knownRaw = String((req.body && req.body.known_ids) || "");
             const manualRaw = String((req.body && req.body.manual_ids) || "");
             // 已列出的群組：用各自的勾選狀態（未勾＝關）；手動新增的群組：預設三項全開。
+            // [fix 2026-07-14] 只寫「有變動」的列（比對頁面載入時的 orig 快照）：舊版整表重寫，
+            // A 開著總表期間 B 在客戶編輯頁改了某群開關，A 按儲存會把 B 的變更用舊值靜默還原。
             const universe = new Map(); // group_id -> {order,stocktake,basket}
             for (const line of knownRaw.split(/[\r\n,]+/)) {
                 const id = line.trim(); if (!id) continue;
-                universe.set(id, { order: orderMap[id] === "1", stocktake: stkMap[id] === "1", basket: bskMap[id] === "1" });
+                const feats = { order: orderMap[id] === "1", stocktake: stkMap[id] === "1", basket: bskMap[id] === "1" };
+                const nowStr = (feats.order ? 1 : 0) + "" + (feats.stocktake ? 1 : 0) + "" + (feats.basket ? 1 : 0);
+                const origStr = typeof origMap[id] === "string" ? origMap[id].trim() : null;
+                if (origStr !== null && origStr === nowStr) continue; // 這列沒動過 → 不覆寫
+                universe.set(id, feats);
             }
             for (const line of manualRaw.split(/[\r\n,]+/)) {
                 const id = line.trim(); if (!id || universe.has(id)) continue;
@@ -9004,7 +9035,7 @@ function createAdminRouter() {
               <label>起 <input id="startD" type="date" value="${escapeAttr(startDefault)}" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;"></label>
               <label>迄 <input id="endD" type="date" value="${escapeAttr(endDefault)}" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;"></label>
               <button id="drawBtn" type="button" class="btn btn-primary">更新圖表</button>
-              <form method="get" action="/admin/logistics/market/history/backfill" style="display:inline-flex;gap:6px;align-items:center;margin-left:auto;">
+              <form method="post" action="/admin/logistics/market/history/backfill" style="display:inline-flex;gap:6px;align-items:center;margin-left:auto;">
                 <select name="days" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;"><option value="90">90 天</option><option value="180">180 天</option><option value="365" selected>365 天（一年）</option></select>
                 <button type="submit" class="btn" title="向農業部抓過去區間資料存入本地" onclick="this.textContent='回補中…';">回補歷史</button>
               </form>
@@ -9065,10 +9096,12 @@ function createAdminRouter() {
     });
 
     // 回補歷史（向農業部抓區間資料存本地）
-    router.get("/logistics/market/history/backfill", async (req, res) => {
-        const daysRaw = parseInt((req.query.days || "90").toString(), 10);
+    // [fix 2026-07-14] GET→POST：這是會寫 DB 的動作，GET 連結會被 SameSite=Lax 的頂層導航
+    // 帶 cookie 觸發（外部連結即可打），且瀏覽器預抓可能誤觸。表單已同步改 method="post"。
+    router.post("/logistics/market/history/backfill", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const daysRaw = parseInt((req.body?.days || req.query.days || "90").toString(), 10);
         const days = daysRaw > 0 && daysRaw <= 400 ? daysRaw : 90;
-        const crops = (req.query.crops || req.query.crop || "").toString();
+        const crops = (req.body?.crops || req.query.crops || req.query.crop || "").toString();
         try {
             const r = await (0, wholesale_snapshot_js_1.backfillWholesaleHistory)(db, days);
             const q = crops ? `?crops=${encodeURIComponent(crops)}&msg=` : "?msg=";
@@ -13156,6 +13189,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const ph = spNos.map(() => "?").join(",");
             const units = await db.prepare(`SELECT sp_no, doc_date, total, ct_no, ct_name FROM cash_sales_doc WHERE icpno = ? AND sp_no IN (${ph})`).all(icpno, ...spNos) || [];
             const unitMap = new Map(units.map((u) => [u.sp_no, u]));
+            // [fix 2026-07-14] 完整性驗證：頁面載入後單被「重新取單」刪掉/改號時，舊版對查無的單
+            // 照插 due=0 的 alloc（孤兒分配，日報表對不上帳且畫面上找不到那張單）。改成明確拒絕。
+            if (units.length !== spNos.length) {
+                const missing = spNos.filter((sp) => !unitMap.has(sp));
+                res.status(409).json({ error: "下列單已不存在（可能被重新取單更新），請重整頁面後再收：" + missing.join("、") });
+                return;
+            }
             // 由勾選的單推客戶：全同一家＝該客戶；跨多家＝標「多客戶(N)」（明細仍逐單留客戶）
             const ctSet = new Map();
             for (const u of units)
@@ -13215,6 +13255,22 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.status(400).json({ error: "缺 payment_id" });
                 return;
             }
+            // [fix 2026-07-14] 金錢操作可稽核：舊版硬刪三表、不存在也回 ok、誰取消了哪筆完全查不到。
+            // 改成先快照（payment＋allocs＋checks）寫進 data_change_log 再刪；查無回 404。
+            const pay = await db.prepare("SELECT * FROM cash_payment WHERE id = ?").get(payId);
+            if (!pay) {
+                res.status(404).json({ error: "找不到這筆收款（可能已被取消）" });
+                return;
+            }
+            const allocSnap = await db.prepare("SELECT sp_no, doc_date, due_amount, alloc_amount FROM cash_payment_alloc WHERE payment_id = ?").all(payId) || [];
+            const checkSnap = await db.prepare("SELECT check_no, bank, due_date, amount FROM cash_check WHERE payment_id = ?").all(payId) || [];
+            await logDataChange(req, {
+                entityType: "cash_payment",
+                entityId: payId,
+                action: "undo_collect",
+                summary: `取消收款 ${pay.ct_name || pay.ct_no || ""} ${pay.pay_date} 共 ${pay.total_amount}（${allocSnap.length} 張單退回未收）`,
+                meta: { payment: pay, allocs: allocSnap, checks: checkSnap },
+            });
             const doDel = async (h) => {
                 await h.prepare("DELETE FROM cash_check WHERE payment_id = ?").run(payId);
                 await h.prepare("DELETE FROM cash_payment_alloc WHERE payment_id = ?").run(payId);
@@ -13533,6 +13589,18 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const method = (["cash", "transfer", "check"].includes(String(b.method ?? "").trim()) ? String(b.method).trim() : "cash");
+            // [fix 2026-07-14] 重送冪等：手動入帳無唯一鍵可擋（銷貨收款有 idx_cash_alloc_sp_uniq、
+            // 這裡沒有），網路逾時重按/請求重送會重複入帳。15 秒內完全相同的一筆視為重複送出，
+            // 直接回 ok（刻意連續入兩筆相同金額的正常情境，間隔必然超過 15 秒）。
+            try {
+                const dupWindow = new Date(Date.now() - 15000).toISOString();
+                const dup = await db.prepare("SELECT id FROM cash_extra_income WHERE icpno = ? AND income_date = ? AND item = ? AND amount = ? AND method = ? AND COALESCE(collected_by,'') = ? AND created_at > ? LIMIT 1")
+                    .get(icpno, date, item, amount, method, String(b.collected_by ?? "").trim(), dupWindow);
+                if (dup) {
+                    res.json({ ok: true, dedup: true });
+                    return;
+                }
+            } catch (_) { /* 查重失敗照常入帳 */ }
             await db.prepare("INSERT INTO cash_extra_income (id, icpno, income_date, item, amount, method, collected_by, note, recorded_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
                 .run((0, id_js_1.newId)("cei"), icpno, date, item, amount, method, String(b.collected_by ?? "").trim(), String(b.note ?? "").trim(), (res.locals && res.locals.adminUser) || "", new Date().toISOString());
             res.json({ ok: true });

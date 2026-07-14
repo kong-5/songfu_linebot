@@ -101,18 +101,31 @@ async function computeCustomerProfile(db, customerId) {
     const hourCounts = {};
     let timeSamples = 0;
     try {
+        // [fix 2026-07-14] ORDER BY COALESCE(updated_at, order_date) 在 PG 是型別錯誤
+        // （TIMESTAMPTZ vs TEXT → 42804），外層 catch 吞掉＝雲端正式環境的星期/時段統計永遠空白、
+        // 本機 SQLite 卻正常。CAST 成 TEXT 兩邊都合法且排序等價（ISO 格式字典序＝時間序）。
         const orows = await db
-            .prepare(`SELECT updated_at, order_date FROM orders WHERE customer_id = ? ORDER BY COALESCE(updated_at, order_date) DESC LIMIT 400`)
+            .prepare(`SELECT updated_at, order_date FROM orders WHERE customer_id = ? ORDER BY COALESCE(CAST(updated_at AS TEXT), order_date) DESC LIMIT 400`)
             .all(cid);
+        // [fix 2026-07-14] 星期/時段一律用台北時區：Cloud Run 伺服器是 UTC，
+        // 舊版 getDay()/getHours() 讓「叫貨時段」整體偏移 8 小時（晚上 9 點被記成下午 1 點）。
+        const tpeParts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Taipei", weekday: "short", hour: "numeric", hourCycle: "h23" });
+        const WD_MAP = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
         for (const o of orows || []) {
             const ms = safeDateMs(o.updated_at) ?? safeDateMs(o.order_date);
             if (ms == null)
                 continue;
-            const d = new Date(ms);
-            const wd = d.getDay();
+            let wd = null, hr = null;
+            try {
+                const parts = tpeParts.formatToParts(new Date(ms));
+                const wdStr = (parts.find((p) => p.type === "weekday") || {}).value;
+                wd = WD_MAP[wdStr];
+                hr = parseInt((parts.find((p) => p.type === "hour") || {}).value, 10);
+            } catch (_) { const d = new Date(ms); wd = d.getDay(); hr = d.getHours(); }
+            if (wd == null || !Number.isFinite(hr))
+                continue;
             const dayLabel = "星期" + WEEK_LABELS[wd];
             weekdayCounts[dayLabel] = (weekdayCounts[dayLabel] || 0) + 1;
-            const hr = d.getHours();
             const bucket = `${hr}:00–${hr + 1}:00`;
             hourCounts[bucket] = (hourCounts[bucket] || 0) + 1;
             timeSamples++;

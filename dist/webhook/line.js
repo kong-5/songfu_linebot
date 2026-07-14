@@ -922,7 +922,6 @@ function createLineWebhook() {
                     return;
                 collectingByGroup.delete(groupId);
                 autoFinalizeTimers.delete(groupId);
-                deleteCollectSession(db, groupId).catch(()=>{});
                 const orderIdsForSession = (session.allOrderIds && session.allOrderIds.length)
                     ? [...new Set(session.allOrderIds)]
                     : [session.orderId];
@@ -942,6 +941,11 @@ function createLineWebhook() {
                         }
                     }
                 }
+                // [fix 2026-07-14] 持久化 session 移到 rebuild 完成後才刪：舊版一進 timer 就刪，
+                // rebuild 期間程序當機＝session 沒了、重啟不會補跑結單（空籃沒補、摘要沒發）。
+                // 現在當機在 rebuild 段會於重啟時 restoreCollectSessions 恢復並重新 finalize
+                // （rebuild 冪等、此時尚未推播）；過了這行才輪到推播類動作，重複風險窗已收斂到最小。
+                deleteCollectSession(db, groupId).catch(()=>{});
                 // B1：30 秒結單前先清掉「完全空白」的訂單（0 品項、無 attachments、raw_message 空）
                 // 避免後台累積一堆空白訂單。若全部訂單都空則直接結束，不發推播。
                 const survivingOrderIds = [];
@@ -1059,7 +1063,15 @@ function createLineWebhook() {
                             }
                         }
                         if (!flexSent) {
-                            await lineClient.pushMessage(groupId, { type: "text", text: summary });
+                            // [fix 2026-07-14] 摘要是客戶核對訂單的唯一憑據：純文字推播失敗再重試一次
+                            //（LINE push 瞬斷很常見；重試仍失敗才放棄並記 log）。
+                            try {
+                                await lineClient.pushMessage(groupId, { type: "text", text: summary });
+                            } catch (pe) {
+                                console.warn("[LINE] 結單摘要推播失敗，3 秒後重試一次:", pe?.message || pe);
+                                await new Promise((r) => setTimeout(r, 3000));
+                                await lineClient.pushMessage(groupId, { type: "text", text: summary });
+                            }
                         }
                     }
                     else {
@@ -1182,15 +1194,23 @@ function createLineWebhook() {
                         const matched = await db.prepare("SELECT id, line_group_id FROM orders WHERE line_message_id = ?").all(mid);
                         if (matched.length) {
                             const deletedIds = new Set(matched.map((m) => m.id));
-                            for (const oid of deletedIds) {
-                                await db.prepare("DELETE FROM order_items WHERE order_id = ?").run(oid);
-                                await db.prepare("DELETE FROM order_attachments WHERE order_id = ?").run(oid);
-                                try {
-                                    await db.prepare("DELETE FROM customer_order_image_examples WHERE order_id = ?").run(oid);
+                            // [fix 2026-07-14] 刪單包交易：舊版逐句刪，中途失敗留「空殼訂單」，
+                            // 且同日後續訊息會重用這張殼繼續累加＝客戶已收回的單復活。
+                            const doUnsendDel = async (h) => {
+                                for (const oid of deletedIds) {
+                                    await h.prepare("DELETE FROM order_items WHERE order_id = ?").run(oid);
+                                    await h.prepare("DELETE FROM order_attachments WHERE order_id = ?").run(oid);
+                                    try {
+                                        await h.prepare("DELETE FROM customer_order_image_examples WHERE order_id = ?").run(oid);
+                                    }
+                                    catch (_) { /* 表或 FK 可能不存在 */ }
+                                    await h.prepare("DELETE FROM orders WHERE id = ?").run(oid);
                                 }
-                                catch (_) { /* 表或 FK 可能不存在 */ }
-                                await db.prepare("DELETE FROM orders WHERE id = ?").run(oid);
-                            }
+                            };
+                            if (typeof db.transaction === "function")
+                                await db.transaction(doUnsendDel);
+                            else
+                                await doUnsendDel(db);
                             for (const [gid, sess] of [...collectingByGroup.entries()]) {
                                 const ids = [sess.orderId, ...(sess.allOrderIds || [])].filter(Boolean);
                                 if (ids.some((id) => deletedIds.has(id))) {
@@ -1680,7 +1700,7 @@ function createLineWebhook() {
                             }
                             mergeSessionOrderIds(session, touchedOrderIds);
                             if (lineClient && map.size > 1) {
-                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db, { pushTo: groupId });
                             }
                         }
                         else if (parsedFromImg.length > 0) {
@@ -1738,7 +1758,7 @@ function createLineWebhook() {
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                             }
                             if (lineClient && map.size > 1) {
-                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                                await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db, { pushTo: groupId });
                             }
                         }
                         else {
@@ -1882,7 +1902,7 @@ function createLineWebhook() {
                                 scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         }
                         if (lineClient && map.size > 1) {
-                            await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                            await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db, { pushTo: groupId });
                         }
                         continue;
                     }
@@ -2261,8 +2281,17 @@ function createLineWebhook() {
                 const session = collectingByGroup.get(groupId);
                 const { orderId, customerId: cid } = session;
                 const idsForRaw = (session.allOrderIds && session.allOrderIds.length) ? [...new Set(session.allOrderIds)] : [orderId];
-                // [fix 2026-07-10] 接手逾時租約重跑（lineMessageIsRetry）時啟用冪等：前次可能已附加同一行
-                await appendRawLineToOrders(db, idsForRaw, text, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
+                // [fix 2026-07-14] 意圖偵測移到 append raw「之前」：客訴/改單/取消/詢送貨/空籃這類
+                // 文字不寫進 raw_message——逐則層面本就不解析（A5 修），但一旦進了 raw，結單整單
+                // rebuild 仍會把「高麗菜5公斤壞掉了」重建成幽靈品項，繞回 A5 想防的洞。
+                // intent 是純 regex 零成本；add_to_order（補叫貨）例外照常寫入（rebuild 需要它）。
+                const intentHit = detectCustomerIntent(text);
+                const NON_ORDER_INTENTS = ["complaint", "return_request", "cancel_order", "modify_order", "delivery_inquiry", "basket_return"];
+                const skipRawForIntent = Boolean(intentHit.intent && NON_ORDER_INTENTS.includes(intentHit.intent));
+                if (!skipRawForIntent) {
+                    // [fix 2026-07-10] 接手逾時租約重跑（lineMessageIsRetry）時啟用冪等：前次可能已附加同一行
+                    await appendRawLineToOrders(db, idsForRaw, text, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
+                }
                 // 對話紀錄：客戶訊息（含 LINE 顯示名稱，供審核頁顯示發話者）
                 try {
                     const spkName = senderUserId ? await (0, line_conversation_js_1.upsertGroupSpeaker)(db, lineClient, groupId, senderUserId, null) : null;
@@ -2287,8 +2316,7 @@ function createLineWebhook() {
                     db,
                     customerId: cid,
                 };
-                // 客戶意圖偵測（含客訴、退貨、取消、改訂單、詢送貨、補叫貨）
-                const intentHit = detectCustomerIntent(text);
+                // 客戶意圖偵測（含客訴、退貨、取消、改訂單、詢送貨、補叫貨）——已在 append raw 前算好（intentHit）
                 if (intentHit.intent === "complaint" || intentHit.intent === "return_request") {
                     // 客訴 / 退貨：標為 complaint，跳過 AI 解析
                     try {
@@ -2394,7 +2422,7 @@ function createLineWebhook() {
                     }
                     mergeSessionOrderIds(session, touchedOrderIds);
                     if (lineClient && map.size > 1) {
-                        await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db);
+                        await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db, { pushTo: groupId });
                     }
                 }
                 else if (parsed.length > 0) {
@@ -2570,6 +2598,21 @@ async function reply(client, token, text, dbOptional, options) {
     }
     catch (e) {
         console.error("[LINE] 回覆失敗（可能 replyToken 逾時或網路問題）:", e);
+        // [fix 2026-07-14] AI 解析（OCR/Gemini 10-40 秒）常超過 replyToken 時效：
+        // 呼叫端帶 options.pushTo（群組/用戶 ID）時降級改 push，「客戶必須知道」的訊息
+        //（如拆單通知）不再靜默消失。未帶 pushTo 的回覆維持 best-effort 舊行為。
+        const pushTo = options?.pushTo;
+        if (pushTo && client) {
+            try {
+                await client.pushMessage(pushTo, { type: "text", text });
+                if (dbOptional)
+                    recordLineReply(dbOptional).catch(() => {});
+                console.log("[LINE] replyToken 失效，已降級用 push 送出");
+            }
+            catch (pe) {
+                console.error("[LINE] push fallback 也失敗:", pe?.message || pe);
+            }
+        }
     }
 }
 // 測試掛鉤：拆單純函式與 DB helper（勿在正式流程 require 這個物件）

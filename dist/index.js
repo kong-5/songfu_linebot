@@ -195,16 +195,34 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
      * 之間會算成前一天——排程建議的 06:00/07:00 打進來剛好抓到「昨天」的行情。 */
     const taipeiTodayYYYYMMDD = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
     const wholesale_snapshot_js_1 = require("./lib/wholesale-snapshot.js");
+    /** [fix 2026-07-14] /api/jobs/* 統一 fail-closed（比照 /api/worker 的 503 做法）：
+     *  未設定 secret 舊版直接放行——livestock-prefetch 會觸發 LINE 推播，可被外部人打爆。
+     *  改成未設定 secret 一律 503（除非明確設 ALLOW_UNAUTH_JOBS=1 沿用舊行為，供過渡期用）。
+     *  ⚠ 部署前確認 Cloud Run 已設 WHOLESALE_JOB_SECRET（或 RHYTHM_JOB_SECRET/LINE_WORKER_SECRET）
+     *  且 Cloud Scheduler 有帶對應標頭；否則行情預抓會開始回 503。 */
+    function jobAuth(req, res, headerNames) {
+        const secret = (process.env.WHOLESALE_JOB_SECRET || process.env.RHYTHM_JOB_SECRET || process.env.LINE_WORKER_SECRET || "").trim();
+        if (!secret) {
+            if (process.env.ALLOW_UNAUTH_JOBS === "1") return true;
+            console.error("[jobs] 未設定 job secret，拒絕執行（設 WHOLESALE_JOB_SECRET，或暫設 ALLOW_UNAUTH_JOBS=1 沿用舊行為）");
+            res.status(503).type("text/plain").send("job secret not configured");
+            return false;
+        }
+        const got = headerNames.map((h) => String(req.headers[h] || "").trim()).find(Boolean) || "";
+        const a = Buffer.from(got, "utf8");
+        const b = Buffer.from(secret, "utf8");
+        if (a.length !== b.length || !crypto_1.default.timingSafeEqual(a, b)) {
+            res.status(401).type("text/plain").send("Unauthorized");
+            return false;
+        }
+        return true;
+    }
     /** Cloud Scheduler 預抓北農行情：建議每日 06:00 / 10:00 / 14:00 各打一次。
-     *  ?date=YYYY-MM-DD（預設今日）；可加 X-Wholesale-Job-Secret 限制。 */
+     *  ?date=YYYY-MM-DD（預設今日）；需帶 X-Wholesale-Job-Secret。 */
     app.post("/api/jobs/wholesale-prefetch", async (req, res) => {
         try {
             if (!dbReady) { res.status(503).json({ ok: false, error: "db not ready" }); return; }
-            const secret = (process.env.WHOLESALE_JOB_SECRET || process.env.RHYTHM_JOB_SECRET || process.env.LINE_WORKER_SECRET || "").trim();
-            if (secret) {
-                const got = String(req.headers["x-wholesale-job-secret"] || req.headers["x-rhythm-job-secret"] || "").trim();
-                if (got !== secret) { res.status(401).type("text/plain").send("Unauthorized"); return; }
-            }
+            if (!jobAuth(req, res, ["x-wholesale-job-secret", "x-rhythm-job-secret"])) return;
             const dateStr = String(req.query.date || req.body?.date || "").trim() || taipeiTodayYYYYMMDD();
             if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).json({ ok: false, error: "invalid date" }); return; }
             const db = (0, index_js_1.getDb)(dbPath);
@@ -253,11 +271,7 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
     app.post("/api/jobs/livestock-prefetch", async (req, res) => {
         try {
             if (!dbReady) { res.status(503).json({ ok: false, error: "db not ready" }); return; }
-            const secret = (process.env.WHOLESALE_JOB_SECRET || process.env.RHYTHM_JOB_SECRET || process.env.LINE_WORKER_SECRET || "").trim();
-            if (secret) {
-                const got = String(req.headers["x-wholesale-job-secret"] || req.headers["x-rhythm-job-secret"] || "").trim();
-                if (got !== secret) { res.status(401).type("text/plain").send("Unauthorized"); return; }
-            }
+            if (!jobAuth(req, res, ["x-wholesale-job-secret", "x-rhythm-job-secret"])) return;
             const dateStr = String(req.query.date || req.body?.date || "").trim() || taipeiTodayYYYYMMDD();
             if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).json({ ok: false, error: "invalid date" }); return; }
             const db = (0, index_js_1.getDb)(dbPath);
@@ -287,14 +301,7 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
                 res.status(503).json({ ok: false, error: "db not ready" });
                 return;
             }
-            const secret = (process.env.RHYTHM_JOB_SECRET || process.env.LINE_WORKER_SECRET || "").trim();
-            if (secret) {
-                const got = String(_req.headers["x-rhythm-job-secret"] || "").trim();
-                if (got !== secret) {
-                    res.status(401).type("text/plain").send("Unauthorized");
-                    return;
-                }
-            }
+            if (!jobAuth(_req, res, ["x-rhythm-job-secret"])) return;
             const db = (0, index_js_1.getDb)(dbPath);
             const out = await rhythm_analysis_js_1.runRhythmDailyJob(db);
             res.json({ ok: true, ...out });
