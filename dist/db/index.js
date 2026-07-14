@@ -153,6 +153,8 @@ function initSqlite(dbPath) {
         "ALTER TABLE order_items ADD COLUMN voided_by TEXT",
         "ALTER TABLE order_items ADD COLUMN void_reason TEXT",
         "ALTER TABLE order_items ADD COLUMN void_note TEXT",
+        // [fix 2026-07-14] 品項冪等鍵：來源 LINE 訊息 id。redelivery/租約重跑時同訊息品項不重插。
+        "ALTER TABLE order_items ADD COLUMN src_line_message_id TEXT",
         // 訂單層級作廢原因（status='deleted' 仍是主要旗標，這幾欄補充原因）
         "ALTER TABLE orders ADD COLUMN voided_at TEXT",
         "ALTER TABLE orders ADD COLUMN voided_by TEXT",
@@ -872,6 +874,11 @@ async function initPg() {
             catch (_) { /* column may already exist */ }
             try {
                 await client.query("ALTER TABLE order_items ADD COLUMN display_order INTEGER");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                // [fix 2026-07-14] 品項冪等鍵（與 initSqlite alters 對應）
+                await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS src_line_message_id TEXT");
             }
             catch (_) { /* column may already exist */ }
             try {
