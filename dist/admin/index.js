@@ -1887,16 +1887,12 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/cash/collect", "cash-collect", "check", "現金收款")}
         ${item("/admin/cash/customers", "cash-customers", "users", "收款客戶主檔")}
       </details>` : ""}
-      <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-wh-settings","inv-barcodes","inv-expiry","inv-adjust"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-adjust","inv-settings"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
-        ${item("/admin/inventory/entry", "inv-entry", "edit", "網站盤點")}
-        ${item("/admin/scan", "inv-scan", "scale", "掃碼盤點")}
-        ${item("/admin/inventory", "inventory", "clipboard", "每日盤點")}
+        ${item("/admin/inventory", "inventory", "clipboard", "盤點")}
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/inventory/adjustments", "inv-adjust", "refresh", "庫存調整")}
-        ${item("/admin/inventory/warehouse-settings", "inv-wh-settings", "pin", "倉庫設定")}
-        ${item("/admin/inventory/barcodes", "inv-barcodes", "tag", "條碼對照")}
-        ${item("/admin/inventory/expiry-items", "inv-expiry", "calendar", "效期品設定")}
+        ${item("/admin/inventory/warehouse-settings", "inv-settings", "pin", "盤點設定")}
       </details>
       <details class="sf-nav-group" ${["customers","cust-groups","products","ai-examples"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">主檔管理</div></summary>
@@ -3132,7 +3128,13 @@ function createAdminRouter() {
         { title: "人員管理", href: "/admin/users", keywords: ["users", "帳號", "員工"] },
         { title: "冷凍／冷藏庫", href: "/admin/freezer-fridge", keywords: ["freezer", "fridge", "冰箱"] },
         { title: "目前庫存", href: "/admin/inventory/stock", keywords: ["stock", "庫存", "凌越", "現有量", "nowqty"] },
-        { title: "每日盤點", href: "/admin/inventory", keywords: ["inventory", "盤點"] },
+        { title: "盤點", href: "/admin/inventory", keywords: ["inventory", "盤點", "每日盤點", "盤差", "盤點結果"] },
+        { title: "網站盤點", href: "/admin/inventory/entry", keywords: ["盤點", "網站盤點", "輸入", "複盤", "web"] },
+        { title: "掃碼盤點", href: "/admin/scan", keywords: ["scan", "掃碼", "條碼", "盤點", "pda"] },
+        { title: "庫存調整", href: "/admin/inventory/adjustments", keywords: ["adjust", "調整", "誤差", "補償", "調整單"] },
+        { title: "盤點設定", href: "/admin/inventory/warehouse-settings", keywords: ["settings", "盤點設定", "倉庫設定", "條碼對照", "效期品", "設定"] },
+        { title: "效期品設定", href: "/admin/inventory/expiry-items", keywords: ["效期", "效期品", "批號", "expiry"] },
+        { title: "條碼對照", href: "/admin/inventory/barcodes", keywords: ["barcode", "條碼", "對照", "綁定"] },
         { title: "物流叫貨", href: "/admin/logistics/procurement", keywords: ["procurement", "採購"] },
         { title: "北農行情", href: "/admin/logistics/market", keywords: ["market", "北農", "價格"] },
         { title: "畜產雞蛋行情", href: "/admin/logistics/livestock", keywords: ["livestock", "毛豬", "豬價", "雞", "白肉雞", "雞蛋", "蛋價", "畜產", "行情", "價格"] },
@@ -6805,8 +6807,13 @@ function createAdminRouter() {
         .stk-pctp{margin-left:4px;font-size:10.5px;color:#9b9a97;font-weight:400;}
         .stk-edited{display:block;font-size:10px;color:#8250df;margin-top:1px;white-space:nowrap;}
       </style>
-      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 每日盤點</div>
-      <h1 class="notion-page-title" style="margin-bottom:14px;">每日盤點</h1>
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 盤點</div>
+      <h1 class="notion-page-title" style="margin-bottom:10px;">盤點</h1>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 16px;">
+        <a class="btn btn-primary" href="/admin/inventory/entry" style="text-decoration:none;">▶ 開始盤點（網站）</a>
+        <a class="btn btn-primary" href="/admin/scan" style="text-decoration:none;">▶ 掃碼盤點</a>
+        <span class="notion-hint" style="margin:0;">選網站直接輸入數量，或掃碼把手機當 PDA。下面是各倉盤點結果與盤差。</span>
+      </div>
       <form method="get" action="/admin/inventory" class="stk-bar">
         <input type="date" name="date" value="${escapeAttr(date)}" onchange="this.form.submit()">
         ${selWh ? `<input type="hidden" name="wh" value="${escapeAttr(selWh)}">` : ""}
@@ -7823,6 +7830,11 @@ function createAdminRouter() {
         list.sort((a, b) => (a.sort - b.sort) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
         return list;
     }
+    // 「盤點設定」三合一：倉庫設定／條碼對照／效期品設定共用分頁列（同一組設定內切換）
+    const settingsTabs = (active) => {
+        const t = (href, key, label) => `<a href="${href}" style="text-decoration:none;padding:7px 14px;border-radius:8px;font-size:13.5px;font-weight:600;${active === key ? "background:#2383e2;color:#fff;" : "background:var(--notion-card,#fff);color:#5b616e;border:1px solid var(--notion-border,#e3e2e0);"}">${label}</a>`;
+        return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 16px;">${t("/admin/inventory/warehouse-settings", "wh", "倉庫設定")}${t("/admin/inventory/barcodes", "barcode", "條碼對照")}${t("/admin/inventory/expiry-items", "expiry", "效期品設定")}</div>`;
+    };
     router.get("/inventory/warehouse-settings", async (req, res) => {
         const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
         const companies = await listStockCompanies();
@@ -7837,8 +7849,9 @@ function createAdminRouter() {
         <td style="text-align:center;"><input type="checkbox" name="inc[${escapeAttr(w.code)}]" value="1" ${w.include ? "checked" : ""}></td>
       </tr>`).join("");
         const body = `
-      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 倉庫設定</div>
-      <h1 class="notion-page-title">倉庫設定</h1>
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 盤點設定</div>
+      <h1 class="notion-page-title">盤點設定</h1>
+      ${settingsTabs("wh")}
       <p class="notion-hint" style="margin:-2px 0 14px;">倉別代號自動來自凌越（貨品主檔的入庫倉別）。填中文名、勾選要「納入盤點」的倉即可；換倉、新增倉都會自動出現，不用手動維護。</p>
       ${coSeg}
       ${ok}
@@ -7854,7 +7867,7 @@ function createAdminRouter() {
         </div>
         <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button></p>
       </form>`;
-        res.type("text/html").send(notionPage("倉庫設定", body, "inv-wh-settings", res));
+        res.type("text/html").send(notionPage("盤點設定", body, "inv-settings", res));
     });
     router.post("/inventory/warehouse-settings", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
@@ -7928,9 +7941,10 @@ function createAdminRouter() {
       </tr>`).join("");
         const coNm = (0, erp_companies_js_1.erpCompanyName)(icpno);
         const body = `
-      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 條碼對照</div>
-      <h1 class="notion-page-title">條碼對照</h1>
-      <p class="notion-hint" style="margin:-2px 0 14px;">商品條碼 ↔ 凌越料號。點「新增品項」直接掃條碼，再模糊搜尋貨品主檔配對，掃完即建檔（凌越沒維護條碼→就在這裡對應）；現場用「掃碼盤點」LIFF 頁也能邊掃邊綁。一個品項可以綁多個條碼（單支＋整箱）。</p>
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 盤點設定</div>
+      <h1 class="notion-page-title">盤點設定</h1>
+      ${settingsTabs("barcode")}
+      <p class="notion-hint" style="margin:-2px 0 14px;">商品條碼 ↔ 凌越料號。點「新增品項」直接掃條碼，再模糊搜尋貨品主檔配對，掃完即建檔（凌越沒維護條碼→就在這裡對應）；現場用「掃碼盤點」也能邊掃邊綁。一個品項可以綁多個條碼（單支＋整箱）。</p>
       ${coSeg}
       ${ok}
       <div class="notion-card" style="padding:14px 16px;margin-bottom:16px;">
@@ -7956,7 +7970,7 @@ function createAdminRouter() {
         </table>
       </div>
       ${barcodeAddModalHtml(icpno, coNm)}`;
-        res.type("text/html").send(notionPage("條碼對照", body, "inv-barcodes", res));
+        res.type("text/html").send(notionPage("盤點設定", body, "inv-settings", res));
     });
     router.post("/inventory/barcodes", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const icpno = (0, erp_companies_js_1.normIcpno)(req.body && req.body.icpno, "02");
@@ -8026,8 +8040,9 @@ function createAdminRouter() {
       </tr>`).join("");
         const emptyRow = `<tr><td colspan="5" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此公司尚未標記任何效期品。用上方「整倉帶入」把雜貨庫房一次設好，或單筆新增料號。</td></tr>`;
         const body = `
-      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 效期品設定</div>
-      <h1 class="notion-page-title">效期品設定</h1>
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 盤點設定</div>
+      <h1 class="notion-page-title">盤點設定</h1>
+      ${settingsTabs("expiry")}
       <p class="notion-hint" style="margin:-2px 0 14px;">標記為「效期品」的料號，盤點時才會跳出<b>效期／批號</b>輸入（雜貨、有到期日的品項才需要）。可<b>整倉一次帶入</b>（例如松揚雜貨庫房），也可單筆增減。設定<b>分公司獨立</b>。</p>
       ${coSeg}
       ${banner}
@@ -8061,7 +8076,7 @@ function createAdminRouter() {
           <tbody>${rowsHtml || emptyRow}</tbody>
         </table>
       </div>`;
-        res.type("text/html").send(notionPage("效期品設定", body, "inv-expiry", res));
+        res.type("text/html").send(notionPage("盤點設定", body, "inv-settings", res));
     });
     router.post("/inventory/expiry-items", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const icpno = (0, erp_companies_js_1.normIcpno)(req.body && req.body.icpno, "02");
