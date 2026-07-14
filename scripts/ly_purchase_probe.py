@@ -27,19 +27,26 @@ LyDataOut 的資料種類代碼(idakd)**（已知清單 000000/000004/000009/000
 
 怎麼用（一次一個代碼，慢慢來）
 ------------------------------
-最安全：先在凌越畫面抄一張「進貨單」的單號，用 --doc 只查那一張：
-    python ly_purchase_probe.py --kind 0000A3 --doc <那張進貨單號>
+**預設＝列表探法（最安全也最準）**：不帶任何過濾，只叫凌越「這個單別給我前 N 筆」
+（irec 硬上限，預設 3 筆），直接看回來的**真實欄位名**判斷是不是進貨：
+    python ly_purchase_probe.py --kind 0000A3
+    python ly_purchase_probe.py --kind 0000A4
+    ...
 
-次之：挑一個「進貨筆數很少」的料號，用 --code：
-    python ly_purchase_probe.py --kind 0000A3 --code <少量料號>
-
-候選代碼建議「一個一個試」（銷貨/訂貨在 A 系列 A0/A1/A2，進貨常在鄰近號段）：
-    0000A3 → 0000A4 → 0000A5 → 0000B1 → 0000B0
+候選代碼「一個一個試」（銷貨/訂貨在 A 系列 A0/A1/A2，進貨常在鄰近號段）：
+    0000A3 → 0000A4 → 0000A5 → 0000A6 → 0000B0 → 0000B1
 每試一個，看輸出：
-  * 印出「N 筆 title / M 筆 detail」且欄位看起來像進貨（有料號/數量/日期）＝找到了。
-  * 回「LyDataOut 失敗：…」＝這個代碼不是有效單別（安全，換下一個）。
-  * 若某個代碼**跑很久沒回**＝先別再試那個；八成是過濾對它沒生效，等它逾時斷掉，
-    把該代碼記下來回報，不要連續猛試。
+  * 回「N 筆」且欄位像進貨（料號/數量/日期/供應商/進貨倉，前綴可能是 SP_/PP_/RV_…）＝**找到了**，
+    把印出來的欄位名一起貼回給我，我判斷前綴。
+  * 回「0 筆（沒過濾也 0）」＝這代碼沒資料/不是真單別（安全，換下一個）。
+  * 回「LyDataOut 失敗：…」＝這代碼不是有效單別（安全，換下一個）。
+  * 為什麼這樣安全：irec 上限只有 3 筆＋逾時 25s，就算誤打大表也只回 3 筆、網路不會爆。
+
+為什麼不要再用「單號/料號過濾」去試未知代碼：
+  凌越只要 WHERE 的欄位名對不上就**靜默回 0 筆、不報錯**（實測連 000000 貨品主檔用
+  SP_NO 過濾也回 0）。所以「過濾＋0 筆」什麼都證明不了。要先用列表探法看到真欄位名、
+  確定代碼與前綴後，才用 --doc/--code 去核對明細：
+    python ly_purchase_probe.py --kind <確定代碼> --code <少量料號> --prefix SP_/SD_
 
 拿到正確代碼後，正式上線只要在「凌越整合代理」設環境變數：
     LY_PURCHASE_IDAKD=<代碼>         # 例如 0000A3
@@ -72,15 +79,21 @@ def _ensure_client(timeout):
     )
 
 
-def _lydataout(icpno, idakd, det_fields, where, whval, order, timeout):
-    """呼叫 LyDataOut，回 (titles, details)。過濾一律有值（呼叫端保證）。"""
+def _lydataout(icpno, idakd, det_fields, where, whval, order, timeout, cap):
+    """呼叫 LyDataOut，回 (titles, details)。
+
+    cap = irec 筆數上限（>0，硬性只回這麼多筆；防止整表倒出造成內網風暴）。
+    where 可空（列表探法）——此時純靠 cap 收斂結果。
+    """
+    if not cap or int(cap) < 1:
+        raise ValueError("cap 必須 ≥ 1（不設上限會有整表倒出的風暴風險）")
     _ensure_client(timeout)
     client = lystk.get_client()
     resp = client.service.LyDataOut(
         ikye=lystk.fresh_key(), icpno=lystk.resolve_icpno(icpno), idakd=idakd,
         ifld="", idetfields=det_fields,
         irwhere=where, iwhval=whval,
-        irec=0, imode=" " * 30, iorder=order, idtorder="",
+        irec=int(cap), imode=" " * 30, iorder=order, idtorder="",
         iswhere="", isifld="",
         Isecgroup="", iseckindfg="", iseckind="", Isecorder="", Isecrec=0,
     )
@@ -96,55 +109,70 @@ def _lydataout(icpno, idakd, det_fields, where, whval, order, timeout):
     return titles, details
 
 
-def probe(icpno, kind, hdr, det, mode, value, want_detail, timeout, show):
-    """一次一發的探測查詢。回 (titles, details)。"""
-    # 只請最少量欄位；欄位名猜錯時 LyDataOut 多半直接報錯（安全），不會硬倒表。
-    if want_detail:
-        det_fields = (f"{det}SEQ,{det}SKNO,{det}NAME,{det}UNIT,{det}QTY,"
-                      f"{det}PRICE,{det}STOT,{det}NO,{det}DATE")
-    else:
-        det_fields = ""  # 只要抬頭：更輕，先確認單別存在與主表欄位
-    if mode == "doc":
-        where = f"{hdr}NO=@v1@"
-    else:  # code
-        where = f"{det}SKNO=@v1@"
-        det_fields = det_fields or (f"{det}SEQ,{det}SKNO,{det}NAME,{det}QTY,{det}NO,{det}DATE")
-    order = f"order by {hdr}NO desc"
+def _fieldset(rows):
+    """回傳這批 rows 出現過的所有欄位名（union，排序）。"""
+    s = set()
+    for r in rows:
+        s.update(r.keys())
+    return sorted(s)
 
-    print(f"▶ 探測 idakd={kind}  icpno={icpno}  過濾 {where} = {value}"
-          f"  逾時 {timeout}s（超過會自動斷線）", flush=True)
-    titles, details = _lydataout(icpno, kind, det_fields, where, value, order, timeout)
+
+def probe(icpno, kind, hdr, det, mode, value, timeout, cap, show):
+    """一次一發的探測查詢。回 (titles, details)。"""
+    if mode == "list":
+        # 列表探法：不帶過濾、只要抬頭、irec 硬上限 cap 筆 → 看真實欄位名 + 確認單別存在。
+        det_fields, where, whval = "", "", ""
+        order = ""  # 不指定排序，避免引用到未知的 {hdr}NO 欄位造成偏差
+        head = f"▶ 探測 idakd={kind}  icpno={icpno}  列表前 {cap} 筆（無過濾）"
+    elif mode == "doc":
+        det_fields = ""  # 先只抬頭確認前綴
+        where, whval = f"{hdr}NO=@v1@", value
+        order = f"order by {hdr}NO desc"
+        head = f"▶ 探測 idakd={kind}  icpno={icpno}  過濾 {where}={value}  上限 {cap} 筆"
+    else:  # code
+        det_fields = f"{det}SEQ,{det}SKNO,{det}NAME,{det}UNIT,{det}QTY,{det}PRICE,{det}STOT,{det}NO,{det}DATE"
+        where, whval = f"{det}SKNO=@v1@", value
+        order = f"order by {hdr}NO desc"
+        head = f"▶ 探測 idakd={kind}  icpno={icpno}  過濾 {where}={value}  上限 {cap} 筆"
+
+    print(head + f"  逾時 {timeout}s（超過會自動斷線）", flush=True)
+    titles, details = _lydataout(icpno, kind, det_fields, where, whval, order, timeout, cap)
 
     print(f"  ← 回傳：抬頭(title) {len(titles)} 筆、明細(detail) {len(details)} 筆", flush=True)
-    # 印出實際欄位名 → 用來確認前綴（SP_/SD_ 還是 PP_/PD_…）與是否像進貨
     if titles:
-        print(f"  抬頭欄位：{sorted(titles[0].keys())}")
+        print(f"  抬頭欄位：{_fieldset(titles)}")
     if details:
-        print(f"  明細欄位：{sorted(details[0].keys())}")
-    # 抽樣印前幾筆（受 --show 限制），方便肉眼判斷是不是進貨
+        print(f"  明細欄位：{_fieldset(details)}")
     for i, t in enumerate(titles[:show]):
-        print(f"  [抬頭 {i+1}] " + "  ".join(f"{k}={v}" for k, v in list(t.items())[:8]))
+        print(f"  [抬頭 {i+1}] " + "  ".join(f"{k}={v}" for k, v in list(t.items())[:10]))
     for i, d in enumerate(details[:show]):
-        print(f"  [明細 {i+1}] " + "  ".join(f"{k}={v}" for k, v in list(d.items())[:8]))
+        print(f"  [明細 {i+1}] " + "  ".join(f"{k}={v}" for k, v in list(d.items())[:10]))
+
     if not titles and not details:
-        print("  （代碼有效但這個過濾值查無資料——換一張確定有進貨的單號/料號再試，"
-              "或這代碼不是進貨單。）")
-    print("  判讀：欄位有『料號/數量/日期/進貨倉』且不是客戶銷貨 → 這個 idakd 很可能就是進貨單。")
+        if mode == "list":
+            print("  → 沒過濾也 0 筆：這個代碼沒資料 / 不是有效單別。換下一個候選代碼。")
+        else:
+            print("  → 0 筆：多半是 WHERE 欄位名對不上（凌越會靜默回 0）。先用 --list（無過濾）"
+                  "看真欄位名，或這代碼/前綴不對。")
+    else:
+        print("  → 判讀：欄位有『料號/數量/日期/供應商/進貨倉』且不是客戶銷貨 → 很可能就是進貨單。"
+              "把上面欄位名貼回來我幫你確認前綴。")
     return titles, details
 
 
 def build_parser():
     p = argparse.ArgumentParser(
-        description="低風險探測凌越『進貨單』資料種類代碼（唯讀、一次一發、短逾時）")
+        description="低風險探測凌越『進貨單』資料種類代碼（唯讀、一次一發、短逾時、irec 上限）")
     p.add_argument("--kind", required=True, help="要試的資料種類代碼 idakd（如 0000A3）")
-    g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument("--doc", help="用單號查（最安全，只回那一張）——凌越畫面抄一張進貨單號")
-    g.add_argument("--code", help="用料號查（挑進貨筆數少的料號）")
+    # 預設＝列表探法（無過濾、只取前 cap 筆）；--doc/--code 為確認前綴後才用的核對模式。
+    g = p.add_mutually_exclusive_group(required=False)
+    g.add_argument("--doc", help="核對用：用單號查（前綴要對，否則靜默回 0）")
+    g.add_argument("--code", help="核對用：用料號查（前綴要對）")
     p.add_argument("--icpno", help="公司代碼（預設 00，或 LY_ICPNO）")
     p.add_argument("--prefix", default="SP_/SD_",
-                   help="欄位前綴 主/明細（預設 SP_/SD_；不同單別可試 PP_/PD_）")
-    p.add_argument("--detail", action="store_true",
-                   help="連明細一起要（預設 --doc 只要抬頭、--code 要明細）")
+                   help="--doc/--code 用的欄位前綴 主/明細（預設 SP_/SD_；可試 PP_/PD_）")
+    p.add_argument("--cap", type=int, default=3,
+                   help="irec 筆數上限（預設 3，防風暴的硬上限；列表探法就靠它收斂）")
     p.add_argument("--timeout", type=int, default=25,
                    help="逾時秒數（預設 25，故意設短防風暴；不要調很大）")
     p.add_argument("--show", type=int, default=5, help="最多印幾筆抽樣（預設 5）")
@@ -158,17 +186,23 @@ def run(args):
     pref = (args.prefix or "SP_/SD_").split("/")
     hdr = (pref[0].strip() or "SP_")
     det = (pref[1].strip() if len(pref) > 1 else "SD_") or "SD_"
+    cap = max(1, int(args.cap))
     if args.timeout > 60:
         print(f"  ⚠ 逾時 {args.timeout}s 偏長；防風暴建議 ≤ 30s。", flush=True)
-    mode = "doc" if args.doc else "code"
-    value = args.doc if args.doc else args.code
-    want_detail = bool(args.detail or mode == "code")
+    if cap > 20:
+        print(f"  ⚠ cap {cap} 偏大；探測用 ≤ 5 筆就夠，設小一點更安全。", flush=True)
+    if args.doc:
+        mode, value = "doc", args.doc
+    elif args.code:
+        mode, value = "code", args.code
+    else:
+        mode, value = "list", ""  # 預設：無過濾、只取前 cap 筆
     try:
         probe(icpno, args.kind.strip(), hdr, det, mode, str(value).strip(),
-              want_detail, args.timeout, max(1, args.show))
+              args.timeout, cap, max(1, args.show))
     except Exception as e:
         print(f"  ✗ {e}", flush=True)
-        print("  → 這個代碼/前綴不通就換下一個試；一次只試一個，別連續猛打。", flush=True)
+        print("  → 這個代碼不通就換下一個試；一次只試一個，別連續猛打。", flush=True)
         return 1
     return 0
 
