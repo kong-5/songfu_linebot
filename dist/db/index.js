@@ -728,6 +728,26 @@ function initSqlite(dbPath) {
         try { sqlite.exec("ALTER TABLE basket_log_history ADD COLUMN new_lines_json TEXT"); } catch (_) {}
     }
     catch (_) { /* table may already exist */ }
+    // === 教育訓練（TTQS / PDDRO）多公司 ===
+    try {
+        sqlite.exec("CREATE TABLE IF NOT EXISTS training_employee (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', name TEXT NOT NULL, emp_no TEXT, dept TEXT, title TEXT, status TEXT NOT NULL DEFAULT 'active', note TEXT, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT, updated_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_training_employee_icpno ON training_employee(icpno, status)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS training_system (icpno TEXT PRIMARY KEY, mission TEXT, vision TEXT, core_values TEXT, policy TEXT, org_note TEXT, goal_short TEXT, goal_mid TEXT, goal_long TEXT, updated_by TEXT, updated_at TEXT)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS training_pddro_check (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', phase TEXT NOT NULL, item TEXT, result TEXT, evidence TEXT, status TEXT, checked_by TEXT, check_date TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_training_pddro_icpno ON training_pddro_check(icpno)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS training_plan (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', year TEXT NOT NULL, title TEXT, goal TEXT, note TEXT, status TEXT NOT NULL DEFAULT 'active', created_by TEXT, created_at TEXT, updated_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_training_plan_icpno ON training_plan(icpno, year)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS training_plan_item (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, month TEXT, theme TEXT, category TEXT, instructor TEXT, instructor_type TEXT, location TEXT, planned_hours REAL, status TEXT NOT NULL DEFAULT 'planned', course_id TEXT, sort_order INTEGER NOT NULL DEFAULT 0, note TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_training_plan_item_plan ON training_plan_item(plan_id)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS training_course (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', plan_item_id TEXT, title TEXT NOT NULL, category TEXT, course_date TEXT, start_time TEXT, end_time TEXT, hours REAL, instructor TEXT, instructor_type TEXT, location TEXT, target_audience TEXT, objective TEXT, summary TEXT, cost REAL, handler TEXT, confirmed_by TEXT, status TEXT NOT NULL DEFAULT 'planned', created_by TEXT, created_at TEXT, updated_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_training_course_icpno ON training_course(icpno, course_date)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS training_attendance (id TEXT PRIMARY KEY, course_id TEXT NOT NULL, employee_id TEXT, name TEXT, dept TEXT, signed INTEGER NOT NULL DEFAULT 1, hours REAL, note TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_training_attendance_course ON training_attendance(course_id)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS training_survey (id TEXT PRIMARY KEY, course_id TEXT NOT NULL, employee_id TEXT, respondent TEXT, content_score INTEGER, instructor_score INTEGER, useful_score INTEGER, overall_score INTEGER, comment TEXT, created_at TEXT)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_training_survey_course ON training_survey(course_id)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS training_outcome (course_id TEXT PRIMARY KEY, reaction TEXT, learning TEXT, behavior TEXT, result TEXT, eval_method TEXT, eval_score TEXT, effectiveness_note TEXT, evidence_url TEXT, evaluated_by TEXT, evaluated_at TEXT, updated_at TEXT)");
+    }
+    catch (_) { /* table may already exist */ }
     for (const alt of alters) {
         try {
             sqlite.exec(alt);
@@ -1445,6 +1465,26 @@ async function initPg() {
           )`);
                 await client.query("CREATE INDEX IF NOT EXISTS idx_commodity_prices_date ON commodity_prices(record_date)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_commodity_prices_cat ON commodity_prices(category)");
+            }
+            catch (_) { /* table may already exist */ }
+            // === 教育訓練（TTQS / PDDRO）多公司 ===
+            try {
+                await client.query("CREATE TABLE IF NOT EXISTS training_employee (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', name TEXT NOT NULL, emp_no TEXT, dept TEXT, title TEXT, status TEXT NOT NULL DEFAULT 'active', note TEXT, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT, updated_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_training_employee_icpno ON training_employee(icpno, status)");
+                await client.query("CREATE TABLE IF NOT EXISTS training_system (icpno TEXT PRIMARY KEY, mission TEXT, vision TEXT, core_values TEXT, policy TEXT, org_note TEXT, goal_short TEXT, goal_mid TEXT, goal_long TEXT, updated_by TEXT, updated_at TEXT)");
+                await client.query("CREATE TABLE IF NOT EXISTS training_pddro_check (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', phase TEXT NOT NULL, item TEXT, result TEXT, evidence TEXT, status TEXT, checked_by TEXT, check_date TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_training_pddro_icpno ON training_pddro_check(icpno)");
+                await client.query("CREATE TABLE IF NOT EXISTS training_plan (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', year TEXT NOT NULL, title TEXT, goal TEXT, note TEXT, status TEXT NOT NULL DEFAULT 'active', created_by TEXT, created_at TEXT, updated_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_training_plan_icpno ON training_plan(icpno, year)");
+                await client.query("CREATE TABLE IF NOT EXISTS training_plan_item (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES training_plan(id) ON DELETE CASCADE, month TEXT, theme TEXT, category TEXT, instructor TEXT, instructor_type TEXT, location TEXT, planned_hours DOUBLE PRECISION, status TEXT NOT NULL DEFAULT 'planned', course_id TEXT, sort_order INTEGER NOT NULL DEFAULT 0, note TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_training_plan_item_plan ON training_plan_item(plan_id)");
+                await client.query("CREATE TABLE IF NOT EXISTS training_course (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', plan_item_id TEXT, title TEXT NOT NULL, category TEXT, course_date TEXT, start_time TEXT, end_time TEXT, hours DOUBLE PRECISION, instructor TEXT, instructor_type TEXT, location TEXT, target_audience TEXT, objective TEXT, summary TEXT, cost DOUBLE PRECISION, handler TEXT, confirmed_by TEXT, status TEXT NOT NULL DEFAULT 'planned', created_by TEXT, created_at TEXT, updated_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_training_course_icpno ON training_course(icpno, course_date)");
+                await client.query("CREATE TABLE IF NOT EXISTS training_attendance (id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES training_course(id) ON DELETE CASCADE, employee_id TEXT, name TEXT, dept TEXT, signed INTEGER NOT NULL DEFAULT 1, hours DOUBLE PRECISION, note TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_training_attendance_course ON training_attendance(course_id)");
+                await client.query("CREATE TABLE IF NOT EXISTS training_survey (id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES training_course(id) ON DELETE CASCADE, employee_id TEXT, respondent TEXT, content_score INTEGER, instructor_score INTEGER, useful_score INTEGER, overall_score INTEGER, comment TEXT, created_at TEXT)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_training_survey_course ON training_survey(course_id)");
+                await client.query("CREATE TABLE IF NOT EXISTS training_outcome (course_id TEXT PRIMARY KEY REFERENCES training_course(id) ON DELETE CASCADE, reaction TEXT, learning TEXT, behavior TEXT, result TEXT, eval_method TEXT, eval_score TEXT, effectiveness_note TEXT, evidence_url TEXT, evaluated_by TEXT, evaluated_at TEXT, updated_at TEXT)");
             }
             catch (_) { /* table may already exist */ }
         }

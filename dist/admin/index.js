@@ -72,6 +72,7 @@ const basket_log_js_1 = require("../lib/basket-log.js");
 const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
+const training_js_1 = require("./training.js");
 const stock_mustcount_js_1 = require("../lib/stock-mustcount.js");
 const line_conversation_js_1 = require("../lib/line-conversation.js");
 const announcement_templates_js_1 = require("../lib/announcement-templates.js");
@@ -1910,6 +1911,14 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/announcements", "announcements", "megaphone", "公告管理")}
         ${item("/admin/calendar", "calendar", "calendar", "行事曆")}
       </details>
+      <details class="sf-nav-group" ${["tr-dash","tr-plans","tr-courses","tr-employees","tr-system"].includes(active) ? "open" : ""}>
+        <summary><div class="sf-nav-group-title">教育訓練</div></summary>
+        ${item("/admin/training", "tr-dash", "spark", "訓練儀表板")}
+        ${item("/admin/training/plans", "tr-plans", "clipboard", "年度計畫")}
+        ${item("/admin/training/courses", "tr-courses", "note", "課程紀錄")}
+        ${item("/admin/training/employees", "tr-employees", "user", "員工名冊")}
+        ${item("/admin/training/system", "tr-system", "wand", "TTQS 系統文件")}
+      </details>
       <details class="sf-nav-group" ${["line-bot","users"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">系統設定</div></summary>
         ${item("/admin/line-bot", "line-bot", "message", "LINE 機器人")}
@@ -3155,6 +3164,11 @@ function createAdminRouter() {
         { title: "訂單圖 Golden Set 評測", href: "/admin/order-eval", keywords: ["eval", "golden", "評測", "harness", "訂單圖"] },
         { title: "叫貨單位換算（LINE）", href: "/admin/line-bot/unit-conversion", keywords: ["unit", "單位", "換算", "conversion"] },
         { title: "大宗原物料行情", href: "/admin/logistics/commodities", keywords: ["commodities", "原物料", "黃豆", "玉米", "小麥", "行情"] },
+        { title: "訓練儀表板", href: "/admin/training", keywords: ["training", "ttqs", "pddro", "教育訓練", "訓練"] },
+        { title: "年度計畫（教育訓練）", href: "/admin/training/plans", keywords: ["training", "年度計畫", "教育訓練計畫", "訓練計畫", "ttqs"] },
+        { title: "課程紀錄（教育訓練）", href: "/admin/training/courses", keywords: ["training", "課程", "紀錄表", "簽到", "滿意度", "成效", "教育訓練"] },
+        { title: "員工名冊（教育訓練）", href: "/admin/training/employees", keywords: ["training", "員工", "名冊", "參加人員", "教育訓練"] },
+        { title: "TTQS 系統文件", href: "/admin/training/system", keywords: ["ttqs", "pddro", "使命", "願景", "目標", "查核", "教育訓練"] },
     ];
     router.get("/api/search", async (req, res) => {
         const q = String(req.query.q || "").trim();
@@ -22916,6 +22930,17 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
             console.error("[admin] /quotes/:id/pdf failed", e);
             res.status(500).send("產生失敗：" + String(e && e.message || e));
         }
+    });
+
+    // 教育訓練（TTQS / PDDRO）模組路由
+    (0, training_js_1.registerTrainingRoutes)(router, {
+        db,
+        notionPage,
+        escapeHtml,
+        escapeAttr,
+        newId: id_js_1.newId,
+        erp: erp_companies_js_1,
+        loadAdminUsers,
     });
 
     return router;
