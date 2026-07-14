@@ -167,7 +167,7 @@
 
   var S={idToken:null,name:'',icpno:'02',wh:null,date:'',items:[],itemIdx:{},counts:{},order:[],
          barcodes:{},cur:null,scanning:false,stream:null,detector:null,zreader:null,engine:'',extra:{},
-         kpOpen:false,kpFresh:false};
+         kpOpen:false,kpFresh:false,savedMeta:{}};
 
   function esc(s){s=(s==null?'':String(s));return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function fmt(n){var v=Number(n);if(!isFinite(v))return '0';return String(Math.round(v*100)/100);}
@@ -287,16 +287,28 @@
       S.baseSubmittedAt=(res.submittedAt!=null?res.submittedAt:null); // 樂觀鎖基準（配合後端 submit）
       S.itemIdx={};S.items.forEach(function(it){S.itemIdx[it.c]=it;});
       S.barcodes=(bc&&bc.map)||{};
-      S.counts={};S.order=[];S.extra={};S.cur=null;S.kpOpen=false;
-      // 續盤：帶回今日已送出的數
+      S.counts={};S.order=[];S.extra={};S.cur=null;S.kpOpen=false;S.savedMeta={};
+      // 續盤：帶回今日已送出的數（畫面顯示上+中合計）；mid/效期另存 savedMeta，
+      // 送出時原樣帶回——後端 submit 是整場 DELETE+INSERT，不帶就會把盤點頁填的中貨/效期洗掉。
       var sv=res.saved||{};
       Object.keys(sv).forEach(function(c){
         var s=sv[c];var tot=(s.counted==null?0:Number(s.counted))+(s.mid==null?0:Number(s.mid));
         if(s.counted!=null||s.mid!=null){S.counts[c]=String(tot);S.order.push(c);}
+        S.savedMeta[c]={mid:(s.mid==null?null:Number(s.mid)),expiry:(s.expiry&&s.expiry.length?s.expiry:[])};
       });
-      // 本機未送出草稿優先
+      // 本機未送出草稿：逐鍵合併、略過空值（比照 stocktake.html 的 #63 回歸修法）。
+      // ⚠ 不可整包取代：saved 可能帶回「他人剛送出」的品項，整包用舊草稿蓋掉＋開頁拿到的新
+      //   baseSubmittedAt 讓樂觀鎖放行 → 送出時把他人整場盤點洗掉。
       var dr=loadDraft();
-      if(dr){if(dr.counts)S.counts=dr.counts;if(dr.order)S.order=dr.order;if(dr.extra)S.extra=dr.extra;}
+      if(dr){
+        if(dr.counts){Object.keys(dr.counts).forEach(function(k){var v=dr.counts[k];if(v==null||String(v)==='')return;S.counts[k]=v;});}
+        if(dr.extra){Object.keys(dr.extra).forEach(function(k){if(dr.extra[k])S.extra[k]=dr.extra[k];});}
+        // order 重建：草稿順序優先，補上 saved 有而草稿沒有的品項
+        var ord=[],seen={};
+        var push=function(c){if(!seen[c]&&S.counts[c]!=null&&S.counts[c]!==''){seen[c]=1;ord.push(c);}};
+        (dr.order||[]).forEach(push);S.order.forEach(push);Object.keys(S.counts).forEach(push);
+        S.order=ord;
+      }
       renderScan();
       startScan();
     }).catch(function(){showCenter('<div>⚠ 載入失敗，請稍後再試</div>');});
@@ -654,12 +666,18 @@
     codes.forEach(function(c){
       var it=itemOf(c);if(!it)return;
       var v=parseFloat(S.counts[c]);if(!isFinite(v))return;
-      counts.push({code:it.c,name:it.n,spec:it.s,unit:it.u,sys:it.sys,counted:v,mid:null,expiry:[]});
+      // 保留既有中貨/效期：掃碼頁輸入的是「上+中合計」，送出時沿用已存的 mid 與 expiry
+      // （後端整場刪插，不帶＝洗掉盤點頁填的中貨拆分與效期批號）。合計小於既有中貨時中貨縮到合計。
+      var meta=S.savedMeta[c]||null;
+      var mid=(meta&&meta.mid!=null&&isFinite(Number(meta.mid)))?Number(meta.mid):null;
+      var good=v;
+      if(mid!=null){if(v>=mid){good=Math.round((v-mid)*100)/100;}else{mid=v;good=0;}}
+      counts.push({code:it.c,name:it.n,spec:it.s,unit:it.u,sys:it.sys,counted:good,mid:mid,expiry:(meta&&meta.expiry)||[]});
     });
     post(apiUrl('submit'),{warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:S.baseSubmittedAt}).then(function(res){
       if(res.error){
         btn.disabled=false;btn.textContent='送出盤點';
-        if(res.code==='conflict_stale'||res.code==='conflict_taken'){alert('這個倉今天已經有人送出盤點了，請退回重進、續盤後再送出。');return;}
+        if(res.code==='conflict_stale'||res.code==='conflict_taken'){alert('這個倉今天已經有人送出盤點了。\n將重新載入最新資料並合併你未送出的數量，請確認後再送出。');openWarehouse(S.wh.code);return;}
         alert('送出失敗：'+res.error);return;
       }
       clearDraft();stopScan();

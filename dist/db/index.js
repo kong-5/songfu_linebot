@@ -355,9 +355,15 @@ function initSqlite(dbPath) {
         // [fix 2026-07-10] 盤點「一倉一日一筆」補真正的 UNIQUE 約束（原 idx_stk_session_date 只是普通索引，
         // 併發送出可打破唯一性）。先冪等去重：同倉同日保留最後送出（submitted_at/created_at 最大者，再以 id 決勝），
         // 落選場次的明細一併清除，再建唯一索引。
-        sqlite.exec("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session s WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = s.wh_code AND s2.count_date = s.count_date AND s2.id <> s.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(s.submitted_at, s.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(s.submitted_at, s.created_at, '') AND s2.id > s.id))))");
-        sqlite.exec("DELETE FROM stocktake_session WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = stocktake_session.wh_code AND s2.count_date = stocktake_session.count_date AND s2.id <> stocktake_session.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') AND s2.id > stocktake_session.id)))");
-        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_stk_session_wh_date_uniq ON stocktake_session(wh_code, count_date)");
+        // [fix 2026-07-14] 唯一鍵與去重都必須含公司（icpno）：凌越倉號可跨公司重複（如松富/松揚同倉號），
+        // 舊版 (wh_code, count_date) 會讓第二家公司送不出、且啟動去重會誤刪另一家公司的整場盤點。
+        // 注意：共用 alters 陣列在本區塊之後才執行，全新 DB 此時尚無 icpno 欄，需自備冪等 ADD COLUMN。
+        try { sqlite.exec("ALTER TABLE stocktake_session ADD COLUMN icpno TEXT"); } catch (_) { /* 欄位已存在 */ }
+        sqlite.exec("UPDATE stocktake_session SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
+        sqlite.exec("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session s WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE COALESCE(NULLIF(TRIM(s2.icpno),''),'00') = COALESCE(NULLIF(TRIM(s.icpno),''),'00') AND s2.wh_code = s.wh_code AND s2.count_date = s.count_date AND s2.id <> s.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(s.submitted_at, s.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(s.submitted_at, s.created_at, '') AND s2.id > s.id))))");
+        sqlite.exec("DELETE FROM stocktake_session WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE COALESCE(NULLIF(TRIM(s2.icpno),''),'00') = COALESCE(NULLIF(TRIM(stocktake_session.icpno),''),'00') AND s2.wh_code = stocktake_session.wh_code AND s2.count_date = stocktake_session.count_date AND s2.id <> stocktake_session.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') AND s2.id > stocktake_session.id)))");
+        sqlite.exec("DROP INDEX IF EXISTS idx_stk_session_wh_date_uniq");
+        sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_stk_session_icp_wh_date_uniq ON stocktake_session(COALESCE(NULLIF(TRIM(icpno),''),'00'), wh_code, count_date)");
     }
     catch (_) { /* 去重/唯一索引失敗不阻斷啟動 */ }
     try {
@@ -1098,9 +1104,13 @@ async function initPg() {
             try {
                 // [fix 2026-07-10] 盤點「一倉一日一筆」補真正的 UNIQUE 約束（與 initSqlite 對應）：
                 // 先冪等去重（同倉同日保留最後送出者、清落選明細），再建唯一索引。
-                await client.query("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session s WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = s.wh_code AND s2.count_date = s.count_date AND s2.id <> s.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(s.submitted_at, s.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(s.submitted_at, s.created_at, '') AND s2.id > s.id))))");
-                await client.query("DELETE FROM stocktake_session WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE s2.wh_code = stocktake_session.wh_code AND s2.count_date = stocktake_session.count_date AND s2.id <> stocktake_session.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') AND s2.id > stocktake_session.id)))");
-                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_stk_session_wh_date_uniq ON stocktake_session(wh_code, count_date)");
+                // [fix 2026-07-14] 唯一鍵與去重都必須含公司（icpno）：凌越倉號可跨公司重複，
+                // 舊版 (wh_code, count_date) 會讓第二家公司送不出、且啟動去重會誤刪另一家公司的整場盤點。
+                await client.query("UPDATE stocktake_session SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
+                await client.query("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session s WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE COALESCE(NULLIF(TRIM(s2.icpno),''),'00') = COALESCE(NULLIF(TRIM(s.icpno),''),'00') AND s2.wh_code = s.wh_code AND s2.count_date = s.count_date AND s2.id <> s.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(s.submitted_at, s.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(s.submitted_at, s.created_at, '') AND s2.id > s.id))))");
+                await client.query("DELETE FROM stocktake_session WHERE EXISTS (SELECT 1 FROM stocktake_session s2 WHERE COALESCE(NULLIF(TRIM(s2.icpno),''),'00') = COALESCE(NULLIF(TRIM(stocktake_session.icpno),''),'00') AND s2.wh_code = stocktake_session.wh_code AND s2.count_date = stocktake_session.count_date AND s2.id <> stocktake_session.id AND (COALESCE(s2.submitted_at, s2.created_at, '') > COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') OR (COALESCE(s2.submitted_at, s2.created_at, '') = COALESCE(stocktake_session.submitted_at, stocktake_session.created_at, '') AND s2.id > stocktake_session.id)))");
+                await client.query("DROP INDEX IF EXISTS idx_stk_session_wh_date_uniq");
+                await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_stk_session_icp_wh_date_uniq ON stocktake_session ((COALESCE(NULLIF(TRIM(icpno),''),'00')), wh_code, count_date)");
             }
             catch (_) { /* 去重/唯一索引失敗不阻斷啟動 */ }
             try {

@@ -71,6 +71,7 @@ const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
 const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
+const order_split_js_1 = require("../lib/order-split.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
 const training_js_1 = require("./training.js");
 const stock_mustcount_js_1 = require("../lib/stock-mustcount.js");
@@ -179,7 +180,9 @@ async function resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer) {
         const newOid = (0, id_js_1.newId)("ord");
         const orderNo = await getNextOrderNoAdmin(db, sourceOrder.order_date);
         const remarkNew = targetSubCustomer ? `[子單拆分: ${targetSubCustomer}]` : null;
-        const splitKeyNew = targetSubCustomer ? targetSubCustomer : null;
+        // [fix 2026-07-14] 主客戶桶必須存 ''（不是 NULL）：rebuild 語意 NULL＝全部品項、''＝只留空 subCustomer。
+        // 舊行為存 NULL，之後整單重辨識會把子客戶品項重建進主桶單 → 與子單重複出貨（與 line.js 對齊）。
+        const splitKeyNew = targetSubCustomer;
         await db.prepare(`
       INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, line_message_id, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ` + nowSql + `)
@@ -8201,8 +8204,10 @@ function createAdminRouter() {
             const saved = {}; let resumed = false; let submittedAt = null;
             const sess = await db.prepare("SELECT id, submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, date, icpno);
             if (sess) {
-                const cRows = await db.prepare("SELECT erp_code, counted_qty, mid_qty FROM stocktake_count WHERE session_id = ?").all(sess.id);
-                for (const r of cRows || []) { const totalv = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty); const midv = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty); const goodv = totalv == null ? null : Math.round((totalv - (midv || 0)) * 100) / 100; saved[String(r.erp_code || "")] = { counted: goodv, mid: midv, expiry: [] }; }
+                // [fix 2026-07-14] expiry 一併帶回（原本固定 []）：掃碼頁 submit 是整場 DELETE+INSERT，
+                // saved 不帶效期＝掃碼頁重送會把盤點頁填好的效期批號整場洗掉。
+                const cRows = await db.prepare("SELECT erp_code, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ?").all(sess.id);
+                for (const r of cRows || []) { const totalv = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty); const midv = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty); const goodv = totalv == null ? null : Math.round((totalv - (midv || 0)) * 100) / 100; let expv = []; try { const p = JSON.parse(String(r.expiry_json || "[]")); if (Array.isArray(p)) expv = p; } catch (_) { } saved[String(r.erp_code || "")] = { counted: goodv, mid: midv, expiry: expv }; }
                 resumed = (cRows || []).length > 0; submittedAt = sess.submitted_at != null && sess.submitted_at !== "" ? String(sess.submitted_at) : null;
             }
             res.json({ date, warehouse: { code, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt });
@@ -11633,6 +11638,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         for (const oid of ids.slice(0, 200)) {
             try {
                 const before = await db.prepare("SELECT order_no, status FROM orders WHERE id = ?").get(oid);
+                // [fix 2026-07-14] 與單筆 approve 相同的狀態機守衛：作廢單／客訴單不可被批次確認復活
+                // （復活後會回到 /wait 回寫候選，已在凌越人工刪掉的單可能再次寫入）。
+                const beforeStatus = String(before?.status || "").toLowerCase().trim();
+                if (!before || beforeStatus === "deleted" || beforeStatus === "complaint") {
+                    console.warn("[admin] batch-approve 略過（%s）: %s", beforeStatus || "not-found", oid);
+                    continue;
+                }
                 await db.prepare("UPDATE orders SET status = ?, approved_by = ?, approved_at = " + nowSql + " WHERE id = ?").run("approved", actor, oid);
                 await logDataChange(req, {
                     entityType: "order",
@@ -12031,7 +12043,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
      * 認證：HTTP 標頭 X-Writeback-Key 需等於環境變數 LINGYUE_WRITEBACK_KEY。
      *
      * GET /admin/lingyue-writeback/pending?date=YYYY-MM-DD
-     *   回傳該日「尚未回寫」（lingyue_written_at 為空）且有可匯出明細的訂單，JSON 格式。
+     *   回傳該日「已排隊（使用者按過『轉入凌越』）且尚未回寫」的訂單，JSON 格式。
+     *   [fix 2026-07-14] 預設只回 lingyue_queued_at 非空的單：舊版回「當日全部未回寫」，
+     *   CLI 拿去整批寫入就是誤寫 60 張事故的路徑（見 docs/凌越回寫-工作交接.md）。
+     *   診斷需要看全部未回寫時帶 ?scope=all（僅供人工檢視，不可拿去寫入）。
      *   欄位沿用凌越 Excel 匯出邏輯（CustomerCode、ProductCode=凌越料號…）。
      *   注意：單據號（DocNo）由凌越端配發／內網 agent 依該日既有單據順編，雲端不指定；
      *         agent 寫入成功後再用下方 callback 把凌越實際單據號回填。
@@ -12041,12 +12056,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const dateParam = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
                 ? req.query.date.trim()
                 : getTaipeiCalendarDateYYYYMMDD();
+            const scopeAll = String(req.query.scope || "") === "all";
             const orderRows = await db.prepare(`
         SELECT o.id, o.order_no, o.order_date, o.remark, c.name AS customer_name, c.hq_cust_code, c.teraoka_code
         FROM orders o JOIN customers c ON c.id = o.customer_id
         WHERE o.order_date = ?
           AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
           AND o.lingyue_written_at IS NULL
+          ${scopeAll ? "" : "AND o.lingyue_queued_at IS NOT NULL"}
         ORDER BY o.order_date ASC, o.order_no ASC, o.id ASC
       `).all(dateParam);
             const orders = [];
@@ -12083,7 +12100,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     items,
                 });
             }
-            res.json({ date: dateParam, count: orders.length, orders });
+            res.json({ date: dateParam, scope: scopeAll ? "all" : "queued", count: orders.length, orders });
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/pending", e?.message || e);
@@ -14029,6 +14046,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         try {
             const order = await db.prepare(`
         SELECT o.id, o.order_no, o.order_date, o.remark, o.lingyue_doc_no,
+               o.lingyue_claimed_at, o.lingyue_written_at,
                c.name AS customer_name, c.hq_cust_code, c.teraoka_code
         FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?
       `).get(req.params.orderId);
@@ -14045,6 +14063,19 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     message: `此單已轉入凌越（單號 ${order.lingyue_doc_no}）。\n\n重新轉入會在凌越「產生一張新單」，舊單 ${order.lingyue_doc_no} 不會自動刪除。\n請先到凌越把舊單 ${order.lingyue_doc_no} 刪除，再按「確定」重新轉入。\n\n確定要重新轉入嗎？`,
                 });
                 return;
+            }
+            // [fix 2026-07-14] 內網 agent 正在寫入中（已認領、租約未過、單號尚未回填）時，重按「轉入凌越」
+            // 會清掉 claimed_at 重新排隊 → 第二條 /wait 再認領再寫 → 凌越兩張單。改成先要求確認。
+            // 租約時長與 /wait 的 LEASE_MS 一致（10 分鐘）。
+            if (!force && !order.lingyue_doc_no && !order.lingyue_written_at && order.lingyue_claimed_at) {
+                const claimedMs = Date.parse(String(order.lingyue_claimed_at));
+                if (Number.isFinite(claimedMs) && Date.now() - claimedMs < 600000) {
+                    res.json({
+                        ok: false, needConfirm: true,
+                        message: "內網小幫手已認領此單、正在寫入凌越（通常數十秒內回填單號）。\n\n現在重新排隊可能造成凌越「重複開單」。\n建議稍等 1～2 分鐘再重整頁面確認；若確定內網代理已中斷，再按「確定」重新排隊。",
+                    });
+                    return;
+                }
             }
             const preview = await buildLingyuePreview(order);
             if (!preview.items.length) {
@@ -16192,6 +16223,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             // [fix 2026-07-08] 建新單(resolveSplitTargetOrder 內)＋搬品項＋補空籃包進單一交易，
             // 中途失敗整批回滾，不留「建了空殼新單卻沒搬到品項」的半套狀態。傳 tx handle 給共用函式。
             const doMove = async (h) => {
+                // [fix 2026-07-14] 拆到子客戶時，同日 NULL 主單先標成 '' 桶（比照 line.js），
+                // 否則之後整單重辨識 NULL＝全部品項，子客戶品項會重建回主單 → 重複出貨。
+                if (targetSubCustomer !== "") {
+                    await order_split_js_1.markSameDayMainOrdersAsSplitBase(h, sourceOrder.customer_id, sourceOrder.order_date);
+                }
                 const targetOrderId = await resolveSplitTargetOrder(h, sourceOrder, targetSubCustomer);
                 if (targetOrderId === orderId) {
                     await h.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
@@ -16246,6 +16282,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             // [fix 2026-07-08] 整批拆單包進單一交易：中途某子客戶失敗則整批回滾，不留半套拆單。
             // moved 只在交易成功回傳後才送出（失敗會被外層 catch 接住回 500，不會誤報）。
             const doSplit = async (h) => {
+                // [fix 2026-07-14] 拆單前先把同日 NULL 主單（含本單）標成 '' 桶（比照 line.js），
+                // 否則之後整單重辨識 NULL＝全部品項，子客戶品項會重建回主單 → 重複出貨。
+                await order_split_js_1.markSameDayMainOrdersAsSplitBase(h, sourceOrder.customer_id, sourceOrder.order_date);
                 for (const [subName, ids] of groups) {
                     const targetOrderId = await resolveSplitTargetOrder(h, sourceOrder, subName);
                     if (targetOrderId === orderId) continue;
@@ -16870,6 +16909,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.status(404).send("訂單不存在");
             return;
         }
+        // [fix 2026-07-14] 狀態機守衛：取消確認只適用 approved 之後的單；作廢／客訴單不可經此路徑
+        // 復活成 pending（復活後會回到 /wait 回寫候選，已在凌越刪掉的單可能再次寫入）。
+        const curStatusUnapprove = String(order.status || "").toLowerCase().trim();
+        if (curStatusUnapprove === "deleted" || curStatusUnapprove === "complaint") {
+            const msg = curStatusUnapprove === "deleted" ? "此訂單已作廢，請先『取消作廢』" : "此訂單為客訴狀態，請由客訴頁還原";
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent(msg) + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+            return;
+        }
         await db.prepare("UPDATE orders SET status = ?, approved_by = NULL, approved_at = NULL WHERE id = ?").run("pending", orderId);
         await logDataChange(req, {
             entityType: "order",
@@ -16919,6 +16966,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const order = await db.prepare("SELECT id, order_no, status FROM orders WHERE id = ?").get(orderId);
         if (!order) {
             res.status(404).send("訂單不存在");
+            return;
+        }
+        // [fix 2026-07-14] 狀態機守衛：只有客訴單能「還原為訂單」；其他狀態（尤其 deleted）
+        // 不可經此路徑被改成 pending 復活。
+        if (String(order.status || "").toLowerCase().trim() !== "complaint") {
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent("此訂單不是客訴狀態，無法還原"));
             return;
         }
         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
