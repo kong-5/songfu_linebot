@@ -19,6 +19,14 @@ function sqlForPg(sql) {
     let s = sql.replace(/datetime\s*\(\s*['"]now['"]\s*\)/gi, "CURRENT_TIMESTAMP");
     s = s.replace(/INSERT\s+OR\s+REPLACE\s+INTO\s+app_settings\s*\(\s*key\s*,\s*value\s*\)\s*VALUES\s*\(\s*\?\s*,\s*\?\s*\)/gi,
         "INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value");
+    // [fix 2026-07-14] fail-fast：其餘 SQLite 專屬語法本轉換層「轉不動」，過去會原樣送進 PG
+    // 直到雲端 500 才發現（本機 SQLite 全測不出）。改成一進來就丟明確錯誤，
+    // 逼寫的人當場用 isPg 雙分支或可攜語法（ON CONFLICT / to_char …）。
+    const unsupported = s.match(/INSERT\s+OR\s+(REPLACE|IGNORE)\s|strftime\s*\(|GROUP_CONCAT\s*\(|\bdate\s*\(\s*['"]now['"]/i);
+    if (unsupported) {
+        throw new Error("sqlForPg: SQL 含 SQLite 專屬語法「" + unsupported[0].trim() + "」，PG 無法執行。" +
+            "請改用可攜寫法（ON CONFLICT…DO UPDATE / to_char）或依 DATABASE_URL 分支。SQL 開頭：" + s.slice(0, 120));
+    }
     let n = 1;
     s = s.replace(/\?/g, () => "$" + n++);
     return s;
@@ -850,6 +858,15 @@ function pgPoolOptions() {
 }
 async function initPg() {
     const pg = require("pg");
+    // [fix 2026-07-14] 型別解析統一，消滅「本機 SQLite 正常、雲端 PG 靜默壞掉」的一整類 bug：
+    // - DATE(1082)：node-pg 預設回 JS Date 物件，程式全把它當 'YYYY-MM-DD' 字串用——
+    //   basket_logs.log_date 會渲染成 "Mon Jul 14 2026 …"、POST 回刪除端點 cast 失敗。改保持原字串。
+    // - INT8(20)：COUNT(*)/SUM 回字串，新程式寫 row.n === 0 會在 PG 失效。改回 Number
+    //   （計數/合計遠小於 2^53，安全）。
+    try {
+        pg.types.setTypeParser(1082, (v) => v);
+        pg.types.setTypeParser(20, (v) => (v == null ? v : Number(v)));
+    } catch (_) { /* 型別解析設定失敗不擋啟動（維持 node-pg 預設行為） */ }
     pgPool = new pg.Pool(pgPoolOptions());
     try {
         const client = await pgPool.connect();
