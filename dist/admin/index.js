@@ -71,6 +71,7 @@ const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
 const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
+const order_split_js_1 = require("../lib/order-split.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
 const training_js_1 = require("./training.js");
 const stock_mustcount_js_1 = require("../lib/stock-mustcount.js");
@@ -179,7 +180,9 @@ async function resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer) {
         const newOid = (0, id_js_1.newId)("ord");
         const orderNo = await getNextOrderNoAdmin(db, sourceOrder.order_date);
         const remarkNew = targetSubCustomer ? `[子單拆分: ${targetSubCustomer}]` : null;
-        const splitKeyNew = targetSubCustomer ? targetSubCustomer : null;
+        // [fix 2026-07-14] 主客戶桶必須存 ''（不是 NULL）：rebuild 語意 NULL＝全部品項、''＝只留空 subCustomer。
+        // 舊行為存 NULL，之後整單重辨識會把子客戶品項重建進主桶單 → 與子單重複出貨（與 line.js 對齊）。
+        const splitKeyNew = targetSubCustomer;
         await db.prepare(`
       INSERT INTO orders (id, order_no, customer_id, order_date, line_group_id, raw_message, status, remark, order_sub_split_key, line_message_id, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ` + nowSql + `)
@@ -16192,6 +16195,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             // [fix 2026-07-08] 建新單(resolveSplitTargetOrder 內)＋搬品項＋補空籃包進單一交易，
             // 中途失敗整批回滾，不留「建了空殼新單卻沒搬到品項」的半套狀態。傳 tx handle 給共用函式。
             const doMove = async (h) => {
+                // [fix 2026-07-14] 拆到子客戶時，同日 NULL 主單先標成 '' 桶（比照 line.js），
+                // 否則之後整單重辨識 NULL＝全部品項，子客戶品項會重建回主單 → 重複出貨。
+                if (targetSubCustomer !== "") {
+                    await order_split_js_1.markSameDayMainOrdersAsSplitBase(h, sourceOrder.customer_id, sourceOrder.order_date);
+                }
                 const targetOrderId = await resolveSplitTargetOrder(h, sourceOrder, targetSubCustomer);
                 if (targetOrderId === orderId) {
                     await h.prepare(`UPDATE order_items SET sub_customer = ? WHERE order_id = ? AND id IN (${phUp})`).run(subVal, orderId, ...itemIds);
@@ -16246,6 +16254,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             // [fix 2026-07-08] 整批拆單包進單一交易：中途某子客戶失敗則整批回滾，不留半套拆單。
             // moved 只在交易成功回傳後才送出（失敗會被外層 catch 接住回 500，不會誤報）。
             const doSplit = async (h) => {
+                // [fix 2026-07-14] 拆單前先把同日 NULL 主單（含本單）標成 '' 桶（比照 line.js），
+                // 否則之後整單重辨識 NULL＝全部品項，子客戶品項會重建回主單 → 重複出貨。
+                await order_split_js_1.markSameDayMainOrdersAsSplitBase(h, sourceOrder.customer_id, sourceOrder.order_date);
                 for (const [subName, ids] of groups) {
                     const targetOrderId = await resolveSplitTargetOrder(h, sourceOrder, subName);
                     if (targetOrderId === orderId) continue;

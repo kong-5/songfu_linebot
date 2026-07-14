@@ -565,16 +565,8 @@ async function insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, { orderDa
     }
     throw lastErr || new Error("insertOrderRowWithSplitMeta: 重試 3 次仍失敗");
 }
-/** [fix 2026-07-10] 拆單時把同客戶同日的「未拆單」主訂單（order_sub_split_key IS NULL）標成主客戶桶（''）。
- * rebuild 的過濾語意是 NULL＝全部品項、''＝只留 subCustomer 空的品項；一旦當日出現子客戶拆單，
- * 若主訂單仍為 NULL，結單整單重辨識會把子客戶品項也重建進主訂單 → 與子單重複出貨。 */
-async function markSameDayMainOrdersAsSplitBase(db, customerId, orderDate, nowSql) {
-    await db.prepare(
-        "UPDATE orders SET order_sub_split_key = '', updated_at = " + nowSql +
-        " WHERE customer_id = ? AND order_date = ? AND order_sub_split_key IS NULL" +
-        " AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')"
-    ).run(customerId, orderDate);
-}
+// [refactor 2026-07-14] 標桶邏輯抽到共用 lib，後台拆單（move-items / split-by-sub-customer）也用同一份。
+const { markSameDayMainOrdersAsSplitBase } = require("../lib/order-split.js");
 /** [fix 2026-07-10] 依子客戶分流時「找到或建立」目標訂單（比照後台 resolveSplitTargetOrder）。
  * 舊行為是每次拆單都無條件新建訂單：同一群組上午、下午各傳一次同一子客戶的叫貨，
  * 或多則訊息各自拆單，會冒出多張同子客戶的當日訂單。改為同客戶＋同日＋同 split key 重用。
