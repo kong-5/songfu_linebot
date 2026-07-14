@@ -212,6 +212,13 @@
     const u = new URL(window.location.href);
     return u.searchParams.get(k) || "";
   }
+  // 與後端 fpOfBk 相同的指紋演算法（樂觀鎖比對用）
+  function fpOfLines(rows){
+    return JSON.stringify((rows||[])
+      .map(l => [String(l.basket_kind), Number(l.basket_no||0), Number(l.taken_to||0), Number(l.picked_up||0)])
+      .filter(x => x[2]||x[3])
+      .sort((a,b)=> a[0]<b[0]?-1:a[0]>b[0]?1:a[1]-b[1]));
+  }
   function todayTaipei(){
     return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei"}).format(new Date());
   }
@@ -389,13 +396,24 @@
       if (state.round.to || state.round.pk) lines.push({ kind: "round", no: 0, takenTo: state.round.to||0, pickedUp: state.round.pk||0 });
       // [fix 2026-07-10] idToken 改走 Authorization header，body 不再帶 token；
       // ctxGroupId（非敏感）一併帶上，後端用真實群組 ID 做成員驗證
+      // [fix 2026-07-14] 送出時重取 token（開頁久放後舊 token 會 401）＋帶樂觀鎖基準 baseFp
+      let tk = state.idToken; try { tk = liff.getIDToken() || tk; } catch(_){}
       const resp = await fetch("/liff/api/basket-log/save", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + state.idToken },
-        body: JSON.stringify({ customerId: state.customerId, date: state.date, lines, ctxGroupId: state.ctxGroupId || "" }),
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tk },
+        body: JSON.stringify({ customerId: state.customerId, date: state.date, lines, ctxGroupId: state.ctxGroupId || "", baseFp: state.baseFp }),
       });
       const data = await resp.json();
+      if (resp.status === 401 && /expired|IdToken/i.test(String(data?.error||""))) {
+        setStatus("err", "登入逾時，正在重新登入…（填的數字還在畫面上）");
+        try { liff.login({ redirectUri: window.location.href }); } catch(_){}
+        return;
+      }
+      if (resp.status === 409 && data?.code === "conflict_stale") {
+        throw new Error(data.error || "開頁後已有他人送出當日紀錄，請關閉重開此頁");
+      }
       if (!data?.ok) throw new Error(data?.error || "儲存失敗");
+      state.baseFp = data.fp || state.baseFp;
       // [fix 2026-07-10 #63回歸] 送出成功＝伺服器狀態已與畫面一致 → 更新基準快照並恢復送出鈕：
       // closeWindow 失敗（外部瀏覽器等）留在頁面時，「取消」不再誤報「內容將遺失」，也可再次送出。
       // 今日已有紀錄改為 true：留在頁面再送會先跳「覆蓋確認」。
@@ -497,6 +515,9 @@
       if (!data?.ok) throw new Error(data?.error || "載入失敗");
       state.customerName = data.customerName || state.customerId;
       hdrSub.textContent = `${state.customerName}　${state.date}`;
+      // [fix 2026-07-14] 樂觀鎖基準：載入當下整日內容的指紋，save 帶回給後端比對，
+      // 開頁後有他人送出＝409，不再默默整日覆蓋掉別人的數字。
+      state.baseFp = fpOfLines(data.lines);
       // 填入既有資料
       state.hasExisting = false;
       for (const ln of (data.lines || [])) {
