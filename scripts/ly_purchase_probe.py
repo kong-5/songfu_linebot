@@ -194,6 +194,10 @@ def scan(icpno, timeout):
             no = _sample(titles, "_NO")
             party = _sample(titles, "CTNAME") or _sample(titles, "CTNO")
             verdict = _classify(pref, titles)
+            # SP_ 那張單據表被多種單別共用：不是 A1(銷貨)/A2(銷退) 的 SP_ 代碼都是候選
+            # （很可能是進貨/進退/調撥——它們跟銷貨共用同一張 SP_/SD_ 表）。
+            if pref in ("SP_", "SD_") and k not in ("0000A1", "0000A2"):
+                verdict = "★ SP_表其他單別（非銷貨/銷退）→ 可能進貨/進退/調撥，深看！"
             if verdict.startswith("★"):
                 hits.append(k)
             print(f"  {k}  {len(titles):>4} {pref or '?':<6} {str(no)[:14]:<15} "
@@ -220,10 +224,12 @@ def probe(icpno, kind, hdr, det, mode, value, timeout, cap, show):
         order = ""  # 不指定排序，避免引用到未知的 {hdr}NO 欄位造成偏差
         head = f"▶ 探測 idakd={kind}  icpno={icpno}  列表前 {cap} 筆（無過濾）"
     elif mode == "doc":
-        det_fields = ""  # 先只抬頭確認前綴
+        # 單張深看：連明細＋倉別一起撈（單張很輕、安全）。SD_WHNO(入)/SD_WHNO2(出) 看方向。
+        det_fields = (f"{det}SEQ,{det}SKNO,{det}NAME,{det}UNIT,{det}QTY,{det}PRICE,"
+                      f"{det}STOT,{det}WHNO,{det}WHNO2,{det}NO,{det}DATE")
         where, whval = f"{hdr}NO=@v1@", value
         order = f"order by {hdr}NO desc"
-        head = f"▶ 探測 idakd={kind}  icpno={icpno}  過濾 {where}={value}  上限 {cap} 筆"
+        head = f"▶ 深看 idakd={kind}  icpno={icpno}  單號 {where}={value}  上限 {cap} 筆"
     else:  # code
         det_fields = f"{det}SEQ,{det}SKNO,{det}NAME,{det}UNIT,{det}QTY,{det}PRICE,{det}STOT,{det}NO,{det}DATE"
         where, whval = f"{det}SKNO=@v1@", value
