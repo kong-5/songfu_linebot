@@ -155,27 +155,9 @@ async function getNextOrderNoAdmin(db, orderDate) {
  */
 async function resolveSplitTargetOrder(db, sourceOrder, targetSubCustomer) {
     const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-    let targetOrderId = null;
-    if (targetSubCustomer === "") {
-        const row = await db.prepare(`
-      SELECT id FROM orders
-      WHERE customer_id = ? AND order_date = ?
-      AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key, '')) = '')
-      AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')
-      ORDER BY id ASC LIMIT 1
-    `).get(sourceOrder.customer_id, sourceOrder.order_date);
-        targetOrderId = row?.id ?? null;
-    }
-    else {
-        const row = await db.prepare(`
-      SELECT id FROM orders
-      WHERE customer_id = ? AND order_date = ?
-      AND TRIM(order_sub_split_key) = ?
-      AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')
-      ORDER BY id ASC LIMIT 1
-    `).get(sourceOrder.customer_id, sourceOrder.order_date, targetSubCustomer);
-        targetOrderId = row?.id ?? null;
-    }
+    // [refactor 2026-07-14] 「找目標單」改用共用 lib（與 line.js 同一份）：修正舊版 ORDER BY id
+    // 與 line 端 ORDER BY order_no 的漂移（同日多張主桶單時兩入口會併進不同單）。
+    let targetOrderId = await order_split_js_1.findSplitTargetOrderId(db, sourceOrder.customer_id, sourceOrder.order_date, targetSubCustomer);
     if (!targetOrderId) {
         const newOid = (0, id_js_1.newId)("ord");
         const orderNo = await getNextOrderNoAdmin(db, sourceOrder.order_date);

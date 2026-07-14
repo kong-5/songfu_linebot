@@ -565,40 +565,40 @@ async function insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, { orderDa
     }
     throw lastErr || new Error("insertOrderRowWithSplitMeta: 重試 3 次仍失敗");
 }
-// [refactor 2026-07-14] 標桶邏輯抽到共用 lib，後台拆單（move-items / split-by-sub-customer）也用同一份。
-const { markSameDayMainOrdersAsSplitBase } = require("../lib/order-split.js");
+// [refactor 2026-07-14] 標桶＋找目標單邏輯抽到共用 lib，後台拆單（move-items / split-by-sub-customer）也用同一份。
+const { markSameDayMainOrdersAsSplitBase, findSplitTargetOrderId, isSplitKeyUniqueConflict } = require("../lib/order-split.js");
 /** [fix 2026-07-10] 依子客戶分流時「找到或建立」目標訂單（比照後台 resolveSplitTargetOrder）。
  * 舊行為是每次拆單都無條件新建訂單：同一群組上午、下午各傳一次同一子客戶的叫貨，
  * 或多則訊息各自拆單，會冒出多張同子客戶的當日訂單。改為同客戶＋同日＋同 split key 重用。
  * subKey ''＝主客戶桶（連同 NULL 舊主訂單一併視為同桶）。回傳 { orderId, created }。 */
 async function findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, { customerId, orderDate, groupId, subKey, rawMessage, lineMessageId }) {
-    let row;
-    if (subKey === "") {
-        row = await db.prepare(
-            "SELECT id FROM orders WHERE customer_id = ? AND order_date = ?" +
-            " AND (order_sub_split_key IS NULL OR TRIM(COALESCE(order_sub_split_key,'')) = '')" +
-            " AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no LIMIT 1"
-        ).get(customerId, orderDate);
+    const found = await findSplitTargetOrderId(db, customerId, orderDate, subKey);
+    if (found)
+        return { orderId: found, created: false };
+    try {
+        const orderId = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
+            orderDate,
+            customerId,
+            groupId,
+            rawMessage: rawMessage ?? "",
+            remark: subKey === "" ? null : `[子單拆分: ${subKey}]`,
+            orderSubSplitKey: subKey,
+            lineMessageId,
+        });
+        return { orderId, created: true };
     }
-    else {
-        row = await db.prepare(
-            "SELECT id FROM orders WHERE customer_id = ? AND order_date = ?" +
-            " AND TRIM(COALESCE(order_sub_split_key,'')) = ?" +
-            " AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no LIMIT 1"
-        ).get(customerId, orderDate, subKey);
+    catch (e) {
+        // [fix 2026-07-14] 撞拆單唯一索引（ux_orders_split_key_day）＝並發下別的 worker 剛建了
+        // 同 key 單 → 改重查重用，訊息品項會累加到那張單，不再各開一張造成重複出貨。
+        if (isSplitKeyUniqueConflict(e)) {
+            const again = await findSplitTargetOrderId(db, customerId, orderDate, subKey);
+            if (again) {
+                console.warn("[split] 併發撞拆單唯一索引，改併入既有單 %s（customer=%s date=%s key=%s）", again, customerId, orderDate, subKey);
+                return { orderId: again, created: false };
+            }
+        }
+        throw e;
     }
-    if (row?.id)
-        return { orderId: row.id, created: false };
-    const orderId = await insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, {
-        orderDate,
-        customerId,
-        groupId,
-        rawMessage: rawMessage ?? "",
-        remark: subKey === "" ? null : `[子單拆分: ${subKey}]`,
-        orderSubSplitKey: subKey,
-        lineMessageId,
-    });
-    return { orderId, created: true };
 }
 async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fallbackUnit) {
     const rows = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(Array.isArray(parsedRows) ? parsedRows : []);

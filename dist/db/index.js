@@ -207,6 +207,21 @@ function initSqlite(dbPath) {
         }
     }
     catch (e) { console.warn("[migration] orders.order_no UNIQUE 檢查/建立失敗:", e?.message || e); }
+    // [fix 2026-07-14] 拆單唯一性下沉 DB：同客戶＋同日＋同（非空）split key 至多一張有效單。
+    // 應用層 SELECT→INSERT 在並發（Cloud Tasks 多 worker／多實例）下守不住——兩張同 key 單
+    // 在結單 rebuild 時各依同一 key 重建品項＝重複出貨。部分唯一索引只約束「有名字的子客戶單」
+    // （''主桶與 NULL 不限制：同日多張主單屬合法），並排除作廢/客訴單。
+    // 既有資料已重複時比照 G13：先警告不建，人工（搬移品項併單）清完後重啟自動建立。
+    try {
+        const dupSplit = sqlite.prepare("SELECT customer_id, order_date, order_sub_split_key, COUNT(*) AS n FROM orders WHERE order_sub_split_key IS NOT NULL AND order_sub_split_key <> '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY customer_id, order_date, order_sub_split_key HAVING COUNT(*) > 1").all();
+        if (dupSplit.length) {
+            console.warn("[migration] orders 拆單鍵發現 %d 組重複，唯一索引暫不建立。請至後台用「搬移品項」併單：", dupSplit.length);
+            for (const d of dupSplit.slice(0, 10)) console.warn("  customer=%s date=%s key=%s ×%s", d.customer_id, d.order_date, d.order_sub_split_key, d.n);
+        } else {
+            sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_split_key_day ON orders(customer_id, order_date, order_sub_split_key) WHERE order_sub_split_key IS NOT NULL AND order_sub_split_key <> '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')");
+        }
+    }
+    catch (e) { console.warn("[migration] orders 拆單鍵 UNIQUE 檢查/建立失敗:", e?.message || e); }
     // G15: LINE 收單 session 持久化（SQLite）
     try {
         sqlite.exec(`CREATE TABLE IF NOT EXISTS line_collect_sessions (
@@ -951,6 +966,18 @@ async function initPg() {
                 }
             }
             catch (e) { console.warn("[migration] orders.order_no UNIQUE 檢查/建立失敗:", e?.message || e); }
+            // [fix 2026-07-14] 拆單唯一性下沉 DB（與 initSqlite 對應，理由見該處註解）。
+            try {
+                const dupSplitRes = await client.query("SELECT customer_id, order_date, order_sub_split_key, COUNT(*) AS n FROM orders WHERE order_sub_split_key IS NOT NULL AND order_sub_split_key <> '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY customer_id, order_date, order_sub_split_key HAVING COUNT(*) > 1");
+                const dupSplit = dupSplitRes.rows || [];
+                if (dupSplit.length) {
+                    console.warn("[migration] orders 拆單鍵發現 %d 組重複，唯一索引暫不建立。請至後台用「搬移品項」併單：", dupSplit.length);
+                    for (const d of dupSplit.slice(0, 10)) console.warn("  customer=%s date=%s key=%s ×%s", d.customer_id, d.order_date, d.order_sub_split_key, d.n);
+                } else {
+                    await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_split_key_day ON orders(customer_id, order_date, order_sub_split_key) WHERE order_sub_split_key IS NOT NULL AND order_sub_split_key <> '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')");
+                }
+            }
+            catch (e) { console.warn("[migration] orders 拆單鍵 UNIQUE 檢查/建立失敗:", e?.message || e); }
             // G15: LINE 收單 session 持久化（PostgreSQL）
             try {
                 await client.query(`CREATE TABLE IF NOT EXISTS line_collect_sessions (
