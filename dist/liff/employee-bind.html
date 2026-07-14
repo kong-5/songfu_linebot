@@ -124,7 +124,10 @@
       setStatus("loading", "綁定中…");
       const idToken = liff.getIDToken();
       if (!idToken) {
+        // [fix 2026-07-14] 所有失敗路徑復原按鈕：舊版失敗後按鈕永久 disabled，
+        // 一次暫時性網路錯誤就得整頁重開（token 未銷毀，重試是安全的）。
         setStatus("err", "無法取得 ID Token，請重新開啟此頁面。");
+        btn.disabled = false;
         return;
       }
       try {
@@ -135,14 +138,16 @@
         });
         const j = await resp.json();
         if (!j.ok) {
-          setStatus("err", "綁定失敗：" + (j.error || "未知錯誤"));
+          setStatus("err", "綁定失敗：" + (j.error || "未知錯誤") + "（可再按一次重試）");
+          btn.disabled = false;
           showClose();
           return;
         }
         setStatus("ok", "已成功綁定 " + j.username + "。可關閉此頁面。");
         showClose();
       } catch (e) {
-        setStatus("err", "綁定失敗：" + (e?.message || e));
+        setStatus("err", "綁定失敗：" + (e?.message || e) + "（可再按一次重試）");
+        btn.disabled = false;
         showClose();
       }
     });

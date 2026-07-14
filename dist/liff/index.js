@@ -134,10 +134,10 @@ function createLiffRouter() {
             // 一次查整倉組 Map（不逐品項查）。sysQtySource 回給前端標示基準來源。
             // 語意：這裡的 sys 只影響「這次開頁之後」送出的盤點——submit 時前端把 sys 原樣帶回、
             // 寫進 stocktake_count.sys_qty 成為建立當下的凍結快照，已送出的 session 不回溯改動。
-            // 註：erp_stock_wh_qty 以 wh_code 為鍵，凌越倉號屬單一公司→查該倉即等同該公司，不再另濾 icpno。
+            // [fix 2026-07-14] erp_stock_wh_qty 已改 (icpno, erp_code, wh_code) 主鍵：倉號可跨公司重複，查詢須帶公司。
             let whQtyMap = null;
             try {
-                const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(code);
+                const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(code, icpno);
                 if ((wq || []).length) {
                     whQtyMap = {};
                     for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0);
@@ -370,7 +370,9 @@ function createLiffRouter() {
             }
             const lineUserId = verified.sub;
             const db = (0, index_js_1.getDb)(dbPath);
-            const p = await (0, liff_bind_token_js_1.consumeLiffBindToken)(db, token);
+            // [fix 2026-07-14] 先綁定成功才銷毀一次性 token：舊順序（先 consume 再 bind）在
+            // bind 失敗（DB 瞬斷等）時 token 已被燒掉，員工重按也救不回，得重新產生連結。
+            const p = await (0, liff_bind_token_js_1.lookupLiffBindToken)(db, token);
             if (!p) {
                 res.status(410).json({ ok: false, error: "連結已過期或已被使用" });
                 return;
@@ -381,6 +383,7 @@ function createLiffRouter() {
                 return;
             }
             await (0, employee_line_binding_js_1.bindLineUserIdToEmployee)(db, username, lineUserId, displayName || verified.name || null);
+            await (0, liff_bind_token_js_1.consumeLiffBindToken)(db, token);
             try {
                 await (0, line_bot_control_js_1.appendLineBotLog)(db, "employee_bound_liff", {
                     username,
@@ -934,6 +937,21 @@ function createLiffRouter() {
                 res.status(authz.status || 403).json({ ok: false, error: authz.error });
                 return;
             }
+            // [fix 2026-07-14] 樂觀鎖：save 是「整日覆蓋」upsert，兩位司機同開頁時後送者會
+            // 蓋掉先送者；舊版唯一防線是「開頁當下 hasExisting」的 confirm，攔不到開頁後才
+            // 送出的人。前端帶「載入當下整日內容指紋」，不一致＝開頁後有人送過 → 409 重載。
+            const fpOfBk = (rows) => JSON.stringify((rows || [])
+                .map((l) => [String(l.basket_kind), Number(l.basket_no || 0), Number(l.taken_to || 0), Number(l.picked_up || 0)])
+                .filter((x) => x[2] || x[3])
+                .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1])));
+            const baseFp = req.body?.baseFp;
+            if (typeof baseFp === "string") {
+                const curRows = await (0, basket_log_js_1.getBasketLinesForDay)(db, customerId, date);
+                if (fpOfBk(curRows) !== baseFp) {
+                    res.status(409).json({ ok: false, code: "conflict_stale", error: "開頁後已有其他人送出當日紀錄，請關閉重開此頁確認最新數字後再送出" });
+                    return;
+                }
+            }
             // 寫入
             await (0, basket_log_js_1.upsertBasketLogLines)(db, {
                 customerId,
@@ -961,7 +979,7 @@ function createLiffRouter() {
                 todayLines,
                 monthAgg,
             });
-            res.json({ ok: true, message, monthAgg });
+            res.json({ ok: true, message, monthAgg, fp: fpOfBk(todayLinesRaw) });
         } catch (e) {
             console.error("[liff basket-log save]", e);
             res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });

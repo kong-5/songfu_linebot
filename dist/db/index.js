@@ -153,6 +153,8 @@ function initSqlite(dbPath) {
         "ALTER TABLE order_items ADD COLUMN voided_by TEXT",
         "ALTER TABLE order_items ADD COLUMN void_reason TEXT",
         "ALTER TABLE order_items ADD COLUMN void_note TEXT",
+        // [fix 2026-07-14] 品項冪等鍵：來源 LINE 訊息 id。redelivery/租約重跑時同訊息品項不重插。
+        "ALTER TABLE order_items ADD COLUMN src_line_message_id TEXT",
         // 訂單層級作廢原因（status='deleted' 仍是主要旗標，這幾欄補充原因）
         "ALTER TABLE orders ADD COLUMN voided_at TEXT",
         "ALTER TABLE orders ADD COLUMN voided_by TEXT",
@@ -207,6 +209,21 @@ function initSqlite(dbPath) {
         }
     }
     catch (e) { console.warn("[migration] orders.order_no UNIQUE 檢查/建立失敗:", e?.message || e); }
+    // [fix 2026-07-14] 拆單唯一性下沉 DB：同客戶＋同日＋同（非空）split key 至多一張有效單。
+    // 應用層 SELECT→INSERT 在並發（Cloud Tasks 多 worker／多實例）下守不住——兩張同 key 單
+    // 在結單 rebuild 時各依同一 key 重建品項＝重複出貨。部分唯一索引只約束「有名字的子客戶單」
+    // （''主桶與 NULL 不限制：同日多張主單屬合法），並排除作廢/客訴單。
+    // 既有資料已重複時比照 G13：先警告不建，人工（搬移品項併單）清完後重啟自動建立。
+    try {
+        const dupSplit = sqlite.prepare("SELECT customer_id, order_date, order_sub_split_key, COUNT(*) AS n FROM orders WHERE order_sub_split_key IS NOT NULL AND order_sub_split_key <> '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY customer_id, order_date, order_sub_split_key HAVING COUNT(*) > 1").all();
+        if (dupSplit.length) {
+            console.warn("[migration] orders 拆單鍵發現 %d 組重複，唯一索引暫不建立。請至後台用「搬移品項」併單：", dupSplit.length);
+            for (const d of dupSplit.slice(0, 10)) console.warn("  customer=%s date=%s key=%s ×%s", d.customer_id, d.order_date, d.order_sub_split_key, d.n);
+        } else {
+            sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_split_key_day ON orders(customer_id, order_date, order_sub_split_key) WHERE order_sub_split_key IS NOT NULL AND order_sub_split_key <> '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')");
+        }
+    }
+    catch (e) { console.warn("[migration] orders 拆單鍵 UNIQUE 檢查/建立失敗:", e?.message || e); }
     // G15: LINE 收單 session 持久化（SQLite）
     try {
         sqlite.exec(`CREATE TABLE IF NOT EXISTS line_collect_sessions (
@@ -278,10 +295,28 @@ function initSqlite(dbPath) {
         // 由 inventory-push 的頂層 warehouse_qty 全表覆蓋（DELETE+INSERT；接收端下一階段實作）；
         // payload 沒帶 warehouse_qty＝該批推送無分倉資料，此表不動。用途：盤點按倉別進行時的分倉帳面基準
         //（取代單一公司總量 SK_NOWQTY 造成的多倉共用品項盤差失真）。
-        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (erp_code, wh_code))");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, wh_code))");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
     }
     catch (_) { /* table may already exist */ }
+    // [migration 2026-07-14] 分倉快照也按公司：主鍵 (erp_code, wh_code) → (icpno, erp_code, wh_code)。
+    // 凌越倉號可跨公司重複（erp_warehouse 已是 (icpno, code) 主鍵），此表無 icpno 時公司間推送
+    // 互相覆蓋、盤點分倉基準誤讀。舊資料補 '00'——此表是每輪推送整批覆蓋的快照，下一輪各公司
+    // 推送即自癒，暫時標錯無累積影響。
+    try {
+        const whPk = sqlite.prepare("SELECT name FROM pragma_table_info('erp_stock_wh_qty') WHERE pk > 0 ORDER BY pk").all().map((r) => String(r.name));
+        if (!whPk.includes("icpno")) {
+            sqlite.exec("BEGIN");
+            sqlite.exec("CREATE TABLE erp_stock_wh_qty_v2 (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, wh_code))");
+            sqlite.exec("INSERT INTO erp_stock_wh_qty_v2 (icpno, erp_code, wh_code, qty, updated_at) SELECT '00', erp_code, wh_code, qty, updated_at FROM erp_stock_wh_qty");
+            sqlite.exec("DROP TABLE erp_stock_wh_qty");
+            sqlite.exec("ALTER TABLE erp_stock_wh_qty_v2 RENAME TO erp_stock_wh_qty");
+            sqlite.exec("COMMIT");
+            sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
+            console.log("[migration] erp_stock_wh_qty 主鍵改為 (icpno, erp_code, wh_code)");
+        }
+    }
+    catch (e) { try { sqlite.exec("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_stock_wh_qty 多公司主鍵遷移失敗:", e?.message || e); }
     try {
         // [fix 2026-07-10] 品項照片：以 erp_code 為鍵獨立存放（不放 erp_stock_items——該表每次庫存推送
         // 全表覆蓋會清掉）。盤點頁縮圖用（對語言不通的員工照片比文字更直觀）。photo_url 存後台上傳後的可存取路徑。
@@ -842,6 +877,11 @@ async function initPg() {
             }
             catch (_) { /* column may already exist */ }
             try {
+                // [fix 2026-07-14] 品項冪等鍵（與 initSqlite alters 對應）
+                await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS src_line_message_id TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
                 await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS confidence_score INTEGER");
             }
             catch (_) {
@@ -951,6 +991,18 @@ async function initPg() {
                 }
             }
             catch (e) { console.warn("[migration] orders.order_no UNIQUE 檢查/建立失敗:", e?.message || e); }
+            // [fix 2026-07-14] 拆單唯一性下沉 DB（與 initSqlite 對應，理由見該處註解）。
+            try {
+                const dupSplitRes = await client.query("SELECT customer_id, order_date, order_sub_split_key, COUNT(*) AS n FROM orders WHERE order_sub_split_key IS NOT NULL AND order_sub_split_key <> '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY customer_id, order_date, order_sub_split_key HAVING COUNT(*) > 1");
+                const dupSplit = dupSplitRes.rows || [];
+                if (dupSplit.length) {
+                    console.warn("[migration] orders 拆單鍵發現 %d 組重複，唯一索引暫不建立。請至後台用「搬移品項」併單：", dupSplit.length);
+                    for (const d of dupSplit.slice(0, 10)) console.warn("  customer=%s date=%s key=%s ×%s", d.customer_id, d.order_date, d.order_sub_split_key, d.n);
+                } else {
+                    await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_split_key_day ON orders(customer_id, order_date, order_sub_split_key) WHERE order_sub_split_key IS NOT NULL AND order_sub_split_key <> '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint')");
+                }
+            }
+            catch (e) { console.warn("[migration] orders 拆單鍵 UNIQUE 檢查/建立失敗:", e?.message || e); }
             // G15: LINE 收單 session 持久化（PostgreSQL）
             try {
                 await client.query(`CREATE TABLE IF NOT EXISTS line_collect_sessions (
@@ -1026,8 +1078,26 @@ async function initPg() {
                 // 由 inventory-push 的頂層 warehouse_qty 全表覆蓋（DELETE+INSERT；接收端下一階段實作）；
                 // payload 沒帶 warehouse_qty＝該批推送無分倉資料，此表不動。用途：盤點按倉別進行時的分倉帳面基準
                 //（取代單一公司總量 SK_NOWQTY 造成的多倉共用品項盤差失真）。
-                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (erp_code, wh_code))");
+                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, wh_code))");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
+                // [migration 2026-07-14] 分倉快照也按公司（理由見 initSqlite 對應處）；整段包交易，
+                // 半途失敗 ROLLBACK 後守門條件仍成立、下次啟動可重試（修正過往 PG 遷移非交易的問題）。
+                try {
+                    const whPkRes = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'erp_stock_wh_qty'::regclass AND i.indisprimary");
+                    const whPkCols = (whPkRes.rows || []).map((r) => String(r.attname));
+                    if (!whPkCols.includes("icpno")) {
+                        await client.query("BEGIN");
+                        await client.query("ALTER TABLE erp_stock_wh_qty ADD COLUMN IF NOT EXISTS icpno TEXT");
+                        await client.query("UPDATE erp_stock_wh_qty SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
+                        await client.query("ALTER TABLE erp_stock_wh_qty ALTER COLUMN icpno SET NOT NULL");
+                        await client.query("ALTER TABLE erp_stock_wh_qty ALTER COLUMN icpno SET DEFAULT '00'");
+                        await client.query("ALTER TABLE erp_stock_wh_qty DROP CONSTRAINT IF EXISTS erp_stock_wh_qty_pkey");
+                        await client.query("ALTER TABLE erp_stock_wh_qty ADD PRIMARY KEY (icpno, erp_code, wh_code)");
+                        await client.query("COMMIT");
+                        console.log("[migration] erp_stock_wh_qty 主鍵改為 (icpno, erp_code, wh_code)");
+                    }
+                }
+                catch (e) { try { await client.query("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_stock_wh_qty 多公司主鍵遷移失敗:", e?.message || e); }
                 // [fix 2026-07-10] 品項照片（與 initSqlite 對應）：獨立表，跨庫存全表覆蓋保留
                 await client.query("CREATE TABLE IF NOT EXISTS erp_stock_item_photo (erp_code TEXT PRIMARY KEY, photo_url TEXT, updated_by TEXT, updated_at TEXT)");
                 // 庫存人工調整值（彌補凌越系統誤差，免重整）：每公司每料號一個總調整值 delta（獨立表，庫存推送不會洗掉）。

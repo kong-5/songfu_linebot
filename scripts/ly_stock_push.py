@@ -326,13 +326,25 @@ def _icpno_list(icpno) -> list:
 
 def push_once(base: str, key: str, icpno: str, timeout: int = 90, verbose: bool = True) -> int:
     """撈凌越目前庫存並 POST 到雲端。icpno 可逗號分隔多公司（如 "00,02"），逐家推送。
-    回傳推送總筆數。失敗時回報原因給雲端。"""
+    回傳推送總筆數。失敗時回報原因給雲端。
+
+    [fix 2026-07-14] 逐家隔離：一家失敗記錄後續推其餘家（舊行為 'all' 時 00 逾時
+    → 01/02/03 當輪全不推、四家快照一起過期）。全部失敗才拋錯讓呼叫端標紅。"""
     total = 0
     codes = _icpno_list(icpno)
+    errors = []
     for one in codes:
         if verbose and len(codes) > 1:
             print(f"▶ 公司 {one} …", flush=True)
-        total += _push_one_company(base, key, one, timeout=timeout, verbose=verbose)
+        try:
+            total += _push_one_company(base, key, one, timeout=timeout, verbose=verbose)
+        except Exception as e:
+            errors.append(f"{one}: {e}")
+            print(f"❌ 公司 {one} 推送失敗（續推其餘公司）：{e}", flush=True)
+    if errors and len(errors) == len(codes):
+        raise RuntimeError("全部公司推送失敗：" + "；".join(errors))
+    if errors:
+        print(f"⚠ 本輪 {len(errors)}/{len(codes)} 家推送失敗：{'；'.join(errors)}", flush=True)
     return total
 
 

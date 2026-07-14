@@ -93,6 +93,12 @@
   function todayTaipei(){
     return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei"}).format(new Date());
   }
+  // [fix 2026-07-14] 本機草稿：舊版無任何暫存，token 逾期 liff.login() 跳轉重載＝整頁十幾個
+  // 庫房的溫度全部重填。輸入即落地（依日期分鍵），重載/續登後自動帶回，儲存成功才清。
+  let _dT = null;
+  function draftKeyFT(){ return "ft_draft_" + (dateInput.value || todayTaipei()); }
+  function flushDraftFT(){ try { localStorage.setItem(draftKeyFT(), JSON.stringify({entries, filler: fillerInput.value})); } catch(_){} }
+  function saveDraftFT(){ clearTimeout(_dT); _dT = setTimeout(flushDraftFT, 250); }
   async function api(path, opts){
     const init = Object.assign({headers:{}}, opts || {});
     init.headers["Authorization"] = "Bearer " + (liff.getIDToken() || "");
@@ -101,6 +107,7 @@
     let j = null;
     try { j = await r.json(); } catch(_){}
     if (r.status === 401 && /expired|IdToken/i.test(String(j?.error || ""))) {
+      flushDraftFT(); // 跳轉前先落地，回來自動接回
       try { toast("登入逾時，正在更新…", 3000); liff.login({redirectUri:location.href}); } catch(_){}
       return new Promise(() => {});
     }
@@ -131,6 +138,7 @@
     dateInput.value = todayTaipei();
     $("#today-btn").addEventListener("click", ()=>{ dateInput.value = todayTaipei(); load(); });
     dateInput.addEventListener("change", load);
+    fillerInput.addEventListener("input", saveDraftFT);
     saveBtn.addEventListener("click", doSave);
     await load();
   }).catch(e => setStatus("err","LIFF 初始化失敗："+(e?.message||e)));
@@ -142,12 +150,23 @@
     const r = await api("/liff/api/freezer-temp/load?date="+encodeURIComponent(date));
     if (r.status !== 200 || !r.body.ok){
       setStatus("err", r.body.error || ("HTTP "+r.status));
+      // [fix 2026-07-14] 載入失敗不再讓儲存鈕卡死：已載過倉別（切日期失敗）仍可操作
+      saveBtn.disabled = warehouses.length === 0;
       return;
     }
     warehouses = r.body.warehouses || [];
     entries = {};
     for (const e of (r.body.entries||[])) entries[e.warehouseId] = e;
     if (r.body.filler_name) fillerInput.value = r.body.filler_name;
+    // [fix 2026-07-14] 帶回本機未儲存草稿（草稿優先於伺服器值；儲存成功會清掉）
+    try {
+      const dr = JSON.parse(localStorage.getItem("ft_draft_"+date) || "null");
+      if (dr && dr.entries && Object.keys(dr.entries).length){
+        for (const k of Object.keys(dr.entries)) entries[k] = dr.entries[k];
+        if (dr.filler && dr.filler.trim()) fillerInput.value = dr.filler;
+        toast("已帶回未儲存的草稿，確認後請按儲存", 3000);
+      }
+    } catch(_){}
     confirmedAt = r.body.confirmed_at || null;
     if (r.body.confirmed_at){
       setStatus("ok", "✓ "+date+" 已填表"+(r.body.anomaly?"（含異常）":""));
@@ -242,7 +261,7 @@
           }
         }
       };
-      signBtn.addEventListener("click", () => { setNeg(!signBtn.classList.contains("neg")); syncTemp(); });
+      signBtn.addEventListener("click", () => { setNeg(!signBtn.classList.contains("neg")); syncTemp(); saveDraftFT(); });
       tempInp.addEventListener("input", () => {
         // Android 鍵盤有負號：使用者自己打了「-」→ 以輸入內容為準，同步切換鈕並移除字元
         if (tempInp.value.includes("-")){
@@ -250,6 +269,7 @@
           setNeg(true);
         }
         syncTemp();
+        saveDraftFT();
       });
       card.querySelectorAll(".seg-btn").forEach(btn => {
         btn.addEventListener("click", () => {
@@ -261,6 +281,7 @@
           btn.parentElement.querySelectorAll(".seg-btn").forEach(b => b.classList.remove("active","danger"));
           btn.classList.add("active");
           if (!val) btn.classList.add("danger");
+          saveDraftFT();
         });
       });
     });
@@ -297,6 +318,7 @@
         toast("儲存失敗："+(r.body.error || "HTTP "+r.status));
       } else {
         ok = true;
+        try { localStorage.removeItem("ft_draft_"+date); } catch(_){}
         toast("✓ 已儲存"+(r.body.anomaly?"（含異常將提醒主管）":""));
       }
     } catch(e){
