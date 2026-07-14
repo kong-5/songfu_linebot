@@ -12041,7 +12041,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
      * 認證：HTTP 標頭 X-Writeback-Key 需等於環境變數 LINGYUE_WRITEBACK_KEY。
      *
      * GET /admin/lingyue-writeback/pending?date=YYYY-MM-DD
-     *   回傳該日「尚未回寫」（lingyue_written_at 為空）且有可匯出明細的訂單，JSON 格式。
+     *   回傳該日「已排隊（使用者按過『轉入凌越』）且尚未回寫」的訂單，JSON 格式。
+     *   [fix 2026-07-14] 預設只回 lingyue_queued_at 非空的單：舊版回「當日全部未回寫」，
+     *   CLI 拿去整批寫入就是誤寫 60 張事故的路徑（見 docs/凌越回寫-工作交接.md）。
+     *   診斷需要看全部未回寫時帶 ?scope=all（僅供人工檢視，不可拿去寫入）。
      *   欄位沿用凌越 Excel 匯出邏輯（CustomerCode、ProductCode=凌越料號…）。
      *   注意：單據號（DocNo）由凌越端配發／內網 agent 依該日既有單據順編，雲端不指定；
      *         agent 寫入成功後再用下方 callback 把凌越實際單據號回填。
@@ -12051,12 +12054,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const dateParam = (typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim()))
                 ? req.query.date.trim()
                 : getTaipeiCalendarDateYYYYMMDD();
+            const scopeAll = String(req.query.scope || "") === "all";
             const orderRows = await db.prepare(`
         SELECT o.id, o.order_no, o.order_date, o.remark, c.name AS customer_name, c.hq_cust_code, c.teraoka_code
         FROM orders o JOIN customers c ON c.id = o.customer_id
         WHERE o.order_date = ?
           AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
           AND o.lingyue_written_at IS NULL
+          ${scopeAll ? "" : "AND o.lingyue_queued_at IS NOT NULL"}
         ORDER BY o.order_date ASC, o.order_no ASC, o.id ASC
       `).all(dateParam);
             const orders = [];
@@ -12093,7 +12098,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     items,
                 });
             }
-            res.json({ date: dateParam, count: orders.length, orders });
+            res.json({ date: dateParam, scope: scopeAll ? "all" : "queued", count: orders.length, orders });
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/pending", e?.message || e);
