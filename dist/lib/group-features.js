@@ -28,15 +28,25 @@ function rowToFeatures(row) {
 }
 
 /**
- * 取得群組的功能設定。查不到列（或查詢失敗）一律回傳三項全開，確保不會意外中斷收單。
+ * 取得群組的功能設定。查不到列（或查詢失敗）回傳預設：**辨識訂單／空籃開、盤點關**
+ *（盤點是 opt-in 白名單制；此註解 2026-07-14 修正——舊註解誤寫「三項全開」與實作矛盾）。
+ * [perf 2026-07-14] 先用精確 WHERE 查（寫入端 setGroupFeatures 存的是去空白 gid，絕大多數
+ * 直接命中）；查不到才退回全表掃描做正規化比對（涵蓋歷史上可能存過帶空白/大小寫差異的列）。
+ * 舊版每則群組訊息都全表掃描，群組數成長後是熱路徑固定開銷。
  * @returns {Promise<{order:boolean, stocktake:boolean, basket:boolean}>}
  */
 async function getGroupFeatures(db, groupId) {
     if (!groupId) return { order: true, stocktake: false, basket: true };
     try {
         const needle = normGid(groupId);
-        const rows = await db.prepare("SELECT group_id, feat_order, feat_stocktake, feat_basket FROM group_features").all();
-        const row = (rows || []).find((r) => normGid(r.group_id) === needle) || null;
+        let row = await db.prepare("SELECT group_id, feat_order, feat_stocktake, feat_basket FROM group_features WHERE group_id = ?").get(String(groupId).trim());
+        if (!row && needle !== String(groupId).trim()) {
+            row = await db.prepare("SELECT group_id, feat_order, feat_stocktake, feat_basket FROM group_features WHERE group_id = ?").get(needle);
+        }
+        if (!row) {
+            const rows = await db.prepare("SELECT group_id, feat_order, feat_stocktake, feat_basket FROM group_features").all();
+            row = (rows || []).find((r) => normGid(r.group_id) === needle) || null;
+        }
         return rowToFeatures(row);
     } catch (e) {
         // 讀取失敗：訂單／空籃維持開（絕不意外斷單），盤點維持關（opt-in）。

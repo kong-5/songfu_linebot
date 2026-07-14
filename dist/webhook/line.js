@@ -1194,15 +1194,23 @@ function createLineWebhook() {
                         const matched = await db.prepare("SELECT id, line_group_id FROM orders WHERE line_message_id = ?").all(mid);
                         if (matched.length) {
                             const deletedIds = new Set(matched.map((m) => m.id));
-                            for (const oid of deletedIds) {
-                                await db.prepare("DELETE FROM order_items WHERE order_id = ?").run(oid);
-                                await db.prepare("DELETE FROM order_attachments WHERE order_id = ?").run(oid);
-                                try {
-                                    await db.prepare("DELETE FROM customer_order_image_examples WHERE order_id = ?").run(oid);
+                            // [fix 2026-07-14] 刪單包交易：舊版逐句刪，中途失敗留「空殼訂單」，
+                            // 且同日後續訊息會重用這張殼繼續累加＝客戶已收回的單復活。
+                            const doUnsendDel = async (h) => {
+                                for (const oid of deletedIds) {
+                                    await h.prepare("DELETE FROM order_items WHERE order_id = ?").run(oid);
+                                    await h.prepare("DELETE FROM order_attachments WHERE order_id = ?").run(oid);
+                                    try {
+                                        await h.prepare("DELETE FROM customer_order_image_examples WHERE order_id = ?").run(oid);
+                                    }
+                                    catch (_) { /* 表或 FK 可能不存在 */ }
+                                    await h.prepare("DELETE FROM orders WHERE id = ?").run(oid);
                                 }
-                                catch (_) { /* 表或 FK 可能不存在 */ }
-                                await db.prepare("DELETE FROM orders WHERE id = ?").run(oid);
-                            }
+                            };
+                            if (typeof db.transaction === "function")
+                                await db.transaction(doUnsendDel);
+                            else
+                                await doUnsendDel(db);
                             for (const [gid, sess] of [...collectingByGroup.entries()]) {
                                 const ids = [sess.orderId, ...(sess.allOrderIds || [])].filter(Boolean);
                                 if (ids.some((id) => deletedIds.has(id))) {
