@@ -8204,8 +8204,10 @@ function createAdminRouter() {
             const saved = {}; let resumed = false; let submittedAt = null;
             const sess = await db.prepare("SELECT id, submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, date, icpno);
             if (sess) {
-                const cRows = await db.prepare("SELECT erp_code, counted_qty, mid_qty FROM stocktake_count WHERE session_id = ?").all(sess.id);
-                for (const r of cRows || []) { const totalv = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty); const midv = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty); const goodv = totalv == null ? null : Math.round((totalv - (midv || 0)) * 100) / 100; saved[String(r.erp_code || "")] = { counted: goodv, mid: midv, expiry: [] }; }
+                // [fix 2026-07-14] expiry 一併帶回（原本固定 []）：掃碼頁 submit 是整場 DELETE+INSERT，
+                // saved 不帶效期＝掃碼頁重送會把盤點頁填好的效期批號整場洗掉。
+                const cRows = await db.prepare("SELECT erp_code, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ?").all(sess.id);
+                for (const r of cRows || []) { const totalv = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty); const midv = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty); const goodv = totalv == null ? null : Math.round((totalv - (midv || 0)) * 100) / 100; let expv = []; try { const p = JSON.parse(String(r.expiry_json || "[]")); if (Array.isArray(p)) expv = p; } catch (_) { } saved[String(r.erp_code || "")] = { counted: goodv, mid: midv, expiry: expv }; }
                 resumed = (cRows || []).length > 0; submittedAt = sess.submitted_at != null && sess.submitted_at !== "" ? String(sess.submitted_at) : null;
             }
             res.json({ date, warehouse: { code, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt });
