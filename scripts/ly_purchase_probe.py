@@ -128,75 +128,88 @@ def _guess_prefix(rows):
     return c.most_common(1)[0][0] if c else ""
 
 
-def _classify(prefix, rows):
-    """依前綴/欄位給一句人話判定，幫忙一眼分辨是不是進貨。"""
+KNOWN = {  # 已識別的前綴 → 說明（用來把「不認得的交易單」凸顯出來）
+    "SP_": "銷貨/銷退類", "SD_": "銷貨/銷退類",
+    "OR_": "訂單類（客戶端）", "OD_": "訂單類（客戶端）",
+    "I_": "收/付款類（不動庫存）", "AR_": "應收/帳款類",
+    "CT_": "客戶/廠商主檔", "SK_": "貨品主檔", "WH_": "倉庫主檔",
+    "DP_": "部門主檔", "EM_": "員工主檔", "UC_": "貨品單位換算主檔",
+    "ST_": "庫存主檔",
+}
+
+
+def _looks_like_txn(rows):
+    """靠欄位判斷像不像「交易單」：有單號(_NO)＋日期(_DATE)才算，不靠料號在不在標題。"""
     keys = set()
     for r in rows:
         keys.update(r.keys())
-    has_skno = any(k.endswith("SKNO") for k in keys)  # 明細裡有料號（動庫存的單才有）
+    has_no = any(k.endswith("_NO") for k in keys)
+    has_date = any(k.endswith("DATE") or k.endswith("DATE1") for k in keys)
+    return has_no and has_date
+
+
+def _classify(prefix, rows):
+    """人話判定。重點：不認得的前綴＋像交易單（有單號+日期）＝可疑進貨，凸顯出來。"""
     p = (prefix or "").upper()
-    if p in ("I_",):
-        return "收/付款類（無料號、不動庫存）"
-    if p in ("SP_", "SD_"):
-        return "銷貨/銷退類"
-    if p in ("OR_", "OD_"):
-        return "訂單類（客戶需求端；有料號但不是進貨）"
-    if p in ("CT_",):
-        return "客戶/廠商主檔類"
-    if p in ("SK_",):
-        return "貨品主檔類"
-    # 未知前綴 + 有料號 → 最可疑，可能就是進貨（供應商→入庫）
-    if has_skno:
-        return "★ 未知前綴且明細有料號 → 很可能是進貨單，重點看這個！"
-    return "未知類（明細無料號）"
+    if p in KNOWN:
+        return KNOWN[p]
+    if _looks_like_txn(rows):
+        return "★ 不認得的前綴＋像交易單（有單號/日期）→ 可能是進貨，深看這個！"
+    return f"未知類（前綴 {p or '?'}，不像交易單）"
 
 
-# 掃描用候選代碼（只掃這些；每個只取標題 2 筆，極輕）。已知的 A0/A1/A2 不掃。
-SCAN_KINDS = [
-    "0000A3", "0000A4", "0000A5", "0000A6", "0000A7", "0000A8", "0000A9",
-    "0000AA", "0000AB", "0000AC", "0000AD", "0000AE", "0000AF",
-    "0000B0", "0000B1", "0000B2", "0000B3",
-    "000002", "000003", "000005", "000006", "000007", "000008",
-    "00000A", "00000B", "00000C", "00000E", "00000F",
-]
+# 掃描候選代碼：交易單大多落在 0000A0~0000FF 這段，整段掃過（各只取標題 2 筆，極輕）。
+SCAN_KINDS = [f"0000{h:02X}" for h in range(0xA0, 0x100)]
+
+
+def _sample(rows, suffix):
+    """取第一筆有值、欄位名以 suffix 結尾的值（如 '_NO' 拿單號、'CTNAME' 拿對象）。"""
+    for r in rows:
+        for kk in r:
+            if kk.endswith(suffix) and r[kk]:
+                return r[kk]
+    return ""
 
 
 def scan(icpno, timeout):
     """安全掃描：候選代碼各只取標題 2 筆，一行印出判定。找可疑的再用 --kind 深看。"""
-    print(f"▶ 掃描 {len(SCAN_KINDS)} 個候選代碼（各只取標題 2 筆，無過濾）icpno={icpno}"
-          f" 逾時 {timeout}s/個", flush=True)
-    print("  代碼      筆數  前綴     對象範例                判定", flush=True)
-    print("  " + "-" * 78, flush=True)
+    import time
+    print(f"▶ 掃描 {len(SCAN_KINDS)} 個候選代碼（各只取標題 2 筆、無過濾、每個間隔 0.15s）"
+          f" icpno={icpno} 逾時 {timeout}s/個", flush=True)
+    print("  提醒：全部唯讀、每個只回 2 筆，很輕；隨時可 Ctrl-C 中止。", flush=True)
+    print("  代碼      筆數 前綴    單號範例        對象範例            判定", flush=True)
+    print("  " + "-" * 88, flush=True)
     hits = []
-    for k in SCAN_KINDS:
-        try:
-            titles, _ = _lydataout(icpno, k, "", "", "", "", timeout, cap=2)
-        except Exception as e:
-            print(f"  {k}    err   —        —                       {e}", flush=True)
-            continue
-        if not titles:
-            print(f"  {k}     0    —        —                       （無資料/非單別）", flush=True)
-            continue
-        pref = _guess_prefix(titles)
-        party = ""
-        for r in titles:
-            for kk in r:
-                if kk.endswith("CTNAME") and r[kk]:
-                    party = r[kk]
-                    break
-            if party:
-                break
-        verdict = _classify(pref, titles)
-        if "很可能是進貨" in verdict:
-            hits.append(k)
-        print(f"  {k}  {len(titles):>4}    {pref or '?':<7} {party[:20]:<22} {verdict}", flush=True)
-    print("  " + "-" * 78, flush=True)
+    try:
+        for k in SCAN_KINDS:
+            try:
+                titles, _ = _lydataout(icpno, k, "", "", "", "", timeout, cap=2)
+            except Exception as e:
+                print(f"  {k}   err  —       —               —                   {e}", flush=True)
+                continue
+            if not titles:
+                # 空的不逐行印，保持畫面乾淨（只在結尾統計）
+                continue
+            pref = _guess_prefix(titles)
+            no = _sample(titles, "_NO")
+            party = _sample(titles, "CTNAME") or _sample(titles, "CTNO")
+            verdict = _classify(pref, titles)
+            if verdict.startswith("★"):
+                hits.append(k)
+            print(f"  {k}  {len(titles):>4} {pref or '?':<6} {str(no)[:14]:<15} "
+                  f"{str(party)[:18]:<20} {verdict}", flush=True)
+            time.sleep(0.15)
+    except KeyboardInterrupt:
+        print("\n  （已中止掃描）", flush=True)
+    print("  " + "-" * 88, flush=True)
     if hits:
-        print(f"  ★ 最可疑（可能進貨）：{', '.join(hits)}  → 用："
-              f"python ly_purchase_probe.py --kind {hits[0]}  深看欄位與明細", flush=True)
+        print(f"  ★ 可疑（可能進貨交易單）：{', '.join(hits)}", flush=True)
+        print(f"    → 深看：python ly_purchase_probe.py --kind {hits[0]} --cap 3"
+              f"（把欄位＋範例貼回來確認）", flush=True)
     else:
-        print("  沒掃到『未知前綴＋有料號』的可疑單別。進貨很可能沒開放 LyDataOut 匯出，"
-              "建議直接問 Dispatch 或改走自己掃碼收貨。", flush=True)
+        print("  這段沒掃到『不認得的交易單』。可能進貨代碼在別的號段——", flush=True)
+        print("  最快解：直接看一張凌越進貨單，把它的『單號開頭幾碼』或『凌越選單名稱』告訴我，"
+              "我就能鎖定號段/代碼。", flush=True)
 
 
 def probe(icpno, kind, hdr, det, mode, value, timeout, cap, show):
