@@ -9997,7 +9997,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         </div>
         <div class="notion-card">
           <h2>當月填表紀錄</h2>
-          ${records.length ? "<table><thead><tr><th>日期</th><th>填表人</th><th>狀態</th><th>操作</th></tr></thead><tbody>" + records.map((r) => `<tr><td>${r.date}</td><td>${escapeHtml(r.filler_name || "")}</td><td>${r.confirmed_at ? "已確認" : "已填"}${r.anomaly ? "、異常" : ""}</td><td><a href="/admin/freezer-fridge/daily?date=${r.date}">編輯</a></td></tr>`).join("") + "</tbody></table>" : "<p>本月尚無填表紀錄</p>"}
+          ${records.length ? "<table><thead><tr><th>日期</th><th>填表人</th><th>狀態</th><th>操作</th></tr></thead><tbody>" + records.map((r) => `<tr><td>${r.date}</td><td>${escapeHtml(r.filler_name || "")}</td><td>${r.confirmed_at ? "已確認" : "已填"}${r.anomaly ? "、<span style=\"color:#dc2626;font-weight:600;\">異常</span>" : ""}</td><td><a href="/admin/freezer-fridge/daily?date=${r.date}">編輯</a> | <a href="/admin/freezer-fridge/daily/report?date=${r.date}" target="_blank" rel="noopener">日報表</a></td></tr>`).join("") + "</tbody></table>" : "<p>本月尚無填表紀錄</p>"}
         </div>
       `;
         res.type("text/html").send(notionPage("冷凍庫冷藏庫檢查表", body + "\n<style>.freezer-cal td,.freezer-cal th{border:1px solid var(--notion-border);padding:8px;min-width:40px;}.freezer-cal .cal-day{display:block;text-align:center;text-decoration:none;color:var(--notion-accent);}.freezer-cal .cal-day.filled{font-weight:600;}</style>", "env", res));
@@ -10117,6 +10117,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const entries = row ? parseFridgeEntriesJson(row.entries_json) : [];
         const entryByWh = {};
         entries.forEach((e) => { entryByWh[e.warehouseId] = e; });
+        const reportUrl = "/admin/freezer-fridge/daily/report?date=" + encodeURIComponent(date);
+        const justSaved = req.query.ok === "1";
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/freezer-fridge">冷凍庫冷藏庫檢查表</a> / 每日填報</div>
         <h1 class="notion-page-title">${date} 冷凍冷藏庫房檢查</h1>
@@ -10141,10 +10143,19 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }).join("")}
               </tbody>
             </table>
-            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button> <a href="/admin/freezer-fridge?month=${encodeURIComponent(date.slice(0, 7))}" class="btn">返回月曆</a></p>
+            <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">儲存</button> <a href="${reportUrl}" target="_blank" rel="noopener" class="btn">產生日報表</a> <a href="/admin/freezer-fridge?month=${encodeURIComponent(date.slice(0, 7))}" class="btn">返回月曆</a></p>
           </form>
         </div>
         `}
+      ${justSaved ? `<script>
+        (function(){
+          if (window.confirm("已儲存，要產生日報表嗎？（可存成 PDF／截圖分享群組）")) {
+            window.open(${JSON.stringify(reportUrl)}, "_blank");
+          }
+          // 清掉網址列的 ?ok=1，重新整理不再重複詢問
+          try { history.replaceState(null, "", ${JSON.stringify("/admin/freezer-fridge/daily?date=" + encodeURIComponent(date))}); } catch(_){}
+        })();
+      </script>` : ""}
       `;
         res.type("text/html").send(notionPage(date + " 檢查表", body, "env", res));
     });
@@ -10178,6 +10189,94 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             await db.prepare("INSERT INTO freezer_fridge_daily (date, entries_json, filler_name) VALUES (?, ?, ?)").run(date, entriesJson, fillerName || "—");
         }
         res.redirect("/admin/freezer-fridge/daily?date=" + encodeURIComponent(date) + "&ok=1");
+    });
+    // 冷凍冷藏「日報表」——乾淨一頁列印頁（大字、異常標紅），可存 PDF／截圖分享群組。
+    // 螢幕上方有「列印／存成 PDF」鈕，列印時自動隱藏；只讀，不套後台 shell。
+    router.get("/freezer-fridge/daily/report", async (req, res) => {
+        const date = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
+        const warehouses = await db.prepare("SELECT id, name, sort_order, compliant_temp, power_compliant, light_compliant, heat_compliant FROM freezer_fridge_warehouses ORDER BY sort_order, name").all();
+        const row = await db.prepare("SELECT * FROM freezer_fridge_daily WHERE date = ?").get(date);
+        const entries = row ? parseFridgeEntriesJson(row.entries_json) : [];
+        const entryByWh = {};
+        entries.forEach((e) => { entryByWh[e.warehouseId] = e; });
+        // 逐倉判定異常（比照 LIFF 儲存端邏輯）：溫度超合規 +5℃、電源異常、電燈開啟、電熱不符合。
+        let anomalyCount = 0;
+        const rowsHtml = warehouses.map((w) => {
+            const e = entryByWh[w.id] || { temp: "", powerOk: true, lightOff: true, heatOk: true };
+            const temp = (e.temp == null ? "" : String(e.temp)).trim();
+            const stdN = parseFloat((String(w.compliant_temp || "").match(/-?\d+(\.\d+)?/) || [])[0] || "");
+            const curN = parseFloat(temp);
+            const tempBad = Number.isFinite(stdN) && Number.isFinite(curN) && (curN - stdN) > 5;
+            const powerBad = e.powerOk === false;
+            const lightBad = e.lightOff === false;
+            const heatBad = e.heatOk === false;
+            if (tempBad || powerBad || lightBad || heatBad)
+                anomalyCount++;
+            const cell = (bad, text) => `<td class="${bad ? "bad" : ""}">${escapeHtml(text)}</td>`;
+            const tempText = temp === "" ? "—" : temp + "℃";
+            return `<tr>
+              <td class="wh-name">${escapeHtml(w.name)}</td>
+              <td class="std">${escapeHtml(w.compliant_temp || "—")}</td>
+              ${temp === "" ? `<td class="muted">—</td>` : cell(tempBad, tempText)}
+              ${cell(powerBad, e.powerOk === false ? "異常" : "正常")}
+              ${cell(lightBad, e.lightOff === false ? "開啟" : "關閉")}
+              ${cell(heatBad, e.heatOk === false ? "不符合" : "符合")}
+            </tr>`;
+        }).join("");
+        const hasData = warehouses.length > 0 && entries.length > 0;
+        const banner = anomalyCount > 0
+            ? `<div class="banner bad">⚠ 本日有 ${anomalyCount} 項異常，請儘速處理</div>`
+            : (hasData ? `<div class="banner ok">✓ 本日全部正常</div>` : `<div class="banner muted">本日尚無填報紀錄</div>`);
+        const html = `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>${escapeHtml(date)} 冷凍冷藏日報表</title>
+        <style>
+          *{box-sizing:border-box;}
+          body{font-family:"Microsoft JhengHei","PingFang TC",ui-sans-serif,system-ui,"Noto Sans TC",sans-serif;color:#111;margin:0;padding:24px;background:#f4f4f4;}
+          .toolbar{max-width:900px;margin:0 auto 16px;text-align:right;}
+          .toolbar button{font-size:16px;padding:10px 22px;border:1px solid #2383e2;background:#2383e2;color:#fff;border-radius:8px;cursor:pointer;font-weight:600;}
+          .sheet{max-width:900px;margin:0 auto;background:#fff;padding:32px 36px;box-shadow:0 2px 12px rgba(0,0,0,.1);}
+          h1{text-align:center;font-size:34px;margin:0 0 6px;letter-spacing:2px;}
+          .meta{text-align:center;font-size:22px;color:#333;margin:0 0 18px;}
+          .meta b{color:#111;}
+          .banner{text-align:center;font-size:26px;font-weight:700;padding:12px;border-radius:8px;margin:0 0 20px;}
+          .banner.bad{background:#fee2e2;color:#b91c1c;border:2px solid #dc2626;}
+          .banner.ok{background:#dcfce7;color:#166534;border:2px solid #16a34a;}
+          .banner.muted{background:#f3f4f6;color:#6b7280;border:2px solid #d1d5db;}
+          table{width:100%;border-collapse:collapse;}
+          th,td{border:2px solid #333;padding:12px 10px;font-size:24px;text-align:center;line-height:1.3;}
+          th{background:#e8e8e8;font-weight:700;font-size:22px;white-space:nowrap;}
+          td.wh-name{text-align:left;font-weight:700;font-size:25px;}
+          td.std{color:#555;font-size:22px;white-space:nowrap;}
+          td.muted{color:#9ca3af;}
+          td.bad{background:#fee2e2;color:#b91c1c;font-weight:800;}
+          .foot{margin-top:22px;font-size:20px;color:#333;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+          .foot .sign{border-top:2px solid #333;padding-top:8px;min-width:220px;text-align:center;}
+          @media print{
+            body{background:#fff;padding:0;}
+            .sheet{box-shadow:none;max-width:none;padding:6mm 8mm;}
+            .toolbar{display:none;}
+            @page{size:A4 portrait;margin:8mm;}
+          }
+        </style></head><body>
+        <div class="toolbar"><button onclick="window.print()">列印 / 存成 PDF</button></div>
+        <div class="sheet">
+          <h1>冷凍冷藏庫溫度日報表</h1>
+          <div class="meta">日期：<b>${escapeHtml(date)}</b>　　填表人：<b>${escapeHtml(row?.filler_name || "—")}</b></div>
+          ${banner}
+          ${warehouses.length === 0
+            ? `<div class="banner muted">尚未設定庫房</div>`
+            : `<table>
+              <thead><tr><th style="text-align:left;">庫房</th><th>合規溫度</th><th>實測溫度</th><th>電源</th><th>電燈</th><th>電熱</th></tr></thead>
+              <tbody>${rowsHtml}</tbody>
+            </table>`}
+          <div class="foot">
+            <div class="sign">填表人：${escapeHtml(row?.filler_name || "")}</div>
+            <div class="sign">主管簽核：</div>
+          </div>
+        </div>
+        </body></html>`;
+        res.type("text/html").send(html);
     });
     router.get("/api/binding-status", async (_req, res) => {
         try {
