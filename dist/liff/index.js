@@ -134,10 +134,10 @@ function createLiffRouter() {
             // 一次查整倉組 Map（不逐品項查）。sysQtySource 回給前端標示基準來源。
             // 語意：這裡的 sys 只影響「這次開頁之後」送出的盤點——submit 時前端把 sys 原樣帶回、
             // 寫進 stocktake_count.sys_qty 成為建立當下的凍結快照，已送出的 session 不回溯改動。
-            // 註：erp_stock_wh_qty 以 wh_code 為鍵，凌越倉號屬單一公司→查該倉即等同該公司，不再另濾 icpno。
+            // [fix 2026-07-14] erp_stock_wh_qty 已改 (icpno, erp_code, wh_code) 主鍵：倉號可跨公司重複，查詢須帶公司。
             let whQtyMap = null;
             try {
-                const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(code);
+                const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(code, icpno);
                 if ((wq || []).length) {
                     whQtyMap = {};
                     for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0);

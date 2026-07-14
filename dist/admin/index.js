@@ -2388,7 +2388,7 @@ const STK_CLIENT_JS = `
     var tries=0;
     function tick(){
       tries++;
-      fetch('/admin/inventory/stock/txn?code='+encodeURIComponent(code)).then(function(r){return r.json();}).then(function(m){
+      fetch('/admin/inventory/stock/txn?code='+encodeURIComponent(code)+'&icpno='+encodeURIComponent(DATA.icpno||'00')).then(function(r){return r.json();}).then(function(m){
         if(m.status==='ready'){ if(_pt){clearInterval(_pt);_pt=null;} dwRender(body,m); }
         else if(m.status==='error'){ if(_pt){clearInterval(_pt);_pt=null;} body.innerHTML='<div style="color:#c0392b;">查詢失敗：'+esc(m.error||'未知')+'</div>'; }
         else if(tries>=20){ if(_pt){clearInterval(_pt);_pt=null;} body.innerHTML='<div style="color:#b7791f;">等待逾時：內網小幫手（凌越整合代理）可能沒在跑。稍後再試。</div>'; }
@@ -6569,19 +6569,21 @@ function createAdminRouter() {
         // 注意：sys_qty（盤差「對當下」）是盤點送出當下寫進 stocktake_count 的凍結快照，這裡原樣讀出、
         // 不回溯改動——只有「最新系統」欄與新建立的 session 用新基準。
         const whLatestCache = {};
-        const getWhLatest = async (whCode) => {
-            if (Object.prototype.hasOwnProperty.call(whLatestCache, whCode)) return whLatestCache[whCode];
+        // [fix 2026-07-14] 快取鍵含 icpno：erp_stock_wh_qty 已按公司分列，倉號可跨公司重複。
+        const getWhLatest = async (icp, whCode) => {
+            const ck = icp + "|" + whCode;
+            if (Object.prototype.hasOwnProperty.call(whLatestCache, ck)) return whLatestCache[ck];
             let m = null;
             try {
-                const rows = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(whCode);
+                const rows = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(whCode, icp);
                 if ((rows || []).length) { m = {}; for (const r of rows) m[String(r.erp_code || "")] = Number(r.qty || 0); }
             } catch (_) { m = null; /* 查詢失敗 → 沿用總量基準 */ }
-            whLatestCache[whCode] = m;
+            whLatestCache[ck] = m;
             return m;
         };
         for (const s of sessions || []) {
             const sIcp = (0, erp_companies_js_1.normIcpno)(s.icpno);
-            const whm = await getWhLatest(String(s.wh_code || ""));
+            const whm = await getWhLatest(sIcp, String(s.wh_code || ""));
             const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, edited_at, edited_by_name FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
             const items = (rows || []).map((r) => {
                 const sys = Number(r.sys_qty || 0);
@@ -7769,12 +7771,14 @@ function createAdminRouter() {
     });
     // ── 點品項查凌越進銷存（單品項，經內網 agent 長連線回填；跨實例用 app_settings 協調）──
     const ERP_TXN_FRESH_MS = 5 * 60 * 1000; // 快取 5 分鐘，避免重複打凌越
+    // [fix 2026-07-14] 快取鍵加公司（erp_txn_req/res_<icpno>_<code>）：跨公司料號撞號時
+    // 舊鍵只含料號，A 公司查完 5 分鐘內 B 公司點同料號會直接拿到 A 的交易明細。
     router.post("/inventory/stock/txn-request", express_1.default.json(), async (req, res) => {
         try {
             const code = String(req.body?.code || "").trim();
-            const icpno = String(req.body?.icpno || "00").trim() || "00";
+            const icpno = (0, erp_companies_js_1.normIcpno)(req.body?.icpno);
             if (!code) { res.status(400).json({ error: "缺少料號" }); return; }
-            const cached = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_txn_res_" + code);
+            const cached = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_txn_res_" + icpno + "_" + code);
             if (cached && cached.value) {
                 try {
                     const c = JSON.parse(cached.value);
@@ -7784,7 +7788,7 @@ function createAdminRouter() {
                     }
                 } catch (_) { }
             }
-            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_txn_req_" + code, JSON.stringify({ icpno, at: new Date().toISOString() }));
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_txn_req_" + icpno + "_" + code, JSON.stringify({ icpno, at: new Date().toISOString() }));
             res.json({ status: "queued" });
         }
         catch (e) {
@@ -7794,15 +7798,16 @@ function createAdminRouter() {
     router.get("/inventory/stock/txn", async (req, res) => {
         try {
             const code = String(req.query.code || "").trim();
+            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
             if (!code) { res.status(400).json({ error: "缺少料號" }); return; }
-            const resRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_txn_res_" + code);
+            const resRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_txn_res_" + icpno + "_" + code);
             if (resRow && resRow.value) {
                 let parsed = {};
                 try { parsed = JSON.parse(resRow.value); } catch (_) { }
                 res.json(Object.assign({ status: parsed.error ? "error" : "ready" }, parsed));
                 return;
             }
-            const reqRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_txn_req_" + code);
+            const reqRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_txn_req_" + icpno + "_" + code);
             res.json({ status: reqRow && reqRow.value ? "pending" : "none" });
         }
         catch (e) {
@@ -8180,7 +8185,7 @@ function createAdminRouter() {
             const wh = await db.prepare("SELECT code, name FROM erp_warehouse WHERE code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
             const rows = await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY erp_code").all(code, icpno);
             let whQtyMap = null;
-            try { const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(code); if ((wq || []).length) { whQtyMap = {}; for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0); } } catch (_) { whQtyMap = null; }
+            try { const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(code, icpno); if ((wq || []).length) { whQtyMap = {}; for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0); } } catch (_) { whQtyMap = null; }
             const items = (rows || []).map((r) => { const c = String(r.erp_code || ""); const sysv = whQtyMap ? Number(whQtyMap[c] || 0) : Number(r.qty || 0); return { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: sysv, exp: false, eunit: "" }; });
             const date = stkAdminTaipeiDate();
             const saved = {}; let resumed = false; let submittedAt = null;
@@ -8312,7 +8317,7 @@ function createAdminRouter() {
             const wh = await db.prepare("SELECT code, name FROM erp_warehouse WHERE code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
             const rows = await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY erp_code").all(code, icpno);
             let whQtyMap = null;
-            try { const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ?").all(code); if ((wq || []).length) { whQtyMap = {}; for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0); } } catch (_) { whQtyMap = null; }
+            try { const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(code, icpno); if ((wq || []).length) { whQtyMap = {}; for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0); } } catch (_) { whQtyMap = null; }
             const sysQtySource = whQtyMap ? "warehouse" : "total";
             const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
             const exp = {}; (expRows || []).forEach((r) => { exp[String(r.erp_code)] = String(r.expiry_unit || ""); });
@@ -12335,22 +12340,18 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     await h.prepare("DELETE FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date < ?").run(icpno, pruneBefore);
                 } catch (_) { /* prune 失敗不影響推送 */ }
                 // 分倉快照：同交易內覆蓋（失敗整批回滾，與主表一致）；沒帶 warehouse_qty 就跳過不動。
-                // 多公司安全：只清「本批帶到的倉別」（凌越倉號屬單一公司），不整表清，否則各公司推送互相清空。
+                // [fix 2026-07-14] 多公司安全改為「按公司覆蓋」：凌越倉號可跨公司重複（erp_warehouse
+                // 已是 (icpno, code) 主鍵），舊版只以倉別清會把別家公司同倉號的列一起刪掉。
                 if (whRows) {
-                    const whDelCodes = Array.from(new Set(whRows.map((r) => r[1])));
-                    for (let i = 0; i < whDelCodes.length; i += 200) {
-                        const chunk = whDelCodes.slice(i, i + 200);
-                        const delPh = chunk.map(() => "?").join(",");
-                        await h.prepare("DELETE FROM erp_stock_wh_qty WHERE wh_code IN (" + delPh + ")").run(...chunk);
-                    }
+                    await h.prepare("DELETE FROM erp_stock_wh_qty WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").run(icpno);
                     const WCHUNK = 50;
                     for (let i = 0; i < whRows.length; i += WCHUNK) {
                         const chunk = whRows.slice(i, i + WCHUNK);
-                        const ph = chunk.map(() => "(?,?,?,?)").join(",");
+                        const ph = chunk.map(() => "(?,?,?,?,?)").join(",");
                         const flat = [];
                         for (const r of chunk)
-                            flat.push(...r);
-                        await h.prepare("INSERT INTO erp_stock_wh_qty (erp_code, wh_code, qty, updated_at) VALUES " + ph).run(...flat);
+                            flat.push(icpno, ...r);
+                        await h.prepare("INSERT INTO erp_stock_wh_qty (icpno, erp_code, wh_code, qty, updated_at) VALUES " + ph).run(...flat);
                     }
                     await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_wh_snapshot_at", snapshotAt);
                 }
@@ -13892,7 +13893,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     const codes = rows.map((r) => {
                         let icpno = "00";
                         try { icpno = JSON.parse(r.value).icpno || "00"; } catch (_) { }
-                        return { code: String(r.key).slice("erp_txn_req_".length), icpno };
+                        // [fix 2026-07-14] 新鍵格式 erp_txn_req_<icpno>_<code>；部署交界期可能殘留
+                        // 舊格式（不含公司前綴）的在途請求，兩種都解析（icpno 以 value JSON 為權威）。
+                        let rest = String(r.key).slice("erp_txn_req_".length);
+                        const m = rest.match(/^(\d{2})_(.+)$/);
+                        if (m) { icpno = m[1]; rest = m[2]; }
+                        return { code: rest, icpno };
                     });
                     res.json({ codes });
                     return;
@@ -13923,8 +13929,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const code = String(r?.code || "").trim();
                 if (!code)
                     continue;
-                const payload = JSON.stringify({ icpno: r.icpno || "00", data: r.data || null, error: r.error || null, fetched_at: now });
-                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_txn_res_" + code, payload);
+                const rIcp = (0, erp_companies_js_1.normIcpno)(r.icpno);
+                const payload = JSON.stringify({ icpno: rIcp, data: r.data || null, error: r.error || null, fetched_at: now });
+                // [fix 2026-07-14] 結果鍵含公司；請求鍵新舊格式都清（部署交界期的在途請求）
+                await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_txn_res_" + rIcp + "_" + code, payload);
+                await db.prepare("DELETE FROM app_settings WHERE key = ?").run("erp_txn_req_" + rIcp + "_" + code);
                 await db.prepare("DELETE FROM app_settings WHERE key = ?").run("erp_txn_req_" + code);
                 n++;
             }

@@ -293,10 +293,28 @@ function initSqlite(dbPath) {
         // 由 inventory-push 的頂層 warehouse_qty 全表覆蓋（DELETE+INSERT；接收端下一階段實作）；
         // payload 沒帶 warehouse_qty＝該批推送無分倉資料，此表不動。用途：盤點按倉別進行時的分倉帳面基準
         //（取代單一公司總量 SK_NOWQTY 造成的多倉共用品項盤差失真）。
-        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (erp_code, wh_code))");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, wh_code))");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
     }
     catch (_) { /* table may already exist */ }
+    // [migration 2026-07-14] 分倉快照也按公司：主鍵 (erp_code, wh_code) → (icpno, erp_code, wh_code)。
+    // 凌越倉號可跨公司重複（erp_warehouse 已是 (icpno, code) 主鍵），此表無 icpno 時公司間推送
+    // 互相覆蓋、盤點分倉基準誤讀。舊資料補 '00'——此表是每輪推送整批覆蓋的快照，下一輪各公司
+    // 推送即自癒，暫時標錯無累積影響。
+    try {
+        const whPk = sqlite.prepare("SELECT name FROM pragma_table_info('erp_stock_wh_qty') WHERE pk > 0 ORDER BY pk").all().map((r) => String(r.name));
+        if (!whPk.includes("icpno")) {
+            sqlite.exec("BEGIN");
+            sqlite.exec("CREATE TABLE erp_stock_wh_qty_v2 (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, wh_code))");
+            sqlite.exec("INSERT INTO erp_stock_wh_qty_v2 (icpno, erp_code, wh_code, qty, updated_at) SELECT '00', erp_code, wh_code, qty, updated_at FROM erp_stock_wh_qty");
+            sqlite.exec("DROP TABLE erp_stock_wh_qty");
+            sqlite.exec("ALTER TABLE erp_stock_wh_qty_v2 RENAME TO erp_stock_wh_qty");
+            sqlite.exec("COMMIT");
+            sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
+            console.log("[migration] erp_stock_wh_qty 主鍵改為 (icpno, erp_code, wh_code)");
+        }
+    }
+    catch (e) { try { sqlite.exec("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_stock_wh_qty 多公司主鍵遷移失敗:", e?.message || e); }
     try {
         // [fix 2026-07-10] 品項照片：以 erp_code 為鍵獨立存放（不放 erp_stock_items——該表每次庫存推送
         // 全表覆蓋會清掉）。盤點頁縮圖用（對語言不通的員工照片比文字更直觀）。photo_url 存後台上傳後的可存取路徑。
@@ -1053,8 +1071,26 @@ async function initPg() {
                 // 由 inventory-push 的頂層 warehouse_qty 全表覆蓋（DELETE+INSERT；接收端下一階段實作）；
                 // payload 沒帶 warehouse_qty＝該批推送無分倉資料，此表不動。用途：盤點按倉別進行時的分倉帳面基準
                 //（取代單一公司總量 SK_NOWQTY 造成的多倉共用品項盤差失真）。
-                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (erp_code, wh_code))");
+                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_wh_qty (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, wh_code TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, wh_code))");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_qty_wh ON erp_stock_wh_qty(wh_code)");
+                // [migration 2026-07-14] 分倉快照也按公司（理由見 initSqlite 對應處）；整段包交易，
+                // 半途失敗 ROLLBACK 後守門條件仍成立、下次啟動可重試（修正過往 PG 遷移非交易的問題）。
+                try {
+                    const whPkRes = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'erp_stock_wh_qty'::regclass AND i.indisprimary");
+                    const whPkCols = (whPkRes.rows || []).map((r) => String(r.attname));
+                    if (!whPkCols.includes("icpno")) {
+                        await client.query("BEGIN");
+                        await client.query("ALTER TABLE erp_stock_wh_qty ADD COLUMN IF NOT EXISTS icpno TEXT");
+                        await client.query("UPDATE erp_stock_wh_qty SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
+                        await client.query("ALTER TABLE erp_stock_wh_qty ALTER COLUMN icpno SET NOT NULL");
+                        await client.query("ALTER TABLE erp_stock_wh_qty ALTER COLUMN icpno SET DEFAULT '00'");
+                        await client.query("ALTER TABLE erp_stock_wh_qty DROP CONSTRAINT IF EXISTS erp_stock_wh_qty_pkey");
+                        await client.query("ALTER TABLE erp_stock_wh_qty ADD PRIMARY KEY (icpno, erp_code, wh_code)");
+                        await client.query("COMMIT");
+                        console.log("[migration] erp_stock_wh_qty 主鍵改為 (icpno, erp_code, wh_code)");
+                    }
+                }
+                catch (e) { try { await client.query("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_stock_wh_qty 多公司主鍵遷移失敗:", e?.message || e); }
                 // [fix 2026-07-10] 品項照片（與 initSqlite 對應）：獨立表，跨庫存全表覆蓋保留
                 await client.query("CREATE TABLE IF NOT EXISTS erp_stock_item_photo (erp_code TEXT PRIMARY KEY, photo_url TEXT, updated_by TEXT, updated_at TEXT)");
                 // 庫存人工調整值（彌補凌越系統誤差，免重整）：每公司每料號一個總調整值 delta（獨立表，庫存推送不會洗掉）。
