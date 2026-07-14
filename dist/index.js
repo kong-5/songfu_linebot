@@ -191,6 +191,9 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             res.status(500).type("text/plain").send("internal error");
         }
     });
+    /** [fix 2026-07-14] 預抓行情的「今日」必須用台北時區：舊版 toISOString()（UTC）在台北 00:00–08:00
+     * 之間會算成前一天——排程建議的 06:00/07:00 打進來剛好抓到「昨天」的行情。 */
+    const taipeiTodayYYYYMMDD = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
     const wholesale_snapshot_js_1 = require("./lib/wholesale-snapshot.js");
     /** Cloud Scheduler 預抓北農行情：建議每日 06:00 / 10:00 / 14:00 各打一次。
      *  ?date=YYYY-MM-DD（預設今日）；可加 X-Wholesale-Job-Secret 限制。 */
@@ -202,7 +205,7 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
                 const got = String(req.headers["x-wholesale-job-secret"] || req.headers["x-rhythm-job-secret"] || "").trim();
                 if (got !== secret) { res.status(401).type("text/plain").send("Unauthorized"); return; }
             }
-            const dateStr = String(req.query.date || req.body?.date || "").trim() || new Date().toISOString().slice(0, 10);
+            const dateStr = String(req.query.date || req.body?.date || "").trim() || taipeiTodayYYYYMMDD();
             if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).json({ ok: false, error: "invalid date" }); return; }
             const db = (0, index_js_1.getDb)(dbPath);
             // 唯讀統計：目前快照涵蓋幾個交易日、最早/最晚日期
@@ -255,7 +258,7 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
                 const got = String(req.headers["x-wholesale-job-secret"] || req.headers["x-rhythm-job-secret"] || "").trim();
                 if (got !== secret) { res.status(401).type("text/plain").send("Unauthorized"); return; }
             }
-            const dateStr = String(req.query.date || req.body?.date || "").trim() || new Date().toISOString().slice(0, 10);
+            const dateStr = String(req.query.date || req.body?.date || "").trim() || taipeiTodayYYYYMMDD();
             if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).json({ ok: false, error: "invalid date" }); return; }
             const db = (0, index_js_1.getDb)(dbPath);
             const r = await (0, livestock_price_js_1.loadOrFetchLivestockPrices)(db, dateStr);
@@ -342,6 +345,16 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         const hp = parts.find((p) => p.type === "hour");
         return hp ? parseInt(hp.value, 10) : 0;
     }
+    /** [fix 2026-07-14] 每日排程冪等改落 DB：舊版只靠 in-memory mark，Cloud Run 多實例或
+     * 整點內重啟會重複執行（每日摘要＝對客戶群組重複推播）。改用 app_settings 原子 claim——
+     * 單一 upsert 語句在 sqlite/pg 皆原子，同一天只有第一個呼叫 changes=1，其餘（含別台實例）為 0。
+     * in-memory mark 保留當快速路徑，省掉每分鐘一次的 DB 往返。 */
+    async function claimDailyMark(db, key, todayMark) {
+        const r = await db.prepare(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE app_settings.value <> excluded.value"
+        ).run(key, todayMark);
+        return Number(r?.changes || 0) === 1;
+    }
     setInterval(async () => {
         if (!dbReady || process.env.RHYTHM_AUTO_SCHEDULE !== "1")
             return;
@@ -352,8 +365,12 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             if (rhythmScheduleMark === todayMark)
                 return;
             const db = (0, index_js_1.getDb)(dbPath);
-            const out = await rhythm_analysis_js_1.runRhythmDailyJob(db);
+            if (!(await claimDailyMark(db, "rhythm_daily_last_run_date", todayMark))) {
+                rhythmScheduleMark = todayMark; // 別台實例已跑
+                return;
+            }
             rhythmScheduleMark = todayMark;
+            const out = await rhythm_analysis_js_1.runRhythmDailyJob(db);
             console.log("[rhythm] auto schedule ok", out);
         }
         catch (e) {
@@ -372,8 +389,13 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             if (taipeiHourNow() !== targetHour) return;
             const todayMark = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
             if (dailySummaryMark === todayMark) return;
-            const out = await daily_summary_push_js_1.runDailySummaryPush(db);
+            // 先 claim 再推（at-most-once）：推到一半失敗不重試，避免前面群組收到兩次；失敗會留 log 供人工補發
+            if (!(await claimDailyMark(db, "daily_summary_last_push_date", todayMark))) {
+                dailySummaryMark = todayMark; // 別台實例已推
+                return;
+            }
             dailySummaryMark = todayMark;
+            const out = await daily_summary_push_js_1.runDailySummaryPush(db);
             console.log("[daily-summary] auto push ok sent=%s skipped=%s errors=%s", out.sent, out.skipped, (out.errors||[]).length);
         } catch (e) {
             console.error("[daily-summary] auto push 失敗:", e?.message || e);
