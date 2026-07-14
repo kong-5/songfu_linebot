@@ -400,6 +400,10 @@ function initSqlite(dbPath) {
         // 額外收入（非銷貨單的款，列現金日報表最後）
         sqlite.exec("CREATE TABLE IF NOT EXISTS cash_extra_income (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', income_date TEXT NOT NULL, item TEXT, amount REAL NOT NULL DEFAULT 0, collected_by TEXT, note TEXT, recorded_by TEXT, created_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_extra_date ON cash_extra_income(icpno, income_date)");
+        // 操作紀錄（錢的稽核軌跡）：收款/取消收款/額外收入新增刪除都留一筆，含操作人＋當下快照。
+        // 特別是「取消收款」會刪掉 cash_payment，稽核紀錄是唯一還原「誰在何時取消了多少錢」的依據。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS cash_audit_log (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', action TEXT NOT NULL, ref_id TEXT, pay_date TEXT, ct_name TEXT, amount REAL NOT NULL DEFAULT 0, detail TEXT, actor TEXT, created_at TEXT NOT NULL)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_cash_audit_created ON cash_audit_log(icpno, created_at)");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -1139,6 +1143,9 @@ async function initPg() {
                 await client.query("ALTER TABLE cash_customer ADD COLUMN IF NOT EXISTS last_txn TEXT");
                 await client.query("ALTER TABLE cash_payment ADD COLUMN IF NOT EXISTS transfer_amount DOUBLE PRECISION NOT NULL DEFAULT 0");
                 await client.query("ALTER TABLE cash_extra_income ADD COLUMN IF NOT EXISTS method TEXT");
+                // 操作紀錄（錢的稽核軌跡）
+                await client.query("CREATE TABLE IF NOT EXISTS cash_audit_log (id TEXT PRIMARY KEY, icpno TEXT NOT NULL DEFAULT '00', action TEXT NOT NULL, ref_id TEXT, pay_date TEXT, ct_name TEXT, amount DOUBLE PRECISION NOT NULL DEFAULT 0, detail TEXT, actor TEXT, created_at TEXT NOT NULL)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_cash_audit_created ON cash_audit_log(icpno, created_at)");
             }
             catch (_) { /* table may already exist */ }
             try {
