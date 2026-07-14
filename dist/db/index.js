@@ -232,6 +232,15 @@ function initSqlite(dbPath) {
         }
     }
     catch (e) { console.warn("[migration] orders 拆單鍵 UNIQUE 檢查/建立失敗:", e?.message || e); }
+    // [perf 2026-07-14] 熱路徑補索引：orders(customer_id, order_date) 被每則 LINE 訊息的
+    // 同日訂單查詢/拆單 find 打（全 codebase 17 處）；order_items(order_id) 是訂單明細/rebuild
+    // 的基本查法，兩者過去都靠全表掃描。附件表同理。
+    try {
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_orders_customer_date ON orders(customer_id, order_date)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_order_attachments_order ON order_attachments(order_id)");
+    }
+    catch (_) { /* index may already exist */ }
     // G15: LINE 收單 session 持久化（SQLite）
     try {
         sqlite.exec(`CREATE TABLE IF NOT EXISTS line_collect_sessions (
@@ -1020,6 +1029,13 @@ async function initPg() {
                 }
             }
             catch (e) { console.warn("[migration] orders 拆單鍵 UNIQUE 檢查/建立失敗:", e?.message || e); }
+            // [perf 2026-07-14] 熱路徑補索引（與 initSqlite 對應）
+            try {
+                await client.query("CREATE INDEX IF NOT EXISTS idx_orders_customer_date ON orders(customer_id, order_date)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_order_attachments_order ON order_attachments(order_id)");
+            }
+            catch (_) { /* index may already exist */ }
             // G15: LINE 收單 session 持久化（PostgreSQL）
             try {
                 await client.query(`CREATE TABLE IF NOT EXISTS line_collect_sessions (
