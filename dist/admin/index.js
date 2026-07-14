@@ -13156,6 +13156,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             const ph = spNos.map(() => "?").join(",");
             const units = await db.prepare(`SELECT sp_no, doc_date, total, ct_no, ct_name FROM cash_sales_doc WHERE icpno = ? AND sp_no IN (${ph})`).all(icpno, ...spNos) || [];
             const unitMap = new Map(units.map((u) => [u.sp_no, u]));
+            // [fix 2026-07-14] 完整性驗證：頁面載入後單被「重新取單」刪掉/改號時，舊版對查無的單
+            // 照插 due=0 的 alloc（孤兒分配，日報表對不上帳且畫面上找不到那張單）。改成明確拒絕。
+            if (units.length !== spNos.length) {
+                const missing = spNos.filter((sp) => !unitMap.has(sp));
+                res.status(409).json({ error: "下列單已不存在（可能被重新取單更新），請重整頁面後再收：" + missing.join("、") });
+                return;
+            }
             // 由勾選的單推客戶：全同一家＝該客戶；跨多家＝標「多客戶(N)」（明細仍逐單留客戶）
             const ctSet = new Map();
             for (const u of units)
@@ -13215,6 +13222,22 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.status(400).json({ error: "缺 payment_id" });
                 return;
             }
+            // [fix 2026-07-14] 金錢操作可稽核：舊版硬刪三表、不存在也回 ok、誰取消了哪筆完全查不到。
+            // 改成先快照（payment＋allocs＋checks）寫進 data_change_log 再刪；查無回 404。
+            const pay = await db.prepare("SELECT * FROM cash_payment WHERE id = ?").get(payId);
+            if (!pay) {
+                res.status(404).json({ error: "找不到這筆收款（可能已被取消）" });
+                return;
+            }
+            const allocSnap = await db.prepare("SELECT sp_no, doc_date, due_amount, alloc_amount FROM cash_payment_alloc WHERE payment_id = ?").all(payId) || [];
+            const checkSnap = await db.prepare("SELECT check_no, bank, due_date, amount FROM cash_check WHERE payment_id = ?").all(payId) || [];
+            await logDataChange(req, {
+                entityType: "cash_payment",
+                entityId: payId,
+                action: "undo_collect",
+                summary: `取消收款 ${pay.ct_name || pay.ct_no || ""} ${pay.pay_date} 共 ${pay.total_amount}（${allocSnap.length} 張單退回未收）`,
+                meta: { payment: pay, allocs: allocSnap, checks: checkSnap },
+            });
             const doDel = async (h) => {
                 await h.prepare("DELETE FROM cash_check WHERE payment_id = ?").run(payId);
                 await h.prepare("DELETE FROM cash_payment_alloc WHERE payment_id = ?").run(payId);
@@ -13533,6 +13556,18 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const method = (["cash", "transfer", "check"].includes(String(b.method ?? "").trim()) ? String(b.method).trim() : "cash");
+            // [fix 2026-07-14] 重送冪等：手動入帳無唯一鍵可擋（銷貨收款有 idx_cash_alloc_sp_uniq、
+            // 這裡沒有），網路逾時重按/請求重送會重複入帳。15 秒內完全相同的一筆視為重複送出，
+            // 直接回 ok（刻意連續入兩筆相同金額的正常情境，間隔必然超過 15 秒）。
+            try {
+                const dupWindow = new Date(Date.now() - 15000).toISOString();
+                const dup = await db.prepare("SELECT id FROM cash_extra_income WHERE icpno = ? AND income_date = ? AND item = ? AND amount = ? AND method = ? AND COALESCE(collected_by,'') = ? AND created_at > ? LIMIT 1")
+                    .get(icpno, date, item, amount, method, String(b.collected_by ?? "").trim(), dupWindow);
+                if (dup) {
+                    res.json({ ok: true, dedup: true });
+                    return;
+                }
+            } catch (_) { /* 查重失敗照常入帳 */ }
             await db.prepare("INSERT INTO cash_extra_income (id, icpno, income_date, item, amount, method, collected_by, note, recorded_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
                 .run((0, id_js_1.newId)("cei"), icpno, date, item, amount, method, String(b.collected_by ?? "").trim(), String(b.note ?? "").trim(), (res.locals && res.locals.adminUser) || "", new Date().toISOString());
             res.json({ ok: true });
