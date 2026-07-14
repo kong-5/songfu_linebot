@@ -195,7 +195,7 @@ async function resolveProductName(db, rawName, customerId) {
 function cleanForAI(s) {
     return String(s || "")
         .replace(/[\(（][^）)]*[\)）]/g, " ")
-        .replace(/[\\s,，.。、]+/g, " ")
+        .replace(/[\s,，.。、]+/g, " ")
         .trim();
 }
 async function aiFallbackResolveProductId(db, rawName, customerId) {
@@ -220,11 +220,11 @@ async function aiFallbackResolveProductId(db, rawName, customerId) {
     catch (_) {
         return null;
     }
-    const normName = (n) => String(n || "").toLowerCase().replace(/[\\s,，.。、]/g, "");
+    const normName = (n) => String(n || "").toLowerCase().replace(/[\s,，.。、]/g, "");
     const filtered = all
         .filter((p) => {
         const nn = normName(p.name);
-        return tokens.some((t) => nn.includes(String(t).toLowerCase().replace(/[\\s,，.。、]/g, "")));
+        return tokens.some((t) => nn.includes(String(t).toLowerCase().replace(/[\s,，.。、]/g, "")));
     })
         .slice(0, 60);
     const pool = filtered.length ? filtered : all.slice(0, 40);
