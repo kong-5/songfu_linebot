@@ -124,6 +124,57 @@ def _timeout_client():
     return lystk._client
 
 
+def _norm_dt(v) -> str:
+    """時間字串正規化供比對：去空白、'/'→'-'、'T'→空格。"""
+    return str(v or "").strip().replace("/", "-").replace("T", " ")
+
+
+def find_written_order(icpno: str, row: dict):
+    """[fix 2026-07-14] 寫入逾時/斷線後回查：這張單是否其實已寫進凌越。
+
+    write_order 丟例外時凌越端**可能已開單成功**（SOAP timeout／連線中斷）；若一律當失敗
+    回報，單留在雲端佇列、租約到期重派 → 再寫一張＝重複開單，且雲端衝突偵測抓不到
+    （第一張根本沒回報單號）。
+
+    比對鍵＝我們自己在 map_order 填的 OR_CREATEDATE（秒級時間戳）＋ OR_CTNO ＋ OR_DATE1：
+    以客戶代碼撈訂貨單（0000A0），**恰好一張**三鍵全中才回其 OR_NO；0 張或多張一律回 None
+    維持「失敗」語意讓雲端重試。查詢本身失敗也回 None——本函式只能把「結果不明」變安全，
+    絕不可誤報成功（誤報會讓雲端記到錯的單號）。
+    """
+    ctno = (row.get("OR_CTNO") or "").strip()
+    want_cd = _norm_dt(row.get("OR_CREATEDATE"))[:19]
+    want_d1 = _norm_dt(row.get("OR_DATE1"))[:10]
+    if not ctno or not want_cd:
+        return None
+    try:
+        client = _timeout_client()
+        resp = client.service.LyDataOut(
+            ikye=lystk.fresh_key(), icpno=lystk.resolve_icpno(icpno), idakd="0000A0",
+            ifld="", idetfields="OD_SKNO",
+            irwhere="OR_CTNO=@v1@", iwhval=ctno,
+            irec=0, imode=" " * 30, iorder="order by OR_NO desc", idtorder="",
+            iswhere="", isifld="",
+            Isecgroup="", iseckindfg="", iseckind="", Isecorder="", Isecrec=0,
+        )
+        if str(resp["LyDataOutResult"]) != "0" or not resp["ixmlda"]:
+            return None
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(str(resp["ixmlda"]))
+        hits = []
+        for t in root.findall(".//LYDATATITLE"):
+            rec = {c.tag: (c.text or "").strip() for c in t}
+            if _norm_dt(rec.get("OR_CREATEDATE"))[:19] != want_cd:
+                continue
+            if want_d1 and _norm_dt(rec.get("OR_DATE1"))[:10] != want_d1:
+                continue
+            no = (rec.get("OR_NO") or "").strip()
+            if no and no not in hits:
+                hits.append(no)
+        return hits[0] if len(hits) == 1 else None
+    except Exception:
+        return None
+
+
 _prod_cache: dict = {}
 
 

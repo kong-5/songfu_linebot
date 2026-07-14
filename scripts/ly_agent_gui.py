@@ -621,9 +621,26 @@ class AgentEngine:
                     ok += 1
                     self.log(f"  ✅ {name} → 凌越單號 {no}")
                 except Exception as e:
-                    result = {"order_id": o.get("order_id"), "ok": False, "error": _short(e),
-                              "written_at": datetime.datetime.now().isoformat(timespec="seconds")}
-                    self.log(f"  ❌ {name} 寫入失敗：{_short(e)}")
+                    # [fix 2026-07-14] 「結果不明」防重複開單：timeout/斷線時凌越可能已開單成功；
+                    # 若一律當失敗回報，單留在雲端佇列、租約到期重派 → 再寫一張（衝突偵測抓不到）。
+                    # 用 bridge.find_written_order 回查（OR_CREATEDATE 秒級時戳＋客戶＋日期，唯一命中
+                    # 才算成功）；被凌越明確拒絕的單回查不到東西，行為與過去相同。
+                    recovered = None
+                    finder = getattr(wb, "find_written_order", None)
+                    if callable(finder):
+                        try:
+                            recovered = finder(icpno, row)
+                        except Exception:
+                            recovered = None
+                    if recovered:
+                        result = {"order_id": o.get("order_id"), "doc_no": recovered, "ok": True,
+                                  "written_at": datetime.datetime.now().isoformat(timespec="seconds")}
+                        ok += 1
+                        self.log(f"  ✅ {name} → 凌越單號 {recovered}（寫入回應中斷，回查確認已開單）")
+                    else:
+                        result = {"order_id": o.get("order_id"), "ok": False, "error": _short(e),
+                                  "written_at": datetime.datetime.now().isoformat(timespec="seconds")}
+                        self.log(f"  ❌ {name} 寫入失敗：{_short(e)}")
                 results.append(result)
                 # 每寫完一張「成功單」就把結果落地 journal（在打 callback 前）：中途斷電/
                 # 當機也不會遺失「凌越已開單」的事實，重啟後先重送、不重寫。
