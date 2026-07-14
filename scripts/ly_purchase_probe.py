@@ -117,6 +117,88 @@ def _fieldset(rows):
     return sorted(s)
 
 
+def _guess_prefix(rows):
+    """從欄位名猜主前綴（第一個底線前的字，取最多數）。回 '' 若猜不出。"""
+    from collections import Counter
+    c = Counter()
+    for r in rows:
+        for k in r.keys():
+            if "_" in k:
+                c[k.split("_", 1)[0] + "_"] += 1
+    return c.most_common(1)[0][0] if c else ""
+
+
+def _classify(prefix, rows):
+    """依前綴/欄位給一句人話判定，幫忙一眼分辨是不是進貨。"""
+    keys = set()
+    for r in rows:
+        keys.update(r.keys())
+    has_skno = any(k.endswith("SKNO") for k in keys)  # 明細裡有料號（動庫存的單才有）
+    p = (prefix or "").upper()
+    if p in ("I_",):
+        return "收/付款類（無料號、不動庫存）"
+    if p in ("SP_", "SD_"):
+        return "銷貨/銷退類"
+    if p in ("OR_", "OD_"):
+        return "訂單類（客戶需求端；有料號但不是進貨）"
+    if p in ("CT_",):
+        return "客戶/廠商主檔類"
+    if p in ("SK_",):
+        return "貨品主檔類"
+    # 未知前綴 + 有料號 → 最可疑，可能就是進貨（供應商→入庫）
+    if has_skno:
+        return "★ 未知前綴且明細有料號 → 很可能是進貨單，重點看這個！"
+    return "未知類（明細無料號）"
+
+
+# 掃描用候選代碼（只掃這些；每個只取標題 2 筆，極輕）。已知的 A0/A1/A2 不掃。
+SCAN_KINDS = [
+    "0000A3", "0000A4", "0000A5", "0000A6", "0000A7", "0000A8", "0000A9",
+    "0000AA", "0000AB", "0000AC", "0000AD", "0000AE", "0000AF",
+    "0000B0", "0000B1", "0000B2", "0000B3",
+    "000002", "000003", "000005", "000006", "000007", "000008",
+    "00000A", "00000B", "00000C", "00000E", "00000F",
+]
+
+
+def scan(icpno, timeout):
+    """安全掃描：候選代碼各只取標題 2 筆，一行印出判定。找可疑的再用 --kind 深看。"""
+    print(f"▶ 掃描 {len(SCAN_KINDS)} 個候選代碼（各只取標題 2 筆，無過濾）icpno={icpno}"
+          f" 逾時 {timeout}s/個", flush=True)
+    print("  代碼      筆數  前綴     對象範例                判定", flush=True)
+    print("  " + "-" * 78, flush=True)
+    hits = []
+    for k in SCAN_KINDS:
+        try:
+            titles, _ = _lydataout(icpno, k, "", "", "", "", timeout, cap=2)
+        except Exception as e:
+            print(f"  {k}    err   —        —                       {e}", flush=True)
+            continue
+        if not titles:
+            print(f"  {k}     0    —        —                       （無資料/非單別）", flush=True)
+            continue
+        pref = _guess_prefix(titles)
+        party = ""
+        for r in titles:
+            for kk in r:
+                if kk.endswith("CTNAME") and r[kk]:
+                    party = r[kk]
+                    break
+            if party:
+                break
+        verdict = _classify(pref, titles)
+        if "很可能是進貨" in verdict:
+            hits.append(k)
+        print(f"  {k}  {len(titles):>4}    {pref or '?':<7} {party[:20]:<22} {verdict}", flush=True)
+    print("  " + "-" * 78, flush=True)
+    if hits:
+        print(f"  ★ 最可疑（可能進貨）：{', '.join(hits)}  → 用："
+              f"python ly_purchase_probe.py --kind {hits[0]}  深看欄位與明細", flush=True)
+    else:
+        print("  沒掃到『未知前綴＋有料號』的可疑單別。進貨很可能沒開放 LyDataOut 匯出，"
+              "建議直接問 Dispatch 或改走自己掃碼收貨。", flush=True)
+
+
 def probe(icpno, kind, hdr, det, mode, value, timeout, cap, show):
     """一次一發的探測查詢。回 (titles, details)。"""
     if mode == "list":
@@ -163,7 +245,9 @@ def probe(icpno, kind, hdr, det, mode, value, timeout, cap, show):
 def build_parser():
     p = argparse.ArgumentParser(
         description="低風險探測凌越『進貨單』資料種類代碼（唯讀、一次一發、短逾時、irec 上限）")
-    p.add_argument("--kind", required=True, help="要試的資料種類代碼 idakd（如 0000A3）")
+    p.add_argument("--kind", help="要試的資料種類代碼 idakd（如 0000A3）；用 --scan 時可省略")
+    p.add_argument("--scan", action="store_true",
+                   help="安全掃描一批候選代碼（各只取標題 2 筆），一次找出可疑的進貨單別")
     # 預設＝列表探法（無過濾、只取前 cap 筆）；--doc/--code 為確認前綴後才用的核對模式。
     g = p.add_mutually_exclusive_group(required=False)
     g.add_argument("--doc", help="核對用：用單號查（前綴要對，否則靜默回 0）")
@@ -191,6 +275,16 @@ def run(args):
         print(f"  ⚠ 逾時 {args.timeout}s 偏長；防風暴建議 ≤ 30s。", flush=True)
     if cap > 20:
         print(f"  ⚠ cap {cap} 偏大；探測用 ≤ 5 筆就夠，設小一點更安全。", flush=True)
+    if args.scan:
+        try:
+            scan(icpno, args.timeout)
+        except Exception as e:
+            print(f"  ✗ 掃描中止：{e}", flush=True)
+            return 1
+        return 0
+    if not args.kind:
+        print("  ✗ 請給 --kind <代碼>，或用 --scan 掃描一批候選代碼。", flush=True)
+        return 2
     if args.doc:
         mode, value = "doc", args.doc
     elif args.code:
