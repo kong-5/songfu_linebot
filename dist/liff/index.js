@@ -19,7 +19,7 @@ const employee_line_binding_js_1 = require("../lib/employee-line-binding.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
-const stock_mustcount_js_1 = require("../lib/stock-mustcount.js");
+const stocktake_api_js_1 = require("../lib/stocktake-api.js");
 
 // 訂單審核 LIFF 允許的職稱（之後若要擴可加 "課長"、"行政"）
 const ORDER_REVIEW_ROLES = ["經理", "主任", "課長"];
@@ -82,15 +82,7 @@ function createLiffRouter() {
     // ── 盤點 LIFF 頁 + API（誰都可以盤，需 LINE 登入；群組白名單由 #盤點 控制）──
     const STOCKTAKE_LIFF_ID = (process.env.LIFF_ID_STOCKTAKE || "2010106501-VocNwkbA").trim();
     router.get("/stocktake", (_req, res) => { serveLiffPage(res, "stocktake.html", STOCKTAKE_LIFF_ID); });
-    // 台北時區日期（YYYY-MM-DD）；可傳入指定時間點（例如 now-24h ＝ 台北的「昨日」，台北無夏令時間，恆為前一天）
-    function stkTaipeiDate(at) {
-        const d = at instanceof Date ? at : new Date();
-        try {
-            const p = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(d);
-            const g = (t) => (p.find((x) => x.type === t) || {}).value;
-            return g("year") + "-" + g("month") + "-" + g("day");
-        } catch (_) { return d.toISOString().slice(0, 10); }
-    }
+    // 台北時區日期改用 lib/stocktake-api.js 的 stkTaipeiDate（單一實作）
     async function stkAuth(req, res) {
         const idToken = (0, liff_auth_js_1.readBearerIdToken)(req);
         if (!idToken) { res.status(401).json({ error: "需 LINE 登入" }); return null; }
@@ -98,26 +90,15 @@ function createLiffRouter() {
         if (!v.ok) { res.status(401).json({ error: v.error || "登入驗證失敗" }); return null; }
         return v;
     }
+    // [refactor 2026-07-14] warehouses/items/submit 三套端點（LIFF／後台掃碼／後台網頁盤點）
+    // 的資料邏輯收斂到 dist/lib/stocktake-api.js 單一權威；這裡只剩認證＋參數＋身分。
     router.get("/api/stocktake/warehouses", async (req, res) => {
         try {
             const v = await stkAuth(req, res); if (!v) return;
             const db = (0, index_js_1.getDb)(dbPath);
-            const date = stkTaipeiDate();
             // 多公司：不帶 icpno＝'00'（松富，行為不變）；掃碼頁帶 icpno=02（松揚）等
             const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
-            const whRows = await db.prepare("SELECT code, name, include_stocktake, sort_order FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
-            const cntRows = await db.prepare("SELECT wh_code AS code, COUNT(*) AS cnt FROM erp_stock_items WHERE wh_code IS NOT NULL AND TRIM(wh_code) <> '' AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? GROUP BY wh_code").all(icpno);
-            const cnt = {}; (cntRows || []).forEach((r) => { cnt[String(r.code)] = Number(r.cnt || 0); });
-            const doneRows = await db.prepare("SELECT DISTINCT wh_code FROM stocktake_session WHERE count_date = ? AND status = 'submitted' AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(date, icpno);
-            const done = {}; (doneRows || []).forEach((r) => { done[String(r.wh_code)] = true; });
-            let list;
-            if ((whRows || []).length) {
-                list = whRows.filter((w) => Number(w.include_stocktake) === 1).map((w) => ({ code: String(w.code), name: String(w.name || ""), sort: Number(w.sort_order || 0), items: cnt[String(w.code)] || 0, countedToday: !!done[String(w.code)] }));
-            } else {
-                list = Object.keys(cnt).map((code) => ({ code, name: "", sort: 0, items: cnt[code], countedToday: !!done[code] }));
-            }
-            list.sort((a, b) => (a.sort - b.sort) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
-            res.json({ date, warehouses: list });
+            res.json(await stocktake_api_js_1.listStocktakeWarehouses(db, { icpno }));
         } catch (e) { console.error("[liff stocktake warehouses]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
     router.get("/api/stocktake/items", async (req, res) => {
@@ -127,57 +108,7 @@ function createLiffRouter() {
             if (!code) { res.status(400).json({ error: "缺少 warehouse" }); return; }
             const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
             const db = (0, index_js_1.getDb)(dbPath);
-            const wh = await db.prepare("SELECT code, name FROM erp_warehouse WHERE code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
-            const rows = await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY erp_code").all(code, icpno);
-            // [分倉庫存 2026-07-10] 系統量基準：erp_stock_wh_qty「該倉」有任何分倉列 → 各品項 sys 用分倉量
-            // （該品項無列＝0）；整倉完全無分倉資料 → fallback 現行總量（erp_stock_items.qty）。
-            // 一次查整倉組 Map（不逐品項查）。sysQtySource 回給前端標示基準來源。
-            // 語意：這裡的 sys 只影響「這次開頁之後」送出的盤點——submit 時前端把 sys 原樣帶回、
-            // 寫進 stocktake_count.sys_qty 成為建立當下的凍結快照，已送出的 session 不回溯改動。
-            // [fix 2026-07-14] erp_stock_wh_qty 已改 (icpno, erp_code, wh_code) 主鍵：倉號可跨公司重複，查詢須帶公司。
-            let whQtyMap = null;
-            try {
-                const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(code, icpno);
-                if ((wq || []).length) {
-                    whQtyMap = {};
-                    for (const r of wq) whQtyMap[String(r.erp_code || "")] = Number(r.qty || 0);
-                }
-            } catch (_) { whQtyMap = null; /* 查詢失敗 → 沿用總量基準，不擋盤點 */ }
-            const sysQtySource = whQtyMap ? "warehouse" : "total";
-            const expRows = await db.prepare("SELECT erp_code, expiry_unit FROM stocktake_expiry_item WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno);
-            const exp = {}; (expRows || []).forEach((r) => { exp[String(r.erp_code)] = String(r.expiry_unit || ""); });
-            // 品項照片（第四波）：只查有照片的料號組成 Set，items 帶 hp 布林；data URI 不塞進 items JSON（撐爆 payload），需要時走單張取圖端點 lazy-load
-            const photoSet = new Set();
-            try { (await db.prepare("SELECT erp_code FROM erp_stock_item_photo").all() || []).forEach((r) => photoSet.add(String(r.erp_code || ""))); } catch (_) { /* 照片表缺失不擋盤點 */ }
-            const items = (rows || []).map((r) => {
-                const c = String(r.erp_code || "");
-                const isExp = Object.prototype.hasOwnProperty.call(exp, c);
-                const sysv = whQtyMap ? Number(whQtyMap[c] || 0) : Number(r.qty || 0);
-                return { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: sysv, exp: isExp, eunit: isExp ? (exp[c] || String(r.unit || "")) : "", hp: photoSet.has(c) ? 1 : undefined };
-            });
-            // 續盤：同倉同日若已送出過，帶回已存的實盤數與效期，重開可接著盤
-            const date = stkTaipeiDate();
-            const saved = {};
-            let resumed = false;
-            let submittedAt = null; // 樂觀鎖基準：開頁當下該 session 的 submitted_at（無 session 為 null）
-            const sess = await db.prepare("SELECT id, submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, date, icpno);
-            if (sess) {
-                const cRows = await db.prepare("SELECT erp_code, counted_qty, mid_qty, expiry_json FROM stocktake_count WHERE session_id = ?").all(sess.id);
-                for (const r of cRows || []) {
-                    let expiry = [];
-                    try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
-                    const totalv = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty);
-                    const midv = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
-                    // counted 存的是合計；還原「上貨」= 合計 − 中貨
-                    const goodv = totalv == null ? null : Math.round((totalv - (midv || 0)) * 100) / 100;
-                    saved[String(r.erp_code || "")] = { counted: goodv, mid: midv, expiry };
-                }
-                resumed = (cRows || []).length > 0;
-                submittedAt = sess.submitted_at != null && sess.submitted_at !== "" ? String(sess.submitted_at) : null;
-            }
-            // 必盤：自昨天（或上次盤點）以來凌越有變動的品項，前端會排最上面＋標紅「必盤」
-            try { const mc = await (0, stock_mustcount_js_1.computeMustCount)(db, { icpno, whCode: code, today: date }); items.forEach((it) => { if (mc.set.has(it.c)) it.mc = 1; }); } catch (_) { }
-            res.json({ date, warehouse: { code, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt, sysQtySource });
+            res.json(await stocktake_api_js_1.getStocktakeItems(db, { icpno, whCode: code, minimal: false }));
         } catch (e) { console.error("[liff stocktake items]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
     // 單張取圖（第四波）：回 JSON { url: data URI }。<img> 無法帶 Authorization header，
@@ -193,14 +124,6 @@ function createLiffRouter() {
             res.json({ url: String(row.photo_url) });
         } catch (e) { console.error("[liff stocktake photo]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
-    // 唯一索引衝突判斷（pg: 23505；better-sqlite3: SQLITE_CONSTRAINT*／UNIQUE constraint failed）
-    function stkIsUniqueConflict(e) {
-        if (!e) return false;
-        const codeStr = String(e.code || "");
-        if (codeStr === "23505") return true;
-        if (codeStr.indexOf("SQLITE_CONSTRAINT") === 0) return true;
-        return /UNIQUE constraint failed/i.test(String(e.message || ""));
-    }
     router.post("/api/stocktake/submit", express_1.json({ limit: "2mb" }), async (req, res) => {
         try {
             const v = await stkAuth(req, res); if (!v) return;
@@ -208,69 +131,23 @@ function createLiffRouter() {
             const code = String(body.warehouse || "").trim();
             const counts = Array.isArray(body.counts) ? body.counts : null;
             if (!code || !counts) { res.status(400).json({ error: "缺少 warehouse 或 counts" }); return; }
-            const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || "")) ? String(body.date) : stkTaipeiDate();
             const icpno = (0, erp_companies_js_1.normIcpno)(body.icpno);
-            // [fix 2026-07-10] 日期限制：只允許台北時區「今日或昨日」，不得覆寫任意歷史日
-            const today = stkTaipeiDate();
-            const yesterday = stkTaipeiDate(new Date(Date.now() - 86400000));
-            if (date !== today && date !== yesterday) {
-                res.status(400).json({ error: "盤點日期僅限今日或昨日（" + yesterday + " ～ " + today + "）" });
-                return;
-            }
             const db = (0, index_js_1.getDb)(dbPath);
-            const { newId } = require("../lib/id.js");
-            const wh = await db.prepare("SELECT name FROM erp_warehouse WHERE code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
-            const totalRow = await db.prepare("SELECT COUNT(*) AS n FROM erp_stock_items WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, icpno);
-            const total = totalRow ? Number(totalRow.n || 0) : counts.length;
-            const now = new Date().toISOString();
-            // [fix 2026-07-10] 樂觀鎖：比對「開頁時的 submitted_at」（body.baseSubmittedAt）與目前 DB 值，
-            // 不一致（含 DB 有、開頁時還沒有）＝開頁後已有他人送出 → 409，避免兩人互相清空對方盤點。
-            // 多公司：以（icpno, 倉, 日）鎖同一場次。
-            const curSess = await db.prepare("SELECT submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(code, date, icpno);
-            const baseSubmittedAt = (body.baseSubmittedAt == null || body.baseSubmittedAt === "") ? null : String(body.baseSubmittedAt);
-            const curSubmittedAt = (curSess && curSess.submitted_at != null && curSess.submitted_at !== "") ? String(curSess.submitted_at) : null;
-            if (curSubmittedAt !== baseSubmittedAt) {
-                res.status(409).json({ error: "開頁後已有他人送出此倉盤點，請重載後續盤再送出", code: "conflict_stale" });
+            const out = await stocktake_api_js_1.submitStocktake(db, {
+                icpno, whCode: code, date: body.date, counts,
+                createdBy: v.sub || "",
+                createdByName: String(body.name || v.name || "").trim(),
+                baseSubmittedAt: body.baseSubmittedAt,
+            });
+            res.json(out);
+        } catch (e) {
+            if (e && e.name === "StkApiError") {
+                res.status(e.httpStatus).json({ error: e.message, ...(e.code ? { code: e.code } : {}) });
                 return;
             }
-            // 交易外先把所有列算好（含 id），交易內只做純 DB 寫入（sqlite transaction 限制：fn 內不得 await 外部 I/O）
-            const sid = newId("stk");
-            const name = String(body.name || v.name || "").trim();
-            const countRows = counts.map((c) => {
-                // counted=上貨(good)、mid=中貨；counted_qty 存兩者合計，mid_qty 單獨保留供品質標注
-                const good = (c.counted == null || c.counted === "") ? null : Number(c.counted);
-                const mid = (c.mid == null || c.mid === "") ? null : Number(c.mid);
-                const cv = (good == null && mid == null) ? null : ((good || 0) + (mid || 0));
-                return [newId("stc"), sid, String(c.code || ""), String(c.name || ""), String(c.spec || ""), String(c.unit || ""), Number(c.sys || 0), cv, mid, JSON.stringify(c.expiry || []), now];
-            });
-            try {
-                // [fix 2026-07-10] 整段包交易（DELETE 舊資料 + INSERT session + bulk INSERT counts），
-                // counts 用多列 VALUES、每批 ≤50 列（11 欄 × 50 = 550 個佔位符，pg 轉 $n 沒問題），
-                // 由 100+ 次往返縮成幾次；中途失敗整包 ROLLBACK，不會留半套資料
-                await db.transaction(async (tx) => {
-                    await tx.prepare("DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?)").run(code, date, icpno);
-                    await tx.prepare("DELETE FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").run(code, date, icpno);
-                    await tx.prepare("INSERT INTO stocktake_session (id, wh_code, wh_name, count_date, status, group_id, created_by, created_by_name, item_count, counted_count, created_at, submitted_at, icpno) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                        .run(sid, code, wh ? String(wh.name || "") : "", date, "submitted", null, v.sub || "", name, total, counts.length, now, now, icpno);
-                    const BATCH = 50;
-                    for (let i = 0; i < countRows.length; i += BATCH) {
-                        const chunk = countRows.slice(i, i + BATCH);
-                        const placeholders = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
-                        const params = [];
-                        for (const row of chunk) params.push(...row);
-                        await tx.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, updated_at) VALUES " + placeholders).run(...params);
-                    }
-                });
-            } catch (e) {
-                // 唯一索引 idx_stk_session_wh_date_uniq 衝突＝兩人幾乎同時送出（都通過樂觀鎖檢查），後到者擋下
-                if (stkIsUniqueConflict(e)) {
-                    res.status(409).json({ error: "此倉今日盤點已被其他人送出，請重新載入", code: "conflict_taken" });
-                    return;
-                }
-                throw e;
-            }
-            res.json({ ok: true, counted: counts.length, total });
-        } catch (e) { console.error("[liff stocktake submit]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+            console.error("[liff stocktake submit]", e);
+            res.status(500).json({ error: String(e?.message || e).slice(0, 200) });
+        }
     });
 
     // ── 掃碼盤點 LIFF 頁（手機當 PDA）＋條碼 API ─────────────────────────
