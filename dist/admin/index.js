@@ -2459,7 +2459,7 @@ const STK_CLIENT_JS = `
     _uploading=true; setUploadUiDisabled(true);
     stkToast('上傳中…');
     var done=function(){ _uploading=false; setUploadUiDisabled(false); };
-    fetch('/admin/inventory/item-photo/'+encodeURIComponent(code),{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'},body:fd}).then(function(r){return r.json();}).then(function(d){
+    fetch('/admin/inventory/item-photo/'+encodeURIComponent(code)+'?icpno='+encodeURIComponent(DATA.icpno||'00'),{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'},body:fd}).then(function(r){return r.json();}).then(function(d){
       done();
       if(d&&d.ok){ PHOTOS[code]=Date.now(); render(); if(_ov.classList.contains('on')&&_ovCode===code) _ov.querySelector('img').src=ovSrc(code); stkToast('已更新照片'); } else { stkToast((d&&d.error)||'上傳失敗',true); }
     }).catch(function(){ done(); stkToast('上傳失敗',true); });
@@ -7762,11 +7762,14 @@ function createAdminRouter() {
                 const dataUri = "data:image/jpeg;base64," + out.toString("base64");
                 const nowIso = new Date().toISOString();
                 const by = req.adminUsername || "";
+                // [prov 2026-07-14] 記錄上傳來源公司：PK 仍為 erp_code（一料號一照、全公司共用，刻意決策），
+                // 此欄為未來若需按公司分照片時的資料基礎（免猜既有照片歸屬）。
+                const photoIcp = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
                 const isPg = Boolean(process.env.DATABASE_URL);
                 if (isPg) {
-                    await db.prepare("INSERT INTO erp_stock_item_photo (erp_code, photo_url, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (erp_code) DO UPDATE SET photo_url = EXCLUDED.photo_url, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at").run(code, dataUri, by, nowIso);
+                    await db.prepare("INSERT INTO erp_stock_item_photo (erp_code, photo_url, updated_by, updated_at, icpno) VALUES (?, ?, ?, ?, ?) ON CONFLICT (erp_code) DO UPDATE SET photo_url = EXCLUDED.photo_url, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at, icpno = EXCLUDED.icpno").run(code, dataUri, by, nowIso, photoIcp);
                 } else {
-                    await db.prepare("INSERT OR REPLACE INTO erp_stock_item_photo (erp_code, photo_url, updated_by, updated_at) VALUES (?, ?, ?, ?)").run(code, dataUri, by, nowIso);
+                    await db.prepare("INSERT OR REPLACE INTO erp_stock_item_photo (erp_code, photo_url, updated_by, updated_at, icpno) VALUES (?, ?, ?, ?, ?)").run(code, dataUri, by, nowIso, photoIcp);
                 }
                 res.json({ ok: true, bytes: out.length });
             } catch (e) { console.error("[admin item-photo upload]", e); res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) }); }

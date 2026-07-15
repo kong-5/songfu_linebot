@@ -163,6 +163,10 @@ function initSqlite(dbPath) {
         "ALTER TABLE order_items ADD COLUMN void_note TEXT",
         // [fix 2026-07-14] 品項冪等鍵：來源 LINE 訊息 id。redelivery/租約重跑時同訊息品項不重插。
         "ALTER TABLE order_items ADD COLUMN src_line_message_id TEXT",
+        // [prov 2026-07-14] 照片來源公司（provenance）：PK 維持 erp_code＝「一料號一張照片、全公司共用」
+        // 屬刻意決策（照片是人工上傳、跨公司撞料號極少）；此欄記錄上傳當下的公司，
+        // 未來若真的發生撞號錯圖，有資料可升級成 (icpno, erp_code) 主鍵而不用猜歸屬。
+        "ALTER TABLE erp_stock_item_photo ADD COLUMN icpno TEXT",
         // 訂單層級作廢原因（status='deleted' 仍是主要旗標，這幾欄補充原因）
         "ALTER TABLE orders ADD COLUMN voided_at TEXT",
         "ALTER TABLE orders ADD COLUMN voided_by TEXT",
@@ -905,6 +909,11 @@ async function initPg() {
             try {
                 // [fix 2026-07-14] 品項冪等鍵（與 initSqlite alters 對應）
                 await client.query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS src_line_message_id TEXT");
+            }
+            catch (_) { /* column may already exist */ }
+            try {
+                // [prov 2026-07-14] 照片來源公司（與 initSqlite alters 對應，語意見該處註解）
+                await client.query("ALTER TABLE erp_stock_item_photo ADD COLUMN IF NOT EXISTS icpno TEXT");
             }
             catch (_) { /* column may already exist */ }
             try {
