@@ -9,7 +9,35 @@
 #  導致 LINE webhook 簽章驗證直接失敗、Vision OCR 無法呼叫，整個 bot 崩潰。）
 
 steps:
+  # [gate 2026-07-14] 建 image 前先跑核心不變式測試（test/*.test.js，零外部依賴、秒級）：
+  # 測試紅＝整個 build 失敗、不部署，壞版本擋在上線前。
+  - name: "node:20-slim"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        npm ci --no-audit --no-fund
+        npm test
+  # [smoke 2026-07-14] PG 冒煙：對臨時 postgres 容器跑 initPg 全套遷移＋核心查詢，
+  # 攔「本機 SQLite 全綠、雲端 PG 才壞」的整類回歸（歷史案例：42804 型別錯誤）。
+  # ⚠ 目前 report-only（|| 警告不擋 build）——首次跑綠後把「|| echo …」整段拿掉轉硬閘門。
+  - name: "gcr.io/cloud-builders/docker"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        docker run -d --name pgsmoke --network cloudbuild \
+          -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=smoke postgres:16-alpine || true
+  - name: "node:20-slim"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        npm ci --no-audit --no-fund
+        DATABASE_URL="postgres://postgres:smoke@pgsmoke:5432/smoke" npm run smoke:pg \
+          || echo "⚠ PG 冒煙未過（目前 report-only 不擋部署）——請查上方 log，穩定後轉硬閘門"
   # 先把上次 build 的映像當 layer 快取拉下來；首次或拉不到都不阻擋（|| true）
+  # [trace 2026-07-14] 同時打 $SHORT_SHA 標籤：latest 之外留每個版本的映像，回滾/追溯有據。
   - name: "gcr.io/cloud-builders/docker"
     entrypoint: "bash"
     args:
@@ -20,11 +48,15 @@ steps:
           --platform linux/amd64 \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${SHORT_SHA} \
           .
   - name: "gcr.io/cloud-builders/docker"
+    entrypoint: "bash"
     args:
-      - "push"
-      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest"
+      - "-c"
+      - |
+        docker push ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest
+        docker push ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${SHORT_SHA}
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
@@ -32,7 +64,7 @@ steps:
       - "deploy"
       - "${_SERVICE}"
       - "--image"
-      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${SHORT_SHA}"
       - "--region"
       - "${_REGION}"
       - "--platform"
@@ -40,6 +72,22 @@ steps:
       - "--allow-unauthenticated"
       - "--add-cloudsql-instances"
       - "${_INSTANCE}"
+  # [gate 2026-07-14] 部署後健康檢查：/health 回 200（含 DB 就緒）才算部署成功。
+  # 失敗＝build 標紅（Cloud Run 已導流新版，需手動回滾 revision——但至少「壞了」會被看見，
+  # 不再是靜默上線）。重試 6 次 × 10 秒，涵蓋冷啟動。
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        URL=$$(gcloud run services describe ${_SERVICE} --region ${_REGION} --format='value(status.url)')
+        echo "健康檢查：$$URL/health"
+        for i in 1 2 3 4 5 6; do
+          if curl -fsS --max-time 10 "$$URL/health"; then echo; echo "✅ /health OK"; exit 0; fi
+          echo "…第 $$i 次未過，10 秒後重試"; sleep 10
+        done
+        echo "❌ /health 連續 6 次失敗——新版可能 DB 未就緒，請至 Cloud Run 檢查/回滾 revision"
+        exit 1
 options:
   logging: CLOUD_LOGGING_ONLY
 
