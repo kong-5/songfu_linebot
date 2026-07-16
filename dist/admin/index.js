@@ -1590,6 +1590,7 @@ const SF_ICONS = {
   list: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5 4h9M5 8h9M5 12h9M2 4h.01M2 8h.01M2 12h.01"/></svg>',
   history: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8a6 6 0 1 0 6-6 6 6 0 0 0-4.2 1.8L2 5.5"/><path d="M2 2v3.5h3.5M8 5v3l2 2"/></svg>',
   warn: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2L1.5 13.5h13L8 2z"/><path d="M8 6v3"/><circle cx="8" cy="11.5" r=".7" fill="currentColor"/></svg>',
+  info: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.4v3.4"/><circle cx="8" cy="5.2" r=".7" fill="currentColor"/></svg>',
   dl: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v9M4 7l4 4 4-4M2.5 13.5h11"/></svg>',
   refresh: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8a6 6 0 0 1 10.5-4M14 2v3.5h-3.5M14 8a6 6 0 0 1-10.5 4M2 14v-3.5h3.5"/></svg>',
   spark: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2l1.4 4.6L14 8l-4.6 1.4L8 14l-1.4-4.6L2 8l4.6-1.4L8 2z"/></svg>',
@@ -1874,9 +1875,10 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/cash/collect", "cash-collect", "check", "現金收款")}
         ${item("/admin/cash/customers", "cash-customers", "users", "收款客戶主檔")}
       </details>` : ""}
-      <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-adjust","inv-settings"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-stats","inv-adjust","inv-settings"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory", "inventory", "clipboard", "盤點")}
+        ${item("/admin/inventory/stats", "inv-stats", "chartLine", "庫存統計圖表")}
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/inventory/adjustments", "inv-adjust", "refresh", "庫存調整")}
         ${item("/admin/inventory/warehouse-settings", "inv-settings", "pin", "盤點設定")}
@@ -3147,6 +3149,7 @@ function createAdminRouter() {
         { title: "冷凍／冷藏庫", href: "/admin/freezer-fridge", keywords: ["freezer", "fridge", "冰箱"] },
         { title: "目前庫存", href: "/admin/inventory/stock", keywords: ["stock", "庫存", "凌越", "現有量", "nowqty"] },
         { title: "盤點", href: "/admin/inventory", keywords: ["inventory", "盤點", "每日盤點", "盤差", "盤點結果"] },
+        { title: "庫存統計圖表", href: "/admin/inventory/stats", keywords: ["stats", "統計", "圖表", "K線", "盤差", "熱力圖", "趨勢"] },
         { title: "網站盤點", href: "/admin/inventory/entry", keywords: ["盤點", "網站盤點", "輸入", "複盤", "web"] },
         { title: "掃碼盤點", href: "/admin/scan", keywords: ["scan", "掃碼", "條碼", "盤點", "pda"] },
         { title: "庫存調整", href: "/admin/inventory/adjustments", keywords: ["adjust", "調整", "誤差", "補償", "調整單"] },
@@ -6687,7 +6690,20 @@ function createAdminRouter() {
         if (selWh && selWh.indexOf(":") < 0) selWh = "00:" + selWh;
         const sel = byWh[selWh] || null;
         const totalDiff = day.reduce((s, x) => s + x.diffCount, 0);
-        const chips = recentDates.map((r) => `<a class="stk-chip ${String(r.d) === date ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(String(r.d))}">${escapeHtml(String(r.d))}<span>${r.n}倉</span></a>`).join("");
+        // 左側日期欄（近期盤點日；目前選的日期若不在清單內──手動挑的日子──插到最上面）
+        const dateColHtml = (() => {
+            const list = recentDates.map((r) => ({ d: String(r.d), n: Number(r.n || 0) }));
+            if (!list.some((r) => r.d === date))
+                list.unshift({ d: date, n: day.length });
+            return list.map((r) => `<a class="stk-drow ${r.d === date ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(r.d)}" title="${escapeAttr(r.d)}"><span class="stk-dn">${escapeHtml(r.d.slice(5).replace("-", "/"))}</span><span class="stk-dc">${r.n}倉</span></a>`).join("");
+        })();
+        // 跨倉品項搜尋資料：當日所有倉的已盤品項（前端模糊過濾；量＝當日已盤筆數，安全）
+        const searchJson = JSON.stringify(day.map((x) => ({
+            key: whKeyOf(x.session.icpno, x.session.wh_code),
+            whName: String(x.session.wh_name || x.session.wh_code || ""),
+            co: (0, erp_companies_js_1.erpCompanyName)(x.session.icpno),
+            items: (x.items || []).map((it) => ({ c: String(it.code || ""), n: String(it.name || ""), s: String(it.spec || ""), sys: it.sys, ct: it.counted, d: it.diff })),
+        }))).replace(/</g, "\\u003c");
         // 左欄
         const whItemsHtml = whList.map((w) => {
             const x = byWh[w.key];
@@ -6752,9 +6768,10 @@ function createAdminRouter() {
                 <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
                 <span class="stk-badge" title="「最新系統」欄的資料基準：分倉＝該倉在凌越的分倉庫存量；總量＝全公司總庫存量（該倉無分倉資料時的後備）">最新基準：${sel.latestSource === "warehouse" ? "分倉" : "總量"}</span>
                 <button type="button" class="stk-togbtn sm" id="stkOnlyDiff">只看盤差</button>
+                <button type="button" class="stk-ibtn" id="stkInfo2" aria-expanded="false" aria-label="盤差計算說明" title="盤差計算說明">${SF_ICONS.info}</button>
               </div>
             </div>
-            <div class="stk-note">「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
+            <div class="stk-note" id="stkInfo2Box" hidden>「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
               <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下 ${escapeHtml(stkAdminTwTime(s.submitted_at) || "—")}</span></th><th class="stk-num">實盤<br><span class="stk-th2">可改·含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下(%)</span></th><th class="stk-num">最新系統<br><span class="stk-th2">+調整 ${escapeHtml(stkAdminTwTime(sel.latestSource === "warehouse" ? stockMeta.wh_snapshot_at : stockMeta.snapshot_at) || "—")}</span></th><th class="stk-num">對最新盤差<br><span class="stk-th2">(%)</span></th><th>調整<br><span class="stk-th2">誤差補償</span></th><th>效期</th></tr></thead>
@@ -6765,20 +6782,32 @@ function createAdminRouter() {
         }
         const body = `
       <style>
-        .stk-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 12px;}
-        .stk-bar input[type=date]{padding:6px 9px;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;background:var(--notion-card,#fff);color:inherit;}
-        .stk-sum{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;}
         .stk-pill{font-size:12.5px;padding:5px 11px;border-radius:99px;background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);color:#5b616e;}
         .stk-pill b{color:inherit;}
         .stk-pill.warn{background:#fcf3e2;border-color:#e8d5ac;color:#8a5a10;}
         .stk-pill.ok{background:#e7f6ee;border-color:#bfe5cf;color:#1f7a46;}
-        .stk-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px;}
-        .stk-chip{font-size:12px;padding:4px 10px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);text-decoration:none;color:#5b616e;background:var(--notion-card,#fff);}
-        .stk-chip span{margin-left:5px;color:#9b9a97;}
-        .stk-chip.on{background:#2383e2;color:#fff;border-color:#2383e2;}
-        .stk-chip.on span{color:#d7e9fb;}
-        .stk-grid{display:grid;grid-template-columns:246px minmax(0,1fr);gap:14px;align-items:start;}
-        @media(max-width:760px){.stk-grid{grid-template-columns:1fr;}}
+        .stk-entry{background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;padding:13px 16px;margin:0 0 18px;}
+        .stk-entry-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;}
+        .stk-bigbtn{display:inline-flex;align-items:center;justify-content:center;min-width:185px;height:40px;padding:0 20px;border-radius:9px;background:#2383e2;color:#fff;font-size:14px;font-weight:700;text-decoration:none;}
+        .stk-bigbtn.alt{background:var(--notion-card,#fff);color:inherit;border:1px solid var(--notion-border,#e3e2e0);}
+        .stk-bigbtn:hover{opacity:.92;text-decoration:none;}
+        .stk-ibtn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:99px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#9b9a97;cursor:pointer;padding:0;flex:none;}
+        .stk-ibtn:hover,.stk-ibtn[aria-expanded="true"]{color:#2383e2;border-color:#2383e2;}
+        .stk-ibtn svg{width:14px;height:14px;}
+        .stk-infobox{background:rgba(35,131,226,.08);border:1px solid rgba(35,131,226,.25);border-radius:9px;padding:8px 13px;font-size:12.5px;color:#5b616e;margin-top:10px;max-width:88ch;}
+        .stk-sect{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;border-top:2px solid var(--notion-border,#e3e2e0);padding-top:14px;margin:0 0 12px;}
+        .stk-sect-t{font-size:16px;font-weight:700;margin:0 4px 0 0;}
+        .stk-search{font-size:12.5px;color:inherit;background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;padding:6px 11px;width:200px;}
+        .stk-date{padding:6px 9px;border:1px solid var(--notion-border,#e3e2e0);border-radius:8px;background:var(--notion-card,#fff);color:inherit;}
+        .stk-drow{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 13px;border-bottom:1px solid var(--notion-border-soft,#f0efed);text-decoration:none;color:#5b616e;font-size:12.5px;}
+        .stk-drow:last-child{border-bottom:0;}
+        .stk-drow:hover{background:rgba(55,53,47,.03);}
+        .stk-drow.on{background:rgba(35,131,226,.12);color:inherit;font-weight:700;box-shadow:inset 3px 0 0 #2383e2;}
+        .stk-dn{font-variant-numeric:tabular-nums;}
+        .stk-dc{font-size:11px;color:#9b9a97;background:var(--notion-bg,#f7f6f3);border:1px solid var(--notion-border,#e3e2e0);border-radius:99px;padding:0 7px;font-variant-numeric:tabular-nums;}
+        .stk-drow.on .stk-dc{background:#2383e2;border-color:#2383e2;color:#fff;}
+        .stk-grid{display:grid;grid-template-columns:132px 246px minmax(0,1fr);gap:14px;align-items:start;}
+        @media(max-width:1020px){.stk-grid{grid-template-columns:1fr;}}
         .wh-panel{background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;overflow:hidden;}
         .wh-panel-h{padding:9px 13px;font-size:11px;font-weight:700;color:#787774;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--notion-border,#e3e2e0);}
         .wh-it{display:block;padding:9px 13px;border-bottom:1px solid var(--notion-border-soft,#f0efed);text-decoration:none;color:inherit;cursor:pointer;}
@@ -6834,29 +6863,39 @@ function createAdminRouter() {
       </style>
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 盤點</div>
       <h1 class="notion-page-title" style="margin-bottom:10px;">盤點</h1>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 16px;">
-        <a class="btn btn-primary" href="/admin/inventory/entry" style="text-decoration:none;">▶ 開始盤點（網站）</a>
-        <a class="btn btn-primary" href="/admin/scan" style="text-decoration:none;">▶ 掃碼盤點</a>
-        <span class="notion-hint" style="margin:0;">選網站直接輸入數量，或掃碼把手機當 PDA。下面是各倉盤點結果與盤差。</span>
+      <div class="stk-entry">
+        <div class="stk-entry-row">
+          <a class="stk-bigbtn" href="/admin/inventory/entry">▶ 開始盤點（網站）</a>
+          <a class="stk-bigbtn alt" href="/admin/scan">▶ 掃碼盤點</a>
+          <button type="button" class="stk-ibtn" id="stkInfo1" aria-expanded="false" aria-label="盤點方式說明" title="盤點方式說明">${SF_ICONS.info}</button>
+          <span style="flex:1"></span>
+          <a class="stk-togbtn" href="/admin/inventory/stats" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;">${sfInlineIcon("chartLine")} 庫存統計圖表</a>
+        </div>
+        <div class="stk-infobox" id="stkInfo1Box" hidden>選<b>網站</b>直接輸入數量，或<b>掃碼</b>把手機當 PDA。下面是各倉盤點結果與盤差。</div>
       </div>
-      <form method="get" action="/admin/inventory" class="stk-bar">
-        <input type="date" name="date" value="${escapeAttr(date)}" onchange="this.form.submit()">
-        ${selWh ? `<input type="hidden" name="wh" value="${escapeAttr(selWh)}">` : ""}
-        <button type="button" class="stk-togbtn" id="stkRefreshInv">↻ 更新最新庫存</button>
-        <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
-        <span id="stkRefreshMsg" style="font-size:12px;color:#8a5a10;"></span>
-        <span style="flex:1"></span>
-        <a href="/admin/inventory/legacy" style="font-size:12px;color:#9b9a97;">舊版盤點作業 →</a>
-      </form>
       ${(req.query.cok || req.query.adjok) ? `<div style="background:#e7f5e9;color:#2e7d32;padding:8px 12px;border-radius:8px;margin:0 0 12px;font-size:13px;">已更新。</div>` : ""}
       ${(req.query.cerr || req.query.adjerr) ? `<div style="background:#fdecec;color:#b3261e;padding:8px 12px;border-radius:8px;margin:0 0 12px;font-size:13px;">操作失敗：${escapeHtml(String(req.query.cerr || req.query.adjerr))}</div>` : ""}
-      <div class="stk-sum">
+      <div class="stk-sect">
+        <h2 class="stk-sect-t">各倉盤點結果</h2>
         <span class="stk-pill">本日已盤 <b>${day.length}</b> / 納入盤點 <b>${includedWh.length}</b> 倉（${pct(day.length, includedWh.length)}%）</span>
         <span class="stk-pill ${totalDiff ? "warn" : "ok"}">盤差品項 <b>${totalDiff}</b> 項</span>
         ${pendingWh.length ? `<span class="stk-pill warn">未盤：${pendingWh.map((w) => escapeHtml(w.name || w.code)).join("、")}</span>` : (includedWh.length ? `<span class="stk-pill ok">全部倉庫已盤 ✓</span>` : "")}
+        <span style="flex:1"></span>
+        <input type="search" id="stkQ" class="stk-search" placeholder="搜尋品項（跨倉模糊）…" autocomplete="off">
+        <form method="get" action="/admin/inventory" style="display:inline-flex;margin:0;">
+          <input type="date" name="date" value="${escapeAttr(date)}" onchange="this.form.submit()" class="stk-date">
+          ${selWh ? `<input type="hidden" name="wh" value="${escapeAttr(selWh)}">` : ""}
+        </form>
+        <button type="button" class="stk-togbtn" id="stkRefreshInv">↻ 更新最新庫存</button>
+        <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
+        <span id="stkRefreshMsg" style="font-size:12px;color:#8a5a10;"></span>
       </div>
-      ${chips ? `<div class="stk-chips">${chips}</div>` : ""}
-      <div class="stk-grid">
+      <div class="stk-card" id="stkSearchCard" style="display:none;margin-bottom:14px;"></div>
+      <div class="stk-grid" id="stkGrid">
+        <div class="wh-panel">
+          <div class="wh-panel-h">近期盤點日</div>
+          ${dateColHtml || `<div class="wh-it idle"><div class="wh-n">尚無盤點</div></div>`}
+        </div>
         <div class="wh-panel">
           <div class="wh-panel-h">倉庫（${date}）</div>
           ${whItemsHtml || `<div class="wh-it idle"><div class="wh-n">尚無倉庫</div></div>`}
@@ -6865,6 +6904,27 @@ function createAdminRouter() {
       </div>
       <script>
       (function(){
+        // ⓘ 說明開合（入口說明＋盤差計算說明）
+        function infoWire(btnId,boxId){ var b=document.getElementById(btnId),x=document.getElementById(boxId); if(!b||!x)return; b.addEventListener('click',function(){ var open=x.hidden; x.hidden=!open; b.setAttribute('aria-expanded',String(open)); }); }
+        infoWire('stkInfo1','stkInfo1Box'); infoWire('stkInfo2','stkInfo2Box');
+        // 跨倉品項搜尋：當日所有倉的已盤品項，模糊比對品名/料號/規格；輸入時蓋掉下方三欄、清空還原
+        var SDATA=${searchJson};
+        var sq=document.getElementById('stkQ'), sc=document.getElementById('stkSearchCard'), grid=document.getElementById('stkGrid');
+        function escH(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+        if(sq&&sc&&grid){ sq.addEventListener('input',function(){
+          var q=sq.value.trim().toLowerCase();
+          if(!q){ sc.style.display='none'; grid.style.display=''; return; }
+          var rows=[];
+          SDATA.forEach(function(w){ w.items.forEach(function(it){ if(((it.c||'')+' '+(it.n||'')+' '+(it.s||'')).toLowerCase().indexOf(q)>=0) rows.push({w:w,it:it}); }); });
+          var dateVal=(document.querySelector('.stk-date')||{}).value||'';
+          var h='<div class="stk-card-h"><div class="stk-card-t"><b>搜尋「'+escH(sq.value.trim())+'」</b><span class="stk-code2">當日已盤品項中符合 '+rows.length+' 筆</span></div></div>';
+          h+='<div style="overflow-x:auto;"><table class="stk-tbl"><thead><tr><th>料號</th><th>品名</th><th>公司</th><th>倉庫</th><th class="stk-num">系統(當下)</th><th class="stk-num">實盤</th><th class="stk-num">盤差</th><th></th></tr></thead><tbody>';
+          if(rows.length){ rows.slice(0,80).forEach(function(r){ var d=r.it.d;
+            h+='<tr'+(d?' class="'+(d<0?'stk-n':'stk-p')+'"':'')+'><td class="stk-code">'+escH(r.it.c)+'</td><td>'+escH(r.it.n)+(r.it.s?'<span class="stk-spec">'+escH(r.it.s)+'</span>':'')+'</td><td>'+escH(r.w.co)+'</td><td>'+escH(r.w.whName)+'</td><td class="stk-num">'+(r.it.sys==null?'—':r.it.sys)+'</td><td class="stk-num">'+(r.it.ct==null?'—':r.it.ct)+'</td><td class="stk-num stk-diff">'+(d==null?'—':(d>0?'+':'')+d)+'</td><td><a href="/admin/inventory?date='+encodeURIComponent(dateVal)+'&wh='+encodeURIComponent(r.w.key)+'" style="font-size:12px;">到該倉 →</a></td></tr>'; }); }
+          else h+='<tr><td colspan="8" style="text-align:center;color:#787774;padding:14px;">當日已盤品項中找不到「'+escH(sq.value.trim())+'」（未盤到的品項不在此清單）</td></tr>';
+          h+='</tbody></table></div>'+(rows.length>80?'<div style="padding:6px 14px;font-size:12px;color:#9b9a97;">僅顯示前 80 筆，請縮小關鍵字。</div>':'');
+          sc.innerHTML=h; sc.style.display=''; grid.style.display='none';
+        }); }
         var btn=document.getElementById('stkOnlyDiff');
         if(btn){ var on=false; btn.addEventListener('click',function(){
           on=!on; btn.classList.toggle('on',on);
@@ -7062,6 +7122,628 @@ function createAdminRouter() {
         }
         res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
         res.type("text/csv").send("﻿" + lines.join("\r\n"));
+    });
+    // ============================================================
+    // 庫存統計圖表（2026-07-16）：三欄式（日K/週K/月K｜倉庫｜品項搜尋）＋盤差熱力圖
+    // K 線：erp_stock_daily（公司層級）/ erp_stock_wh_daily（分倉，有資料才用、否則退回公司層級）。
+    // 盤差＝盤點凍結當下（counted_qty − sys_qty）；「當日最後」由一倉一日一筆的 stocktake_session 天然成立，
+    // 台北時間換日即定案，不需另跑結算排程。分母取 max(|sys|,1) 避免 sys=0/負數時百分比爆掉。
+    // ============================================================
+    const statsTaipeiDateAgo = (days) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(Date.now() - days * 86400000));
+    const statsVarPct = (sys, counted) => Math.round(((counted - sys) / Math.max(Math.abs(sys), 1)) * 1000) / 10;
+    router.get("/inventory/stats/items", async (req, res) => {
+        try {
+            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const q = String(req.query.q || "").trim().toLowerCase();
+            let rows = (await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno)) || [];
+            if (q)
+                rows = rows.filter((r) => (String(r.erp_code) + " " + String(r.name || "") + " " + String(r.spec || "")).toLowerCase().indexOf(q) >= 0);
+            rows.sort((a, b) => String(a.erp_code).localeCompare(String(b.erp_code)));
+            res.json({ items: rows.slice(0, 12).map((r) => ({ code: String(r.erp_code), name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), qty: Number(r.qty || 0) })) });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
+    router.get("/inventory/stats/kline", async (req, res) => {
+        try {
+            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const code = String(req.query.code || "").trim();
+            const wh = String(req.query.wh || "").trim();
+            if (!code) { res.status(400).json({ error: "缺少料號" }); return; }
+            let scope = "company", raw = [];
+            if (wh) {
+                try { raw = (await db.prepare("SELECT snap_date AS d, qty, qty_open, qty_high, qty_low FROM erp_stock_wh_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND wh_code = ? AND erp_code = ? ORDER BY snap_date").all(icpno, wh, code)) || []; } catch (_) { raw = []; }
+                if (raw.length) scope = "warehouse";
+            }
+            if (!raw.length) {
+                try { raw = (await db.prepare("SELECT snap_date AS d, qty, qty_open, qty_high, qty_low FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ? ORDER BY snap_date").all(icpno, code)) || []; } catch (_) { raw = []; }
+            }
+            // 舊列（加欄前）open/high/low 為 NULL：open 退回收、高低夾在開收之間（畫成無影線的實體）。
+            const bars = raw.map((b) => {
+                const close = Number(b.qty || 0);
+                const open = (b.qty_open == null || !Number.isFinite(Number(b.qty_open))) ? close : Number(b.qty_open);
+                const high = (b.qty_high == null || !Number.isFinite(Number(b.qty_high))) ? Math.max(open, close) : Number(b.qty_high);
+                const low = (b.qty_low == null || !Number.isFinite(Number(b.qty_low))) ? Math.min(open, close) : Number(b.qty_low);
+                return { d: String(b.d), open, high, low, close };
+            });
+            const since = statsTaipeiDateAgo(90);
+            let vrows = [];
+            try {
+                const sql = "SELECT s.count_date AS d, c.sys_qty, c.counted_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND c.erp_code = ? AND s.count_date >= ?" + (wh ? " AND s.wh_code = ?" : "");
+                vrows = (wh ? await db.prepare(sql).all(icpno, code, since, wh) : await db.prepare(sql).all(icpno, code, since)) || [];
+            } catch (_) { vrows = []; }
+            const byDate = new Map(); // 全公司檢視＝同日各倉加總後算盤差
+            for (const v of vrows) {
+                const k = String(v.d);
+                const acc = byDate.get(k) || { sys: 0, counted: 0 };
+                acc.sys += Number(v.sys_qty || 0);
+                acc.counted += Number(v.counted_qty || 0);
+                byDate.set(k, acc);
+            }
+            const variance = Array.from(byDate.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+                .map(([d, a]) => ({ d, sys: a.sys, counted: a.counted, var_pct: statsVarPct(a.sys, a.counted) }));
+            res.json({ scope, bars, variance });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
+    router.get("/inventory/stats/heatmap", async (req, res) => {
+        try {
+            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const wh = String(req.query.wh || "").trim();
+            const days = Math.min(31, Math.max(7, parseInt(String(req.query.days || "14"), 10) || 14));
+            const since = statsTaipeiDateAgo(days - 1);
+            let rows = [];
+            try {
+                const sql = "SELECT s.count_date AS d, c.erp_code, c.name, c.spec, c.sys_qty, c.counted_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND s.count_date >= ?" + (wh ? " AND s.wh_code = ?" : "");
+                rows = (wh ? await db.prepare(sql).all(icpno, since, wh) : await db.prepare(sql).all(icpno, since)) || [];
+            } catch (_) { rows = []; }
+            const items = new Map(); // code -> {code,name,spec,days:{date:{sys,counted}}}
+            for (const r of rows) {
+                const code = String(r.erp_code || "").trim();
+                if (!code) continue;
+                let it = items.get(code);
+                if (!it) { it = { code, name: String(r.name || ""), spec: String(r.spec || ""), days: {} }; items.set(code, it); }
+                const k = String(r.d);
+                const acc = it.days[k] || { sys: 0, counted: 0 };
+                acc.sys += Number(r.sys_qty || 0);
+                acc.counted += Number(r.counted_qty || 0);
+                it.days[k] = acc;
+            }
+            const dates = [];
+            for (let i = days - 1; i >= 0; i--) dates.push(statsTaipeiDateAgo(i));
+            const out = Array.from(items.values()).map((it) => {
+                const cells = {};
+                let maxAbs = 0;
+                for (const [d, a] of Object.entries(it.days)) {
+                    const p = statsVarPct(a.sys, a.counted);
+                    cells[d] = { v: p, sys: a.sys, counted: a.counted };
+                    if (Math.abs(p) > maxAbs) maxAbs = Math.abs(p);
+                }
+                return { code: it.code, name: it.name, spec: it.spec, cells, max_abs: maxAbs };
+            }).sort((a, b) => b.max_abs - a.max_abs).slice(0, 200); // 護欄：最多 200 品項（已依嚴重度排序，截掉的都是後段）
+            res.json({ dates, items: out });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
+    router.get("/inventory/stats", async (req, res) => {
+        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+        let whs = [];
+        try { whs = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY sort_order, code").all(icpno)) || []; } catch (_) { whs = []; }
+        const coSeg = Object.entries(erp_companies_js_1.ERP_COMPANY_NAMES).map(([c, n]) => `<a class="sf-seg-btn ${c === icpno ? "on" : ""}" href="/admin/inventory/stats?icpno=${c}">${escapeHtml(n)}</a>`).join("");
+        const whJson = JSON.stringify(whs.map((w) => ({ code: String(w.code), name: String(w.name || "") })));
+        const body = `
+      <style>
+        .ivs-root{--ivs-up:#e34948;--ivs-up-soft:rgba(227,73,72,.12);--ivs-down:#008300;--ivs-line:#2a78d6;
+          --ivs-grid:#eceae5;--ivs-base:#c9c7c1;--ivs-mut:#9b9a97;--ivs-ink2:#787774;
+          --ivs-card:var(--notion-card,#fff);--ivs-border:var(--notion-border,#e3e2e0);
+          --ivs-neg:#e34948;--ivs-pos:#2a78d6;--ivs-mid:#f0efec;}
+        [data-theme="dark"] .ivs-root{--ivs-up:#e66767;--ivs-up-soft:rgba(230,103,103,.16);--ivs-down:#2fae2f;--ivs-line:#3987e5;
+          --ivs-grid:#2c2c2a;--ivs-base:#44433f;--ivs-mut:#898781;--ivs-ink2:#c3c2b7;
+          --ivs-neg:#e66767;--ivs-pos:#3987e5;--ivs-mid:#383835;}
+        .ivs-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 14px;}
+        .ivs-flabel{font-size:12px;color:var(--ivs-mut);}
+        .sf-seg.ivs-seg{display:inline-flex;gap:3px;border:1px solid var(--ivs-border);border-radius:9px;padding:3px;background:transparent;}
+        .sf-seg.ivs-seg .sf-seg-btn{border:0;background:transparent;color:var(--ivs-ink2);font:inherit;font-size:12.5px;font-weight:600;padding:4px 12px;border-radius:7px;cursor:pointer;text-decoration:none;white-space:nowrap;}
+        .sf-seg.ivs-seg .sf-seg-btn.on{background:var(--ivs-card);color:inherit;box-shadow:0 1px 3px rgba(15,15,15,.12);}
+        .ivs-grid3{display:grid;grid-template-columns:150px 235px minmax(0,1fr);gap:14px;align-items:start;}
+        @media (max-width:1020px){ .ivs-grid3{grid-template-columns:1fr;} }
+        .ivs-col{background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:12px;overflow:hidden;}
+        .ivs-col-h{font-size:12px;font-weight:700;color:var(--ivs-mut);padding:9px 13px;border-bottom:1px solid var(--ivs-grid);}
+        .ivs-row{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;border:0;border-bottom:1px solid var(--ivs-grid);background:transparent;color:var(--ivs-ink2);font:inherit;font-size:12.5px;padding:9px 13px;cursor:pointer;text-align:left;}
+        .ivs-row:hover{background:rgba(35,131,226,.05);}
+        .ivs-row.on{background:rgba(35,131,226,.10);color:inherit;font-weight:700;box-shadow:inset 3px 0 0 #2383e2;}
+        .ivs-row .tag{font-size:10.5px;color:var(--ivs-mut);border:1px solid var(--ivs-border);border-radius:99px;padding:0 7px;white-space:nowrap;}
+        .ivs-card{background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:12px;padding:14px 16px;margin-bottom:14px;}
+        .ivs-card-h{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin-bottom:6px;}
+        .ivs-card-t{font-size:14.5px;font-weight:700;}
+        .ivs-note{font-size:12px;color:var(--ivs-mut);}
+        .ivs-legend{display:flex;flex-wrap:wrap;gap:13px;font-size:12px;color:var(--ivs-ink2);align-items:center;margin-left:auto;}
+        .ivs-lg{display:inline-flex;align-items:center;gap:5px;}
+        .ivs-lg .k{width:8px;height:12px;border-radius:2px;flex:none;}
+        .ivs-chart{position:relative;width:100%;}
+        .ivs-chart svg{display:block;width:100%;height:auto;cursor:crosshair;}
+        .ivs-search{position:relative;margin-bottom:12px;}
+        .ivs-search input{width:100%;font:inherit;font-size:13px;color:inherit;background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:9px;padding:8px 12px 8px 34px;box-sizing:border-box;}
+        .ivs-search .mag{position:absolute;left:11px;top:50%;transform:translateY(-50%);width:15px;height:15px;stroke:var(--ivs-mut);stroke-width:1.4;fill:none;pointer-events:none;}
+        .ivs-matches{position:absolute;z-index:30;left:0;right:0;top:calc(100% + 4px);background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:10px;box-shadow:0 8px 28px rgba(15,15,15,.18);overflow:hidden;}
+        .ivs-matches button{display:flex;justify-content:space-between;gap:10px;width:100%;border:0;background:transparent;color:var(--ivs-ink2);font:inherit;font-size:13px;padding:8px 13px;cursor:pointer;text-align:left;}
+        .ivs-matches button:hover{background:rgba(35,131,226,.07);color:inherit;}
+        .ivs-matches .sp{font-size:11.5px;color:var(--ivs-mut);}
+        .ivs-matches .none{padding:10px 13px;font-size:12.5px;color:var(--ivs-mut);}
+        #ivsTip{position:fixed;z-index:99;pointer-events:none;display:none;background:var(--ivs-card);color:inherit;border:1px solid var(--ivs-border);border-radius:9px;box-shadow:0 6px 24px rgba(15,15,15,.2);padding:8px 11px;font-size:12px;line-height:1.5;min-width:150px;}
+        #ivsTip .td{font-weight:700;margin-bottom:2px;}
+        #ivsTip .tr{display:flex;justify-content:space-between;gap:14px;}
+        #ivsTip .tr b{font-variant-numeric:tabular-nums;}
+        .ivs-empty{border:1px dashed var(--ivs-border);border-radius:10px;padding:26px 14px;text-align:center;color:var(--ivs-mut);font-size:12.5px;}
+        .ivs-heat-tools{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:4px 0 10px;font-size:12.5px;color:var(--ivs-ink2);}
+        .ivs-heat-tools input[type="search"]{font:inherit;font-size:12.5px;color:inherit;background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:8px;padding:5px 10px;width:150px;}
+        .ivs-heat-scroll{overflow-x:auto;}
+        table.ivs-hm{border-collapse:separate;border-spacing:2px;font-size:11.5px;}
+        table.ivs-hm th{font-weight:600;color:var(--ivs-mut);padding:2px 5px;text-align:center;white-space:nowrap;}
+        table.ivs-hm th.rowh{text-align:right;color:var(--ivs-ink2);padding-right:9px;max-width:170px;overflow:hidden;text-overflow:ellipsis;}
+        table.ivs-hm td{min-width:30px;height:25px;border-radius:5px;text-align:center;cursor:pointer;font-weight:700;font-size:10.5px;color:transparent;}
+        table.ivs-hm td:hover{outline:2px solid #2383e2;outline-offset:1px;}
+        table.ivs-hm td.sel{outline:2px solid currentColor;outline-offset:1px;}
+        table.ivs-hm td.na{background:transparent !important;border:1px dashed var(--ivs-grid);cursor:default;}
+        table.ivs-hm td.showv{color:inherit;}
+        .ivs-hm-legend{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ivs-mut);margin-top:10px;}
+        .ivs-hm-grad{width:150px;height:9px;border-radius:5px;background:linear-gradient(90deg,var(--ivs-neg),var(--ivs-mid) 50%,var(--ivs-pos));}
+        .ivs-grid-heat{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:14px;align-items:start;}
+        @media (max-width:1020px){ .ivs-grid-heat{grid-template-columns:1fr;} }
+        .ivs-rank{display:flex;align-items:center;gap:9px;padding:8px 2px;border-bottom:1px solid var(--ivs-grid);cursor:pointer;border-radius:6px;}
+        .ivs-rank:hover{background:rgba(35,131,226,.05);}
+        .ivs-rank .n{font-size:12px;color:var(--ivs-mut);width:16px;text-align:right;flex:none;}
+        .ivs-rank .nm{flex:1;min-width:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .ivs-rank .sp{font-size:11px;color:var(--ivs-mut);flex:none;}
+        .ivs-pill{display:inline-flex;font-size:11.5px;font-weight:700;padding:1px 8px;border-radius:99px;white-space:nowrap;}
+        .ivs-pill.bad{background:rgba(227,73,72,.12);color:#b3261e;}
+        .ivs-pill.ok{background:rgba(0,131,0,.10);color:#2e7d32;}
+        [data-theme="dark"] .ivs-pill.bad{color:#ef8a84;}
+        [data-theme="dark"] .ivs-pill.ok{color:#7bcf87;}
+        .ivs-drill{margin-top:14px;}
+        .ivs-drill-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+        @media (max-width:1020px){ .ivs-drill-grid{grid-template-columns:1fr;} }
+      </style>
+      <div class="ivs-root">
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / <a href="/admin/inventory">盤點</a> / 庫存統計圖表</div>
+      <h1 class="notion-page-title" style="margin-bottom:6px;">庫存統計圖表</h1>
+      <p class="notion-hint" style="margin:0 0 14px;">每個貨品每日的庫存變動（K 線）與每日盤差％追蹤。K 線的開＝昨收、收＝當日最後推送、高低＝當日各次推送極值；盤差＝當日最後一筆盤點（換日即定案）。</p>
+      <div class="ivs-bar">
+        <span class="ivs-flabel">公司</span>
+        <div class="sf-seg ivs-seg">${coSeg}</div>
+        <span class="ivs-flabel">檢視</span>
+        <div class="sf-seg ivs-seg" id="ivsView">
+          <button type="button" class="sf-seg-btn on" data-v="charts">${sfInlineIcon("chartLine")} 品項圖表</button>
+          <button type="button" class="sf-seg-btn" data-v="heat">${sfInlineIcon("chartBar")} 盤差熱力圖</button>
+        </div>
+        <span style="flex:1"></span>
+        <span class="ivs-note" id="ivsScopeNote"></span>
+      </div>
+
+      <div id="ivsCharts">
+        <div class="ivs-grid3">
+          <div class="ivs-col" id="ivsGranCol"></div>
+          <div class="ivs-col" id="ivsWhCol"></div>
+          <div style="min-width:0;">
+            <div class="ivs-search">
+              <svg class="mag" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+              <input type="search" id="ivsQ" placeholder="搜尋品項（品名／料號／規格，模糊比對）…" autocomplete="off">
+              <div class="ivs-matches" id="ivsMatches" hidden></div>
+            </div>
+            <div class="ivs-card">
+              <div class="ivs-card-h">
+                <div class="ivs-card-t" id="ivsKTitle">請先搜尋品項</div>
+                <span class="ivs-note" id="ivsKNote"></span>
+                <div class="ivs-legend">
+                  <span class="ivs-lg"><span class="k" style="border:2px solid var(--ivs-up);background:var(--ivs-up-soft);"></span>增加（空心紅）</span>
+                  <span class="ivs-lg"><span class="k" style="background:var(--ivs-down);"></span>減少（實心綠）</span>
+                  <span class="ivs-lg" style="color:var(--ivs-mut);">虛線＝有盤點</span>
+                </div>
+              </div>
+              <div class="ivs-chart" id="ivsK"></div>
+            </div>
+            <div class="ivs-card">
+              <div class="ivs-card-h">
+                <div class="ivs-card-t">盤差％</div>
+                <span class="ivs-note" id="ivsVNote">當日最後盤差；灰帶＝±2% 目標；紅點＝|盤差| 超過 2%</span>
+              </div>
+              <div class="ivs-chart" id="ivsV"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="ivsHeat" hidden>
+        <div class="ivs-grid-heat">
+          <div class="ivs-card" style="margin-bottom:0;">
+            <div class="ivs-card-h">
+              <div class="ivs-card-t">盤差熱力圖（品項 × 日期）</div>
+              <span class="ivs-note">紅＝盤虧（實盤少）、藍＝盤盈（實盤多）；虛線空格＝當日未盤</span>
+            </div>
+            <div class="ivs-heat-tools">
+              <input type="search" id="ivsHQ" placeholder="搜尋品項…" autocomplete="off">
+              <label style="display:inline-flex;align-items:center;gap:5px;"><input type="checkbox" id="ivsHOnly" checked> 只看有盤差</label>
+              <label style="display:inline-flex;align-items:center;gap:5px;"><input type="checkbox" id="ivsHShowV"> 格內顯示數值</label>
+              <span class="ivs-note" id="ivsHCount"></span>
+              <span style="flex:1"></span>
+              <span class="ivs-flabel">期間</span>
+              <div class="sf-seg ivs-seg" id="ivsHDays">
+                <button type="button" class="sf-seg-btn" data-d="7">7天</button>
+                <button type="button" class="sf-seg-btn on" data-d="14">14天</button>
+                <button type="button" class="sf-seg-btn" data-d="31">31天</button>
+              </div>
+              <button type="button" class="sf-seg-btn" id="ivsHMore" style="border:1px solid var(--ivs-border);border-radius:8px;display:none;"></button>
+            </div>
+            <div class="ivs-flabel" style="margin-bottom:6px;">倉庫：<span id="ivsHWhName"></span>（跟左側「品項圖表」的倉庫選擇共用；下方下鑽同倉）</div>
+            <div class="ivs-heat-scroll" id="ivsHM"></div>
+            <div class="ivs-hm-legend"><span>−8%</span><span class="ivs-hm-grad"></span><span>＋8%</span><span style="margin-left:8px;">格子越深＝盤差越大，點格子看下方詳情</span></div>
+          </div>
+          <div class="ivs-card" style="margin-bottom:0;">
+            <div class="ivs-card-h"><div class="ivs-card-t">期間盤差排行</div></div>
+            <div class="ivs-note" style="margin-bottom:4px;">依「最大單日 |盤差％|」排序（前 10）</div>
+            <div id="ivsRank"></div>
+          </div>
+        </div>
+        <div class="ivs-drill" id="ivsDrill" hidden>
+          <div class="ivs-card">
+            <div class="ivs-card-h">
+              <div class="ivs-card-t" id="ivsDrillT"></div>
+              <span class="ivs-note" id="ivsDrillN"></span>
+            </div>
+            <div class="ivs-drill-grid">
+              <div class="ivs-chart" id="ivsDK"></div>
+              <div class="ivs-chart" id="ivsDV"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+      <div id="ivsTip" role="status"></div>
+      <script>
+      (function(){
+        "use strict";
+        var ICPNO=${JSON.stringify(icpno)};
+        var WHS=${whJson};
+        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hDays:14, hOnly:true, hShowV:false, hShowAll:false, hQ:"", hSel:null};
+        var klineCache={}; // code|wh -> {scope,bars,variance}
+        var heatCache={};  // wh|days -> {dates,items}
+        var root=document.querySelector(".ivs-root");
+        function css(n){ return getComputedStyle(root).getPropertyValue(n).trim(); }
+        var tip=document.getElementById("ivsTip");
+        function showTip(html,x,y){ tip.innerHTML=html; tip.style.display="block"; var r=tip.getBoundingClientRect(); var L=x+14,T=y+14; if(L+r.width>innerWidth-8)L=x-r.width-14; if(T+r.height>innerHeight-8)T=y-r.height-14; tip.style.left=L+"px"; tip.style.top=T+"px"; }
+        function hideTip(){ tip.style.display="none"; }
+        var NS="http://www.w3.org/2000/svg";
+        function el(t,a,p){ var e=document.createElementNS(NS,t); for(var k in a)e.setAttribute(k,a[k]); if(p)p.appendChild(e); return e; }
+        function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c];}); }
+        function niceTicks(min,max,n){ var span=max-min||1,step0=span/n,mag=Math.pow(10,Math.floor(Math.log(step0)/Math.LN10)); var cands=[1,2,2.5,5,10],step=10*mag; for(var i=0;i<cands.length;i++){ if(span/(cands[i]*mag)<=n){ step=cands[i]*mag; break; } } var t=[]; for(var v=Math.ceil(min/step)*step; v<=max+1e-9; v+=step)t.push(Math.round(v*1e6)/1e6); return t; }
+        var WEEK="日一二三四五六";
+        function mdOf(d){ return d.slice(5).replace("-","/"); }
+        function wdOf(d){ try{ return WEEK[new Date(d+"T00:00:00").getDay()]; }catch(_){ return ""; } }
+        function fmtN(v){ v=Number(v); if(v===0)v=0; return v.toLocaleString("zh-TW",{maximumFractionDigits:2}); }
+
+        /* ── K 線（bars: [{d,open,high,low,close,varPct?,counted?,sys?}]） ── */
+        function renderK(host,bars,unit,opts){
+          opts=opts||{};
+          host.innerHTML="";
+          if(!bars.length){ host.innerHTML='<div class="ivs-empty">尚無每日庫存快照。庫存推送（LY_STOCK_TIMES／手動）啟用後就會開始累積，隔天起可看 K 線。</div>'; return; }
+          var W=opts.w||960,H=opts.h||300,padL=56,padR=14,padT=14,padB=30;
+          var svg=el("svg",{viewBox:"0 0 "+W+" "+H,"aria-label":"每日庫存K線圖"},host);
+          var lo=Infinity,hi=-Infinity;
+          bars.forEach(function(b){ lo=Math.min(lo,b.low); hi=Math.max(hi,b.high); });
+          var pad=(hi-lo)*0.12||5; lo=lo-pad; hi=hi+pad;
+          function X(i){ return padL+(i+0.5)*(W-padL-padR)/bars.length; }
+          function Y(v){ return padT+(hi-v)*(H-padT-padB)/(hi-lo); }
+          var slot=(W-padL-padR)/bars.length, bw=Math.max(3,Math.min(11,slot*0.55));
+          niceTicks(lo,hi,5).forEach(function(v){
+            el("line",{x1:padL,x2:W-padR,y1:Y(v),y2:Y(v),stroke:css("--ivs-grid"),"stroke-width":1},svg);
+            el("text",{x:padL-8,y:Y(v)+4,"text-anchor":"end","font-size":11,fill:css("--ivs-mut"),style:"font-variant-numeric:tabular-nums"},svg).textContent=fmtN(v);
+          });
+          el("line",{x1:padL,x2:W-padR,y1:H-padB,y2:H-padB,stroke:css("--ivs-base"),"stroke-width":1},svg);
+          var lblEvery=Math.ceil(bars.length/10);
+          bars.forEach(function(b,i){ if(i%lblEvery===0) el("text",{x:X(i),y:H-padB+18,"text-anchor":"middle","font-size":11,fill:css("--ivs-mut")},svg).textContent=mdOf(b.d); });
+          var upC=css("--ivs-up"),dnC=css("--ivs-down");
+          bars.forEach(function(b,i){
+            var up=b.close>=b.open, col=up?upC:dnC;
+            if(b.varPct!=null) el("line",{x1:X(i),x2:X(i),y1:padT,y2:H-padB,stroke:css("--ivs-base"),"stroke-width":1,"stroke-dasharray":"2 4"},svg);
+            el("line",{x1:X(i),x2:X(i),y1:Y(b.high),y2:Y(b.low),stroke:col,"stroke-width":1.6},svg);
+            var y1=Y(Math.max(b.open,b.close)),y2=Y(Math.min(b.open,b.close));
+            el("rect",{x:X(i)-bw/2,y:y1,width:bw,height:Math.max(2,y2-y1),rx:2,fill:up?css("--ivs-up-soft"):col,stroke:col,"stroke-width":up?1.6:0},svg);
+          });
+          var cross=el("g",{style:"display:none"},svg);
+          var cx=el("line",{y1:padT,y2:H-padB,stroke:css("--ivs-mut"),"stroke-width":1,"stroke-dasharray":"3 3"},cross);
+          var hit=el("rect",{x:padL,y:padT,width:W-padL-padR,height:H-padT-padB,fill:"transparent"},svg);
+          hit.addEventListener("mousemove",function(ev){
+            var box=svg.getBoundingClientRect(),mx=(ev.clientX-box.left)*W/box.width;
+            var i=Math.max(0,Math.min(bars.length-1,Math.floor((mx-padL)/slot)));
+            var b=bars[i],net=b.close-b.open,sign=net>0?"＋":net<0?"−":"±";
+            cross.style.display=""; cx.setAttribute("x1",X(i)); cx.setAttribute("x2",X(i));
+            showTip('<div class="td">'+esc(b.d)+'（'+wdOf(b.d)+'）</div>'+
+              '<div class="tr"><span>開</span><b>'+fmtN(b.open)+'</b></div>'+
+              '<div class="tr"><span>高 / 低</span><b>'+fmtN(b.high)+' / '+fmtN(b.low)+'</b></div>'+
+              '<div class="tr"><span>收</span><b>'+fmtN(b.close)+'</b></div>'+
+              '<div class="tr"><span>淨變動</span><b style="color:'+(net>=0?upC:dnC)+'">'+sign+fmtN(Math.abs(net))+' '+esc(unit||"")+'</b></div>'+
+              (b.counted!=null?'<div class="tr"><span>盤點</span><b>'+fmtN(b.counted)+'（盤差 '+(b.varPct>0?"+":"")+b.varPct+'%）</b></div>':
+               b.varPct!=null?'<div class="tr"><span>期間最大盤差</span><b>'+(b.varPct>0?"+":"")+b.varPct+'%</b></div>':
+               '<div class="tr"><span>盤點</span><b>—</b></div>'),ev.clientX,ev.clientY);
+          });
+          hit.addEventListener("mouseleave",function(){ cross.style.display="none"; hideTip(); });
+        }
+
+        /* ── 盤差％折線（pts: [{d,varPct,counted,sys}]） ── */
+        function renderV(host,pts,opts){
+          opts=opts||{};
+          host.innerHTML="";
+          if(!pts.length){ host.innerHTML='<div class="ivs-empty">此期間沒有盤點記錄。</div>'; return; }
+          var W=opts.w||960,H=opts.h||230,padL=56,padR=14,padT=14,padB=30;
+          var svg=el("svg",{viewBox:"0 0 "+W+" "+H,"aria-label":"盤差百分比折線圖"},host);
+          var lo=-3,hi=3;
+          pts.forEach(function(p){ if(p.varPct!=null){ lo=Math.min(lo,p.varPct); hi=Math.max(hi,p.varPct); } });
+          lo=Math.floor(lo-0.8); hi=Math.ceil(hi+0.8);
+          function X(i){ return padL+(i+0.5)*(W-padL-padR)/pts.length; }
+          function Y(v){ return padT+(hi-v)*(H-padT-padB)/(hi-lo); }
+          el("rect",{x:padL,y:Y(2),width:W-padL-padR,height:Y(-2)-Y(2),fill:css("--ivs-grid"),opacity:.55},svg);
+          niceTicks(lo,hi,5).forEach(function(v){
+            el("line",{x1:padL,x2:W-padR,y1:Y(v),y2:Y(v),stroke:css("--ivs-grid"),"stroke-width":1},svg);
+            el("text",{x:padL-8,y:Y(v)+4,"text-anchor":"end","font-size":11,fill:css("--ivs-mut"),style:"font-variant-numeric:tabular-nums"},svg).textContent=v+"%";
+          });
+          el("line",{x1:padL,x2:W-padR,y1:Y(0),y2:Y(0),stroke:css("--ivs-base"),"stroke-width":1.2},svg);
+          var lblEvery=Math.ceil(pts.length/10);
+          pts.forEach(function(p,i){ if(i%lblEvery===0) el("text",{x:X(i),y:H-padB+18,"text-anchor":"middle","font-size":11,fill:css("--ivs-mut")},svg).textContent=mdOf(p.d); });
+          var lineC=css("--ivs-line"),alertC=css("--ivs-up"),surf=css("--ivs-card")||"#fff";
+          var path=pts.map(function(p,i){ return (i?"L":"M")+X(i).toFixed(1)+","+Y(p.varPct).toFixed(1); }).join(" ");
+          el("path",{d:path,fill:"none",stroke:lineC,"stroke-width":2,"stroke-linejoin":"round","stroke-linecap":"round"},svg);
+          pts.forEach(function(p,i){
+            var alert=Math.abs(p.varPct)>2;
+            el("circle",{cx:X(i),cy:Y(p.varPct),r:alert?4.6:3.4,fill:alert?alertC:lineC,stroke:surf,"stroke-width":2},svg);
+          });
+          var slot=(W-padL-padR)/pts.length;
+          var hit=el("rect",{x:padL,y:padT,width:W-padL-padR,height:H-padT-padB,fill:"transparent"},svg);
+          hit.addEventListener("mousemove",function(ev){
+            var box=svg.getBoundingClientRect(),mx=(ev.clientX-box.left)*W/box.width;
+            var i=Math.max(0,Math.min(pts.length-1,Math.floor((mx-padL)/slot)));
+            var p=pts[i];
+            showTip('<div class="td">'+esc(p.d)+'（'+wdOf(p.d)+'）</div>'+
+              '<div class="tr"><span>系統（盤點當下）</span><b>'+fmtN(p.sys)+'</b></div>'+
+              '<div class="tr"><span>實盤</span><b>'+fmtN(p.counted)+'</b></div>'+
+              '<div class="tr"><span>盤差</span><b>'+(p.varPct>0?"+":"")+p.varPct+'%</b></div>',ev.clientX,ev.clientY);
+          });
+          hit.addEventListener("mouseleave",hideTip);
+        }
+
+        /* ── 週/月彙總 ── */
+        function weekKey(d){ var t=new Date(d+"T00:00:00"); t.setDate(t.getDate()-((t.getDay()+6)%7)); return t.getFullYear()+"-"+t.getMonth()+"-"+t.getDate(); }
+        function aggBars(bars,gran,count){
+          var out=[],key=null,cur=null;
+          bars.forEach(function(b){
+            var k=gran==="w"?weekKey(b.d):b.d.slice(0,7);
+            if(k!==key){ key=k; cur={d:b.d,open:b.open,close:b.close,high:b.high,low:b.low,varPct:null,counted:null,_ma:0}; out.push(cur); }
+            cur.d=b.d; cur.close=b.close; cur.high=Math.max(cur.high,b.high); cur.low=Math.min(cur.low,b.low);
+            if(b.varPct!=null&&Math.abs(b.varPct)>=cur._ma){ cur._ma=Math.abs(b.varPct); cur.varPct=b.varPct; }
+          });
+          return out.slice(-count);
+        }
+        function aggPts(pts,gran,count){
+          var out=[],key=null,cur=null;
+          pts.forEach(function(p){
+            var k=gran==="w"?weekKey(p.d):p.d.slice(0,7);
+            if(k!==key){ key=k; cur={d:p.d,varPct:p.varPct,counted:p.counted,sys:p.sys,_ma:Math.abs(p.varPct)}; out.push(cur); return; }
+            cur.d=p.d;
+            if(Math.abs(p.varPct)>=cur._ma){ cur._ma=Math.abs(p.varPct); cur.varPct=p.varPct; cur.counted=p.counted; cur.sys=p.sys; }
+          });
+          return out.slice(-count);
+        }
+
+        /* ── 三欄：粒度/期間、倉庫 ── */
+        var GRANS=[["d","日 K","一根＝一天"],["w","週 K","一根＝一週"],["m","月 K","一根＝一個月"]];
+        var PERIODS={d:[[14,"近 14 天"],[30,"近 30 天"],[90,"近 90 天"]],w:[[4,"近 4 週"],[13,"近 13 週"]],m:[[2,"近 2 個月"],[3,"近 3 個月"]]};
+        function drawGranCol(){
+          var host=document.getElementById("ivsGranCol"),h='<div class="ivs-col-h">檢視粒度</div>';
+          GRANS.forEach(function(g){ h+='<button type="button" class="ivs-row'+(g[0]===S.gran?" on":"")+'" data-g="'+g[0]+'"><span>'+g[1]+'</span><span class="tag">'+g[2]+'</span></button>'; });
+          h+='<div class="ivs-col-h" style="border-top:1px solid var(--ivs-grid);">期間</div>';
+          PERIODS[S.gran].forEach(function(p){ h+='<button type="button" class="ivs-row'+(p[0]===S.period?" on":"")+'" data-p="'+p[0]+'"><span>'+p[1]+'</span></button>'; });
+          host.innerHTML=h;
+          host.querySelectorAll("[data-g]").forEach(function(b){ b.addEventListener("click",function(){ S.gran=b.dataset.g; S.period=PERIODS[S.gran][PERIODS[S.gran].length-1][0]; drawGranCol(); drawCharts(); }); });
+          host.querySelectorAll("[data-p]").forEach(function(b){ b.addEventListener("click",function(){ S.period=+b.dataset.p; drawGranCol(); drawCharts(); }); });
+        }
+        function drawWhCol(){
+          var host=document.getElementById("ivsWhCol"),h='<div class="ivs-col-h">倉庫</div>';
+          h+='<button type="button" class="ivs-row'+(S.wh===""?" on":"")+'" data-w=""><span>全公司（各倉合計）</span></button>';
+          WHS.forEach(function(w){ h+='<button type="button" class="ivs-row'+(S.wh===w.code?" on":"")+'" data-w="'+esc(w.code)+'"><span>'+esc(w.name||w.code)+'</span><span class="tag">'+esc(w.code)+'</span></button>'; });
+          host.innerHTML=h;
+          host.querySelectorAll("[data-w]").forEach(function(b){ b.addEventListener("click",function(){ S.wh=b.dataset.w; S.hSel=null; drawWhCol(); loadKline(); loadHeat(); }); });
+          document.getElementById("ivsHWhName").textContent=S.wh?(WHS.filter(function(w){return w.code===S.wh;}).map(function(w){return w.name||w.code;})[0]||S.wh):"全公司（各倉合計）";
+        }
+
+        /* ── 資料載入 ── */
+        function fetchJson(u){ return fetch(u).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); }); }
+        function loadKline(){
+          if(!S.item){ drawCharts(); return; }
+          var key=S.item.code+"|"+S.wh;
+          if(klineCache[key]){ drawCharts(); return; }
+          document.getElementById("ivsK").innerHTML='<div class="ivs-empty">載入中…</div>';
+          fetchJson("/admin/inventory/stats/kline?icpno="+encodeURIComponent(ICPNO)+"&code="+encodeURIComponent(S.item.code)+"&wh="+encodeURIComponent(S.wh))
+            .then(function(j){ klineCache[key]=j; drawCharts(); })
+            .catch(function(e){ document.getElementById("ivsK").innerHTML='<div class="ivs-empty">載入失敗：'+esc(e.message)+'</div>'; });
+        }
+        function drawCharts(){
+          if(S.view!=="charts") return;
+          var kHost=document.getElementById("ivsK"),vHost=document.getElementById("ivsV");
+          if(!S.item){ document.getElementById("ivsKTitle").textContent="請先搜尋品項"; kHost.innerHTML='<div class="ivs-empty">用上方搜尋框找品項（打「雞」「蛋」或料號都可以）。</div>'; vHost.innerHTML=""; return; }
+          var j=klineCache[S.item.code+"|"+S.wh];
+          if(!j) return;
+          var granName=S.gran==="d"?"日":S.gran==="w"?"週":"月";
+          document.getElementById("ivsKTitle").textContent=S.item.name+(S.item.spec?"（"+S.item.spec+"）":"")+" — "+granName+" K 庫存變動";
+          var scopeTxt=S.wh&&j.scope==="company"?"⚠ 此倉尚無分倉每日快照，顯示全公司量（分倉資料自今日起累積）":(S.wh?"分倉量":"全公司量");
+          document.getElementById("ivsKNote").textContent=scopeTxt+(S.item.unit?" · 單位："+S.item.unit:"");
+          var vmap={}; (j.variance||[]).forEach(function(v){ vmap[v.d]={p:v.var_pct,c:v.counted,s:v.sys}; });
+          var bars=(j.bars||[]).map(function(b){ var v=vmap[b.d]; return {d:b.d,open:b.open,high:b.high,low:b.low,close:b.close,varPct:v?v.p:null,counted:v?v.c:null}; });
+          var pts=(j.variance||[]).map(function(v){ return {d:v.d,varPct:v.var_pct,counted:v.counted,sys:v.sys}; });
+          if(S.gran==="d"){ bars=bars.slice(-S.period); var cut=bars.length?bars[0].d:""; pts=pts.filter(function(p){ return !cut||p.d>=cut; }); }
+          else { bars=aggBars(bars,S.gran,S.period); pts=aggPts(pts,S.gran,S.period); }
+          document.getElementById("ivsVNote").textContent=S.gran==="d"?"當日最後盤差；灰帶＝±2% 目標；紅點＝|盤差| 超過 2%":"每"+granName+"取期間內最大 |盤差|；灰帶＝±2% 目標";
+          renderK(kHost,bars,S.item.unit,{});
+          renderV(vHost,pts,{});
+        }
+
+        /* ── 品項搜尋 ── */
+        (function(){
+          var q=document.getElementById("ivsQ"),box=document.getElementById("ivsMatches"),t=null;
+          function doSearch(){
+            var s=q.value.trim();
+            fetchJson("/admin/inventory/stats/items?icpno="+encodeURIComponent(ICPNO)+"&q="+encodeURIComponent(s)).then(function(j){
+              var m=j.items||[];
+              box.innerHTML=m.length?m.map(function(it){ return '<button type="button" data-code="'+esc(it.code)+'" data-name="'+esc(it.name)+'" data-spec="'+esc(it.spec)+'" data-unit="'+esc(it.unit)+'"><span>'+esc(it.name||it.code)+'</span><span class="sp">'+esc(it.code)+(it.spec?" · "+esc(it.spec):"")+'</span></button>'; }).join(""):'<div class="none">找不到「'+esc(s)+'」，換個關鍵字試試</div>';
+              box.hidden=false;
+              box.querySelectorAll("button").forEach(function(b){ b.addEventListener("click",function(){
+                S.item={code:b.dataset.code,name:b.dataset.name,spec:b.dataset.spec,unit:b.dataset.unit};
+                q.value=S.item.name; box.hidden=true; loadKline();
+              }); });
+            }).catch(function(){ box.hidden=true; });
+          }
+          q.addEventListener("input",function(){ clearTimeout(t); if(!q.value.trim()){ box.hidden=true; return; } t=setTimeout(doSearch,200); });
+          q.addEventListener("focus",function(){ if(q.value.trim()){ clearTimeout(t); t=setTimeout(doSearch,100); } });
+          q.addEventListener("blur",function(){ setTimeout(function(){ box.hidden=true; },200); });
+        })();
+
+        /* ── 熱力圖 ── */
+        function loadHeat(){
+          if(S.view!=="heat") return;
+          var key=S.wh+"|"+S.hDays;
+          if(heatCache[key]){ drawHeat(); return; }
+          document.getElementById("ivsHM").innerHTML='<div class="ivs-empty">載入中…</div>';
+          fetchJson("/admin/inventory/stats/heatmap?icpno="+encodeURIComponent(ICPNO)+"&wh="+encodeURIComponent(S.wh)+"&days="+S.hDays)
+            .then(function(j){ heatCache[key]=j; drawHeat(); })
+            .catch(function(e){ document.getElementById("ivsHM").innerHTML='<div class="ivs-empty">載入失敗：'+esc(e.message)+'</div>'; });
+        }
+        function divColor(v){
+          if(v==null) return "";
+          var t=Math.max(-1,Math.min(1,v/8)),mid=css("--ivs-mid"),pole=t<0?css("--ivs-neg"):css("--ivs-pos");
+          var k=Math.round(Math.pow(Math.abs(t),0.7)*100);
+          return "color-mix(in oklab, "+pole+" "+k+"%, "+mid+")";
+        }
+        var HTOP=20;
+        function heatVisible(j){
+          var list=j.items.slice();
+          if(S.hQ){ var s=S.hQ.toLowerCase(); list=list.filter(function(it){ return (it.name+it.code+(it.spec||"")).toLowerCase().indexOf(s)>=0; }); }
+          var diffCount=list.filter(function(it){ return it.max_abs>0; }).length;
+          if(S.hOnly) list=list.filter(function(it){ return it.max_abs>0; });
+          var total=list.length;
+          if(!S.hShowAll) list=list.slice(0,HTOP);
+          return {list:list,total:total,diffCount:diffCount,all:j.items.length};
+        }
+        function drawHeat(){
+          if(S.view!=="heat") return;
+          var j=heatCache[S.wh+"|"+S.hDays];
+          if(!j) return;
+          var vis=heatVisible(j);
+          document.getElementById("ivsHCount").textContent="期間有盤點 "+vis.all+" 品項、有盤差 "+vis.diffCount+" 項；列出 "+vis.list.length+" 列（依最大 |盤差%| 排序）";
+          var more=document.getElementById("ivsHMore");
+          more.style.display=vis.total>HTOP?"":"none";
+          more.textContent=S.hShowAll?("收合為 Top "+HTOP):("顯示全部 "+vis.total+" 項");
+          var host=document.getElementById("ivsHM");
+          if(!vis.list.length){ host.innerHTML='<div class="ivs-empty">'+(vis.all?"沒有符合的品項。":"此期間沒有盤點記錄。")+'</div>'; drawRank(j); return; }
+          var h='<table class="ivs-hm"><thead><tr><th class="rowh"></th>';
+          j.dates.forEach(function(d){ h+='<th>'+mdOf(d)+'<br><span style="font-weight:400">'+wdOf(d)+'</span></th>'; });
+          h+='</tr></thead><tbody>';
+          vis.list.forEach(function(it){
+            h+='<tr><th class="rowh" title="'+esc(it.name)+'">'+esc(it.name||it.code)+'</th>';
+            j.dates.forEach(function(d){
+              var c=it.cells[d],v=c?c.v:null;
+              var sel=S.hSel&&S.hSel.code===it.code&&S.hSel.d===d?" sel":"";
+              var fg=(S.hShowV&&v!=null&&Math.abs(v)>4)?"#fff":"inherit";
+              h+='<td class="'+(S.hShowV?"showv":"")+sel+(v==null?" na":"")+'" data-code="'+esc(it.code)+'" data-d="'+d+'" style="background:'+divColor(v)+';color:'+(S.hShowV&&v!=null?fg:"")+'">'+(v==null?"":(v>0?"+":"")+v)+'</td>';
+            });
+            h+='</tr>';
+          });
+          host.innerHTML=h+'</tbody></table>';
+          host.querySelectorAll("td").forEach(function(td){
+            td.addEventListener("mousemove",function(ev){
+              var it=j.items.filter(function(x){return x.code===td.dataset.code;})[0];
+              var c=it&&it.cells[td.dataset.d];
+              showTip('<div class="td">'+esc(it?it.name:"")+' · '+esc(td.dataset.d)+'</div>'+
+                (c?'<div class="tr"><span>系統（盤點當下）</span><b>'+fmtN(c.sys)+'</b></div><div class="tr"><span>實盤</span><b>'+fmtN(c.counted)+'</b></div><div class="tr"><span>盤差</span><b>'+(c.v>0?"+":"")+c.v+'%</b></div>':'<div class="tr"><span>當日未盤點</span></div>')+
+                '<div style="color:var(--ivs-mut);margin-top:2px;">點擊查看下方詳情</div>',ev.clientX,ev.clientY);
+            });
+            td.addEventListener("mouseleave",hideTip);
+            td.addEventListener("click",function(){ S.hSel={code:td.dataset.code,d:td.dataset.d}; drawHeat(); drawDrill(j); });
+          });
+          drawRank(j);
+        }
+        function drawRank(j){
+          var ranked=j.items.slice().sort(function(a,b){ return b.max_abs-a.max_abs; }).slice(0,10);
+          var host=document.getElementById("ivsRank");
+          host.innerHTML=ranked.length?ranked.map(function(it,i){
+            var bad=it.max_abs>2;
+            return '<div class="ivs-rank" data-code="'+esc(it.code)+'"><span class="n">'+(i+1)+'</span><span class="nm">'+esc(it.name||it.code)+'</span><span class="sp">'+esc(it.spec||"")+'</span><span class="ivs-pill '+(bad?"bad":"ok")+'">'+it.max_abs.toFixed(1)+'%</span></div>';
+          }).join(""):'<div class="ivs-empty">此期間沒有盤點記錄。</div>';
+          host.querySelectorAll(".ivs-rank").forEach(function(row){
+            row.addEventListener("click",function(){
+              var it=j.items.filter(function(x){return x.code===row.dataset.code;})[0];
+              if(!it) return;
+              var worst=null,wv=-1;
+              j.dates.forEach(function(d){ var c=it.cells[d]; if(c&&Math.abs(c.v)>wv){ wv=Math.abs(c.v); worst=d; } });
+              S.hSel={code:it.code,d:worst||j.dates[j.dates.length-1]}; drawHeat(); drawDrill(j);
+            });
+          });
+        }
+        function drawDrill(j){
+          var box=document.getElementById("ivsDrill");
+          if(!S.hSel){ box.hidden=true; return; }
+          var it=j.items.filter(function(x){return x.code===S.hSel.code;})[0];
+          if(!it){ box.hidden=true; return; }
+          box.hidden=false;
+          var c=it.cells[S.hSel.d];
+          document.getElementById("ivsDrillT").textContent=(it.name||it.code)+(it.spec?"（"+it.spec+"）":"")+" — 明細下鑽";
+          document.getElementById("ivsDrillN").textContent="選取日 "+S.hSel.d+(c?("：盤差 "+(c.v>0?"+":"")+c.v+"%（系統 "+fmtN(c.sys)+"／實盤 "+fmtN(c.counted)+"）"):"：當日未盤點");
+          var key=it.code+"|"+S.wh;
+          var render=function(kj){
+            var vmap={}; (kj.variance||[]).forEach(function(v){ vmap[v.d]={p:v.var_pct,c:v.counted,s:v.sys}; });
+            var bars=(kj.bars||[]).map(function(b){ var v=vmap[b.d]; return {d:b.d,open:b.open,high:b.high,low:b.low,close:b.close,varPct:v?v.p:null,counted:v?v.c:null}; }).slice(-30);
+            var cut=bars.length?bars[0].d:"";
+            var pts=(kj.variance||[]).map(function(v){ return {d:v.d,varPct:v.var_pct,counted:v.counted,sys:v.sys}; }).filter(function(p){ return !cut||p.d>=cut; });
+            renderK(document.getElementById("ivsDK"),bars,"",{w:620,h:250});
+            renderV(document.getElementById("ivsDV"),pts,{w:620,h:250});
+          };
+          if(klineCache[key]) render(klineCache[key]);
+          else fetchJson("/admin/inventory/stats/kline?icpno="+encodeURIComponent(ICPNO)+"&code="+encodeURIComponent(it.code)+"&wh="+encodeURIComponent(S.wh)).then(function(kj){ klineCache[key]=kj; render(kj); }).catch(function(){});
+          box.scrollIntoView({behavior:"smooth",block:"nearest"});
+        }
+        document.getElementById("ivsHQ").addEventListener("input",function(){ S.hQ=this.value.trim(); S.hShowAll=false; drawHeat(); });
+        document.getElementById("ivsHOnly").addEventListener("change",function(){ S.hOnly=this.checked; S.hShowAll=false; drawHeat(); });
+        document.getElementById("ivsHShowV").addEventListener("change",function(){ S.hShowV=this.checked; drawHeat(); });
+        document.getElementById("ivsHMore").addEventListener("click",function(){ S.hShowAll=!S.hShowAll; drawHeat(); });
+        document.getElementById("ivsHDays").addEventListener("click",function(ev){
+          var b=ev.target.closest("button"); if(!b) return;
+          this.querySelectorAll("button").forEach(function(x){x.classList.remove("on");}); b.classList.add("on");
+          S.hDays=+b.dataset.d; S.hSel=null; loadHeat();
+        });
+
+        /* ── 檢視切換 ── */
+        document.getElementById("ivsView").addEventListener("click",function(ev){
+          var b=ev.target.closest("button"); if(!b) return;
+          this.querySelectorAll("button").forEach(function(x){x.classList.remove("on");}); b.classList.add("on");
+          S.view=b.dataset.v;
+          document.getElementById("ivsCharts").hidden=S.view!=="charts";
+          document.getElementById("ivsHeat").hidden=S.view!=="heat";
+          if(S.view==="heat") loadHeat(); else drawCharts();
+        });
+
+        /* ── 初始 ── */
+        drawGranCol(); drawWhCol();
+        fetchJson("/admin/inventory/stats/items?icpno="+encodeURIComponent(ICPNO)+"&q=").then(function(j){
+          if(j.items&&j.items.length){ S.item=j.items[0]; document.getElementById("ivsQ").value=S.item.name; loadKline(); }
+          else drawCharts();
+        }).catch(function(){ drawCharts(); });
+        new MutationObserver(function(){ klineCache={}; if(S.view==="charts"){ loadKline(); } else { drawHeat(); } })
+          .observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
+      })();
+      </script>`;
+        res.type("text/html").send(notionPage("庫存統計圖表", body, "inv-stats", res));
     });
     router.get("/inventory/legacy", async (req, res) => {
         const warehouses = await db.prepare("SELECT id, name FROM inventory_warehouses ORDER BY sort_order, name").all();
@@ -12264,20 +12946,44 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         flat.push(...r);
                     await h.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
                 }
-                // 每日庫存快照（供盤點「必盤」判定：跟昨天有無變動）：同交易內，一天一份、最後一次推送為準（先刪今天這家再整批插）。
+                // 每日庫存快照（供盤點「必盤」判定＋統計圖表 K 線）：同交易內，一天一份、最後一次推送為準（先刪今天這家再整批插）。
+                // [統計圖表 2026-07-16] K 線 OHLC：開＝當日第一次推送時的「昨日收」（無昨日快照＝當次量）；
+                // 高/低＝當日所有推送觀測到的極值（含開）；qty＝收（最後推送量）。同日重推保留既有 open、只擴 high/low。
                 const dailySnapDate = stkAdminTaipeiDate();
+                const todayOhlc = new Map(); // erp_code -> {open,hi,lo}
+                try {
+                    for (const t of (await h.prepare("SELECT erp_code, qty_open, qty_high, qty_low FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date = ?").all(icpno, dailySnapDate)) || [])
+                        todayOhlc.set(String(t.erp_code), { open: Number(t.qty_open), hi: Number(t.qty_high), lo: Number(t.qty_low) });
+                } catch (_) { /* 舊庫尚無 OHLC 欄時視同全新一天 */ }
+                const ydayClose = new Map(); // erp_code -> 昨收
+                try {
+                    const pv = await h.prepare("SELECT MAX(snap_date) AS d FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date < ?").get(icpno, dailySnapDate);
+                    if (pv && pv.d) {
+                        for (const r0 of (await h.prepare("SELECT erp_code, qty FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date = ?").all(icpno, String(pv.d))) || [])
+                            ydayClose.set(String(r0.erp_code), Number(r0.qty));
+                    }
+                } catch (_) { /* 無昨日快照＝open 退回當次量 */ }
+                const mergeOhlc = (exist, yday, qty) => {
+                    const open = (exist && Number.isFinite(exist.open)) ? exist.open : (Number.isFinite(yday) ? yday : qty);
+                    const hi = Math.max(Number.isFinite(exist?.hi) ? exist.hi : -Infinity, qty, open);
+                    const lo = Math.min(Number.isFinite(exist?.lo) ? exist.lo : Infinity, qty, open);
+                    return [open, hi, lo];
+                };
                 await h.prepare("DELETE FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date = ?").run(icpno, dailySnapDate);
                 for (let i = 0; i < rows.length; i += CHUNK) {
                     const chunk = rows.slice(i, i + CHUNK);
-                    const ph = chunk.map(() => "(?,?,?,?,?)").join(",");
+                    const ph = chunk.map(() => "(?,?,?,?,?,?,?,?)").join(",");
                     const flat = [];
-                    for (const r of chunk)
-                        flat.push(icpno, r[0], dailySnapDate, r[4], snapshotAt); // r = [code,name,spec,unit,qty,wh_code,icpno,at]；qty=r[4]
-                    await h.prepare("INSERT INTO erp_stock_daily (icpno, erp_code, snap_date, qty, updated_at) VALUES " + ph).run(...flat);
+                    for (const r of chunk) { // r = [code,name,spec,unit,qty,wh_code,icpno,at]；qty=r[4]
+                        const [o, hi, lo] = mergeOhlc(todayOhlc.get(r[0]), ydayClose.get(r[0]), r[4]);
+                        flat.push(icpno, r[0], dailySnapDate, r[4], o, hi, lo, snapshotAt);
+                    }
+                    await h.prepare("INSERT INTO erp_stock_daily (icpno, erp_code, snap_date, qty, qty_open, qty_high, qty_low, updated_at) VALUES " + ph).run(...flat);
                 }
-                try { // 只留近 14 天，避免無限成長
-                    const pruneBefore = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(Date.now() - 14 * 86400000));
+                try { // 只留近 90 天（統計圖表月 K 需要較長歷史），避免無限成長
+                    const pruneBefore = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(Date.now() - 90 * 86400000));
                     await h.prepare("DELETE FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date < ?").run(icpno, pruneBefore);
+                    await h.prepare("DELETE FROM erp_stock_wh_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date < ?").run(icpno, pruneBefore);
                 } catch (_) { /* prune 失敗不影響推送 */ }
                 // 分倉快照：同交易內覆蓋（失敗整批回滾，與主表一致）；沒帶 warehouse_qty 就跳過不動。
                 // [fix 2026-07-14] 多公司安全改為「按公司覆蓋」：凌越倉號可跨公司重複（erp_warehouse
@@ -12294,6 +13000,33 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         await h.prepare("INSERT INTO erp_stock_wh_qty (icpno, erp_code, wh_code, qty, updated_at) VALUES " + ph).run(...flat);
                     }
                     await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_wh_snapshot_at", snapshotAt);
+                    // [統計圖表 2026-07-16] 分倉每日快照＋OHLC（K 線分倉檢視）：與公司層級同一套規則。
+                    const whKey = (c, wc) => c + "" + wc;
+                    const whTodayOhlc = new Map();
+                    try {
+                        for (const t of (await h.prepare("SELECT erp_code, wh_code, qty_open, qty_high, qty_low FROM erp_stock_wh_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date = ?").all(icpno, dailySnapDate)) || [])
+                            whTodayOhlc.set(whKey(String(t.erp_code), String(t.wh_code)), { open: Number(t.qty_open), hi: Number(t.qty_high), lo: Number(t.qty_low) });
+                    } catch (_) { }
+                    const whYdayClose = new Map();
+                    try {
+                        const pvw = await h.prepare("SELECT MAX(snap_date) AS d FROM erp_stock_wh_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date < ?").get(icpno, dailySnapDate);
+                        if (pvw && pvw.d) {
+                            for (const r0 of (await h.prepare("SELECT erp_code, wh_code, qty FROM erp_stock_wh_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date = ?").all(icpno, String(pvw.d))) || [])
+                                whYdayClose.set(whKey(String(r0.erp_code), String(r0.wh_code)), Number(r0.qty));
+                        }
+                    } catch (_) { }
+                    await h.prepare("DELETE FROM erp_stock_wh_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date = ?").run(icpno, dailySnapDate);
+                    for (let i = 0; i < whRows.length; i += WCHUNK) {
+                        const chunk = whRows.slice(i, i + WCHUNK);
+                        const ph = chunk.map(() => "(?,?,?,?,?,?,?,?,?)").join(",");
+                        const flat = [];
+                        for (const r of chunk) { // r = [erp_code, wh_code, qty, at]
+                            const k = whKey(r[0], r[1]);
+                            const [o, hi, lo] = mergeOhlc(whTodayOhlc.get(k), whYdayClose.get(k), r[2]);
+                            flat.push(icpno, r[1], r[0], dailySnapDate, r[2], o, hi, lo, snapshotAt);
+                        }
+                        await h.prepare("INSERT INTO erp_stock_wh_daily (icpno, wh_code, erp_code, snap_date, qty, qty_open, qty_high, qty_low, updated_at) VALUES " + ph).run(...flat);
+                    }
                 }
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));

@@ -200,6 +200,10 @@ function initSqlite(dbPath) {
         // 成功改 'done'、失敗只刪自己的 processing 列；舊列 status NULL 視同 'done'（舊語意下已處理完成）
         "ALTER TABLE processed_line_messages ADD COLUMN status TEXT",
         "ALTER TABLE processed_line_messages ADD COLUMN claimed_at TEXT",
+        // [統計圖表 2026-07-16] 每日快照加 K 線 OHLC（open=當日首推時的昨收、high/low=當日各次推送極值；qty=收）
+        "ALTER TABLE erp_stock_daily ADD COLUMN qty_open REAL",
+        "ALTER TABLE erp_stock_daily ADD COLUMN qty_high REAL",
+        "ALTER TABLE erp_stock_daily ADD COLUMN qty_low REAL",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -348,6 +352,10 @@ function initSqlite(dbPath) {
         // 每日庫存快照（供盤點「必盤」判定：跟昨天/上次有無變動）：庫存推送時一天存一份（最後一次為準）。
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_daily (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, snap_date))");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_daily_date ON erp_stock_daily(icpno, snap_date)");
+        // [統計圖表 2026-07-16] 分倉每日快照（K線分倉檢視用）：帶 warehouse_qty 的推送一天一份、
+        // OHLC 同 erp_stock_daily（open=當日首推時的昨收、high/low=當日各次推送極值）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_wh_daily (icpno TEXT NOT NULL DEFAULT '00', wh_code TEXT NOT NULL, erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, qty_open REAL, qty_high REAL, qty_low REAL, updated_at TEXT, PRIMARY KEY (icpno, wh_code, erp_code, snap_date))");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_daily_date ON erp_stock_wh_daily(icpno, wh_code, snap_date)");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -1147,6 +1155,12 @@ async function initPg() {
                 // 每日庫存快照（供盤點「必盤」判定：跟昨天/上次有無變動）：庫存推送時一天存一份（最後一次為準）。
                 await client.query("CREATE TABLE IF NOT EXISTS erp_stock_daily (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, snap_date))");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_daily_date ON erp_stock_daily(icpno, snap_date)");
+                // [統計圖表 2026-07-16] K 線 OHLC 欄（與 initSqlite alters 對應）＋分倉每日快照表
+                await client.query("ALTER TABLE erp_stock_daily ADD COLUMN IF NOT EXISTS qty_open DOUBLE PRECISION");
+                await client.query("ALTER TABLE erp_stock_daily ADD COLUMN IF NOT EXISTS qty_high DOUBLE PRECISION");
+                await client.query("ALTER TABLE erp_stock_daily ADD COLUMN IF NOT EXISTS qty_low DOUBLE PRECISION");
+                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_wh_daily (icpno TEXT NOT NULL DEFAULT '00', wh_code TEXT NOT NULL, erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, qty_open DOUBLE PRECISION, qty_high DOUBLE PRECISION, qty_low DOUBLE PRECISION, updated_at TEXT, PRIMARY KEY (icpno, wh_code, erp_code, snap_date))");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_daily_date ON erp_stock_wh_daily(icpno, wh_code, snap_date)");
             }
             catch (_) { /* table may already exist */ }
             try {
