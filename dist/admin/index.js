@@ -7139,7 +7139,9 @@ function createAdminRouter() {
             if (q)
                 rows = rows.filter((r) => (String(r.erp_code) + " " + String(r.name || "") + " " + String(r.spec || "")).toLowerCase().indexOf(q) >= 0);
             rows.sort((a, b) => String(a.erp_code).localeCompare(String(b.erp_code)));
-            res.json({ items: rows.slice(0, 12).map((r) => ({ code: String(r.erp_code), name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), qty: Number(r.qty || 0) })) });
+            if (!String(req.query.all || "").trim())
+                rows = rows.slice(0, 12);
+            res.json({ items: rows.map((r) => ({ code: String(r.erp_code), name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), qty: Number(r.qty || 0) })) });
         }
         catch (e) {
             res.status(500).json({ error: String(e?.message || e) });
@@ -7270,12 +7272,18 @@ function createAdminRouter() {
         .ivs-search{position:relative;margin-bottom:12px;}
         .ivs-search input{width:100%;font:inherit;font-size:13px;color:inherit;background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:9px;padding:8px 12px 8px 34px;box-sizing:border-box;}
         .ivs-search .mag{position:absolute;left:11px;top:50%;transform:translateY(-50%);width:15px;height:15px;stroke:var(--ivs-mut);stroke-width:1.4;fill:none;pointer-events:none;}
-        .ivs-matches{position:absolute;z-index:30;left:0;right:0;top:calc(100% + 4px);background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:10px;box-shadow:0 8px 28px rgba(15,15,15,.18);overflow:hidden;}
-        .ivs-matches button{display:flex;justify-content:space-between;gap:10px;width:100%;border:0;background:transparent;color:var(--ivs-ink2);font:inherit;font-size:13px;padding:8px 13px;cursor:pointer;text-align:left;}
-        .ivs-matches button:hover{background:rgba(35,131,226,.07);color:inherit;}
-        .ivs-matches .sp{font-size:11.5px;color:var(--ivs-mut);}
-        .ivs-matches .none{padding:10px 13px;font-size:12.5px;color:var(--ivs-mut);}
-        #ivsTip{position:fixed;z-index:99;pointer-events:none;display:none;background:var(--ivs-card);color:inherit;border:1px solid var(--ivs-border);border-radius:9px;box-shadow:0 6px 24px rgba(15,15,15,.2);padding:8px 11px;font-size:12px;line-height:1.5;min-width:150px;}
+        .ivs-list{max-height:560px;overflow:auto;}
+        .ivs-list table{width:100%;border-collapse:collapse;font-size:12.5px;}
+        .ivs-list th{position:sticky;top:0;background:var(--ivs-card);text-align:left;font-size:11px;color:var(--ivs-mut);font-weight:600;padding:5px 10px;border-bottom:1px solid var(--ivs-border);}
+        .ivs-list td{padding:6px 10px;border-bottom:1px solid var(--ivs-grid);}
+        .ivs-list tr.it{cursor:pointer;}
+        .ivs-list tr.it:hover{background:rgba(35,131,226,.07);}
+        .ivs-list .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+        .ivs-list .cd{color:var(--ivs-mut);font-variant-numeric:tabular-nums;white-space:nowrap;}
+        .ivs-list .sp{color:var(--ivs-mut);font-size:11.5px;margin-left:6px;}
+        .ivs-backbtn{border:1px solid var(--ivs-border);background:var(--ivs-card);color:var(--ivs-ink2);font:inherit;font-size:12.5px;font-weight:600;padding:4px 12px;border-radius:8px;cursor:pointer;}
+        .ivs-backbtn:hover{border-color:#2383e2;color:#2383e2;}
+        #ivsTip{position:fixed;z-index:99;pointer-events:none;display:none;background:var(--ivs-card,#fff);color:inherit;border:1px solid var(--ivs-border,#e3e2e0);border-radius:9px;box-shadow:0 6px 24px rgba(15,15,15,.2);padding:8px 11px;font-size:12px;line-height:1.5;min-width:150px;}
         #ivsTip .td{font-weight:700;margin-bottom:2px;}
         #ivsTip .tr{display:flex;justify-content:space-between;gap:14px;}
         #ivsTip .tr b{font-variant-numeric:tabular-nums;}
@@ -7284,9 +7292,9 @@ function createAdminRouter() {
         .ivs-heat-tools input[type="search"]{font:inherit;font-size:12.5px;color:inherit;background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:8px;padding:5px 10px;width:150px;}
         .ivs-heat-scroll{overflow-x:auto;}
         table.ivs-hm{border-collapse:separate;border-spacing:2px;font-size:11.5px;}
-        table.ivs-hm th{font-weight:600;color:var(--ivs-mut);padding:2px 5px;text-align:center;white-space:nowrap;}
-        table.ivs-hm th.rowh{text-align:right;color:var(--ivs-ink2);padding-right:9px;max-width:170px;overflow:hidden;text-overflow:ellipsis;}
-        table.ivs-hm td{min-width:30px;height:25px;border-radius:5px;text-align:center;cursor:pointer;font-weight:700;font-size:10.5px;color:transparent;}
+        table.ivs-hm th{font-weight:600;color:var(--ivs-mut);padding:1px 0;text-align:center;white-space:nowrap;font-size:10px;line-height:1.3;}
+        table.ivs-hm th.rowh{text-align:right;color:var(--ivs-ink2);padding-right:9px;max-width:170px;overflow:hidden;text-overflow:ellipsis;font-size:11.5px;}
+        table.ivs-hm td{width:28px;min-width:28px;max-width:28px;height:28px;border-radius:6px;text-align:center;cursor:pointer;font-weight:700;font-size:10px;color:transparent;box-sizing:border-box;}
         table.ivs-hm td:hover{outline:2px solid #2383e2;outline-offset:1px;}
         table.ivs-hm td.sel{outline:2px solid currentColor;outline-offset:1px;}
         table.ivs-hm td.na{background:transparent !important;border:1px dashed var(--ivs-grid);cursor:default;}
@@ -7333,16 +7341,25 @@ function createAdminRouter() {
             <div class="ivs-search">
               <svg class="mag" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
               <input type="search" id="ivsQ" placeholder="搜尋品項（品名／料號／規格，模糊比對）…" autocomplete="off">
-              <div class="ivs-matches" id="ivsMatches" hidden></div>
             </div>
+            <div class="ivs-card" id="ivsListCard">
+              <div class="ivs-card-h">
+                <div class="ivs-card-t">全部品項</div>
+                <span class="ivs-note" id="ivsListCount"></span>
+                <span class="ivs-note" style="margin-left:auto;">點一列看該品項的每日變動與盤差</span>
+              </div>
+              <div class="ivs-list" id="ivsList"></div>
+            </div>
+            <div id="ivsChartsArea" hidden>
             <div class="ivs-card">
               <div class="ivs-card-h">
-                <div class="ivs-card-t" id="ivsKTitle">請先搜尋品項</div>
+                <button type="button" class="ivs-backbtn" id="ivsBack">‹ 品項清單</button>
+                <div class="ivs-card-t" id="ivsKTitle"></div>
                 <span class="ivs-note" id="ivsKNote"></span>
                 <div class="ivs-legend">
                   <span class="ivs-lg"><span class="k" style="border:2px solid var(--ivs-up);background:var(--ivs-up-soft);"></span>增加（空心紅）</span>
                   <span class="ivs-lg"><span class="k" style="background:var(--ivs-down);"></span>減少（實心綠）</span>
-                  <span class="ivs-lg" style="color:var(--ivs-mut);">虛線＝有盤點</span>
+                  <span class="ivs-lg"><span style="width:9px;height:9px;border-radius:99px;background:var(--ivs-line);flex:none;"></span>盤點量</span>
                 </div>
               </div>
               <div class="ivs-chart" id="ivsK"></div>
@@ -7353,6 +7370,7 @@ function createAdminRouter() {
                 <span class="ivs-note" id="ivsVNote">當日最後盤差；灰帶＝±2% 目標；紅點＝|盤差| 超過 2%</span>
               </div>
               <div class="ivs-chart" id="ivsV"></div>
+            </div>
             </div>
           </div>
         </div>
@@ -7402,8 +7420,8 @@ function createAdminRouter() {
           </div>
         </div>
       </div>
-      </div>
       <div id="ivsTip" role="status"></div>
+      </div>
       <script>
       (function(){
         "use strict";
@@ -7422,7 +7440,17 @@ function createAdminRouter() {
         function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c];}); }
         function niceTicks(min,max,n){ var span=max-min||1,step0=span/n,mag=Math.pow(10,Math.floor(Math.log(step0)/Math.LN10)); var cands=[1,2,2.5,5,10],step=10*mag; for(var i=0;i<cands.length;i++){ if(span/(cands[i]*mag)<=n){ step=cands[i]*mag; break; } } var t=[]; for(var v=Math.ceil(min/step)*step; v<=max+1e-9; v+=step)t.push(Math.round(v*1e6)/1e6); return t; }
         var WEEK="日一二三四五六";
-        function mdOf(d){ return d.slice(5).replace("-","/"); }
+        function mdOf(d){ return (+d.slice(5,7))+"/"+(+d.slice(8,10)); }
+        // 期初＝前一天的期末（串鏈）：舊快照只有收盤量也能連起來、每天都看得到當日變動
+        function chainBars(bars){
+          for(var i=0;i<bars.length;i++){
+            var b=bars[i];
+            if(i>0) b.open=bars[i-1].close;
+            b.high=Math.max(b.high,b.open,b.close);
+            b.low=Math.min(b.low,b.open,b.close);
+          }
+          return bars;
+        }
         function wdOf(d){ try{ return WEEK[new Date(d+"T00:00:00").getDay()]; }catch(_){ return ""; } }
         function fmtN(v){ v=Number(v); if(v===0)v=0; return v.toLocaleString("zh-TW",{maximumFractionDigits:2}); }
 
@@ -7434,7 +7462,7 @@ function createAdminRouter() {
           var W=opts.w||960,H=opts.h||300,padL=56,padR=14,padT=14,padB=30;
           var svg=el("svg",{viewBox:"0 0 "+W+" "+H,"aria-label":"每日庫存K線圖"},host);
           var lo=Infinity,hi=-Infinity;
-          bars.forEach(function(b){ lo=Math.min(lo,b.low); hi=Math.max(hi,b.high); });
+          bars.forEach(function(b){ lo=Math.min(lo,b.low); hi=Math.max(hi,b.high); if(b.counted!=null){ lo=Math.min(lo,b.counted); hi=Math.max(hi,b.counted); } });
           var pad=(hi-lo)*0.12||5; lo=lo-pad; hi=hi+pad;
           function X(i){ return padL+(i+0.5)*(W-padL-padR)/bars.length; }
           function Y(v){ return padT+(hi-v)*(H-padT-padB)/(hi-lo); }
@@ -7446,13 +7474,17 @@ function createAdminRouter() {
           el("line",{x1:padL,x2:W-padR,y1:H-padB,y2:H-padB,stroke:css("--ivs-base"),"stroke-width":1},svg);
           var lblEvery=Math.ceil(bars.length/10);
           bars.forEach(function(b,i){ if(i%lblEvery===0) el("text",{x:X(i),y:H-padB+18,"text-anchor":"middle","font-size":11,fill:css("--ivs-mut")},svg).textContent=mdOf(b.d); });
-          var upC=css("--ivs-up"),dnC=css("--ivs-down");
+          var upC=css("--ivs-up"),dnC=css("--ivs-down"),lineC=css("--ivs-line"),surfC=css("--ivs-card")||"#fff";
           bars.forEach(function(b,i){
             var up=b.close>=b.open, col=up?upC:dnC;
             if(b.varPct!=null) el("line",{x1:X(i),x2:X(i),y1:padT,y2:H-padB,stroke:css("--ivs-base"),"stroke-width":1,"stroke-dasharray":"2 4"},svg);
             el("line",{x1:X(i),x2:X(i),y1:Y(b.high),y2:Y(b.low),stroke:col,"stroke-width":1.6},svg);
             var y1=Y(Math.max(b.open,b.close)),y2=Y(Math.min(b.open,b.close));
             el("rect",{x:X(i)-bw/2,y:y1,width:bw,height:Math.max(2,y2-y1),rx:2,fill:up?css("--ivs-up-soft"):col,stroke:col,"stroke-width":up?1.6:0},svg);
+          });
+          // 盤點量：藍點畫在實盤數的位置（虛線只標「這天有盤」，藍點才是盤了多少）
+          bars.forEach(function(b,i){
+            if(b.counted!=null) el("circle",{cx:X(i),cy:Y(b.counted),r:4,fill:lineC,stroke:surfC,"stroke-width":2},svg);
           });
           var cross=el("g",{style:"display:none"},svg);
           var cx=el("line",{y1:padT,y2:H-padB,stroke:css("--ivs-mut"),"stroke-width":1,"stroke-dasharray":"3 3"},cross);
@@ -7461,15 +7493,16 @@ function createAdminRouter() {
             var box=svg.getBoundingClientRect(),mx=(ev.clientX-box.left)*W/box.width;
             var i=Math.max(0,Math.min(bars.length-1,Math.floor((mx-padL)/slot)));
             var b=bars[i],net=b.close-b.open,sign=net>0?"＋":net<0?"−":"±";
+            var gname=opts.granName||"當日";
             cross.style.display=""; cx.setAttribute("x1",X(i)); cx.setAttribute("x2",X(i));
             showTip('<div class="td">'+esc(b.d)+'（'+wdOf(b.d)+'）</div>'+
-              '<div class="tr"><span>開</span><b>'+fmtN(b.open)+'</b></div>'+
-              '<div class="tr"><span>高 / 低</span><b>'+fmtN(b.high)+' / '+fmtN(b.low)+'</b></div>'+
-              '<div class="tr"><span>收</span><b>'+fmtN(b.close)+'</b></div>'+
-              '<div class="tr"><span>淨變動</span><b style="color:'+(net>=0?upC:dnC)+'">'+sign+fmtN(Math.abs(net))+' '+esc(unit||"")+'</b></div>'+
-              (b.counted!=null?'<div class="tr"><span>盤點</span><b>'+fmtN(b.counted)+'（盤差 '+(b.varPct>0?"+":"")+b.varPct+'%）</b></div>':
+              '<div class="tr"><span>'+(gname==="當日"?"期初（昨日期末）":"期初")+'</span><b>'+fmtN(b.open)+'</b></div>'+
+              '<div class="tr"><span>最高 / 最低</span><b>'+fmtN(b.high)+' / '+fmtN(b.low)+'</b></div>'+
+              '<div class="tr"><span>期末</span><b>'+fmtN(b.close)+'</b></div>'+
+              '<div class="tr"><span>'+gname+'變動</span><b style="color:'+(net>=0?upC:dnC)+'">'+sign+fmtN(Math.abs(net))+' '+esc(unit||"")+'</b></div>'+
+              (b.counted!=null?'<div class="tr"><span>盤點（實盤）</span><b>'+fmtN(b.counted)+'（盤差 '+(b.varPct>0?"+":"")+b.varPct+'%）</b></div>':
                b.varPct!=null?'<div class="tr"><span>期間最大盤差</span><b>'+(b.varPct>0?"+":"")+b.varPct+'%</b></div>':
-               '<div class="tr"><span>盤點</span><b>—</b></div>'),ev.clientX,ev.clientY);
+               '<div class="tr"><span>盤點</span><b>—（'+gname+'未盤）</b></div>'),ev.clientX,ev.clientY);
           });
           hit.addEventListener("mouseleave",function(){ cross.style.display="none"; hideTip(); });
         }
@@ -7571,44 +7604,61 @@ function createAdminRouter() {
             .catch(function(e){ document.getElementById("ivsK").innerHTML='<div class="ivs-empty">載入失敗：'+esc(e.message)+'</div>'; });
         }
         function drawCharts(){
-          if(S.view!=="charts") return;
+          if(S.view!=="charts"||!S.item) return;
           var kHost=document.getElementById("ivsK"),vHost=document.getElementById("ivsV");
-          if(!S.item){ document.getElementById("ivsKTitle").textContent="請先搜尋品項"; kHost.innerHTML='<div class="ivs-empty">用上方搜尋框找品項（打「雞」「蛋」或料號都可以）。</div>'; vHost.innerHTML=""; return; }
           var j=klineCache[S.item.code+"|"+S.wh];
           if(!j) return;
           var granName=S.gran==="d"?"日":S.gran==="w"?"週":"月";
-          document.getElementById("ivsKTitle").textContent=S.item.name+(S.item.spec?"（"+S.item.spec+"）":"")+" — "+granName+" K 庫存變動";
+          document.getElementById("ivsKTitle").textContent=S.item.name+(S.item.spec?"（"+S.item.spec+"）":"")+" — 每"+granName+"庫存變動";
           var scopeTxt=S.wh&&j.scope==="company"?"⚠ 此倉尚無分倉每日快照，顯示全公司量（分倉資料自今日起累積）":(S.wh?"分倉量":"全公司量");
           document.getElementById("ivsKNote").textContent=scopeTxt+(S.item.unit?" · 單位："+S.item.unit:"");
           var vmap={}; (j.variance||[]).forEach(function(v){ vmap[v.d]={p:v.var_pct,c:v.counted,s:v.sys}; });
-          var bars=(j.bars||[]).map(function(b){ var v=vmap[b.d]; return {d:b.d,open:b.open,high:b.high,low:b.low,close:b.close,varPct:v?v.p:null,counted:v?v.c:null}; });
+          var bars=chainBars((j.bars||[]).map(function(b){ var v=vmap[b.d]; return {d:b.d,open:b.open,high:b.high,low:b.low,close:b.close,varPct:v?v.p:null,counted:v?v.c:null}; }));
           var pts=(j.variance||[]).map(function(v){ return {d:v.d,varPct:v.var_pct,counted:v.counted,sys:v.sys}; });
           if(S.gran==="d"){ bars=bars.slice(-S.period); var cut=bars.length?bars[0].d:""; pts=pts.filter(function(p){ return !cut||p.d>=cut; }); }
           else { bars=aggBars(bars,S.gran,S.period); pts=aggPts(pts,S.gran,S.period); }
           document.getElementById("ivsVNote").textContent=S.gran==="d"?"當日最後盤差；灰帶＝±2% 目標；紅點＝|盤差| 超過 2%":"每"+granName+"取期間內最大 |盤差|；灰帶＝±2% 目標";
-          renderK(kHost,bars,S.item.unit,{});
+          renderK(kHost,bars,S.item.unit,{granName:"當"+granName});
           renderV(vHost,pts,{});
         }
 
-        /* ── 品項搜尋 ── */
-        (function(){
-          var q=document.getElementById("ivsQ"),box=document.getElementById("ivsMatches"),t=null;
-          function doSearch(){
-            var s=q.value.trim();
-            fetchJson("/admin/inventory/stats/items?icpno="+encodeURIComponent(ICPNO)+"&q="+encodeURIComponent(s)).then(function(j){
-              var m=j.items||[];
-              box.innerHTML=m.length?m.map(function(it){ return '<button type="button" data-code="'+esc(it.code)+'" data-name="'+esc(it.name)+'" data-spec="'+esc(it.spec)+'" data-unit="'+esc(it.unit)+'"><span>'+esc(it.name||it.code)+'</span><span class="sp">'+esc(it.code)+(it.spec?" · "+esc(it.spec):"")+'</span></button>'; }).join(""):'<div class="none">找不到「'+esc(s)+'」，換個關鍵字試試</div>';
-              box.hidden=false;
-              box.querySelectorAll("button").forEach(function(b){ b.addEventListener("click",function(){
-                S.item={code:b.dataset.code,name:b.dataset.name,spec:b.dataset.spec,unit:b.dataset.unit};
-                q.value=S.item.name; box.hidden=true; loadKline();
-              }); });
-            }).catch(function(){ box.hidden=true; });
-          }
-          q.addEventListener("input",function(){ clearTimeout(t); if(!q.value.trim()){ box.hidden=true; return; } t=setTimeout(doSearch,200); });
-          q.addEventListener("focus",function(){ if(q.value.trim()){ clearTimeout(t); t=setTimeout(doSearch,100); } });
-          q.addEventListener("blur",function(){ setTimeout(function(){ box.hidden=true; },200); });
-        })();
+        /* ── 品項清單（預設全部顯示，搜尋即時過濾，點列進圖表） ── */
+        var ALL_ITEMS=null, listQ="", LIST_CAP=500;
+        function drawList(){
+          var host=document.getElementById("ivsList");
+          if(!ALL_ITEMS){ host.innerHTML='<div class="ivs-empty">載入中…</div>'; return; }
+          var q=listQ.toLowerCase();
+          var list=q?ALL_ITEMS.filter(function(it){ return (it.code+" "+it.name+" "+(it.spec||"")).toLowerCase().indexOf(q)>=0; }):ALL_ITEMS;
+          document.getElementById("ivsListCount").textContent="共 "+ALL_ITEMS.length+" 項"+(q?("，符合 "+list.length+" 項"):"");
+          if(!list.length){ host.innerHTML='<div class="ivs-empty">找不到「'+esc(listQ)+'」，換個關鍵字試試。</div>'; return; }
+          var h='<table><thead><tr><th>料號</th><th>品名</th><th>單位</th><th class="num">目前庫存</th></tr></thead><tbody>';
+          list.slice(0,LIST_CAP).forEach(function(it,i){
+            h+='<tr class="it" data-i="'+i+'"><td class="cd">'+esc(it.code)+'</td><td>'+esc(it.name||it.code)+(it.spec?'<span class="sp">'+esc(it.spec)+'</span>':'')+'</td><td>'+esc(it.unit||"")+'</td><td class="num">'+fmtN(it.qty)+'</td></tr>';
+          });
+          h+='</tbody></table>'+(list.length>LIST_CAP?'<div style="padding:8px 12px;font-size:12px;color:var(--ivs-mut);">僅顯示前 '+LIST_CAP+' 項，請用搜尋縮小範圍。</div>':'');
+          host.innerHTML=h;
+          var shown=list.slice(0,LIST_CAP);
+          host.querySelectorAll("tr.it").forEach(function(tr){
+            tr.addEventListener("click",function(){ selectItem(shown[+tr.dataset.i]); });
+          });
+        }
+        function showList(){
+          document.getElementById("ivsListCard").hidden=false;
+          document.getElementById("ivsChartsArea").hidden=true;
+          drawList();
+        }
+        function selectItem(it){
+          if(!it) return;
+          S.item=it;
+          document.getElementById("ivsListCard").hidden=true;
+          document.getElementById("ivsChartsArea").hidden=false;
+          loadKline();
+        }
+        document.getElementById("ivsBack").addEventListener("click",showList);
+        document.getElementById("ivsQ").addEventListener("input",function(){
+          listQ=this.value.trim();
+          showList(); // 打字＝回到清單即時過濾
+        });
 
         /* ── 熱力圖 ── */
         function loadHeat(){
@@ -7703,7 +7753,7 @@ function createAdminRouter() {
           var key=it.code+"|"+S.wh;
           var render=function(kj){
             var vmap={}; (kj.variance||[]).forEach(function(v){ vmap[v.d]={p:v.var_pct,c:v.counted,s:v.sys}; });
-            var bars=(kj.bars||[]).map(function(b){ var v=vmap[b.d]; return {d:b.d,open:b.open,high:b.high,low:b.low,close:b.close,varPct:v?v.p:null,counted:v?v.c:null}; }).slice(-30);
+            var bars=chainBars((kj.bars||[]).map(function(b){ var v=vmap[b.d]; return {d:b.d,open:b.open,high:b.high,low:b.low,close:b.close,varPct:v?v.p:null,counted:v?v.c:null}; })).slice(-30);
             var cut=bars.length?bars[0].d:"";
             var pts=(kj.variance||[]).map(function(v){ return {d:v.d,varPct:v.var_pct,counted:v.counted,sys:v.sys}; }).filter(function(p){ return !cut||p.d>=cut; });
             renderK(document.getElementById("ivsDK"),bars,"",{w:620,h:250});
@@ -7733,12 +7783,11 @@ function createAdminRouter() {
           if(S.view==="heat") loadHeat(); else drawCharts();
         });
 
-        /* ── 初始 ── */
-        drawGranCol(); drawWhCol();
-        fetchJson("/admin/inventory/stats/items?icpno="+encodeURIComponent(ICPNO)+"&q=").then(function(j){
-          if(j.items&&j.items.length){ S.item=j.items[0]; document.getElementById("ivsQ").value=S.item.name; loadKline(); }
-          else drawCharts();
-        }).catch(function(){ drawCharts(); });
+        /* ── 初始：先列全部品項，不預選 ── */
+        drawGranCol(); drawWhCol(); drawList();
+        fetchJson("/admin/inventory/stats/items?icpno="+encodeURIComponent(ICPNO)+"&all=1&q=").then(function(j){
+          ALL_ITEMS=j.items||[]; drawList();
+        }).catch(function(e){ document.getElementById("ivsList").innerHTML='<div class="ivs-empty">品項載入失敗：'+esc(e.message)+'</div>'; });
         new MutationObserver(function(){ klineCache={}; if(S.view==="charts"){ loadKline(); } else { drawHeat(); } })
           .observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
       })();
