@@ -14774,6 +14774,69 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     /**
+     * 凌越客戶主檔（資料種類 000001）快照 — 機器對機器端點（內網 agent 用，X-Writeback-Key 認證）。
+     *
+     * POST /admin/lingyue-writeback/customers-push
+     *   body: { icpno, snapshot_at, customers: [{ ctno, name, short_name, addr1, addr2,
+     *           tel1, tel2, fax, unino, boss, contact, fkfs, sales, stop, raw }, ...] }
+     *   內網 agent（ly_stock_push.py）隨庫存推送順帶推整張客戶主檔 → 按公司(icpno)覆蓋。
+     *   raw＝整筆原始欄位（dict），存 raw_json——凌越有的欄位全保留，前台要顯示什麼都查得到。
+     */
+    router.post("/lingyue-writeback/customers-push", express_1.default.json({ limit: "32mb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const customers = Array.isArray(body.customers) ? body.customers : null;
+            if (!customers) {
+                res.status(400).json({ error: "缺少 customers 陣列" });
+                return;
+            }
+            const icpno = String(body.icpno || "00").trim() || "00";
+            const snapshotAt = (typeof body.snapshot_at === "string" && body.snapshot_at.trim())
+                ? body.snapshot_at.trim() : new Date().toISOString();
+            const S = (v) => String(v ?? "").trim();
+            const rows = [];
+            for (const c of customers) {
+                const ctno = S(c?.ctno);
+                if (!ctno)
+                    continue;
+                let rawJson = "";
+                try { rawJson = c?.raw && typeof c.raw === "object" ? JSON.stringify(c.raw) : ""; } catch (_) { rawJson = ""; }
+                rows.push([
+                    icpno, ctno, S(c?.name), S(c?.short_name), S(c?.addr1), S(c?.addr2),
+                    S(c?.tel1), S(c?.tel2), S(c?.fax), S(c?.unino), S(c?.boss), S(c?.contact),
+                    S(c?.fkfs), S(c?.sales), S(c?.stop), rawJson, snapshotAt,
+                ]);
+            }
+            // 比照 inventory-push：單一交易內按公司覆蓋（DELETE WHERE icpno + 分批 INSERT + meta），
+            // 中途失敗整批回滾＝保留上一份完整快照；其他公司的資料不動。
+            const doReplace = async (h) => {
+                await h.prepare("DELETE FROM erp_customers WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").run(icpno);
+                const CHUNK = 50;
+                for (let i = 0; i < rows.length; i += CHUNK) {
+                    const chunk = rows.slice(i, i + CHUNK);
+                    const ph = chunk.map(() => "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").join(",");
+                    const flat = [];
+                    for (const r of chunk)
+                        flat.push(...r);
+                    await h.prepare("INSERT INTO erp_customers (icpno, ctno, name, short_name, addr1, addr2, tel1, tel2, fax, unino, boss, contact, fkfs, sales, stop, raw_json, updated_at) VALUES " + ph).run(...flat);
+                }
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_customers_snapshot_at", snapshotAt);
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_customers_snapshot_at_" + icpno, snapshotAt);
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_customers_count_" + icpno, String(rows.length));
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doReplace);
+            else
+                await doReplace(db);
+            console.log("[admin] customers-push 完成：icpno", icpno, "共", rows.length, "筆");
+            res.json({ ok: true, count: rows.length, snapshot_at: snapshotAt });
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/customers-push", e?.message || e);
+            res.status(500).json({ error: "customers-push 失敗", detail: String(e?.message || e) });
+        }
+    });
+    /**
      * GET /admin/lingyue-writeback/inventory-wait?timeout=25
      *   長連線等待（long-poll）：內網 agent 掛一條線等「使用者在網站點了『庫存更新』」。
      *   有待處理請求（app_settings.erp_stock_refresh_requested_at 非空）立刻回 {refresh:true}，
@@ -18794,17 +18857,23 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         res.type("text/html").send(notionPage("訂貨單", sheetBody, "", res));
     });
     router.get("/customers/new", async (req, res) => {
+        // 支援 query 預填（凌越客戶主檔頁「建立客戶」帶 name/hq_cust_code/contact 過來，直接存就好）
+        const pre = (k) => escapeAttr(String(req.query[k] || "").trim());
+        const preHint = String(req.query.hq_cust_code || "").trim()
+            ? `<p style="font-size:13px;color:var(--txt-2);background:var(--notion-sidebar);padding:8px 12px;border-radius:var(--notion-radius);">已由凌越客戶主檔帶入名稱／凌越編號／電話，確認後按建立即可。</p>`
+            : "";
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / 新增客戶</div>
         <h1 class="notion-page-title">新增客戶</h1>
         <div class="notion-card">
+          ${preHint}
           <form method="post" action="/admin/customers/new">
-            <label>客戶名稱 <input type="text" name="name" required placeholder="例：XX餐廳" style="width:100%;"></label>
+            <label>客戶名稱 <input type="text" name="name" required placeholder="例：XX餐廳" value="${pre("name")}" style="width:100%;"></label>
             <label>寺岡編號（CustCode／QR） <input type="text" name="teraoka_code" placeholder="可留空" style="width:100%;"></label>
-            <label>凌越編號（HQCustCode） <input type="text" name="hq_cust_code" placeholder="可留空" style="width:100%;"></label>
+            <label>凌越編號（HQCustCode） <input type="text" name="hq_cust_code" placeholder="可留空" value="${pre("hq_cust_code")}" style="width:100%;"></label>
             <label>LINE 群組名稱 <input type="text" name="line_group_name" placeholder="可留空，之後可改" style="width:100%;"></label>
             <label>LINE 群組 ID <input type="text" name="line_group_id" placeholder="C開頭群組 ID，可留空後補" style="width:100%;"></label>
-            <label>聯絡方式 <input type="text" name="contact" placeholder="電話或備註，可留空" style="width:100%;"></label>
+            <label>聯絡方式 <input type="text" name="contact" placeholder="電話或備註，可留空" value="${pre("contact")}" style="width:100%;"></label>
             <label>第幾號線（檢貨路線）<select name="route_line"><option value="">— 不指定</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n} 號線</option>`).join("")}</select></label>
             <label>專屬子客戶/分店名單 (請用逗號分隔) <input type="text" name="known_sub_customers" placeholder="例：東大附小,豐源國小,馬蘭國小" style="width:100%;"></label>
             <p style="margin-top:16px;"><button type="submit" class="btn btn-primary">建立</button></p>
@@ -19192,6 +19261,51 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             catch (pe) {
                 console.error("[admin] customer profile section", pe?.message || pe);
             }
+            // 凌越客戶主檔（erp_customers 快照，內網代理同步）：hq_cust_code＝凌越 CT_NO。
+            // 唯讀顯示（永遠跟凌越同步，不用抄進網站欄位）；「帶入聯絡方式」只是把電話填進上方表單方便存檔。
+            let erpSection = "";
+            try {
+                const hq = String(customer.hq_cust_code || "").trim();
+                if (hq) {
+                    const erps = (await db.prepare("SELECT icpno, ctno, name, short_name, addr1, addr2, tel1, tel2, fax, unino, boss, contact, fkfs, sales, stop, updated_at FROM erp_customers WHERE ctno = ? ORDER BY icpno").all(hq)) || [];
+                    const fld = (label, v) => (v && String(v).trim() ? `<tr><td style="padding:5px 8px;color:var(--txt-3);white-space:nowrap;width:90px;">${label}</td><td style="padding:5px 8px;">${escapeHtml(String(v).trim())}</td></tr>` : "");
+                    const blocks = erps.map((r) => {
+                        const stopped = ["1", "Y", "YES", "TRUE"].includes(String(r.stop || "").trim().toUpperCase());
+                        const telVal = String(r.tel1 || r.tel2 || "").trim();
+                        return `
+                        <div style="flex:1;min-width:260px;border:var(--hairline);border-radius:var(--radius-md);padding:10px 12px;">
+                          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                            <span class="sf-pill" style="font-size:11px;">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(r.icpno))}</span>
+                            <span class="mono" style="font-size:12px;color:var(--txt-3);">${escapeHtml(r.ctno)}</span>
+                            ${stopped ? '<span class="sf-pill" style="font-size:10px;">凌越停用</span>' : ""}
+                            ${telVal ? `<button type="button" class="sf-btn sm erp-fill-contact" data-v="${escapeAttr(telVal)}" style="margin-left:auto;">帶入聯絡方式</button>` : ""}
+                          </div>
+                          <table style="width:100%;font-size:13px;border-collapse:collapse;"><tbody>
+                            ${fld("名稱", r.name)}${fld("簡稱", r.short_name)}
+                            ${fld("地址", r.addr1)}${fld("地址2", r.addr2)}
+                            ${fld("電話", [r.tel1, r.tel2].filter((x) => x && String(x).trim()).join(" / "))}
+                            ${fld("傳真", r.fax)}${fld("統編", r.unino)}
+                            ${fld("負責人", r.boss)}${fld("聯絡人", r.contact)}
+                            ${fld("付款方式", r.fkfs)}${fld("業務員", r.sales)}
+                          </tbody></table>
+                        </div>`;
+                    }).join("");
+                    erpSection = `
+                    <div class="sf-card" style="margin-top:14px;">
+                      <div class="sf-card-head"><div class="sf-card-title">${SF_ICONS.doc} 凌越主檔資料（自動同步，唯讀）</div>
+                        <span class="sf-card-sub">${erps.length ? "來自凌越客戶主檔，內網代理隨庫存推送更新；要改請在凌越改" : ""}<a href="/admin/customers/erp?q=${encodeURIComponent(hq)}" style="margin-left:8px;">總表</a></span></div>
+                      <div style="padding:12px 16px;">
+                        ${erps.length
+                            ? `<div style="display:flex;gap:12px;flex-wrap:wrap;">${blocks}</div>`
+                            : `<p style="margin:0;font-size:13px;color:var(--txt-2);">凌越編號 <code class="mono">${escapeHtml(hq)}</code> 查無主檔資料——可能編號不一致，或內網代理尚未同步客戶主檔（更新代理資料夾的 <code>ly_stock_push.py</code> 後會隨庫存推送自動同步）。</p>`}
+                      </div>
+                    </div>
+                    <script>document.querySelectorAll(".erp-fill-contact").forEach(function(b){b.addEventListener("click",function(){var i=document.querySelector('input[name="contact"]');if(i){i.value=this.getAttribute("data-v")||"";i.focus();}});});</script>`;
+                }
+            }
+            catch (ee) {
+                console.error("[admin] customer erp section", ee?.message || ee);
+            }
         const editBody = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / 編輯客戶</div>
         <h1 class="notion-page-title">編輯客戶</h1>
@@ -19232,6 +19346,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             <div style="margin-top:6px;"><button type="submit" class="sf-btn primary">${SF_ICONS.check}<span>儲存</span></button></div>
           </form>
         </div>
+        ${erpSection}
         <div class="sf-card" style="margin-top:14px;">
           <div class="sf-card-head"><div class="sf-card-title">此客戶專用別名（叫貨習慣）</div></div>
           <div style="padding:14px 16px;">
@@ -19354,6 +19469,102 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
         await db.prepare("DELETE FROM customer_product_aliases WHERE id = ?").run(aliasId);
         res.redirect("/admin/customers/" + encodeURIComponent(customerId) + "/edit?ok=alias_del");
+    });
+    // === 凌越客戶主檔（erp_customers 快照）===
+    // 內網代理（ly_stock_push.py）隨庫存推送整批同步凌越客戶主檔(000001)上來，按公司覆蓋。
+    // 這頁是唯讀總表：搜尋、公司切換、與網站客戶比對（hq_cust_code＝凌越 CT_NO）、一鍵建立網站客戶。
+    router.get("/customers/erp", async (req, res) => {
+        try {
+            let coRows = [];
+            try {
+                coRows = (await db.prepare("SELECT COALESCE(NULLIF(TRIM(icpno),''),'00') AS c, COUNT(*) AS n FROM erp_customers GROUP BY c ORDER BY c").all()) || [];
+            }
+            catch (_) { coRows = []; }
+            const companies = coRows.map((r) => (0, erp_companies_js_1.normIcpno)(r.c));
+            const counts = {};
+            coRows.forEach((r) => { counts[(0, erp_companies_js_1.normIcpno)(r.c)] = Number(r.n || 0); });
+            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno, companies[0] || "00");
+            const q = String(req.query.q || "").trim();
+            const LIMIT = 800;
+            const rows = q
+                ? await db.prepare("SELECT ctno, name, short_name, addr1, addr2, tel1, tel2, fax, unino, boss, contact, fkfs, sales, stop FROM erp_customers WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND (ctno LIKE ? OR name LIKE ? OR addr1 LIKE ? OR tel1 LIKE ? OR unino LIKE ?) ORDER BY ctno LIMIT " + LIMIT).all(icpno, "%" + q + "%", "%" + q + "%", "%" + q + "%", "%" + q + "%", "%" + q + "%")
+                : await db.prepare("SELECT ctno, name, short_name, addr1, addr2, tel1, tel2, fax, unino, boss, contact, fkfs, sales, stop FROM erp_customers WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY ctno LIMIT " + LIMIT).all(icpno);
+            // 網站客戶對照：hq_cust_code（凌越 CT_NO）→ 網站客戶
+            const siteMap = {};
+            try {
+                ((await db.prepare("SELECT id, name, hq_cust_code FROM customers WHERE hq_cust_code IS NOT NULL AND TRIM(hq_cust_code) <> ''").all()) || [])
+                    .forEach((c) => { siteMap[String(c.hq_cust_code).trim()] = c; });
+            }
+            catch (_) { }
+            let snapshotAt = "";
+            try {
+                const s = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_customers_snapshot_at_" + icpno);
+                snapshotAt = String(s?.value || "").replace("T", " ").slice(0, 19);
+            }
+            catch (_) { }
+            const isStopped = (v) => ["1", "Y", "YES", "TRUE"].includes(String(v || "").trim().toUpperCase());
+            const coSeg = companies.length > 1
+                ? `<div class="sf-seg" style="display:inline-flex;">${companies.map((c) => `<a class="${c === icpno ? "active" : ""}" href="/admin/customers/erp?icpno=${c}${q ? "&q=" + encodeURIComponent(q) : ""}">${escapeHtml((0, erp_companies_js_1.erpCompanyName)(c))} <span class="mono" style="font-size:11px;opacity:.7;">${counts[c] ?? ""}</span></a>`).join("")}</div>`
+                : "";
+            const trows = rows.map((r) => {
+                const site = siteMap[String(r.ctno).trim()];
+                const stopped = isStopped(r.stop);
+                const tel = [r.tel1, r.tel2].filter((x) => x && String(x).trim()).map((x) => escapeHtml(x)).join(" / ");
+                const addr = escapeHtml(r.addr1 || "") + (r.addr2 && String(r.addr2).trim() ? `<div style="color:var(--txt-3);">${escapeHtml(r.addr2)}</div>` : "");
+                const siteCell = site
+                    ? `<a href="/admin/customers/${encodeURIComponent(site.id)}/edit" style="color:var(--accent);text-decoration:none;">${escapeHtml(site.name)}</a>`
+                    : `<a class="sf-btn sm" href="/admin/customers/new?name=${encodeURIComponent(r.name || "")}&hq_cust_code=${encodeURIComponent(r.ctno)}&contact=${encodeURIComponent(r.tel1 || "")}">${SF_ICONS.plus}<span>建立客戶</span></a>`;
+                return `<tr${stopped ? ' style="opacity:.55;"' : ""}>
+                  <td class="mono" style="font-size:12px;white-space:nowrap;">${escapeHtml(r.ctno)}</td>
+                  <td><div style="font-weight:500;">${escapeHtml(r.name || "")}</div>${r.short_name && String(r.short_name).trim() ? `<div style="font-size:11px;color:var(--txt-3);">${escapeHtml(r.short_name)}</div>` : ""}${stopped ? '<span class="sf-pill" style="font-size:10px;">停用</span>' : ""}</td>
+                  <td style="font-size:12px;">${addr || "<span style='color:var(--txt-3);'>—</span>"}</td>
+                  <td class="mono" style="font-size:12px;white-space:nowrap;">${tel || "—"}</td>
+                  <td class="mono" style="font-size:12px;">${escapeHtml(r.unino || "") || "—"}</td>
+                  <td style="font-size:12px;">${escapeHtml(r.boss || r.contact || "") || "—"}</td>
+                  <td class="mono" style="font-size:12px;">${escapeHtml(r.fkfs || "")}${r.sales && String(r.sales).trim() ? ` / ${escapeHtml(r.sales)}` : ""}</td>
+                  <td>${siteCell}</td>
+                </tr>`;
+            }).join("");
+            const emptyHint = companies.length === 0
+                ? `<div class="notion-card" style="margin-top:14px;"><p style="margin:0;color:var(--txt-2);">尚無凌越客戶主檔資料。內網「凌越整合代理」更新 <code>ly_stock_push.py</code> 後，客戶主檔會隨每次庫存推送自動同步上來（也可在庫存管理按「庫存更新」立即觸發）。</p></div>`
+                : "";
+            const body = `
+            <div class="sf-root" style="padding:24px 32px;display:flex;flex-direction:column;gap:14px;background:var(--bg-0);min-height:100%;width:100%;box-sizing:border-box;">
+              <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+                <div>
+                  <div class="sf-breadcrumb" style="margin-bottom:6px;"><a href="/admin/customers" style="color:inherit;text-decoration:none;">主檔管理 / 客戶管理</a> / 凌越客戶主檔</div>
+                  <h1 style="margin:0;font-size:22px;font-weight:600;">凌越客戶主檔</h1>
+                  <div style="font-size:12px;color:var(--txt-3);margin-top:4px;">唯讀快照，由內網代理隨庫存推送自動同步${snapshotAt ? `；最後同步 ${escapeHtml(snapshotAt)}` : ""}。要改資料請在凌越改，下次推送自動更新。</div>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${coSeg}</div>
+              </div>
+              <form method="get" action="/admin/customers/erp" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <input type="hidden" name="icpno" value="${escapeAttr(icpno)}">
+                <div style="position:relative;flex:0 0 320px;">
+                  <input class="sf-input" name="q" value="${escapeAttr(q)}" placeholder="搜尋 編號／名稱／地址／電話／統編..." style="padding-left:28px;">
+                  <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.search}</span>
+                </div>
+                <button class="sf-btn" type="submit">${SF_ICONS.search}<span>搜尋</span></button>
+                ${q ? `<a class="sf-btn ghost" href="/admin/customers/erp?icpno=${escapeAttr(icpno)}">清除</a>` : ""}
+                <span style="font-size:12px;color:var(--txt-3);">共 ${rows.length}${rows.length >= LIMIT ? "+（已達顯示上限，請用搜尋縮小）" : ""} 筆</span>
+              </form>
+              ${emptyHint}
+              <div class="sf-table-wrap">
+                <table class="sf-table">
+                  <thead><tr>
+                    <th style="width:90px;">編號</th><th>名稱</th><th>地址</th><th style="width:130px;">電話</th>
+                    <th style="width:90px;">統編</th><th style="width:90px;">負責人</th><th style="width:110px;">付款/業務</th><th style="width:150px;">網站客戶</th>
+                  </tr></thead>
+                  <tbody>${trows || `<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--txt-3);">${q ? "無符合資料" : "此公司尚無客戶主檔資料"}</td></tr>`}</tbody>
+                </table>
+              </div>
+            </div>`;
+            res.type("text/html").send(notionPage("凌越客戶主檔", body, "customers", res));
+        }
+        catch (e) {
+            console.error("[admin] 凌越客戶主檔頁錯誤:", e?.message || e);
+            res.redirect("/admin/customers?err=" + encodeURIComponent("凌越客戶主檔載入失敗：" + (e?.message || String(e)).slice(0, 80)));
+        }
     });
     // 匯出客戶清單 CSV（含路線、綁定、狀態）——可用來對帳凌越當日出貨、找出沒下單的客戶
     router.get("/customers/export.csv", async (req, res) => {
@@ -19598,6 +19809,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               <h1 style="margin:0;font-size:22px;font-weight:600;">客戶管理</h1>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+              <a class="sf-btn" href="/admin/customers/erp">${SF_ICONS.doc}<span>凌越客戶主檔</span></a>
               <a class="sf-btn" href="/admin/customers/groups">${SF_ICONS.users}<span>群組功能</span></a>
               <a class="sf-btn" href="/admin/import-customers">${SF_ICONS.dl}<span>匯入 CSV</span></a>
               <a class="sf-btn" href="/admin/customers/export.csv">${SF_ICONS.dl}<span>匯出客戶 CSV</span></a>
