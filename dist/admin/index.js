@@ -1372,6 +1372,32 @@ details.sf-nav-group > summary:hover > .sf-nav-group-title { background: var(--b
   border-radius: 999px; background: var(--bad-soft); color: var(--bad);
   display: inline-flex; align-items: center; justify-content: center; line-height: 1;
 }
+/* ── 三欄工作流版型（sf3）：欄1＝時間/範圍、欄2＝對象、欄3＝內容。
+   盤點/庫存統計圖表首創，全平台「選時間→選對象→看內容」的作業頁共用。
+   欄1/欄2 是導覽（點了換內容），不是表單；手機(≤1020px)自動摺直排。 ── */
+.sf3-grid { display: grid; grid-template-columns: 150px 235px minmax(0,1fr); gap: 14px; align-items: start; }
+.sf3-grid.cols2 { grid-template-columns: 235px minmax(0,1fr); }
+@media (max-width: 1020px) { .sf3-grid, .sf3-grid.cols2 { grid-template-columns: 1fr; } }
+.sf3-col { background: var(--bg-1, #fff); border: 1px solid var(--line, #e3e2e0); border-radius: 12px; overflow: hidden; min-width: 0; }
+.sf3-col-h { font-size: 12px; font-weight: 700; color: var(--txt-3, #9b9a97); padding: 9px 13px; border-bottom: 1px solid var(--line-2, #eceae5); }
+.sf3-col-body { max-height: 640px; overflow: auto; }
+.sf3-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
+  border: 0; border-bottom: 1px solid var(--line-2, #f0efed); background: transparent;
+  color: var(--txt-2, #5b616e); font: inherit; font-size: 12.5px; padding: 8px 13px;
+  cursor: pointer; text-align: left; text-decoration: none; box-sizing: border-box;
+}
+.sf3-row:last-child { border-bottom: 0; }
+.sf3-row:hover { background: rgba(35,131,226,.05); text-decoration: none; }
+.sf3-row.on { background: rgba(35,131,226,.10); color: var(--txt-1, inherit); font-weight: 700; box-shadow: inset 3px 0 0 var(--accent, #2383e2); }
+.sf3-row .sf3-nm { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sf3-tag {
+  font-size: 11px; color: var(--txt-3, #9b9a97); background: var(--bg-2, #f7f6f3);
+  border: 1px solid var(--line, #e3e2e0); border-radius: 999px; padding: 0 7px;
+  font-variant-numeric: tabular-nums; white-space: nowrap; flex: none;
+}
+.sf3-row.on .sf3-tag { background: var(--accent, #2383e2); border-color: var(--accent, #2383e2); color: #fff; }
+.sf3-tag.warn { background: var(--warn-soft, #fcf3e2); border-color: transparent; color: var(--warn, #8a5a10); }
 .sf-sidebar-foot {
   padding: 10px; border-top: var(--hairline);
   display: flex; align-items: center; gap: 10px;
@@ -11598,6 +11624,44 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 needReviewSum = Number(r?.c) || 0;
             } catch (_) { /* fallback 為 0 */ }
             const pendingCount = totalShown - approvedCount;
+            // ── 三欄版型（sf3）資料：欄1＝近 14 天每日單量、欄2＝本區間客戶彙總 ──
+            const ordersDateAgo = (n) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(Date.now() - n * 86400000));
+            const dayCounts = new Map(); // date -> {n:單數, p:未確認數}
+            try {
+                for (const r of (await db.prepare("SELECT order_date AS d, COUNT(*) AS n, SUM(CASE WHEN COALESCE(LOWER(TRIM(status)),'') <> 'approved' THEN 1 ELSE 0 END) AS p FROM orders WHERE order_date >= ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY order_date").all(ordersDateAgo(13))) || [])
+                    dayCounts.set(String(r.d), { n: Number(r.n || 0), p: Number(r.p || 0) });
+            } catch (_) { }
+            try {
+                for (const r of (await db.prepare("SELECT order_date AS d, COUNT(*) AS n FROM logistics_orders WHERE order_date >= ? GROUP BY order_date").all(ordersDateAgo(13))) || []) {
+                    const k = String(r.d);
+                    const a = dayCounts.get(k) || { n: 0, p: 0 };
+                    a.n += Number(r.n || 0);
+                    dayCounts.set(k, a);
+                }
+            } catch (_) { }
+            const keepQ = (onlyNeedReview ? "&need_review=1" : "") + (statusFilter ? "&status=" + encodeURIComponent(statusFilter) : "");
+            const singleDay = filterDateFrom === filterDateTo;
+            const sf3DateCol = (!singleDay ? `<span class="sf3-row on"><span class="sf3-nm">區間 ${escapeHtml(filterDateFrom.slice(5))}～${escapeHtml(filterDateTo.slice(5))}</span><span class="sf3-tag">${orders.length}單</span></span>` : "") +
+                Array.from({ length: 14 }, (_, i) => {
+                    const d = ordersDateAgo(i);
+                    const c = dayCounts.get(d) || { n: 0, p: 0 };
+                    const on = singleDay && filterDateFrom === d;
+                    const wd = "日一二三四五六"[new Date(d + "T00:00:00Z").getUTCDay()] || "";
+                    const label = i === 0 ? "今天" : (i === 1 ? "昨天" : `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}（${wd}）`);
+                    const tag = c.n ? `<span class="sf3-tag ${c.p > 0 ? "warn" : ""}" title="${c.n} 單${c.p ? "，" + c.p + " 未確認" : ""}">${c.n}${c.p ? "·" + c.p + "待" : ""}</span>` : "";
+                    return `<a class="sf3-row ${on ? "on" : ""}" href="/admin/orders?date_from=${d}&date_to=${d}${keepQ}" title="${escapeAttr(d)}"><span class="sf3-nm">${escapeHtml(label)}</span>${tag}</a>`;
+                }).join("");
+            const custAgg = new Map(); // 顯示名 -> {n, p}
+            for (const o of orders) {
+                const nm = (o.customer_name && String(o.customer_name).trim()) || (o.customer_id ? `客戶 ${String(o.customer_id).slice(0, 6)}` : "未選客戶");
+                const a = custAgg.get(nm) || { n: 0, p: 0 };
+                a.n++;
+                if (String(o.status || "").toLowerCase() !== "approved") a.p++;
+                custAgg.set(nm, a);
+            }
+            const sf3CustCol = `<button type="button" class="sf3-row on" data-cust=""><span class="sf3-nm">全部客戶</span><span class="sf3-tag">${orders.length}單</span></button>` +
+                Array.from(custAgg.entries()).sort((a, b) => (b[1].p - a[1].p) || (b[1].n - a[1].n) || a[0].localeCompare(b[0], "zh-Hant"))
+                    .map(([nm, a]) => `<button type="button" class="sf3-row" data-cust="${escapeAttr(nm)}"><span class="sf3-nm">${escapeHtml(nm)}</span><span class="sf3-tag ${a.p > 0 ? "warn" : ""}" title="${a.n} 單${a.p ? "，" + a.p + " 未確認" : ""}">${a.n}${a.p ? "·" + a.p + "待" : ""}</span></button>`).join("");
             const statCard = (label, num, status, href) => `
               <a href="${href || "#"}" style="text-decoration:none;color:inherit;padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;min-width:140px;">
                 <span class="sf-dot ${status}"></span>
@@ -11629,6 +11693,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           ${req.query.err === "baddate" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">改出貨日失敗：請確認已勾選訂單並選了有效日期</div>" : ""}
           ${req.query.ok === "approved_done" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">🎉 全部待確認都處理完了</div>" : ""}
           ${req.query.err === "none" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">請先勾選要處理的訂單</div>" : ""}
+          <div class="sf3-grid">
+            <div class="sf3-col">
+              <div class="sf3-col-h">出貨日</div>
+              <div class="sf3-col-body">${sf3DateCol}</div>
+            </div>
+            <div class="sf3-col">
+              <div class="sf3-col-h">客戶（此區間）</div>
+              <div class="sf3-col-body" id="sf3CustCol">${sf3CustCol}</div>
+            </div>
+            <div style="min-width:0;display:flex;flex-direction:column;gap:16px;">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${statCard("總訂單", totalShown, "ok", "#")}
             ${statCard("待簽核", pendingCount, pendingCount>0?"warn":"ok", "#")}
@@ -11750,6 +11824,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               </table>
             </div>
           </details>` : ""}
+            </div>
+          </div>
         </div>
           <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
           <script>
@@ -11926,12 +12002,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               var qNo = (document.getElementById("orderFilterOrderNo") && document.getElementById("orderFilterOrderNo").value || "").toLowerCase().trim();
               var qCust = (document.getElementById("orderFilterCustomer") && document.getElementById("orderFilterCustomer").value || "").toLowerCase().trim();
               var qRoute = (document.getElementById("orderFilterRoute") && document.getElementById("orderFilterRoute").value || "").trim();
+              var exactCust = String(window.__sf3Cust || ""); // 三欄客戶欄選取＝精確比對
               document.querySelectorAll("tr.order-row").forEach(function(tr){
                 var no = (tr.getAttribute("data-orderno") || "").toLowerCase();
                 var cust = (tr.getAttribute("data-cust") || "").toLowerCase();
                 var route = (tr.getAttribute("data-route") || "").trim();
                 var okNo = !qNo || no.indexOf(qNo) >= 0;
-                var okCust = !qCust || cust.indexOf(qCust) >= 0;
+                var okCust = (!qCust || cust.indexOf(qCust) >= 0) && (!exactCust || (tr.getAttribute("data-cust") || "") === exactCust);
                 var okRoute = !qRoute || (qRoute === "__none__" ? route === "" : route === qRoute);
                 var show = okNo && okCust && okRoute;
                 tr.style.display = show ? "" : "none";
@@ -11949,6 +12026,18 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             if (fo) fo.addEventListener("input", applyListFilters);
             if (fc) fc.addEventListener("input", applyListFilters);
             if (fr) fr.addEventListener("change", applyListFilters);
+            // 三欄客戶欄：點客戶＝只看該客戶（再點一次或點「全部客戶」還原）；跟上方文字篩選可疊加
+            var custCol = document.getElementById("sf3CustCol");
+            if (custCol) custCol.addEventListener("click", function(e){
+              var row = e.target.closest(".sf3-row[data-cust]");
+              if (!row) return;
+              var nm = row.getAttribute("data-cust") || "";
+              window.__sf3Cust = (nm && window.__sf3Cust === nm) ? "" : nm;
+              custCol.querySelectorAll(".sf3-row").forEach(function(r){
+                r.classList.toggle("on", (r.getAttribute("data-cust") || "") === window.__sf3Cust);
+              });
+              applyListFilters();
+            });
             // 即時統計勾選數
             function updateSelectedHint(){
               var n = document.querySelectorAll(".order-batch-cb:checked").length;
