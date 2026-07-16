@@ -7191,6 +7191,64 @@ function createAdminRouter() {
             res.status(500).json({ error: String(e?.message || e) });
         }
     });
+    // 整倉序列（品項總覽小圖用）：一次回該倉（或全公司）所有品項近 N 天的期末量＋盤點點
+    router.get("/inventory/stats/series", async (req, res) => {
+        try {
+            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const wh = String(req.query.wh || "").trim();
+            const days = Math.min(60, Math.max(7, parseInt(String(req.query.days || "30"), 10) || 30));
+            const since = statsTaipeiDateAgo(days - 1);
+            let scope = "company", rows = [];
+            if (wh) {
+                try { rows = (await db.prepare("SELECT erp_code, snap_date AS d, qty FROM erp_stock_wh_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND wh_code = ? AND snap_date >= ? ORDER BY snap_date").all(icpno, wh, since)) || []; } catch (_) { rows = []; }
+                if (rows.length) scope = "warehouse";
+            }
+            if (!rows.length) {
+                try { rows = (await db.prepare("SELECT erp_code, snap_date AS d, qty FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date >= ? ORDER BY snap_date").all(icpno, since)) || []; } catch (_) { rows = []; }
+            }
+            const dates = Array.from(new Set(rows.map((r) => String(r.d)))).sort();
+            const idx = new Map(dates.map((d, i) => [d, i]));
+            const meta = new Map();
+            try {
+                for (const m of (await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno)) || [])
+                    meta.set(String(m.erp_code), m);
+            } catch (_) { }
+            const items = new Map();
+            for (const r of rows) {
+                const code = String(r.erp_code);
+                let it = items.get(code);
+                if (!it) {
+                    const m = meta.get(code);
+                    it = { code, name: String(m?.name || "") || code, spec: String(m?.spec || ""), unit: String(m?.unit || ""), qty: m ? Number(m.qty || 0) : null, closes: new Array(dates.length).fill(null), counts: {} };
+                    items.set(code, it);
+                }
+                it.closes[idx.get(String(r.d))] = Number(r.qty || 0);
+            }
+            let vrows = [];
+            try {
+                const sql = "SELECT s.count_date AS d, c.erp_code, c.sys_qty, c.counted_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND s.count_date >= ?" + (wh ? " AND s.wh_code = ?" : "");
+                vrows = (wh ? await db.prepare(sql).all(icpno, since, wh) : await db.prepare(sql).all(icpno, since)) || [];
+            } catch (_) { vrows = []; }
+            const vagg = new Map();
+            for (const v of vrows) {
+                const k = String(v.erp_code) + "|" + String(v.d);
+                const a = vagg.get(k) || { sys: 0, counted: 0 };
+                a.sys += Number(v.sys_qty || 0);
+                a.counted += Number(v.counted_qty || 0);
+                vagg.set(k, a);
+            }
+            for (const [k, a] of vagg.entries()) {
+                const p = k.indexOf("|");
+                const it = items.get(k.slice(0, p));
+                if (it) it.counts[k.slice(p + 1)] = { v: statsVarPct(a.sys, a.counted), c: a.counted };
+            }
+            const out = Array.from(items.values()).sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")).slice(0, 400);
+            res.json({ scope, dates, items: out });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
     router.get("/inventory/stats/heatmap", async (req, res) => {
         try {
             const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
@@ -7272,15 +7330,17 @@ function createAdminRouter() {
         .ivs-search{position:relative;margin-bottom:12px;}
         .ivs-search input{width:100%;font:inherit;font-size:13px;color:inherit;background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:9px;padding:8px 12px 8px 34px;box-sizing:border-box;}
         .ivs-search .mag{position:absolute;left:11px;top:50%;transform:translateY(-50%);width:15px;height:15px;stroke:var(--ivs-mut);stroke-width:1.4;fill:none;pointer-events:none;}
-        .ivs-list{max-height:560px;overflow:auto;}
-        .ivs-list table{width:100%;border-collapse:collapse;font-size:12.5px;}
-        .ivs-list th{position:sticky;top:0;background:var(--ivs-card);text-align:left;font-size:11px;color:var(--ivs-mut);font-weight:600;padding:5px 10px;border-bottom:1px solid var(--ivs-border);}
-        .ivs-list td{padding:6px 10px;border-bottom:1px solid var(--ivs-grid);}
-        .ivs-list tr.it{cursor:pointer;}
-        .ivs-list tr.it:hover{background:rgba(35,131,226,.07);}
-        .ivs-list .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
-        .ivs-list .cd{color:var(--ivs-mut);font-variant-numeric:tabular-nums;white-space:nowrap;}
-        .ivs-list .sp{color:var(--ivs-mut);font-size:11.5px;margin-left:6px;}
+        .ivs-list{max-height:680px;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;padding:2px;}
+        .ivs-gcard{border:1px solid var(--ivs-border);border-radius:10px;background:var(--ivs-card);padding:9px 11px 8px;cursor:pointer;text-align:left;font:inherit;color:inherit;min-width:0;}
+        .ivs-gcard:hover{border-color:#2383e2;box-shadow:0 2px 10px rgba(35,131,226,.15);}
+        .ivs-gcard .gc-top{display:flex;justify-content:space-between;gap:8px;align-items:baseline;}
+        .ivs-gcard .gc-nm{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .ivs-gcard .gc-q{font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;}
+        .ivs-gcard .gc-sub{font-size:11px;color:var(--ivs-mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px;}
+        .ivs-gcard .gc-spark svg{display:block;width:100%;height:auto;}
+        .ivs-gcard .gc-ft{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:4px;font-size:11.5px;}
+        .gc-delta{font-weight:700;font-variant-numeric:tabular-nums;}
+        .gc-delta.up{color:var(--ivs-up);} .gc-delta.down{color:var(--ivs-down);} .gc-delta.flat{color:var(--ivs-mut);}
         .ivs-backbtn{border:1px solid var(--ivs-border);background:var(--ivs-card);color:var(--ivs-ink2);font:inherit;font-size:12.5px;font-weight:600;padding:4px 12px;border-radius:8px;cursor:pointer;}
         .ivs-backbtn:hover{border-color:#2383e2;color:#2383e2;}
         #ivsTip{position:fixed;z-index:99;pointer-events:none;display:none;background:var(--ivs-card,#fff);color:inherit;border:1px solid var(--ivs-border,#e3e2e0);border-radius:9px;box-shadow:0 6px 24px rgba(15,15,15,.2);padding:8px 11px;font-size:12px;line-height:1.5;min-width:150px;}
@@ -7344,9 +7404,9 @@ function createAdminRouter() {
             </div>
             <div class="ivs-card" id="ivsListCard">
               <div class="ivs-card-h">
-                <div class="ivs-card-t">全部品項</div>
+                <div class="ivs-card-t">品項總覽（整倉小圖）</div>
                 <span class="ivs-note" id="ivsListCount"></span>
-                <span class="ivs-note" style="margin-left:auto;">點一列看該品項的每日變動與盤差</span>
+                <span class="ivs-note" style="margin-left:auto;">點卡片看該品項的大圖與盤差</span>
               </div>
               <div class="ivs-list" id="ivsList"></div>
             </div>
@@ -7588,7 +7648,10 @@ function createAdminRouter() {
           h+='<button type="button" class="ivs-row'+(S.wh===""?" on":"")+'" data-w=""><span>全公司（各倉合計）</span></button>';
           WHS.forEach(function(w){ h+='<button type="button" class="ivs-row'+(S.wh===w.code?" on":"")+'" data-w="'+esc(w.code)+'"><span>'+esc(w.name||w.code)+'</span><span class="tag">'+esc(w.code)+'</span></button>'; });
           host.innerHTML=h;
-          host.querySelectorAll("[data-w]").forEach(function(b){ b.addEventListener("click",function(){ S.wh=b.dataset.w; S.hSel=null; drawWhCol(); loadKline(); loadHeat(); }); });
+          host.querySelectorAll("[data-w]").forEach(function(b){ b.addEventListener("click",function(){
+            S.wh=b.dataset.w; S.hSel=null; drawWhCol(); loadKline(); loadHeat();
+            if(!document.getElementById("ivsListCard").hidden) loadGrid();
+          }); });
           document.getElementById("ivsHWhName").textContent=S.wh?(WHS.filter(function(w){return w.code===S.wh;}).map(function(w){return w.name||w.code;})[0]||S.wh):"全公司（各倉合計）";
         }
 
@@ -7622,24 +7685,71 @@ function createAdminRouter() {
           renderV(vHost,pts,{});
         }
 
-        /* ── 品項清單（預設全部顯示，搜尋即時過濾，點列進圖表） ── */
-        var ALL_ITEMS=null, listQ="", LIST_CAP=500;
+        /* ── 品項總覽（整倉小圖卡牆）：每項一張 30 天走勢迷你圖，點卡片看大圖 ── */
+        var seriesCache={}, listQ="", LIST_CAP=300;
+        function loadGrid(){
+          var key=S.wh;
+          if(seriesCache[key]){ drawList(); return; }
+          document.getElementById("ivsList").innerHTML='<div class="ivs-empty" style="grid-column:1/-1;">載入中…</div>';
+          fetchJson("/admin/inventory/stats/series?icpno="+encodeURIComponent(ICPNO)+"&wh="+encodeURIComponent(S.wh)+"&days=30")
+            .then(function(j){ seriesCache[key]=j; drawList(); })
+            .catch(function(e){ document.getElementById("ivsList").innerHTML='<div class="ivs-empty" style="grid-column:1/-1;">載入失敗：'+esc(e.message)+'</div>'; });
+        }
+        function miniSpark(host,dates,closes,counts){
+          var W=240,H=58,p=5;
+          var svg=el("svg",{viewBox:"0 0 "+W+" "+H});
+          var vals=[];
+          closes.forEach(function(c){ if(c!=null)vals.push(c); });
+          Object.keys(counts).forEach(function(d){ vals.push(counts[d].c); });
+          if(!vals.length){ host.appendChild(svg); return; }
+          var lo=Math.min.apply(null,vals),hi=Math.max.apply(null,vals);
+          if(hi===lo)hi=lo+1;
+          var X=function(i){ return p+(i/(Math.max(dates.length-1,1)))*(W-2*p); };
+          var Y=function(v){ return p+(hi-v)*(H-2*p)/(hi-lo); };
+          var dstr="",pen=false,lastI=null;
+          closes.forEach(function(c,i){
+            if(c==null){ pen=false; return; }
+            dstr+=(pen?"L":"M")+X(i).toFixed(1)+","+Y(c).toFixed(1); pen=true; lastI=i;
+          });
+          if(dstr) el("path",{d:dstr,fill:"none",stroke:css("--ivs-line"),"stroke-width":1.6,"stroke-linejoin":"round","stroke-linecap":"round"},svg);
+          var surf=css("--ivs-card")||"#fff";
+          dates.forEach(function(d,i){
+            var c=counts[d];
+            if(c) el("circle",{cx:X(i),cy:Y(c.c),r:3,fill:Math.abs(c.v)>2?css("--ivs-up"):css("--ivs-line"),stroke:surf,"stroke-width":1.5},svg);
+          });
+          if(lastI!=null) el("circle",{cx:X(lastI),cy:Y(closes[lastI]),r:2.5,fill:css("--ivs-line")},svg);
+          host.appendChild(svg);
+        }
         function drawList(){
           var host=document.getElementById("ivsList");
-          if(!ALL_ITEMS){ host.innerHTML='<div class="ivs-empty">載入中…</div>'; return; }
+          var j=seriesCache[S.wh];
+          if(!j){ loadGrid(); return; }
           var q=listQ.toLowerCase();
-          var list=q?ALL_ITEMS.filter(function(it){ return (it.code+" "+it.name+" "+(it.spec||"")).toLowerCase().indexOf(q)>=0; }):ALL_ITEMS;
-          document.getElementById("ivsListCount").textContent="共 "+ALL_ITEMS.length+" 項"+(q?("，符合 "+list.length+" 項"):"");
-          if(!list.length){ host.innerHTML='<div class="ivs-empty">找不到「'+esc(listQ)+'」，換個關鍵字試試。</div>'; return; }
-          var h='<table><thead><tr><th>料號</th><th>品名</th><th>單位</th><th class="num">目前庫存</th></tr></thead><tbody>';
-          list.slice(0,LIST_CAP).forEach(function(it,i){
-            h+='<tr class="it" data-i="'+i+'"><td class="cd">'+esc(it.code)+'</td><td>'+esc(it.name||it.code)+(it.spec?'<span class="sp">'+esc(it.spec)+'</span>':'')+'</td><td>'+esc(it.unit||"")+'</td><td class="num">'+fmtN(it.qty)+'</td></tr>';
-          });
-          h+='</tbody></table>'+(list.length>LIST_CAP?'<div style="padding:8px 12px;font-size:12px;color:var(--ivs-mut);">僅顯示前 '+LIST_CAP+' 項，請用搜尋縮小範圍。</div>':'');
-          host.innerHTML=h;
+          var list=q?j.items.filter(function(it){ return (it.code+" "+it.name+" "+(it.spec||"")).toLowerCase().indexOf(q)>=0; }):j.items;
+          var scopeTxt=S.wh&&j.scope==="company"?"（⚠ 此倉尚無分倉每日快照，顯示全公司量）":"";
+          document.getElementById("ivsListCount").textContent="共 "+j.items.length+" 項"+(q?("，符合 "+list.length+" 項"):"")+" · 近 30 天走勢，藍點＝盤點、紅點＝|盤差|>2%"+scopeTxt;
+          if(!list.length){ host.innerHTML='<div class="ivs-empty" style="grid-column:1/-1;">'+(j.items.length?("找不到「"+esc(listQ)+"」，換個關鍵字試試。"):"此範圍尚無每日快照資料（庫存推送啟用後開始累積）。")+'</div>'; return; }
           var shown=list.slice(0,LIST_CAP);
-          host.querySelectorAll("tr.it").forEach(function(tr){
-            tr.addEventListener("click",function(){ selectItem(shown[+tr.dataset.i]); });
+          host.innerHTML=shown.map(function(it,i){
+            var first=null,last=null;
+            it.closes.forEach(function(c){ if(c!=null){ if(first==null)first=c; last=c; } });
+            var ch=(first==null||last==null)?null:(last-first);
+            var dCls=ch==null||ch===0?"flat":(ch>0?"up":"down");
+            var dTxt=ch==null?"—":(ch>0?"＋":ch<0?"−":"±")+fmtN(Math.abs(ch));
+            var lastV=null,ds=Object.keys(it.counts).sort();
+            if(ds.length) lastV=it.counts[ds[ds.length-1]].v;
+            return '<button type="button" class="ivs-gcard" data-i="'+i+'">'+
+              '<div class="gc-top"><span class="gc-nm">'+esc(it.name)+'</span><span class="gc-q">'+(it.qty==null?"—":fmtN(it.qty))+' '+esc(it.unit||"")+'</span></div>'+
+              '<div class="gc-sub">'+esc(it.code)+(it.spec?" · "+esc(it.spec):"")+'</div>'+
+              '<div class="gc-spark"></div>'+
+              '<div class="gc-ft"><span class="gc-delta '+dCls+'">30天 '+dTxt+'</span>'+
+              (lastV==null?'<span style="color:var(--ivs-mut);">未盤</span>':'<span class="ivs-pill '+(Math.abs(lastV)>2?"bad":"ok")+'">最新盤差 '+(lastV>0?"+":"")+lastV+'%</span>')+
+              '</div></button>';
+          }).join("")+(list.length>LIST_CAP?'<div class="ivs-empty" style="grid-column:1/-1;">僅顯示前 '+LIST_CAP+' 張，請用搜尋縮小範圍。</div>':'');
+          host.querySelectorAll(".ivs-gcard").forEach(function(card){
+            var it=shown[+card.dataset.i];
+            miniSpark(card.querySelector(".gc-spark"),j.dates,it.closes,it.counts);
+            card.addEventListener("click",function(){ selectItem(it); });
           });
         }
         function showList(){
@@ -7783,13 +7893,13 @@ function createAdminRouter() {
           if(S.view==="heat") loadHeat(); else drawCharts();
         });
 
-        /* ── 初始：先列全部品項，不預選 ── */
-        drawGranCol(); drawWhCol(); drawList();
-        fetchJson("/admin/inventory/stats/items?icpno="+encodeURIComponent(ICPNO)+"&all=1&q=").then(function(j){
-          ALL_ITEMS=j.items||[]; drawList();
-        }).catch(function(e){ document.getElementById("ivsList").innerHTML='<div class="ivs-empty">品項載入失敗：'+esc(e.message)+'</div>'; });
-        new MutationObserver(function(){ klineCache={}; if(S.view==="charts"){ loadKline(); } else { drawHeat(); } })
-          .observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
+        /* ── 初始：先攤開整倉品項小圖，不預選 ── */
+        drawGranCol(); drawWhCol(); loadGrid();
+        new MutationObserver(function(){
+          klineCache={};
+          if(S.view==="charts"){ if(S.item&&document.getElementById("ivsListCard").hidden) loadKline(); else drawList(); }
+          else drawHeat();
+        }).observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
       })();
       </script>`;
         res.type("text/html").send(notionPage("庫存統計圖表", body, "inv-stats", res));
