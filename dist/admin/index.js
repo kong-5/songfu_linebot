@@ -1398,6 +1398,24 @@ details.sf-nav-group > summary:hover > .sf-nav-group-title { background: var(--b
 }
 .sf3-row.on .sf3-tag { background: var(--accent, #2383e2); border-color: var(--accent, #2383e2); color: #fff; }
 .sf3-tag.warn { background: var(--warn-soft, #fcf3e2); border-color: transparent; color: var(--warn, #8a5a10); }
+/* sf3 月曆（欄1 的另一種形態：適合「挑某一天」的頁，如訂單審核） */
+.sf3-cal { padding: 8px 8px 10px; }
+.sf3-cal-head { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px 6px; font-size: 12.5px; font-weight: 700; color: var(--txt-2, #5b616e); }
+.sf3-cal-nav { border: 1px solid var(--line, #e3e2e0); background: transparent; border-radius: 6px; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; color: var(--txt-3, #9b9a97); text-decoration: none; font-size: 13px; }
+.sf3-cal-nav:hover { border-color: var(--accent, #2383e2); color: var(--accent, #2383e2); text-decoration: none; }
+.sf3-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.sf3-cal-wd { font-size: 10px; color: var(--txt-3, #9b9a97); text-align: center; padding: 2px 0; }
+.sf3-cal-d { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; height: 38px; border-radius: 8px; font-size: 12px; color: var(--txt-2, #5b616e); text-decoration: none; border: 1px solid transparent; }
+a.sf3-cal-d:hover { background: rgba(35,131,226,.07); text-decoration: none; }
+.sf3-cal-d.today { border-color: var(--accent, #2383e2); }
+.sf3-cal-d.on { background: var(--accent, #2383e2); color: #fff; }
+.sf3-cal-d .n { font-variant-numeric: tabular-nums; line-height: 1; }
+.sf3-cal-d .c { font-size: 9px; line-height: 1; font-weight: 700; color: var(--txt-3, #9b9a97); font-variant-numeric: tabular-nums; }
+.sf3-cal-d .c.warn { color: var(--warn, #b45309); }
+.sf3-cal-d.on .c, .sf3-cal-d.on .c.warn { color: #fff; }
+.sf3-cal-foot { margin-top: 6px; text-align: center; }
+.sf3-cal-foot a { font-size: 11.5px; color: var(--txt-3, #9b9a97); text-decoration: none; }
+.sf3-cal-foot a:hover { color: var(--accent, #2383e2); }
 .sf-sidebar-foot {
   padding: 10px; border-top: var(--hairline);
   display: flex; align-items: center; gap: 10px;
@@ -11624,44 +11642,48 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 needReviewSum = Number(r?.c) || 0;
             } catch (_) { /* fallback 為 0 */ }
             const pendingCount = totalShown - approvedCount;
-            // ── 三欄版型（sf3）資料：欄1＝近 14 天每日單量、欄2＝本區間客戶彙總 ──
-            const ordersDateAgo = (n) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(Date.now() - n * 86400000));
+            // ── 兩欄版型（sf3 cols2）：欄1＝出貨日月曆（每日單量·未確認數），欄2＝原內容 ──
+            const keepQ = (onlyNeedReview ? "&need_review=1" : "") + (statusFilter ? "&status=" + encodeURIComponent(statusFilter) : "");
+            const singleDay = filterDateFrom === filterDateTo;
+            const calM = /^\d{4}-\d{2}$/.test(String(req.query.cal || "")) ? String(req.query.cal) : filterDateFrom.slice(0, 7);
             const dayCounts = new Map(); // date -> {n:單數, p:未確認數}
             try {
-                for (const r of (await db.prepare("SELECT order_date AS d, COUNT(*) AS n, SUM(CASE WHEN COALESCE(LOWER(TRIM(status)),'') <> 'approved' THEN 1 ELSE 0 END) AS p FROM orders WHERE order_date >= ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY order_date").all(ordersDateAgo(13))) || [])
+                for (const r of (await db.prepare("SELECT order_date AS d, COUNT(*) AS n, SUM(CASE WHEN COALESCE(LOWER(TRIM(status)),'') <> 'approved' THEN 1 ELSE 0 END) AS p FROM orders WHERE order_date >= ? AND order_date <= ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') GROUP BY order_date").all(calM + "-01", calM + "-31")) || [])
                     dayCounts.set(String(r.d), { n: Number(r.n || 0), p: Number(r.p || 0) });
             } catch (_) { }
             try {
-                for (const r of (await db.prepare("SELECT order_date AS d, COUNT(*) AS n FROM logistics_orders WHERE order_date >= ? GROUP BY order_date").all(ordersDateAgo(13))) || []) {
+                for (const r of (await db.prepare("SELECT order_date AS d, COUNT(*) AS n FROM logistics_orders WHERE order_date >= ? AND order_date <= ? GROUP BY order_date").all(calM + "-01", calM + "-31")) || []) {
                     const k = String(r.d);
                     const a = dayCounts.get(k) || { n: 0, p: 0 };
                     a.n += Number(r.n || 0);
                     dayCounts.set(k, a);
                 }
             } catch (_) { }
-            const keepQ = (onlyNeedReview ? "&need_review=1" : "") + (statusFilter ? "&status=" + encodeURIComponent(statusFilter) : "");
-            const singleDay = filterDateFrom === filterDateTo;
-            const sf3DateCol = (!singleDay ? `<span class="sf3-row on"><span class="sf3-nm">區間 ${escapeHtml(filterDateFrom.slice(5))}～${escapeHtml(filterDateTo.slice(5))}</span><span class="sf3-tag">${orders.length}單</span></span>` : "") +
-                Array.from({ length: 14 }, (_, i) => {
-                    const d = ordersDateAgo(i);
-                    const c = dayCounts.get(d) || { n: 0, p: 0 };
-                    const on = singleDay && filterDateFrom === d;
-                    const wd = "日一二三四五六"[new Date(d + "T00:00:00Z").getUTCDay()] || "";
-                    const label = i === 0 ? "今天" : (i === 1 ? "昨天" : `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}（${wd}）`);
-                    const tag = c.n ? `<span class="sf3-tag ${c.p > 0 ? "warn" : ""}" title="${c.n} 單${c.p ? "，" + c.p + " 未確認" : ""}">${c.n}${c.p ? "·" + c.p + "待" : ""}</span>` : "";
-                    return `<a class="sf3-row ${on ? "on" : ""}" href="/admin/orders?date_from=${d}&date_to=${d}${keepQ}" title="${escapeAttr(d)}"><span class="sf3-nm">${escapeHtml(label)}</span>${tag}</a>`;
-                }).join("");
-            const custAgg = new Map(); // 顯示名 -> {n, p}
-            for (const o of orders) {
-                const nm = (o.customer_name && String(o.customer_name).trim()) || (o.customer_id ? `客戶 ${String(o.customer_id).slice(0, 6)}` : "未選客戶");
-                const a = custAgg.get(nm) || { n: 0, p: 0 };
-                a.n++;
-                if (String(o.status || "").toLowerCase() !== "approved") a.p++;
-                custAgg.set(nm, a);
-            }
-            const sf3CustCol = `<button type="button" class="sf3-row on" data-cust=""><span class="sf3-nm">全部客戶</span><span class="sf3-tag">${orders.length}單</span></button>` +
-                Array.from(custAgg.entries()).sort((a, b) => (b[1].p - a[1].p) || (b[1].n - a[1].n) || a[0].localeCompare(b[0], "zh-Hant"))
-                    .map(([nm, a]) => `<button type="button" class="sf3-row" data-cust="${escapeAttr(nm)}"><span class="sf3-nm">${escapeHtml(nm)}</span><span class="sf3-tag ${a.p > 0 ? "warn" : ""}" title="${a.n} 單${a.p ? "，" + a.p + " 未確認" : ""}">${a.n}${a.p ? "·" + a.p + "待" : ""}</span></button>`).join("");
+            const sf3Cal = (() => {
+                const [cy, cm] = calM.split("-").map(Number);
+                const daysInMonth = new Date(Date.UTC(cy, cm, 0)).getUTCDate();
+                const firstWd = new Date(Date.UTC(cy, cm - 1, 1)).getUTCDay(); // 0=日
+                const fmtM = (dt) => dt.getUTCFullYear() + "-" + String(dt.getUTCMonth() + 1).padStart(2, "0");
+                const prevM = fmtM(new Date(Date.UTC(cy, cm - 2, 1)));
+                const nextM = fmtM(new Date(Date.UTC(cy, cm, 1)));
+                const rangeQ = `date_from=${encodeURIComponent(filterDateFrom)}&date_to=${encodeURIComponent(filterDateTo)}`;
+                let h = `<div class="sf3-cal"><div class="sf3-cal-head">
+                    <a class="sf3-cal-nav" href="/admin/orders?${rangeQ}${keepQ}&cal=${prevM}" title="上個月">‹</a>
+                    <span>${cy} 年 ${cm} 月</span>
+                    <a class="sf3-cal-nav" href="/admin/orders?${rangeQ}${keepQ}&cal=${nextM}" title="下個月">›</a>
+                  </div><div class="sf3-cal-grid">`;
+                h += "日一二三四五六".split("").map((w) => `<span class="sf3-cal-wd">${w}</span>`).join("");
+                for (let i = 0; i < firstWd; i++) h += "<span></span>";
+                for (let d = 1; d <= daysInMonth; d++) {
+                    const ds = calM + "-" + String(d).padStart(2, "0");
+                    const c = dayCounts.get(ds);
+                    const cls = (singleDay && filterDateFrom === ds ? " on" : "") + (ds === today ? " today" : "");
+                    const cnt = c ? `<span class="c ${c.p > 0 ? "warn" : ""}" title="${c.n} 單${c.p ? "，" + c.p + " 未確認" : ""}">${c.n}</span>` : `<span class="c">&nbsp;</span>`;
+                    h += `<a class="sf3-cal-d${cls}" href="/admin/orders?date_from=${ds}&date_to=${ds}${keepQ}&cal=${calM}" title="${ds}${c ? `：${c.n} 單${c.p ? "、" + c.p + " 未確認" : ""}` : ""}"><span class="n">${d}</span>${cnt}</a>`;
+                }
+                h += `</div><div class="sf3-cal-foot"><a href="/admin/orders?date_from=${today}&date_to=${today}${keepQ}&cal=${today.slice(0, 7)}">回今天</a>${!singleDay ? `<span style="font-size:11px;color:var(--txt-3);display:block;margin-top:3px;">目前查詢區間 ${escapeHtml(filterDateFrom.slice(5))}～${escapeHtml(filterDateTo.slice(5))}</span>` : ""}</div></div>`;
+                return h;
+            })();
             const statCard = (label, num, status, href) => `
               <a href="${href || "#"}" style="text-decoration:none;color:inherit;padding:10px 16px;background:var(--bg-1);border:var(--hairline);border-radius:var(--radius-md);flex:1;display:flex;align-items:center;gap:10px;min-width:140px;">
                 <span class="sf-dot ${status}"></span>
@@ -11693,14 +11715,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           ${req.query.err === "baddate" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">改出貨日失敗：請確認已勾選訂單並選了有效日期</div>" : ""}
           ${req.query.ok === "approved_done" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">🎉 全部待確認都處理完了</div>" : ""}
           ${req.query.err === "none" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">請先勾選要處理的訂單</div>" : ""}
-          <div class="sf3-grid">
+          <div class="sf3-grid cols2">
             <div class="sf3-col">
               <div class="sf3-col-h">出貨日</div>
-              <div class="sf3-col-body">${sf3DateCol}</div>
-            </div>
-            <div class="sf3-col">
-              <div class="sf3-col-h">客戶（此區間）</div>
-              <div class="sf3-col-body" id="sf3CustCol">${sf3CustCol}</div>
+              ${sf3Cal}
             </div>
             <div style="min-width:0;display:flex;flex-direction:column;gap:16px;">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
@@ -12026,18 +12044,6 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             if (fo) fo.addEventListener("input", applyListFilters);
             if (fc) fc.addEventListener("input", applyListFilters);
             if (fr) fr.addEventListener("change", applyListFilters);
-            // 三欄客戶欄：點客戶＝只看該客戶（再點一次或點「全部客戶」還原）；跟上方文字篩選可疊加
-            var custCol = document.getElementById("sf3CustCol");
-            if (custCol) custCol.addEventListener("click", function(e){
-              var row = e.target.closest(".sf3-row[data-cust]");
-              if (!row) return;
-              var nm = row.getAttribute("data-cust") || "";
-              window.__sf3Cust = (nm && window.__sf3Cust === nm) ? "" : nm;
-              custCol.querySelectorAll(".sf3-row").forEach(function(r){
-                r.classList.toggle("on", (r.getAttribute("data-cust") || "") === window.__sf3Cust);
-              });
-              applyListFilters();
-            });
             // 即時統計勾選數
             function updateSelectedHint(){
               var n = document.querySelectorAll(".order-batch-cb:checked").length;
@@ -15478,7 +15484,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const orderStatusDisplay = orderStatusLc === "approved" ? "已確認" : orderStatusLc === "pending" ? "待確認" : orderStatusLc === "deleted" ? "已作廢" : orderStatusLc === "complaint" ? "客訴" : escapeHtml(String(order.status || ""));
         const confirmOrderFormHtml = orderStatusLc === "approved"
             ? `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/unapprove?back=${encodeURIComponent(backTo)}" id="approveOrderForm" style="display:inline;margin:0;flex:0 0 auto;"><button type="submit" class="btn btn-cute-approve" title="再按一次可撤銷確認" onclick="return confirm('確定要撤銷確認？訂單將恢復為待確認。');">已確認</button></form>`
-            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}&next=1" id="approveOrderForm" style="display:inline;margin:0;flex:0 0 auto;" title="確認後自動跳到下一筆待確認"><button type="submit" class="btn btn-cute-approve">確認 → 下一筆</button></form>`;
+            : `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/approve?back=${encodeURIComponent(backTo)}" id="approveOrderForm" style="display:inline;margin:0;flex:0 0 auto;" title="確認後回訂單列表"><button type="submit" class="btn btn-cute-approve">確認</button></form>`;
         const toComplaintFormHtml = orderStatusLc === "complaint" || orderStatusLc === "deleted"
             ? ""
             : `<button type="button" id="btnToComplaint" data-order-id="${escapeAttr(orderId)}" class="sf-btn sm" title="此筆其實是客訴而非訂單，按下將轉入客訴處理流程（轉完留在本頁，不跳轉）" style="color:#c2410c;border-color:#fed7aa;">⚠ 轉為客訴</button>`;
@@ -16252,7 +16258,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             </script>
             <div style="padding:12px 14px;border-top:var(--hairline);display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
               <button type="submit" class="sf-btn primary" title="儲存數量、單位、備註與排序">${SF_ICONS.check}<span>儲存明細</span></button>
-              ${orderStatusLc === "approved" || orderStatusLc === "deleted" || orderStatusLc === "complaint" ? "" : `<button type="submit" form="approveOrderForm" class="btn btn-cute-approve" title="核對完畢，直接確認並跳到下一筆待確認">確認 → 下一筆</button>`}
+              ${orderStatusLc === "approved" || orderStatusLc === "deleted" || orderStatusLc === "complaint" ? "" : `<button type="submit" form="approveOrderForm" class="btn btn-cute-approve" title="核對完畢，確認後回訂單列表">確認</button>`}
             </div>
           </div>
           ${(voidedItems && voidedItems.length) ? `
@@ -17859,7 +17865,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             res.redirect((backTo || "/admin/orders") + (backTo.includes("?") ? "&" : "?") + "ok=approved_done");
             return;
         }
-        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=approved" + (backTo ? "&back=" + encodeURIComponent(backTo) : ""));
+        // [2026-07-16 使用者定案] 取消「確認後自動跳下一筆」：確認完直接回訂單列表（帶原日期/篩選），
+        // 不再被帶去別的訂單點來點去。goNext 分支保留（無按鈕使用）以防外部連結帶 next=1。
+        if (backTo) {
+            res.redirect(backTo + (backTo.includes("?") ? "&" : "?") + "ok=approved");
+            return;
+        }
+        res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=approved");
     });
     router.post("/orders/:orderId/set-date", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const { orderId } = req.params;
