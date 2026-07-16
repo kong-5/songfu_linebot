@@ -7501,6 +7501,22 @@ function createAdminRouter() {
         function niceTicks(min,max,n){ var span=max-min||1,step0=span/n,mag=Math.pow(10,Math.floor(Math.log(step0)/Math.LN10)); var cands=[1,2,2.5,5,10],step=10*mag; for(var i=0;i<cands.length;i++){ if(span/(cands[i]*mag)<=n){ step=cands[i]*mag; break; } } var t=[]; for(var v=Math.ceil(min/step)*step; v<=max+1e-9; v+=step)t.push(Math.round(v*1e6)/1e6); return t; }
         var WEEK="日一二三四五六";
         function mdOf(d){ return (+d.slice(5,7))+"/"+(+d.slice(8,10)); }
+        // 補日曆日：沒推送快照的日子沿用前一日期末（syn 標記，畫成灰色持平棒），K 棒才不會跳日斷開
+        function fillDaily(bars){
+          if(bars.length<2) return bars;
+          var map={}; bars.forEach(function(b){ map[b.d]=b; });
+          var out=[],prev=null;
+          var cur=new Date(bars[0].d+"T00:00:00"),end=new Date(bars[bars.length-1].d+"T00:00:00");
+          var guard=0;
+          while(cur<=end&&guard++<400){
+            var d=cur.getFullYear()+"-"+String(cur.getMonth()+1).padStart(2,"0")+"-"+String(cur.getDate()).padStart(2,"0");
+            var b=map[d];
+            if(b){ out.push(b); prev=b; }
+            else if(prev) out.push({d:d,open:prev.close,high:prev.close,low:prev.close,close:prev.close,syn:true});
+            cur.setDate(cur.getDate()+1);
+          }
+          return out;
+        }
         // 期初＝前一天的期末（串鏈）：舊快照只有收盤量也能連起來、每天都看得到當日變動
         function chainBars(bars){
           for(var i=0;i<bars.length;i++){
@@ -7526,7 +7542,7 @@ function createAdminRouter() {
           var pad=(hi-lo)*0.12||5; lo=lo-pad; hi=hi+pad;
           function X(i){ return padL+(i+0.5)*(W-padL-padR)/bars.length; }
           function Y(v){ return padT+(hi-v)*(H-padT-padB)/(hi-lo); }
-          var slot=(W-padL-padR)/bars.length, bw=Math.max(3,Math.min(11,slot*0.55));
+          var slot=(W-padL-padR)/bars.length, bw=Math.max(3,Math.min(16,slot*0.75));
           niceTicks(lo,hi,5).forEach(function(v){
             el("line",{x1:padL,x2:W-padR,y1:Y(v),y2:Y(v),stroke:css("--ivs-grid"),"stroke-width":1},svg);
             el("text",{x:padL-8,y:Y(v)+4,"text-anchor":"end","font-size":11,fill:css("--ivs-mut"),style:"font-variant-numeric:tabular-nums"},svg).textContent=fmtN(v);
@@ -7535,9 +7551,16 @@ function createAdminRouter() {
           var lblEvery=Math.ceil(bars.length/10);
           bars.forEach(function(b,i){ if(i%lblEvery===0) el("text",{x:X(i),y:H-padB+18,"text-anchor":"middle","font-size":11,fill:css("--ivs-mut")},svg).textContent=mdOf(b.d); });
           var upC=css("--ivs-up"),dnC=css("--ivs-down"),lineC=css("--ivs-line"),surfC=css("--ivs-card")||"#fff";
+          // 期末連線（墊在 K 棒底下）：像看盤軟體一樣把每天串起來
+          el("path",{d:bars.map(function(b,i){ return (i?"L":"M")+X(i).toFixed(1)+","+Y(b.close).toFixed(1); }).join(" "),
+            fill:"none",stroke:css("--ivs-mut"),"stroke-width":1.2,opacity:.5,"stroke-linejoin":"round"},svg);
           bars.forEach(function(b,i){
-            var up=b.close>=b.open, col=up?upC:dnC;
             if(b.varPct!=null) el("line",{x1:X(i),x2:X(i),y1:padT,y2:H-padB,stroke:css("--ivs-base"),"stroke-width":1,"stroke-dasharray":"2 4"},svg);
+            if(b.syn){ // 無推送日：灰色持平小橫棒（沿用前一日期末）
+              el("line",{x1:X(i)-bw/2,x2:X(i)+bw/2,y1:Y(b.close),y2:Y(b.close),stroke:css("--ivs-base"),"stroke-width":1.6},svg);
+              return;
+            }
+            var up=b.close>=b.open, col=up?upC:dnC;
             el("line",{x1:X(i),x2:X(i),y1:Y(b.high),y2:Y(b.low),stroke:col,"stroke-width":1.6},svg);
             var y1=Y(Math.max(b.open,b.close)),y2=Y(Math.min(b.open,b.close));
             el("rect",{x:X(i)-bw/2,y:y1,width:bw,height:Math.max(2,y2-y1),rx:2,fill:up?css("--ivs-up-soft"):col,stroke:col,"stroke-width":up?1.6:0},svg);
@@ -7556,6 +7579,7 @@ function createAdminRouter() {
             var gname=opts.granName||"當日";
             cross.style.display=""; cx.setAttribute("x1",X(i)); cx.setAttribute("x2",X(i));
             showTip('<div class="td">'+esc(b.d)+'（'+wdOf(b.d)+'）</div>'+
+              (b.syn?'<div class="tr" style="color:var(--ivs-mut);"><span>當日無庫存推送，沿用前一日</span></div>':'')+
               '<div class="tr"><span>'+(gname==="當日"?"期初（昨日期末）":"期初")+'</span><b>'+fmtN(b.open)+'</b></div>'+
               '<div class="tr"><span>最高 / 最低</span><b>'+fmtN(b.high)+' / '+fmtN(b.low)+'</b></div>'+
               '<div class="tr"><span>期末</span><b>'+fmtN(b.close)+'</b></div>'+
@@ -7676,7 +7700,9 @@ function createAdminRouter() {
           var scopeTxt=S.wh&&j.scope==="company"?"⚠ 此倉尚無分倉每日快照，顯示全公司量（分倉資料自今日起累積）":(S.wh?"分倉量":"全公司量");
           document.getElementById("ivsKNote").textContent=scopeTxt+(S.item.unit?" · 單位："+S.item.unit:"");
           var vmap={}; (j.variance||[]).forEach(function(v){ vmap[v.d]={p:v.var_pct,c:v.counted,s:v.sys}; });
-          var bars=chainBars((j.bars||[]).map(function(b){ var v=vmap[b.d]; return {d:b.d,open:b.open,high:b.high,low:b.low,close:b.close,varPct:v?v.p:null,counted:v?v.c:null}; }));
+          var bars=fillDaily((j.bars||[]).map(function(b){ return {d:b.d,open:b.open,high:b.high,low:b.low,close:b.close}; }));
+          bars.forEach(function(b){ var v=vmap[b.d]; b.varPct=v?v.p:null; b.counted=v?v.c:null; });
+          bars=chainBars(bars);
           var pts=(j.variance||[]).map(function(v){ return {d:v.d,varPct:v.var_pct,counted:v.counted,sys:v.sys}; });
           if(S.gran==="d"){ bars=bars.slice(-S.period); var cut=bars.length?bars[0].d:""; pts=pts.filter(function(p){ return !cut||p.d>=cut; }); }
           else { bars=aggBars(bars,S.gran,S.period); pts=aggPts(pts,S.gran,S.period); }
@@ -7701,7 +7727,7 @@ function createAdminRouter() {
           var svg=el("svg",{viewBox:"0 0 "+W+" "+H});
           var bars=[],prev=null;
           closes.forEach(function(c,i){
-            if(c==null){ bars.push(null); return; }
+            if(c==null){ bars.push(prev==null?null:{o:prev,c:prev,syn:true}); return; }
             var o=prev==null?c:prev;
             bars.push({o:o,c:c}); prev=c;
           });
@@ -7716,8 +7742,13 @@ function createAdminRouter() {
           var X=function(i){ return p+(i+0.5)*slot; };
           var Y=function(v){ return p+(hi-v)*(H-2*p)/(hi-lo); };
           var upC=css("--ivs-up"),dnC=css("--ivs-down"),surf=css("--ivs-card")||"#fff";
+          // 期末連線墊底，K 棒視覺連續
+          var lp="",pen=false;
+          bars.forEach(function(b,i){ if(!b){ pen=false; return; } lp+=(pen?"L":"M")+X(i).toFixed(1)+","+Y(b.c).toFixed(1); pen=true; });
+          if(lp) el("path",{d:lp,fill:"none",stroke:css("--ivs-mut"),"stroke-width":1,opacity:.5,"stroke-linejoin":"round"},svg);
           bars.forEach(function(b,i){
             if(!b) return;
+            if(b.syn){ el("line",{x1:X(i)-bw/2,x2:X(i)+bw/2,y1:Y(b.c),y2:Y(b.c),stroke:css("--ivs-base"),"stroke-width":1.2},svg); return; }
             var up=b.c>=b.o,col=up?upC:dnC;
             var y1=Y(Math.max(b.o,b.c)),y2=Y(Math.min(b.o,b.c));
             el("rect",{x:X(i)-bw/2,y:y1,width:bw,height:Math.max(1.5,y2-y1),rx:1,
@@ -7871,7 +7902,9 @@ function createAdminRouter() {
           var key=it.code+"|"+S.wh;
           var render=function(kj){
             var vmap={}; (kj.variance||[]).forEach(function(v){ vmap[v.d]={p:v.var_pct,c:v.counted,s:v.sys}; });
-            var bars=chainBars((kj.bars||[]).map(function(b){ var v=vmap[b.d]; return {d:b.d,open:b.open,high:b.high,low:b.low,close:b.close,varPct:v?v.p:null,counted:v?v.c:null}; })).slice(-30);
+            var bars=fillDaily((kj.bars||[]).map(function(b){ return {d:b.d,open:b.open,high:b.high,low:b.low,close:b.close}; }));
+            bars.forEach(function(b){ var v=vmap[b.d]; b.varPct=v?v.p:null; b.counted=v?v.c:null; });
+            bars=chainBars(bars).slice(-30);
             var cut=bars.length?bars[0].d:"";
             var pts=(kj.variance||[]).map(function(v){ return {d:v.d,varPct:v.var_pct,counted:v.counted,sys:v.sys}; }).filter(function(p){ return !cut||p.d>=cut; });
             renderK(document.getElementById("ivsDK"),bars,"",{w:620,h:250});
