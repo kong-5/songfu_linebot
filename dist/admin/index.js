@@ -6846,7 +6846,6 @@ function createAdminRouter() {
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
         <span id="stkRefreshMsg" style="font-size:12px;color:#8a5a10;"></span>
         <span style="flex:1"></span>
-        <a href="/admin/inventory/legacy" style="font-size:12px;color:#9b9a97;">舊版盤點作業 →</a>
       </form>
       ${(req.query.cok || req.query.adjok) ? `<div style="background:#e7f5e9;color:#2e7d32;padding:8px 12px;border-radius:8px;margin:0 0 12px;font-size:13px;">已更新。</div>` : ""}
       ${(req.query.cerr || req.query.adjerr) ? `<div style="background:#fdecec;color:#b3261e;padding:8px 12px;border-radius:8px;margin:0 0 12px;font-size:13px;">操作失敗：${escapeHtml(String(req.query.cerr || req.query.adjerr))}</div>` : ""}
