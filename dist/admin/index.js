@@ -1878,7 +1878,6 @@ function sfSidebar(active, opts = {}) {
       <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-stats","inv-adjust","inv-settings"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory", "inventory", "clipboard", "盤點")}
-        ${item("/admin/inventory/stats", "inv-stats", "chartLine", "庫存統計圖表")}
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
         ${item("/admin/inventory/adjustments", "inv-adjust", "refresh", "庫存調整")}
         ${item("/admin/inventory/warehouse-settings", "inv-settings", "pin", "盤點設定")}
@@ -7206,6 +7205,19 @@ function createAdminRouter() {
             if (!rows.length) {
                 try { rows = (await db.prepare("SELECT erp_code, snap_date AS d, qty FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date >= ? ORDER BY snap_date").all(icpno, since)) || []; } catch (_) { rows = []; }
             }
+            // 選了倉但沒有分倉每日快照（退回全公司量）時，品項仍要照倉別過濾（erp_stock_items.wh_code），
+            // 不然點左側倉庫清單看起來「品項都沒變」；分倉現量另查 erp_stock_wh_qty（卡片現量＋隱藏庫存0用）。
+            let whCodes = null, whQty = null;
+            if (wh) {
+                try {
+                    const wc = (await db.prepare("SELECT erp_code FROM erp_stock_items WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND wh_code = ?").all(icpno, wh)) || [];
+                    whCodes = new Set(wc.map((r) => String(r.erp_code)));
+                } catch (_) { whCodes = null; }
+                try {
+                    const wq = (await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND wh_code = ?").all(icpno, wh)) || [];
+                    if (wq.length) whQty = new Map(wq.map((r) => [String(r.erp_code), Number(r.qty || 0)]));
+                } catch (_) { whQty = null; }
+            }
             const dates = Array.from(new Set(rows.map((r) => String(r.d)))).sort();
             const idx = new Map(dates.map((d, i) => [d, i]));
             const meta = new Map();
@@ -7242,8 +7254,14 @@ function createAdminRouter() {
                 const it = items.get(k.slice(0, p));
                 if (it) it.counts[k.slice(p + 1)] = { v: statsVarPct(a.sys, a.counted), c: a.counted };
             }
-            const out = Array.from(items.values()).sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")).slice(0, 400);
-            res.json({ scope, dates, items: out });
+            let list = Array.from(items.values());
+            const whFiltered = !!(wh && scope === "company" && whCodes && whCodes.size);
+            if (whFiltered)
+                list = list.filter((it) => whCodes.has(it.code) || Object.keys(it.counts).length); // 該倉有盤過的也留
+            if (whQty)
+                for (const it of list) it.qty = whQty.has(it.code) ? whQty.get(it.code) : 0;
+            const out = list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")).slice(0, 400);
+            res.json({ scope, whFiltered, dates, items: out });
         }
         catch (e) {
             res.status(500).json({ error: String(e?.message || e) });
@@ -7357,7 +7375,7 @@ function createAdminRouter() {
         .hmg-cell{width:24px;height:24px;border-radius:5px;cursor:pointer;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;color:transparent;box-sizing:border-box;border:0;padding:0;font-family:inherit;}
         .hmg-cell:hover{outline:2px solid #2383e2;outline-offset:1px;}
         .hmg-cell.sel{outline:2px solid currentColor;outline-offset:1px;}
-        .hmg-cell.na{background:transparent !important;border:1px dashed var(--ivs-grid);cursor:default;}
+        .hmg-cell.na{background:linear-gradient(to top right,transparent calc(50% - 0.6px),var(--ivs-base) calc(50% - 0.6px),var(--ivs-base) calc(50% + 0.6px),transparent calc(50% + 0.6px)) !important;border:1px solid var(--ivs-grid);cursor:default;}
         .hmg-cell.showv{color:inherit;}
         .ivs-hm-legend{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ivs-mut);margin-top:10px;}
         .ivs-hm-grad{width:150px;height:9px;border-radius:5px;background:linear-gradient(90deg,var(--ivs-neg),var(--ivs-mid) 50%,var(--ivs-pos));}
@@ -7398,9 +7416,12 @@ function createAdminRouter() {
           <div class="ivs-col" id="ivsGranCol"></div>
           <div class="ivs-col" id="ivsWhCol"></div>
           <div style="min-width:0;">
-            <div class="ivs-search">
-              <svg class="mag" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
-              <input type="search" id="ivsQ" placeholder="搜尋品項（品名／料號／規格，模糊比對）…" autocomplete="off">
+            <div style="display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;margin-bottom:12px;">
+              <div class="ivs-search" style="flex:1;min-width:220px;margin-bottom:0;">
+                <svg class="mag" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+                <input type="search" id="ivsQ" placeholder="搜尋品項（品名／料號／規格，模糊比對）…" autocomplete="off">
+              </div>
+              <label class="sf-switch-label"><input type="checkbox" id="ivsHideZero"><span class="sf-switch"></span>隱藏庫存＝0</label>
             </div>
             <div class="ivs-card" id="ivsListCard">
               <div class="ivs-card-h">
@@ -7427,7 +7448,7 @@ function createAdminRouter() {
             <div class="ivs-card">
               <div class="ivs-card-h">
                 <div class="ivs-card-t">盤差％</div>
-                <span class="ivs-note" id="ivsVNote">當日最後盤差；灰帶＝±2% 目標；紅點＝|盤差| 超過 2%</span>
+                <span class="ivs-note" id="ivsVNote">當日最後盤差；紅柱＝盤盈（實盤多）、藍柱＝盤虧（實盤少）；灰帶＝±2% 目標</span>
               </div>
               <div class="ivs-chart" id="ivsV"></div>
             </div>
@@ -7442,12 +7463,12 @@ function createAdminRouter() {
           <div class="ivs-card" style="margin-bottom:0;">
             <div class="ivs-card-h">
               <div class="ivs-card-t">盤差熱力圖（品項 × 日期）</div>
-              <span class="ivs-note">紅＝盤盈（實盤多）、藍＝盤虧（實盤少）；虛線空格＝當日未盤</span>
+              <span class="ivs-note">紅＝盤盈（實盤多）、藍＝盤虧（實盤少）；斜線＝當日未盤</span>
             </div>
             <div class="ivs-heat-tools">
               <input type="search" id="ivsHQ" placeholder="搜尋品項…" autocomplete="off">
-              <label style="display:inline-flex;align-items:center;gap:5px;"><input type="checkbox" id="ivsHOnly"> 只看有盤差</label>
-              <label style="display:inline-flex;align-items:center;gap:5px;"><input type="checkbox" id="ivsHShowV"> 格內顯示數值</label>
+              <label class="sf-switch-label"><input type="checkbox" id="ivsHOnly"><span class="sf-switch"></span>只看有盤差</label>
+              <label class="sf-switch-label"><input type="checkbox" id="ivsHShowV"><span class="sf-switch"></span>格內顯示數值</label>
               <span class="ivs-note" id="ivsHCount"></span>
               <span style="flex:1"></span>
               <span class="ivs-flabel">期間</span>
@@ -7487,7 +7508,7 @@ function createAdminRouter() {
         "use strict";
         var ICPNO=${JSON.stringify(icpno)};
         var WHS=${whJson};
-        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hDays:14, hOnly:false, hShowV:false, hShowAll:true, hQ:"", hSel:null};
+        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hideZero:false, hDays:14, hOnly:false, hShowV:false, hShowAll:true, hQ:"", hSel:null};
         var klineCache={}; // code|wh -> {scope,bars,variance}
         var heatCache={};  // wh|days -> {dates,items}
         var root=document.querySelector(".ivs-root");
@@ -7591,16 +7612,16 @@ function createAdminRouter() {
           hit.addEventListener("mouseleave",function(){ cross.style.display="none"; hideTip(); });
         }
 
-        /* ── 盤差％折線（pts: [{d,varPct,counted,sys}]） ── */
+        /* ── 盤差％長條（pts: [{d,varPct,counted,sys}]）：0 軸置中、紅柱＝盤盈、藍柱＝盤虧（同熱力圖配色），方向大小一眼看出 ── */
         function renderV(host,pts,opts){
           opts=opts||{};
           host.innerHTML="";
           if(!pts.length){ host.innerHTML='<div class="ivs-empty">此期間沒有盤點記錄。</div>'; return; }
-          var W=opts.w||960,H=opts.h||230,padL=56,padR=14,padT=14,padB=30;
-          var svg=el("svg",{viewBox:"0 0 "+W+" "+H,"aria-label":"盤差百分比折線圖"},host);
-          var lo=-3,hi=3;
-          pts.forEach(function(p){ if(p.varPct!=null){ lo=Math.min(lo,p.varPct); hi=Math.max(hi,p.varPct); } });
-          lo=Math.floor(lo-0.8); hi=Math.ceil(hi+0.8);
+          var W=opts.w||960,H=opts.h||230,padL=56,padR=14,padT=20,padB=30;
+          var svg=el("svg",{viewBox:"0 0 "+W+" "+H,"aria-label":"盤差百分比長條圖"},host);
+          var m=3;
+          pts.forEach(function(p){ if(p.varPct!=null) m=Math.max(m,Math.abs(p.varPct)); });
+          var hi=Math.ceil(m*1.15+0.5),lo=-hi; // 上下對稱、0 在正中
           function X(i){ return padL+(i+0.5)*(W-padL-padR)/pts.length; }
           function Y(v){ return padT+(hi-v)*(H-padT-padB)/(hi-lo); }
           el("rect",{x:padL,y:Y(2),width:W-padL-padR,height:Y(-2)-Y(2),fill:css("--ivs-grid"),opacity:.55},svg);
@@ -7611,14 +7632,15 @@ function createAdminRouter() {
           el("line",{x1:padL,x2:W-padR,y1:Y(0),y2:Y(0),stroke:css("--ivs-base"),"stroke-width":1.2},svg);
           var lblEvery=Math.ceil(pts.length/10);
           pts.forEach(function(p,i){ if(i%lblEvery===0) el("text",{x:X(i),y:H-padB+18,"text-anchor":"middle","font-size":11,fill:css("--ivs-mut")},svg).textContent=mdOf(p.d); });
-          var lineC=css("--ivs-line"),alertC=css("--ivs-up"),surf=css("--ivs-card")||"#fff";
-          var path=pts.map(function(p,i){ return (i?"L":"M")+X(i).toFixed(1)+","+Y(p.varPct).toFixed(1); }).join(" ");
-          el("path",{d:path,fill:"none",stroke:lineC,"stroke-width":2,"stroke-linejoin":"round","stroke-linecap":"round"},svg);
+          var posC=css("--ivs-pos"),negC=css("--ivs-neg"),mutC=css("--ivs-mut");
+          var slot=(W-padL-padR)/pts.length,bw=Math.max(6,Math.min(26,slot*0.55)),showLab=slot>=30;
           pts.forEach(function(p,i){
-            var alert=Math.abs(p.varPct)>2;
-            el("circle",{cx:X(i),cy:Y(p.varPct),r:alert?4.6:3.4,fill:alert?alertC:lineC,stroke:surf,"stroke-width":2},svg);
+            var v=p.varPct==null?0:p.varPct,col=v>=0?posC:negC;
+            var y0=Y(0),y1=Y(v),top=Math.min(y0,y1),hgt=Math.abs(y1-y0);
+            if(hgt<2){ top=y0-1; hgt=2; } // 盤差 0% 也畫一小節：有盤、剛好沒差
+            el("rect",{x:X(i)-bw/2,y:top,width:bw,height:hgt,rx:2,fill:col,opacity:v===0?.45:.9},svg);
+            if(showLab) el("text",{x:X(i),y:v>=0?y1-5:y1+13,"text-anchor":"middle","font-size":10.5,"font-weight":700,fill:v===0?mutC:col,style:"font-variant-numeric:tabular-nums"},svg).textContent=(v>0?"+":"")+v+"%";
           });
-          var slot=(W-padL-padR)/pts.length;
           var hit=el("rect",{x:padL,y:padT,width:W-padL-padR,height:H-padT-padB,fill:"transparent"},svg);
           hit.addEventListener("mousemove",function(ev){
             var box=svg.getBoundingClientRect(),mx=(ev.clientX-box.left)*W/box.width;
@@ -7709,7 +7731,7 @@ function createAdminRouter() {
           var pts=(j.variance||[]).map(function(v){ return {d:v.d,varPct:v.var_pct,counted:v.counted,sys:v.sys}; });
           if(S.gran==="d"){ bars=bars.slice(-S.period); var cut=bars.length?bars[0].d:""; pts=pts.filter(function(p){ return !cut||p.d>=cut; }); }
           else { bars=aggBars(bars,S.gran,S.period); pts=aggPts(pts,S.gran,S.period); }
-          document.getElementById("ivsVNote").textContent=S.gran==="d"?"當日最後盤差；灰帶＝±2% 目標；紅點＝|盤差| 超過 2%":"每"+granName+"取期間內最大 |盤差|；灰帶＝±2% 目標";
+          document.getElementById("ivsVNote").textContent=S.gran==="d"?"當日最後盤差；紅柱＝盤盈（實盤多）、藍柱＝盤虧（實盤少）；灰帶＝±2% 目標":"每"+granName+"取期間內最大 |盤差|；紅柱＝盤盈、藍柱＝盤虧；灰帶＝±2% 目標";
           renderK(kHost,bars,S.item.unit,{granName:"當"+granName});
           renderV(vHost,pts,{});
         }
@@ -7768,10 +7790,11 @@ function createAdminRouter() {
           var j=seriesCache[S.wh];
           if(!j){ loadGrid(); return; }
           var q=listQ.toLowerCase();
-          var list=q?j.items.filter(function(it){ return (it.code+" "+it.name+" "+(it.spec||"")).toLowerCase().indexOf(q)>=0; }):j.items;
-          var scopeTxt=S.wh&&j.scope==="company"?"（⚠ 此倉尚無分倉每日快照，顯示全公司量）":"";
-          document.getElementById("ivsListCount").textContent="共 "+j.items.length+" 項"+(q?("，符合 "+list.length+" 項"):"")+" · 近 30 天走勢，藍點＝盤點、紅點＝|盤差|>2%"+scopeTxt;
-          if(!list.length){ host.innerHTML='<div class="ivs-empty" style="grid-column:1/-1;">'+(j.items.length?("找不到「"+esc(listQ)+"」，換個關鍵字試試。"):"此範圍尚無每日快照資料（庫存推送啟用後開始累積）。")+'</div>'; return; }
+          var list=q?j.items.filter(function(it){ return (it.code+" "+it.name+" "+(it.spec||"")).toLowerCase().indexOf(q)>=0; }):j.items.slice();
+          if(S.hideZero) list=list.filter(function(it){ return it.qty==null||Number(it.qty)!==0; });
+          var scopeTxt=S.wh&&j.scope==="company"?(j.whFiltered?"（品項已依倉別篩選；⚠ 此倉尚無分倉每日快照，走勢為全公司量）":"（⚠ 此倉尚無分倉每日快照，顯示全公司量）"):"";
+          document.getElementById("ivsListCount").textContent="共 "+j.items.length+" 項"+((q||S.hideZero)?("，顯示 "+list.length+" 項"):"")+" · 近 30 天走勢，藍點＝盤點、紅點＝|盤差|>2%"+scopeTxt;
+          if(!list.length){ host.innerHTML='<div class="ivs-empty" style="grid-column:1/-1;">'+(j.items.length?(q?("找不到「"+esc(listQ)+"」，換個關鍵字試試。"):"沒有庫存非 0 的品項（右上開關可切回全部）。"):"此範圍尚無每日快照資料（庫存推送啟用後開始累積）。")+'</div>'; return; }
           var shown=list.slice(0,LIST_CAP);
           host.innerHTML=shown.map(function(it,i){
             var first=null,last=null;
@@ -7811,6 +7834,10 @@ function createAdminRouter() {
         document.getElementById("ivsQ").addEventListener("input",function(){
           listQ=this.value.trim();
           showList(); // 打字＝回到清單即時過濾
+        });
+        document.getElementById("ivsHideZero").addEventListener("change",function(){
+          S.hideZero=this.checked;
+          if(!document.getElementById("ivsListCard").hidden) drawList();
         });
 
         /* ── 熱力圖 ── */
