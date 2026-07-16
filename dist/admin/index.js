@@ -7283,7 +7283,7 @@ function createAdminRouter() {
                     if (Math.abs(p) > maxAbs) maxAbs = Math.abs(p);
                 }
                 return { code: it.code, name: it.name, spec: it.spec, cells, max_abs: maxAbs };
-            }).sort((a, b) => b.max_abs - a.max_abs).slice(0, 200); // 護欄：最多 200 品項（已依嚴重度排序，截掉的都是後段）
+            }).sort((a, b) => b.max_abs - a.max_abs).slice(0, 400); // 護欄：最多 400 品項（已依嚴重度排序，截掉的都是後段）
             res.json({ dates, items: out });
         }
         catch (e) {
@@ -7353,15 +7353,15 @@ function createAdminRouter() {
         .ivs-heat-scroll{overflow-x:auto;}
         .ivs-hmg{display:grid;gap:2px;width:max-content;}
         .hmg-h{font-weight:600;color:var(--ivs-mut);text-align:center;white-space:nowrap;font-size:10px;line-height:1.3;align-self:end;overflow:hidden;}
-        .hmg-r{font-size:11.5px;font-weight:600;color:var(--ivs-ink2);text-align:right;padding-right:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:center;min-width:0;}
-        .hmg-cell{width:30px;height:30px;border-radius:6px;cursor:pointer;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;color:transparent;box-sizing:border-box;border:0;padding:0;font-family:inherit;}
+        .hmg-r{font-size:11px;font-weight:600;color:var(--ivs-ink2);text-align:right;padding-right:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:center;min-width:0;}
+        .hmg-cell{width:24px;height:24px;border-radius:5px;cursor:pointer;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;color:transparent;box-sizing:border-box;border:0;padding:0;font-family:inherit;}
         .hmg-cell:hover{outline:2px solid #2383e2;outline-offset:1px;}
         .hmg-cell.sel{outline:2px solid currentColor;outline-offset:1px;}
         .hmg-cell.na{background:transparent !important;border:1px dashed var(--ivs-grid);cursor:default;}
         .hmg-cell.showv{color:inherit;}
         .ivs-hm-legend{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ivs-mut);margin-top:10px;}
         .ivs-hm-grad{width:150px;height:9px;border-radius:5px;background:linear-gradient(90deg,var(--ivs-neg),var(--ivs-mid) 50%,var(--ivs-pos));}
-        .ivs-grid-heat{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:14px;align-items:start;}
+        .ivs-grid-heat{display:grid;grid-template-columns:235px minmax(0,1fr) 270px;gap:14px;align-items:start;}
         @media (max-width:1020px){ .ivs-grid-heat{grid-template-columns:1fr;} }
         .ivs-rank{display:flex;align-items:center;gap:9px;padding:8px 2px;border-bottom:1px solid var(--ivs-grid);cursor:pointer;border-radius:6px;}
         .ivs-rank:hover{background:rgba(35,131,226,.05);}
@@ -7438,6 +7438,7 @@ function createAdminRouter() {
 
       <div id="ivsHeat" hidden>
         <div class="ivs-grid-heat">
+          <div class="ivs-col" id="ivsHWhCol"></div>
           <div class="ivs-card" style="margin-bottom:0;">
             <div class="ivs-card-h">
               <div class="ivs-card-t">盤差熱力圖（品項 × 日期）</div>
@@ -7445,7 +7446,7 @@ function createAdminRouter() {
             </div>
             <div class="ivs-heat-tools">
               <input type="search" id="ivsHQ" placeholder="搜尋品項…" autocomplete="off">
-              <label style="display:inline-flex;align-items:center;gap:5px;"><input type="checkbox" id="ivsHOnly" checked> 只看有盤差</label>
+              <label style="display:inline-flex;align-items:center;gap:5px;"><input type="checkbox" id="ivsHOnly"> 只看有盤差</label>
               <label style="display:inline-flex;align-items:center;gap:5px;"><input type="checkbox" id="ivsHShowV"> 格內顯示數值</label>
               <span class="ivs-note" id="ivsHCount"></span>
               <span style="flex:1"></span>
@@ -7457,7 +7458,6 @@ function createAdminRouter() {
               </div>
               <button type="button" class="sf-seg-btn" id="ivsHMore" style="border:1px solid var(--ivs-border);border-radius:8px;display:none;"></button>
             </div>
-            <div class="ivs-flabel" style="margin-bottom:6px;">倉庫：<span id="ivsHWhName"></span>（跟左側「品項圖表」的倉庫選擇共用；下方下鑽同倉）</div>
             <div class="ivs-heat-scroll" id="ivsHM"></div>
             <div class="ivs-hm-legend"><span>−8%</span><span class="ivs-hm-grad"></span><span>＋8%</span><span style="margin-left:8px;">格子越深＝盤差越大，點格子看下方詳情</span></div>
           </div>
@@ -7487,7 +7487,7 @@ function createAdminRouter() {
         "use strict";
         var ICPNO=${JSON.stringify(icpno)};
         var WHS=${whJson};
-        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hDays:14, hOnly:true, hShowV:false, hShowAll:false, hQ:"", hSel:null};
+        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hDays:14, hOnly:false, hShowV:false, hShowAll:true, hQ:"", hSel:null};
         var klineCache={}; // code|wh -> {scope,bars,variance}
         var heatCache={};  // wh|days -> {dates,items}
         var root=document.querySelector(".ivs-root");
@@ -7668,15 +7668,18 @@ function createAdminRouter() {
           host.querySelectorAll("[data-p]").forEach(function(b){ b.addEventListener("click",function(){ S.period=+b.dataset.p; drawGranCol(); drawCharts(); }); });
         }
         function drawWhCol(){
-          var host=document.getElementById("ivsWhCol"),h='<div class="ivs-col-h">倉庫</div>';
+          var h='<div class="ivs-col-h">倉庫</div>';
           h+='<button type="button" class="ivs-row'+(S.wh===""?" on":"")+'" data-w=""><span>全公司（各倉合計）</span></button>';
           WHS.forEach(function(w){ h+='<button type="button" class="ivs-row'+(S.wh===w.code?" on":"")+'" data-w="'+esc(w.code)+'"><span>'+esc(w.name||w.code)+'</span><span class="tag">'+esc(w.code)+'</span></button>'; });
-          host.innerHTML=h;
-          host.querySelectorAll("[data-w]").forEach(function(b){ b.addEventListener("click",function(){
-            S.wh=b.dataset.w; S.hSel=null; drawWhCol(); loadKline(); loadHeat();
-            if(!document.getElementById("ivsListCard").hidden) loadGrid();
-          }); });
-          document.getElementById("ivsHWhName").textContent=S.wh?(WHS.filter(function(w){return w.code===S.wh;}).map(function(w){return w.name||w.code;})[0]||S.wh):"全公司（各倉合計）";
+          ["ivsWhCol","ivsHWhCol"].forEach(function(id){
+            var host=document.getElementById(id);
+            if(!host) return;
+            host.innerHTML=h;
+            host.querySelectorAll("[data-w]").forEach(function(b){ b.addEventListener("click",function(){
+              S.wh=b.dataset.w; S.hSel=null; drawWhCol(); loadKline(); loadHeat();
+              if(!document.getElementById("ivsListCard").hidden) loadGrid();
+            }); });
+          });
         }
 
         /* ── 資料載入 ── */
@@ -7847,7 +7850,7 @@ function createAdminRouter() {
           more.textContent=S.hShowAll?("收合為 Top "+HTOP):("顯示全部 "+vis.total+" 項");
           var host=document.getElementById("ivsHM");
           if(!vis.list.length){ host.innerHTML='<div class="ivs-empty">'+(vis.all?"沒有符合的品項。":"此期間沒有盤點記錄。")+'</div>'; drawRank(j); return; }
-          var h='<div class="ivs-hmg" style="grid-template-columns:170px repeat('+j.dates.length+',30px);">';
+          var h='<div class="ivs-hmg" style="grid-template-columns:150px repeat('+j.dates.length+',24px);">';
           h+='<div></div>';
           j.dates.forEach(function(d){ h+='<div class="hmg-h">'+mdOf(d)+'<br><span style="font-weight:400">'+wdOf(d)+'</span></div>'; });
           vis.list.forEach(function(it){
@@ -7914,8 +7917,8 @@ function createAdminRouter() {
           else fetchJson("/admin/inventory/stats/kline?icpno="+encodeURIComponent(ICPNO)+"&code="+encodeURIComponent(it.code)+"&wh="+encodeURIComponent(S.wh)).then(function(kj){ klineCache[key]=kj; render(kj); }).catch(function(){});
           box.scrollIntoView({behavior:"smooth",block:"nearest"});
         }
-        document.getElementById("ivsHQ").addEventListener("input",function(){ S.hQ=this.value.trim(); S.hShowAll=false; drawHeat(); });
-        document.getElementById("ivsHOnly").addEventListener("change",function(){ S.hOnly=this.checked; S.hShowAll=false; drawHeat(); });
+        document.getElementById("ivsHQ").addEventListener("input",function(){ S.hQ=this.value.trim(); drawHeat(); });
+        document.getElementById("ivsHOnly").addEventListener("change",function(){ S.hOnly=this.checked; drawHeat(); });
         document.getElementById("ivsHShowV").addEventListener("change",function(){ S.hShowV=this.checked; drawHeat(); });
         document.getElementById("ivsHMore").addEventListener("click",function(){ S.hShowAll=!S.hShowAll; drawHeat(); });
         document.getElementById("ivsHDays").addEventListener("click",function(ev){
