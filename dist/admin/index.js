@@ -6713,6 +6713,12 @@ function createAdminRouter() {
         // 人工調整值（彌補系統誤差）：最新系統/對最新盤差都會加上它
         const adjMap = {};
         try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
+        // [未來銷貨加回] 開關開時「最新系統」欄旁標藍色「未來+N」——純提示（解釋盤差來源），
+        // 刻意不進最新系統/盤差計算：盤差是實盤 vs 凌越帳的對帳，混入未來量會失真。
+        const futMap = {};
+        try { (await db.prepare("SELECT erp_code, qty, icpno FROM erp_future_sales").all() || []).forEach((r) => { futMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) { }
+        let futOn = false;
+        try { const fr = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("stock_future_reversal_enabled"); futOn = !!(fr && String(fr.value) === "1"); } catch (_) { }
         const day = await loadStocktakeDay(date, latestMap, adjMap);
         let includedWh = [];
         try { includedWh = (await db.prepare("SELECT code, name, icpno FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY icpno, sort_order, code").all()) || []; } catch (_) { includedWh = []; }
@@ -6789,40 +6795,53 @@ function createAdminRouter() {
             const s = sel.session;
             const done = Number(s.counted_count || 0), all = Number(s.item_count || 0);
             const dLatestCls = (d) => (d == null ? "" : d === 0 ? "stk-z" : d > 0 ? "stk-p" : "stk-n");
-            // 調整欄：一鍵把「顯示/最新系統」校正成此次實盤（delta＝實盤−凌越總量），之後每日盤差都扣掉此系統誤差；可重設/取消。
+            // [UI 2026-07-17] 調整欄收斂成單一標籤：點標籤開浮動面板（套用實盤／手動存值／刪除），
+            // 表單改由前端動態組出送 POST /inventory/adjustments（欄位與舊 inline form 相同）。
             const icpForm = (0, erp_companies_js_1.normIcpno)(s.icpno);
             const backQ = `date=${encodeURIComponent(date)}&wh=${encodeURIComponent(selWh)}`;
-            const adjHidden = (it) => `<input type="hidden" name="icpno" value="${escapeAttr(icpForm)}"><input type="hidden" name="erp_code" value="${escapeAttr(it.code)}"><input type="hidden" name="wh_code" value="${escapeAttr(String(s.wh_code || ""))}"><input type="hidden" name="back" value="${escapeAttr(backQ)}">`;
-            const setForm = (it, label, cls) => `<form method="post" action="/admin/inventory/adjustments" style="display:inline;"><input type="hidden" name="action" value="set_from_count">${adjHidden(it)}<input type="hidden" name="counted" value="${escapeAttr(String(it.counted))}"><input type="hidden" name="name" value="${escapeAttr(it.name)}"><input type="hidden" name="spec" value="${escapeAttr(it.spec)}"><input type="hidden" name="unit" value="${escapeAttr(it.unit)}"><button type="submit" class="stk-adjbtn${cls || ""}" title="讓最新系統＝此次實盤，之後每日盤差都扣掉這個系統誤差">${label}</button></form>`;
-            const delForm = (it) => `<form method="post" action="/admin/inventory/adjustments" style="display:inline;" onsubmit="return confirm('取消 ${escapeAttr(it.code)} 的庫存調整？');"><input type="hidden" name="action" value="delete">${adjHidden(it)}<button type="submit" class="stk-adjbtn del">取消</button></form>`;
             const adjCell = (it) => {
-                if (it.adj) {
-                    let h = `<span class="stk-adjchip" title="人工調整值，顯示與盤差都已加上此數">調 ${it.adj > 0 ? "+" : ""}${it.adj}</span>`;
-                    if (it.counted != null && it.diffLatest != null && it.diffLatest !== 0) h += setForm(it, "重設");
-                    return h + delForm(it);
-                }
-                return it.counted == null ? "—" : setForm(it, "建立調整");
+                if (it.counted == null && !it.adj)
+                    return "—";
+                const attrs = ` data-code="${escapeAttr(it.code)}" data-name="${escapeAttr(it.name)}" data-spec="${escapeAttr(it.spec)}" data-unit="${escapeAttr(it.unit)}" data-counted="${it.counted == null ? "" : escapeAttr(String(it.counted))}" data-adj="${escapeAttr(String(it.adj || 0))}" data-base="${it.latestRaw == null ? "" : escapeAttr(String(it.latestRaw))}"`;
+                if (it.adj)
+                    return `<button type="button" class="stk-adjchip2 on"${attrs} title="已有調整（誤差補償），點開面板可套用實盤/改值/刪除">調 ${it.adj > 0 ? "+" : ""}${it.adj}</button>`;
+                return `<button type="button" class="stk-adjchip2"${attrs} title="點開調整面板：把最新系統校正成實盤，或手動填調整值">調整</button>`;
             };
-            // 複盤：實盤可直接改（confirm 確認、寫修改軌跡）；盤差／對最新盤差把 % 用括號併進同一欄。
-            const countForm = (it) => `<form method="post" action="/admin/inventory/count-edit" style="display:inline-flex;gap:3px;align-items:center;justify-content:flex-end;" onsubmit="return confirm('複盤修正 ${escapeAttr(it.code)}：實盤改為 '+this.counted.value+'？（會留下修改軌跡）');"><input type="hidden" name="session_id" value="${escapeAttr(s.id)}"><input type="hidden" name="erp_code" value="${escapeAttr(it.code)}"><input type="hidden" name="back" value="${escapeAttr(backQ)}"><input type="number" name="counted" value="${it.counted == null ? "" : escapeAttr(String(it.counted))}" step="any" class="stk-editqty" title="複盤：直接改實盤數"><button type="submit" class="stk-adjbtn" title="送出複盤修正（會留修改軌跡）">改</button></form>`;
+            // 未來銷貨加回（藍標）：開關開才顯示；純提示解釋盤差來源，刻意不進最新系統/盤差計算（盤差是與凌越帳的對帳）。
+            const futOf = (it) => Number(futMap[icpForm + "|" + String(it.code)] || 0);
+            const latestCell = (it) => {
+                if (it.latest == null)
+                    return "—";
+                const fut = futOf(it);
+                const futB = (futOn && fut) ? `<span class="stk-futb" title="有未來日期銷貨 ${fut > 0 ? "+" : ""}${fut}（先開單、貨還在架上）——實盤若多出這個量屬正常；此量未計入最新系統/盤差">未來${fut > 0 ? "+" : ""}${fut}</span>` : "";
+                if (it.adj)
+                    return `<span title="凌越 ${fmtN(it.latestRaw)} ＋ 調整 ${it.adj > 0 ? "+" : ""}${it.adj} ＝ ${fmtN(it.latest)}"><b>${fmtN(it.latest)}</b><span class="stk-ladj2">(調${it.adj > 0 ? "+" : ""}${it.adj})</span></span>${futB}`;
+                return `${fmtN(it.latest)}${futB}`;
+            };
+            // 複盤：點實盤數字原地改（Enter 送出、Esc 取消；仍走 confirm＋修改軌跡）。✎/含中改 inline 小標，列高固定一行。
+            const countCell = (it) => {
+                const edited = it.editedAt ? `<span class="stk-editmark" title="複盤修正 ${escapeAttr(stkAdminTwTime(it.editedAt))}${it.editedBy ? " · " + escapeAttr(it.editedBy) : ""}">✎</span>` : "";
+                const mid = it.mid ? `<span class="stk-mid2" title="其中中貨 ${it.mid}">中${it.mid}</span>` : "";
+                return `<span class="stk-ct" role="button" tabindex="0" data-code="${escapeAttr(it.code)}" data-counted="${it.counted == null ? "" : escapeAttr(String(it.counted))}" title="點一下複盤修正實盤數">${fmtN(it.counted)}</span>${edited}${mid}`;
+            };
             const rowsHtml = sel.items.map((it) => {
                 // 紅底＝盤差(對當下)超過 ±5% 才標（sys=0 時 % 無意義，不標）；不再以正負號決定整列底色
                 const hot = it.diff != null && it.sys !== 0 && Math.abs((it.diff / it.sys) * 100) > 5;
                 return `
               <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}${hot ? " stk-hot" : ""}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
-                <td>${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
+                <td class="stk-name" title="${escapeAttr(it.name + (it.spec ? " " + it.spec : ""))}">${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
                 <td class="stk-num stk-sep">${fmtN(it.sys)}</td>
-                <td class="stk-num">${countForm(it)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}${it.editedAt ? `<span class="stk-edited" title="複盤修正 ${escapeAttr(stkAdminTwTime(it.editedAt))}${it.editedBy ? " · " + escapeAttr(it.editedBy) : ""}">✎ ${escapeHtml(stkAdminTwTime(it.editedAt))}</span>` : ""}</td>
+                <td class="stk-num">${countCell(it)}</td>
                 <td class="stk-num stk-diff">${it.diff == null ? "—" : `${(it.diff > 0 ? "+" : "") + it.diff}<span class="stk-pctp">(${diffPct(it)})</span>`}</td>
-                <td class="stk-num stk-latest stk-sep">${it.latest == null ? "—" : (it.adj ? `<span class="stk-lraw" title="凌越快照（未含調整）">${fmtN(it.latestRaw)}</span><span class="stk-ladj" title="庫存調整（誤差補償）">調 ${it.adj > 0 ? "+" : ""}${it.adj}</span><span class="stk-lsum" title="加總＝凌越快照＋調整">＝${fmtN(it.latest)}</span>` : fmtN(it.latest))}</td>
+                <td class="stk-num stk-latest stk-sep">${latestCell(it)}</td>
                 <td class="stk-num ${dLatestCls(it.diffLatest)}">${it.diffLatest == null ? "—" : `<b>${(it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b><span class="stk-pctp">(${latestPct(it)})</span>`}</td>
                 <td class="stk-adj stk-sep">${adjCell(it)}</td>
-                <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
+                <td class="stk-exp" title="${escapeAttr(expiryTxt(it.expiry))}">${escapeHtml(expiryTxt(it.expiry))}</td>
               </tr>`;
             }).join("");
             rightHtml = `
-          <div class="stk-card">
+          <div class="stk-card" id="stkCard" data-icp="${escapeAttr(icpForm)}" data-wh="${escapeAttr(String(s.wh_code || ""))}" data-sid="${escapeAttr(String(s.id))}" data-back="${escapeAttr(backQ)}">
             <div class="stk-card-h">
               <div class="stk-card-t"><b>${escapeHtml(s.wh_name || s.wh_code)}</b>${coTag(s.icpno) ? `<span class="wh-co">${escapeHtml(coTag(s.icpno))}</span>` : ""}<span class="stk-code2">${escapeHtml(s.wh_code)}</span></div>
               <div class="stk-card-m">
@@ -6849,7 +6868,7 @@ function createAdminRouter() {
                 </tr>
                 <tr>
                   <th class="stk-num stk-sep">系統</th>
-                  <th class="stk-num">實盤 <span class="stk-th2">可改·含中</span></th>
+                  <th class="stk-num">實盤 <span class="stk-th2">點數字可改</span></th>
                   <th class="stk-num">盤差 <span class="stk-th2">(%)</span></th>
                   <th class="stk-num stk-sep">系統 <span class="stk-th2">快照/調整/加總</span></th>
                   <th class="stk-num">盤差 <span class="stk-th2">(%)</span></th>
@@ -6915,18 +6934,19 @@ function createAdminRouter() {
         .stk-tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
         .stk-tbl th{position:sticky;top:0;text-align:left;padding:5px 10px;background:var(--notion-bg,#f7f6f3);border-bottom:1px solid var(--notion-border,#e3e2e0);font-size:11px;color:#787774;font-weight:600;}
         .stk-th2{font-size:9.5px;font-weight:500;color:#9b9a97;}
-        .stk-tbl td{padding:4px 10px;border-bottom:1px solid var(--notion-border-soft,#f0efed);vertical-align:top;}
+        .stk-tbl td{padding:3px 10px;border-bottom:1px solid var(--notion-border-soft,#f0efed);vertical-align:middle;white-space:nowrap;}
+        .stk-name{max-width:230px;overflow:hidden;text-overflow:ellipsis;}
         .stk-tbl tr:last-child td{border-bottom:0;}
         .stk-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
         th.stk-num{text-align:right;}
         .stk-code{font-variant-numeric:tabular-nums;color:#787774;white-space:nowrap;}
         .stk-spec{margin-left:6px;font-size:11px;color:#9b9a97;}
-        .stk-exp{font-size:11.5px;color:#8a5a10;max-width:220px;}
-        .stk-mid{display:block;font-size:10.5px;color:#2383e2;font-weight:600;}
+        .stk-exp{font-size:11.5px;color:#8a5a10;max-width:200px;overflow:hidden;text-overflow:ellipsis;}
         .stk-latest{color:#5b616e;}
-        .stk-lraw{display:block;}
-        .stk-ladj{display:block;font-size:10.5px;font-weight:600;color:#8250df;}
-        .stk-lsum{display:block;font-size:11.5px;font-weight:700;border-top:1px solid var(--notion-border,#e3e2e0);margin-top:1px;padding-top:1px;}
+        .stk-ladj2{margin-left:4px;font-size:10.5px;color:#8250df;font-weight:600;}
+        .stk-futb{margin-left:4px;font-size:10px;font-weight:700;color:#0369a1;background:#e0f2fe;border-radius:4px;padding:0 4px;white-space:nowrap;}
+        .stk-mid2{margin-left:4px;font-size:10px;font-weight:700;color:#2383e2;background:#e8f1fd;border-radius:4px;padding:0 4px;}
+        .stk-editmark{margin-left:3px;font-size:10.5px;color:#8250df;cursor:default;}
         tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}
         tr.stk-p .stk-diff{color:#1f7a46;font-weight:700;}
         tr.stk-z .stk-diff{color:#9b9a97;}
@@ -6942,14 +6962,23 @@ function createAdminRouter() {
         .stk-togbtn.sm{padding:4px 10px;font-size:11.5px;}
         .stk-togbtn.on{background:#2383e2;border-color:#2383e2;color:#fff;}
         .stk-empty{background:var(--notion-card,#fff);border:1px dashed var(--notion-border,#e3e2e0);border-radius:12px;padding:34px 16px;text-align:center;color:#787774;}
-        .stk-adjchip{display:inline-block;font-size:11px;font-weight:700;color:#8250df;background:#f3eefd;border-radius:5px;padding:1px 6px;white-space:nowrap;margin-right:5px;}
-        .stk-adjbtn{font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;white-space:nowrap;margin-left:3px;}
-        .stk-adjbtn:hover{background:#f3eefd;border-color:#c9b6f0;color:#6a3fc0;}
-        .stk-adjbtn.del{color:#b3261e;}
-        .stk-adjbtn.del:hover{background:#fdecec;border-color:#e8b4b0;color:#8f1d17;}
-        .stk-editqty{width:58px;text-align:right;font-variant-numeric:tabular-nums;font-size:12.5px;padding:2px 5px;border:1px solid var(--notion-border,#e3e2e0);border-radius:6px;background:var(--notion-card,#fff);color:inherit;}
+        .stk-adjchip2{display:inline-block;font-size:11px;font-weight:600;color:#9b9a97;background:transparent;border:1px dashed var(--notion-border,#d5d3cf);border-radius:99px;padding:1px 9px;white-space:nowrap;cursor:pointer;}
+        .stk-adjchip2:hover{color:#6a3fc0;border-color:#c9b6f0;background:#f7f3fe;}
+        .stk-adjchip2.on{color:#8250df;background:#f3eefd;border:1px solid #ddccf8;font-weight:700;}
+        .stk-editqty{width:64px;text-align:right;font-variant-numeric:tabular-nums;font-size:12.5px;padding:1px 5px;border:1px solid #2383e2;border-radius:6px;background:var(--notion-card,#fff);color:inherit;}
         .stk-pctp{margin-left:4px;font-size:10.5px;color:#9b9a97;font-weight:400;}
-        .stk-edited{display:block;font-size:10px;color:#8250df;margin-top:1px;white-space:nowrap;}
+        .stk-ct{cursor:pointer;border-bottom:1px dashed transparent;}
+        .stk-ct:hover{color:#2383e2;border-bottom-color:#2383e2;}
+        .stk-pop{position:absolute;z-index:1000;background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.14);padding:12px 14px;width:260px;font-size:12.5px;}
+        .stk-pop-t{font-weight:700;margin-bottom:2px;}
+        .stk-pop-s{color:#787774;font-size:11.5px;margin-bottom:8px;}
+        .stk-pop-row{display:flex;align-items:center;gap:6px;margin-bottom:10px;}
+        .stk-pop-row input{flex:1;min-width:0;text-align:right;font-variant-numeric:tabular-nums;padding:4px 8px;border:1px solid var(--notion-border,#e3e2e0);border-radius:7px;background:var(--notion-card,#fff);color:inherit;font-size:13px;}
+        .stk-pop-b{display:flex;gap:6px;flex-wrap:wrap;}
+        .stk-pop-b button{font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;}
+        .stk-pop-b button.pri{background:#8250df;border-color:#8250df;color:#fff;font-weight:600;}
+        .stk-pop-b button.del{color:#b3261e;}
+        .stk-pop-b button:hover{opacity:.9;}
       </style>
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 盤點</div>
       <h1 class="notion-page-title" style="margin-bottom:10px;">盤點</h1>
@@ -6980,6 +7009,7 @@ function createAdminRouter() {
         <button type="button" class="stk-togbtn" id="stkRefreshInv">↻ 更新最新庫存</button>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/anomalies?date=${encodeURIComponent(date)}" title="當日盤差品項＋可能原因，可推送 LINE 群組請大家複查">異常排查表</a>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
+        <label class="sf-switch-label" style="font-size:12.5px;" title="開＝『最新系統』欄標出有未來日期銷貨的品項（藍標「未來+N」，解釋盤差來源）；與目前庫存頁共用同一開關。純提示，不改變盤差計算。"><input type="checkbox" id="stkFutRev"${futOn ? " checked" : ""}><span class="sf-switch"></span>未來銷貨加回</label>
         <span id="stkRefreshMsg" style="font-size:12px;color:#8a5a10;"></span>
       </div>
       <div class="stk-card" id="stkSearchCard" style="display:none;margin-bottom:14px;"></div>
@@ -7042,6 +7072,81 @@ function createAdminRouter() {
             },3000);
           }).catch(function(){ rb.disabled=false; msg.style.color='#b3261e'; msg.textContent='送出失敗，請稍後再試。'; });
         }); }
+        // 未來銷貨加回開關（與目前庫存頁共用全域設定 stock_future_reversal_enabled）
+        var fr=document.getElementById('stkFutRev');
+        if(fr){ fr.addEventListener('change',function(){ var on=fr.checked; fr.disabled=true;
+          fetch('/admin/inventory/stock/future-toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:on})})
+            .then(function(r){return r.json();}).then(function(){ location.reload(); })
+            .catch(function(){ fr.disabled=false; fr.checked=!on; });
+        }); }
+        // 卡片常數（調整面板/複盤共用）＋動態表單送出（欄位與舊 inline form 相同）
+        var card=document.getElementById('stkCard');
+        var CTX=card?{icp:card.getAttribute('data-icp')||'00',wh:card.getAttribute('data-wh')||'',sid:card.getAttribute('data-sid')||'',back:card.getAttribute('data-back')||''}:null;
+        function postForm(action,fields){
+          var f=document.createElement('form'); f.method='post'; f.action=action; f.style.display='none';
+          Object.keys(fields).forEach(function(k){ var i=document.createElement('input'); i.type='hidden'; i.name=k; i.value=fields[k]==null?'':String(fields[k]); f.appendChild(i); });
+          document.body.appendChild(f); f.submit();
+        }
+        // 調整面板：點「調整／調 +N」標籤開啟（全頁共用一個浮動面板）
+        var pop=null;
+        function closePop(){ if(pop){ pop.remove(); pop=null; document.removeEventListener('mousedown',outPop,true); } }
+        function outPop(e){ if(pop&&!pop.contains(e.target)) closePop(); }
+        function openPop(btn){
+          if(!CTX) return; closePop();
+          var d=btn.dataset; var counted=d.counted===''?null:Number(d.counted); var adj=Number(d.adj||0); var base=d.base===''?null:Number(d.base);
+          var applyV=(counted!=null&&base!=null)?Math.round((counted-base)*100)/100:null;
+          pop=document.createElement('div'); pop.className='stk-pop';
+          pop.innerHTML='<div class="stk-pop-t">'+escH(d.code)+' '+escH(d.name)+'</div>'
+            +'<div class="stk-pop-s">凌越 '+(base==null?'—':base)+'｜實盤 '+(counted==null?'—':counted)+(adj?('｜現調 '+(adj>0?'+':'')+adj):'')+'</div>'
+            +'<div class="stk-pop-row"><span>調整值</span><input type="number" step="any" id="stkPopD" value="'+(adj||(applyV==null?'':applyV))+'"></div>'
+            +'<div class="stk-pop-b">'
+            +(counted!=null?'<button type="button" class="pri" id="stkPopApply" title="讓最新系統＝此次實盤">套用實盤'+(applyV!=null?('（'+(applyV>0?'+':'')+applyV+'）'):'')+'</button>':'')
+            +'<button type="button" id="stkPopSave" title="以上面填的調整值儲存">儲存</button>'
+            +(adj?'<button type="button" class="del" id="stkPopDel">刪除</button>':'')
+            +'<button type="button" id="stkPopX">關閉</button></div>';
+          document.body.appendChild(pop);
+          var r=btn.getBoundingClientRect();
+          var left=Math.min(window.scrollX+r.left, window.scrollX+document.documentElement.clientWidth-278);
+          pop.style.top=(window.scrollY+r.bottom+6)+'px'; pop.style.left=Math.max(8,left)+'px';
+          var common={icpno:CTX.icp,erp_code:d.code,wh_code:CTX.wh,back:CTX.back,name:d.name,spec:d.spec,unit:d.unit};
+          var ap=pop.querySelector('#stkPopApply');
+          if(ap) ap.addEventListener('click',function(){ postForm('/admin/inventory/adjustments',Object.assign({action:'set_from_count',counted:counted},common)); });
+          pop.querySelector('#stkPopSave').addEventListener('click',function(){
+            var v=Number(pop.querySelector('#stkPopD').value);
+            if(!isFinite(v)){ alert('調整值要是數字'); return; }
+            postForm('/admin/inventory/adjustments',Object.assign({action:'update',delta:v},common));
+          });
+          var dl=pop.querySelector('#stkPopDel');
+          if(dl) dl.addEventListener('click',function(){ if(confirm('刪除 '+d.code+' 的庫存調整？')) postForm('/admin/inventory/adjustments',Object.assign({action:'delete'},common)); });
+          pop.querySelector('#stkPopX').addEventListener('click',closePop);
+          setTimeout(function(){ document.addEventListener('mousedown',outPop,true); },0);
+        }
+        Array.prototype.forEach.call(document.querySelectorAll('.stk-adjchip2'),function(b){ b.addEventListener('click',function(e){ e.stopPropagation(); openPop(b); }); });
+        // 複盤：點實盤數字原地改（Enter 送出、Esc/失焦取消；confirm＋修改軌跡不變）
+        Array.prototype.forEach.call(document.querySelectorAll('.stk-ct'),function(sp){
+          function startEdit(){
+            if(!CTX||sp.getAttribute('data-editing')) return;
+            sp.setAttribute('data-editing','1');
+            var old=sp.getAttribute('data-counted');
+            var inp=document.createElement('input'); inp.type='number'; inp.step='any'; inp.value=old; inp.className='stk-editqty';
+            sp.textContent=''; sp.appendChild(inp); inp.focus(); inp.select();
+            function cancel(){ if(!sp.getAttribute('data-editing')) return; sp.removeAttribute('data-editing'); sp.textContent=(old===''?'—':old); }
+            inp.addEventListener('keydown',function(ev){
+              if(ev.key==='Enter'){ ev.preventDefault();
+                var v=inp.value.trim();
+                if(v===''||!isFinite(Number(v))){ alert('請輸入數字'); return; }
+                if(confirm('複盤修正 '+sp.getAttribute('data-code')+'：實盤改為 '+v+'？（會留下修改軌跡）')){
+                  sp.removeAttribute('data-editing');
+                  postForm('/admin/inventory/count-edit',{session_id:CTX.sid,erp_code:sp.getAttribute('data-code'),counted:v,back:CTX.back});
+                } else { cancel(); }
+              }
+              if(ev.key==='Escape'){ cancel(); }
+            });
+            inp.addEventListener('blur',function(){ setTimeout(cancel,150); });
+          }
+          sp.addEventListener('click',startEdit);
+          sp.addEventListener('keydown',function(ev){ if(ev.key==='Enter'||ev.key===' '){ ev.preventDefault(); startEdit(); } });
+        });
       })();
       </script>`;
         res.type("text/html").send(notionPage("每日盤點", body, "inventory", res));
