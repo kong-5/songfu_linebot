@@ -6798,7 +6798,7 @@ function createAdminRouter() {
                 <td class="stk-num stk-sep">${fmtN(it.sys)}</td>
                 <td class="stk-num">${countForm(it)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}${it.editedAt ? `<span class="stk-edited" title="複盤修正 ${escapeAttr(stkAdminTwTime(it.editedAt))}${it.editedBy ? " · " + escapeAttr(it.editedBy) : ""}">✎ ${escapeHtml(stkAdminTwTime(it.editedAt))}</span>` : ""}</td>
                 <td class="stk-num stk-diff">${it.diff == null ? "—" : `${(it.diff > 0 ? "+" : "") + it.diff}<span class="stk-pctp">(${diffPct(it)})</span>`}</td>
-                <td class="stk-num stk-latest stk-sep">${fmtN(it.latest)}</td>
+                <td class="stk-num stk-latest stk-sep">${it.latest == null ? "—" : (it.adj ? `<span class="stk-lraw" title="凌越快照（未含調整）">${fmtN(it.latestRaw)}</span><span class="stk-ladj" title="庫存調整（誤差補償）">調 ${it.adj > 0 ? "+" : ""}${it.adj}</span><span class="stk-lsum" title="加總＝凌越快照＋調整">＝${fmtN(it.latest)}</span>` : fmtN(it.latest))}</td>
                 <td class="stk-num ${dLatestCls(it.diffLatest)}">${it.diffLatest == null ? "—" : `<b>${(it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b><span class="stk-pctp">(${latestPct(it)})</span>`}</td>
                 <td class="stk-adj stk-sep">${adjCell(it)}</td>
                 <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
@@ -6834,7 +6834,7 @@ function createAdminRouter() {
                   <th class="stk-num stk-sep">系統</th>
                   <th class="stk-num">實盤 <span class="stk-th2">可改·含中</span></th>
                   <th class="stk-num">盤差 <span class="stk-th2">(%)</span></th>
-                  <th class="stk-num stk-sep">系統 <span class="stk-th2">+調整</span></th>
+                  <th class="stk-num stk-sep">系統 <span class="stk-th2">快照/調整/加總</span></th>
                   <th class="stk-num">盤差 <span class="stk-th2">(%)</span></th>
                 </tr>
               </thead>
@@ -6907,6 +6907,9 @@ function createAdminRouter() {
         .stk-exp{font-size:11.5px;color:#8a5a10;max-width:220px;}
         .stk-mid{display:block;font-size:10.5px;color:#2383e2;font-weight:600;}
         .stk-latest{color:#5b616e;}
+        .stk-lraw{display:block;}
+        .stk-ladj{display:block;font-size:10.5px;font-weight:600;color:#8250df;}
+        .stk-lsum{display:block;font-size:11.5px;font-weight:700;border-top:1px solid var(--notion-border,#e3e2e0);margin-top:1px;padding-top:1px;}
         tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}
         tr.stk-p .stk-diff{color:#1f7a46;font-weight:700;}
         tr.stk-z .stk-diff{color:#9b9a97;}
@@ -7194,13 +7197,13 @@ function createAdminRouter() {
         try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMapCsv[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) {}
         const day = await loadStocktakeDay(date, latestMapCsv, adjMapCsv);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
-        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量,最新系統基準,對最新盤差,效期明細,盤點人,送出時間"];
+        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量(凌越),調整值,最新系統量(加總),最新系統基準,對最新盤差,效期明細,盤點人,送出時間"];
         for (const { session: s, items, latestSource } of day) {
             const baseTxt = latestSource === "warehouse" ? "分倉" : "總量";
             for (const it of items) {
                 const dp = it.diff == null ? "" : (it.sys === 0 ? "" : ((it.diff / it.sys) * 100).toFixed(1) + "%");
                 const exp = (it.expiry || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"}x${b.qty || "?"}`).join(" / ");
-                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latest == null ? "" : it.latest, baseTxt, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
+                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latestRaw == null ? "" : it.latestRaw, it.adj || "", it.latest == null ? "" : it.latest, baseTxt, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
             }
         }
         res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
