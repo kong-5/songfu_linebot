@@ -7229,6 +7229,11 @@ function createAdminRouter() {
         if (it.adj) c.push("已掛庫存調整 " + (it.adj > 0 ? "+" : "") + it.adj + " → 確認是否與新誤差重複補償");
         return c;
     }
+    // 群組訊息文字（頁面預覽/複製與 LINE 推送共用同一份；依使用者要求「不含排查原因」，原因只留網頁表格）
+    const anomN2 = (v) => (v == null ? "—" : String(Math.round(Number(v) * 100) / 100));
+    const anomSysTxt = (a) => (a.it.adj ? `帳${anomN2(a.it.latestRaw)} 調${a.it.adj > 0 ? "+" : ""}${a.it.adj}＝${anomN2(a.it.latest)}` : `帳${anomN2(a.it.latest)}`);
+    const anomItemTxt = (a) => `${a.it.name}${a.it.spec ? "（" + a.it.spec + "）" : ""} ${a.it.code}\n　${anomSysTxt(a)}｜實盤${anomN2(a.it.counted)}｜差${a.it.diffLatest > 0 ? "+" : ""}${anomN2(a.it.diffLatest)}（${a.pct > 0 ? "+" : ""}${a.pct}%）`;
+    const anomWhTag = (a) => `【${a.icp === "00" ? "" : a.co + "｜"}${a.whName || a.wh} ${a.wh}】`;
     // 當日異常清單（GET 頁與 POST 送出共用同一權威，避免送出內容與畫面分岔）
     async function loadStocktakeAnomalies(date) {
         const latestMap = {};
@@ -7310,7 +7315,41 @@ function createAdminRouter() {
           <thead><tr><th style="text-align:center;">選</th><th>倉庫</th><th>料號</th><th>品名</th><th style="text-align:right;">最新系統<br><span style="font-weight:400;font-size:10px;">快照/調整/加總</span></th><th style="text-align:right;">實盤</th><th style="text-align:right;">對最新盤差(%)</th><th>可能原因（排查方向）</th></tr></thead>
           <tbody>${rowsHtml || `<tr><td colspan="8" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此日期沒有「對最新盤差 ≠ 0」的品項 🎉</td></tr>`}</tbody>
         </table>
-      </div>`;
+      </div>
+      ${list.length ? `
+      <div class="notion-card" style="padding:14px 16px;margin-top:14px;">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:8px;">
+          <b style="font-size:13.5px;">訊息文字（勾選會即時更新，可直接複製貼到 LINE）</b>
+          <button type="button" class="btn-primary" id="anomCopy" style="font-size:12.5px;padding:5px 14px;">複製文字</button>
+          <span id="anomCopyMsg" style="font-size:12px;color:#1f7a46;"></span>
+        </div>
+        <textarea id="anomPreview" readonly class="sf-textarea" style="width:100%;min-height:240px;font-size:12.5px;line-height:1.65;font-variant-numeric:tabular-nums;"></textarea>
+      </div>
+      <script>
+      (function(){
+        var AITEMS=${JSON.stringify(list.map((a) => ({ key: a.key, wh: anomWhTag(a), txt: anomItemTxt(a) }))).replace(/</g, "\\u003c")};
+        var ADATE=${JSON.stringify(date)};
+        var ta=document.getElementById('anomPreview');
+        function rebuild(){
+          var sel={}; document.querySelectorAll('input[name="keys"]:checked').forEach(function(cb){ sel[cb.value]=1; });
+          var items=AITEMS.filter(function(x){ return sel[x.key]; });
+          if(!items.length){ ta.value='（未勾選任何品項）'; return; }
+          var out='📋 盤點異常排查表 '+ADATE+'（共 '+items.length+' 項）\\n請大家幫忙複查，確認實際狀況後回報：';
+          var groups=[],byWh={};
+          items.forEach(function(x){ if(!byWh[x.wh]){ byWh[x.wh]={wh:x.wh,items:[]}; groups.push(byWh[x.wh]); } byWh[x.wh].items.push(x); });
+          var idx=0;
+          groups.forEach(function(g){ out+='\\n\\n'+g.wh; g.items.forEach(function(x){ idx++; out+='\\n'+idx+'. '+x.txt; }); });
+          ta.value=out;
+        }
+        document.querySelectorAll('input[name="keys"]').forEach(function(cb){ cb.addEventListener('change',rebuild); });
+        rebuild();
+        document.getElementById('anomCopy').addEventListener('click',function(){
+          var ok=function(){ var m=document.getElementById('anomCopyMsg'); m.textContent='已複製 ✓'; setTimeout(function(){ m.textContent=''; },2500); };
+          if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(ta.value).then(ok).catch(function(){ ta.select(); document.execCommand('copy'); ok(); }); }
+          else { ta.select(); document.execCommand('copy'); ok(); }
+        });
+      })();
+      </script>` : ""}`;
         res.type("text/html").send(notionPage("異常排查表", body, "inventory", res));
     });
     router.post("/inventory/anomalies/send", express_1.default.urlencoded({ extended: true }), async (req, res) => {
@@ -7327,29 +7366,30 @@ function createAdminRouter() {
             if (!list.length) { res.redirect(back + "&err=" + encodeURIComponent("沒有勾選任何品項")); return; }
             const token = (process.env.LINE_CHANNEL_ACCESS_TOKEN || "").trim();
             if (!token) { res.redirect(back + "&err=" + encodeURIComponent("LINE_CHANNEL_ACCESS_TOKEN 未設定")); return; }
-            // 訊息組裝：按倉分段、每則 ≤4200 字自動分則
-            const n2 = (v) => (v == null ? "—" : String(Math.round(Number(v) * 100) / 100));
-            const header = `📋 盤點異常排查表 ${date}（共 ${list.length} 項）\n請大家幫忙複查，確認實際狀況後回報：`;
-            const texts = [];
-            let cur = header;
-            let lastWh = "";
-            let idx = 0;
+            // 訊息組裝：按倉分組（倉序＝該倉最嚴重品項的順序）、不含排查原因（太長，原因看網頁表格）、
+            // 每則 ≤4200 字自動分則（換則重印倉庫標頭）。與頁面「訊息文字」預覽同一套 helper。
+            const groupsM = new Map();
             for (const a of list) {
-                idx++;
-                const whKey = a.icp + ":" + a.wh;
-                const whTag = `\n\n【${a.icp === "00" ? "" : a.co + "｜"}${a.whName || a.wh} ${a.wh}】`;
-                const sysTxt = a.it.adj ? `帳${n2(a.it.latestRaw)} 調${a.it.adj > 0 ? "+" : ""}${a.it.adj}＝${n2(a.it.latest)}` : `帳${n2(a.it.latest)}`;
-                const itemTxt = `\n${idx}. ${a.it.name}${a.it.spec ? "（" + a.it.spec + "）" : ""} ${a.it.code}` +
-                    `\n　${sysTxt}｜實盤${n2(a.it.counted)}｜差${a.it.diffLatest > 0 ? "+" : ""}${n2(a.it.diffLatest)}（${a.pct > 0 ? "+" : ""}${a.pct}%）` +
-                    `\n　排查：${a.causes.join("／")}`;
-                let block = (lastWh !== whKey ? whTag : "") + itemTxt;
-                if ((cur + block).length > 4200) { // 超長自動分則（換則重印倉庫標頭）
-                    texts.push(cur);
-                    cur = `📋 盤點異常排查表 ${date}（續）`;
-                    block = whTag + itemTxt;
+                const k = a.icp + ":" + a.wh;
+                if (!groupsM.has(k)) groupsM.set(k, { tag: anomWhTag(a), items: [] });
+                groupsM.get(k).items.push(a);
+            }
+            const texts = [];
+            let cur = `📋 盤點異常排查表 ${date}（共 ${list.length} 項）\n請大家幫忙複查，確認實際狀況後回報：`;
+            let idx = 0;
+            for (const g of groupsM.values()) {
+                let whPrinted = false;
+                for (const a of g.items) {
+                    idx++;
+                    let block = (whPrinted ? "" : "\n\n" + g.tag) + `\n${idx}. ` + anomItemTxt(a);
+                    if ((cur + block).length > 4200) {
+                        texts.push(cur);
+                        cur = `📋 盤點異常排查表 ${date}（續）`;
+                        block = "\n\n" + g.tag + `\n${idx}. ` + anomItemTxt(a);
+                    }
+                    cur += block;
+                    whPrinted = true;
                 }
-                cur += block;
-                lastWh = whKey;
             }
             texts.push(cur);
             for (let i = 0; i < texts.length; i += 5) {
