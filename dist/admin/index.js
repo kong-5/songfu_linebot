@@ -6775,7 +6775,7 @@ function createAdminRouter() {
             // 調整欄：一鍵把「顯示/最新系統」校正成此次實盤（delta＝實盤−凌越總量），之後每日盤差都扣掉此系統誤差；可重設/取消。
             const icpForm = (0, erp_companies_js_1.normIcpno)(s.icpno);
             const backQ = `date=${encodeURIComponent(date)}&wh=${encodeURIComponent(selWh)}`;
-            const adjHidden = (it) => `<input type="hidden" name="icpno" value="${escapeAttr(icpForm)}"><input type="hidden" name="erp_code" value="${escapeAttr(it.code)}"><input type="hidden" name="back" value="${escapeAttr(backQ)}">`;
+            const adjHidden = (it) => `<input type="hidden" name="icpno" value="${escapeAttr(icpForm)}"><input type="hidden" name="erp_code" value="${escapeAttr(it.code)}"><input type="hidden" name="wh_code" value="${escapeAttr(String(s.wh_code || ""))}"><input type="hidden" name="back" value="${escapeAttr(backQ)}">`;
             const setForm = (it, label, cls) => `<form method="post" action="/admin/inventory/adjustments" style="display:inline;"><input type="hidden" name="action" value="set_from_count">${adjHidden(it)}<input type="hidden" name="counted" value="${escapeAttr(String(it.counted))}"><input type="hidden" name="name" value="${escapeAttr(it.name)}"><input type="hidden" name="spec" value="${escapeAttr(it.spec)}"><input type="hidden" name="unit" value="${escapeAttr(it.unit)}"><button type="submit" class="stk-adjbtn${cls || ""}" title="讓最新系統＝此次實盤，之後每日盤差都扣掉這個系統誤差">${label}</button></form>`;
             const delForm = (it) => `<form method="post" action="/admin/inventory/adjustments" style="display:inline;" onsubmit="return confirm('取消 ${escapeAttr(it.code)} 的庫存調整？');"><input type="hidden" name="action" value="delete">${adjHidden(it)}<button type="submit" class="stk-adjbtn del">取消</button></form>`;
             const adjCell = (it) => {
@@ -6788,18 +6788,22 @@ function createAdminRouter() {
             };
             // 複盤：實盤可直接改（confirm 確認、寫修改軌跡）；盤差／對最新盤差把 % 用括號併進同一欄。
             const countForm = (it) => `<form method="post" action="/admin/inventory/count-edit" style="display:inline-flex;gap:3px;align-items:center;justify-content:flex-end;" onsubmit="return confirm('複盤修正 ${escapeAttr(it.code)}：實盤改為 '+this.counted.value+'？（會留下修改軌跡）');"><input type="hidden" name="session_id" value="${escapeAttr(s.id)}"><input type="hidden" name="erp_code" value="${escapeAttr(it.code)}"><input type="hidden" name="back" value="${escapeAttr(backQ)}"><input type="number" name="counted" value="${it.counted == null ? "" : escapeAttr(String(it.counted))}" step="any" class="stk-editqty" title="複盤：直接改實盤數"><button type="submit" class="stk-adjbtn" title="送出複盤修正（會留修改軌跡）">改</button></form>`;
-            const rowsHtml = sel.items.map((it) => `
-              <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}">
+            const rowsHtml = sel.items.map((it) => {
+                // 紅底＝盤差(對當下)超過 ±5% 才標（sys=0 時 % 無意義，不標）；不再以正負號決定整列底色
+                const hot = it.diff != null && it.sys !== 0 && Math.abs((it.diff / it.sys) * 100) > 5;
+                return `
+              <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}${hot ? " stk-hot" : ""}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
                 <td>${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
-                <td class="stk-num">${fmtN(it.sys)}</td>
+                <td class="stk-num stk-sep">${fmtN(it.sys)}</td>
                 <td class="stk-num">${countForm(it)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}${it.editedAt ? `<span class="stk-edited" title="複盤修正 ${escapeAttr(stkAdminTwTime(it.editedAt))}${it.editedBy ? " · " + escapeAttr(it.editedBy) : ""}">✎ ${escapeHtml(stkAdminTwTime(it.editedAt))}</span>` : ""}</td>
                 <td class="stk-num stk-diff">${it.diff == null ? "—" : `${(it.diff > 0 ? "+" : "") + it.diff}<span class="stk-pctp">(${diffPct(it)})</span>`}</td>
-                <td class="stk-num stk-latest">${fmtN(it.latest)}</td>
+                <td class="stk-num stk-latest stk-sep">${fmtN(it.latest)}</td>
                 <td class="stk-num ${dLatestCls(it.diffLatest)}">${it.diffLatest == null ? "—" : `<b>${(it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b><span class="stk-pctp">(${latestPct(it)})</span>`}</td>
-                <td class="stk-adj">${adjCell(it)}</td>
+                <td class="stk-adj stk-sep">${adjCell(it)}</td>
                 <td class="stk-exp">${escapeHtml(expiryTxt(it.expiry))}</td>
-              </tr>`).join("");
+              </tr>`;
+            }).join("");
             rightHtml = `
           <div class="stk-card">
             <div class="stk-card-h">
@@ -6814,10 +6818,26 @@ function createAdminRouter() {
                 <button type="button" class="stk-ibtn" id="stkInfo2" aria-expanded="false" aria-label="盤差計算說明" title="盤差計算說明">${SF_ICONS.info}</button>
               </div>
             </div>
-            <div class="stk-note" id="stkInfo2Box" hidden>「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
+            <div class="stk-note" id="stkInfo2Box" hidden>紅底＝盤差(對當下)超過 <b>±5%</b> 的品項。「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
             <div style="overflow-x:auto;">
             <table class="stk-tbl">
-              <thead><tr><th>料號</th><th>品名</th><th class="stk-num">系統<br><span class="stk-th2">盤點當下 ${escapeHtml(stkAdminTwTime(s.submitted_at) || "—")}</span></th><th class="stk-num">實盤<br><span class="stk-th2">可改·含中</span></th><th class="stk-num">盤差<br><span class="stk-th2">對當下(%)</span></th><th class="stk-num">最新系統<br><span class="stk-th2">+調整 ${escapeHtml(stkAdminTwTime(sel.latestSource === "warehouse" ? stockMeta.wh_snapshot_at : stockMeta.snapshot_at) || "—")}</span></th><th class="stk-num">對最新盤差<br><span class="stk-th2">(%)</span></th><th>調整<br><span class="stk-th2">誤差補償</span></th><th>效期</th></tr></thead>
+              <thead>
+                <tr>
+                  <th rowspan="2">料號</th>
+                  <th rowspan="2">品名</th>
+                  <th colspan="3" class="stk-grp">盤點當下 <span class="stk-th2">凍結・送出 ${escapeHtml(stkAdminTwTime(s.submitted_at) || "—")}</span></th>
+                  <th colspan="2" class="stk-grp">最新庫存 <span class="stk-th2">快照 ${escapeHtml(stkAdminTwTime(sel.latestSource === "warehouse" ? stockMeta.wh_snapshot_at : stockMeta.snapshot_at) || "—")}・已含調整</span></th>
+                  <th rowspan="2" class="stk-sep">調整<br><span class="stk-th2">誤差補償</span></th>
+                  <th rowspan="2">效期</th>
+                </tr>
+                <tr>
+                  <th class="stk-num stk-sep">系統</th>
+                  <th class="stk-num">實盤 <span class="stk-th2">可改·含中</span></th>
+                  <th class="stk-num">盤差 <span class="stk-th2">(%)</span></th>
+                  <th class="stk-num stk-sep">系統 <span class="stk-th2">+調整</span></th>
+                  <th class="stk-num">盤差 <span class="stk-th2">(%)</span></th>
+                </tr>
+              </thead>
               <tbody>${rowsHtml || `<tr><td colspan="9" style="text-align:center;color:#787774;padding:14px;">此單沒有已盤品項</td></tr>`}</tbody>
             </table>
             </div>
@@ -6890,7 +6910,14 @@ function createAdminRouter() {
         tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}
         tr.stk-p .stk-diff{color:#1f7a46;font-weight:700;}
         tr.stk-z .stk-diff{color:#9b9a97;}
-        tr.stk-n{background:rgba(179,38,30,.08);}
+        td.stk-n{color:#b3261e;}
+        td.stk-p{color:#1f7a46;}
+        td.stk-z{color:#9b9a97;}
+        tr.stk-hot{background:rgba(179,38,30,.10);}
+        .stk-grp{text-align:center !important;border-left:1px solid var(--notion-border,#e3e2e0);border-bottom:1px solid var(--notion-border-soft,#f0efed);}
+        th.stk-sep,td.stk-sep{border-left:1px solid var(--notion-border,#e3e2e0);}
+        .stk-tbl thead tr:first-child th{top:0;}
+        .stk-tbl thead tr+tr th{top:23px;}
         .stk-togbtn{font-size:12.5px;padding:6px 12px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;}
         .stk-togbtn.sm{padding:4px 10px;font-size:11.5px;}
         .stk-togbtn.on{background:#2383e2;border-color:#2383e2;color:#fff;}
@@ -7018,8 +7045,21 @@ function createAdminRouter() {
             if (action === "set_from_count") {
                 const counted = Number(req.body?.counted);
                 if (!Number.isFinite(counted)) { done("adjerr=" + encodeURIComponent("實盤數無效")); return; }
-                baseQty = stock ? Number(stock.qty || 0) : 0; // 凌越目前總量
-                delta = Math.round((counted - baseQty) * 100) / 100; // 讓顯示/最新系統＝實盤
+                // [fix 2026-07-17] delta 基準改與盤差表「最新系統」同一套：該倉有分倉列→用分倉量
+                // （品項無列＝0），整倉無分倉資料才退回公司總量。舊版一律用公司總量，品項跨倉
+                // （尤其他倉有負庫存）時會算錯：分倉 13.7、總量 -1.2、實盤 16.8 → 誤存 +18（正確 +3.1）。
+                baseQty = stock ? Number(stock.qty || 0) : 0; // 後備：公司總量
+                const whCodeAdj = String(req.body?.wh_code || "").trim();
+                if (whCodeAdj) {
+                    try {
+                        const whAny = await db.prepare("SELECT 1 AS x FROM erp_stock_wh_qty WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? LIMIT 1").get(whCodeAdj, icpno);
+                        if (whAny) {
+                            const hit = await db.prepare("SELECT qty FROM erp_stock_wh_qty WHERE wh_code = ? AND erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(whCodeAdj, erpCode, icpno);
+                            baseQty = hit ? Number(hit.qty || 0) : 0;
+                        }
+                    } catch (_) { /* 分倉查詢失敗→沿用總量基準（與顯示端 fallback 規則一致） */ }
+                }
+                delta = Math.round((counted - baseQty) * 100) / 100; // 讓「最新系統」＝實盤
                 countedQty = counted;
                 name = String(req.body?.name || (stock && stock.name) || (cur && cur.name) || "");
                 spec = String(req.body?.spec || (stock && stock.spec) || (cur && cur.spec) || "");
@@ -7174,6 +7214,13 @@ function createAdminRouter() {
     // ============================================================
     const statsTaipeiDateAgo = (days) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(Date.now() - days * 86400000));
     const statsVarPct = (sys, counted) => Math.round(((counted - sys) / Math.max(Math.abs(sys), 1)) * 1000) / 10;
+    // [fix 2026-07-17] 統計盤差一律「含庫存調整」：盤差＝實盤 −（凍結系統＋目前 delta）。
+    // 調整是長期掛著的系統誤差補償（凌越端無法修），不扣掉的話已補償品項會永遠霸佔熱力圖/排行。
+    const statsAdjMap = async (icpno) => {
+        const m = {};
+        try { (await db.prepare("SELECT erp_code, delta FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno) || []).forEach((r) => { m[String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
+        return m;
+    };
     router.get("/inventory/stats/items", async (req, res) => {
         try {
             const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
@@ -7226,8 +7273,9 @@ function createAdminRouter() {
                 acc.counted += Number(v.counted_qty || 0);
                 byDate.set(k, acc);
             }
+            const adjKl = Number((await statsAdjMap(icpno))[code] || 0); // 盤差含庫存調整（與熱力圖一致）
             const variance = Array.from(byDate.entries()).sort((a, b) => a[0].localeCompare(b[0]))
-                .map(([d, a]) => ({ d, sys: a.sys, counted: a.counted, var_pct: statsVarPct(a.sys, a.counted) }));
+                .map(([d, a]) => ({ d, sys: a.sys, counted: a.counted, var_pct: statsVarPct(a.sys + adjKl, a.counted) }));
             res.json({ scope, bars, variance });
         }
         catch (e) {
@@ -7293,10 +7341,12 @@ function createAdminRouter() {
                 a.counted += Number(v.counted_qty || 0);
                 vagg.set(k, a);
             }
+            const adjSer = await statsAdjMap(icpno); // 盤差含庫存調整（與熱力圖一致）
             for (const [k, a] of vagg.entries()) {
                 const p = k.indexOf("|");
-                const it = items.get(k.slice(0, p));
-                if (it) it.counts[k.slice(p + 1)] = { v: statsVarPct(a.sys, a.counted), c: a.counted };
+                const code0 = k.slice(0, p);
+                const it = items.get(code0);
+                if (it) it.counts[k.slice(p + 1)] = { v: statsVarPct(a.sys + Number(adjSer[code0] || 0), a.counted), c: a.counted };
             }
             let list = Array.from(items.values());
             const whFiltered = !!(wh && scope === "company" && whCodes && whCodes.size);
@@ -7336,12 +7386,16 @@ function createAdminRouter() {
             }
             const dates = [];
             for (let i = days - 1; i >= 0; i--) dates.push(statsTaipeiDateAgo(i));
+            const adjMap = await statsAdjMap(icpno); // 盤差含庫存調整（誤差補償）
             const out = Array.from(items.values()).map((it) => {
                 const cells = {};
                 let maxAbs = 0;
+                const adj = Number(adjMap[it.code] || 0);
                 for (const [d, a] of Object.entries(it.days)) {
-                    const p = statsVarPct(a.sys, a.counted);
+                    const sysAdj = Math.round((a.sys + adj) * 100) / 100;
+                    const p = statsVarPct(sysAdj, a.counted);
                     cells[d] = { v: p, sys: a.sys, counted: a.counted };
+                    if (adj) { cells[d].adj = adj; cells[d].sys_adj = sysAdj; }
                     if (Math.abs(p) > maxAbs) maxAbs = Math.abs(p);
                 }
                 return { code: it.code, name: it.name, spec: it.spec, cells, max_abs: maxAbs };
@@ -7507,7 +7561,7 @@ function createAdminRouter() {
           <div class="ivs-card" style="margin-bottom:0;">
             <div class="ivs-card-h">
               <div class="ivs-card-t">盤差熱力圖（品項 × 日期）</div>
-              <span class="ivs-note">紅＝盤盈（實盤多）、藍＝盤虧（實盤少）；斜線＝當日未盤</span>
+              <span class="ivs-note">紅＝盤盈（實盤多）、藍＝盤虧（實盤少）；斜線＝當日未盤；盤差已扣庫存調整（誤差補償）</span>
             </div>
             <div class="ivs-heat-tools">
               <input type="search" id="ivsHQ" placeholder="搜尋品項…" autocomplete="off">
@@ -7515,6 +7569,13 @@ function createAdminRouter() {
               <label class="sf-switch-label"><input type="checkbox" id="ivsHShowV"><span class="sf-switch"></span>格內顯示數值</label>
               <span class="ivs-note" id="ivsHCount"></span>
               <span style="flex:1"></span>
+              <span class="ivs-flabel">級距</span>
+              <div class="sf-seg ivs-seg" id="ivsHScale">
+                <button type="button" class="sf-seg-btn" data-s="8">±8%</button>
+                <button type="button" class="sf-seg-btn" data-s="25">±25%</button>
+                <button type="button" class="sf-seg-btn" data-s="50">±50%</button>
+                <button type="button" class="sf-seg-btn on" data-s="100">±100%</button>
+              </div>
               <span class="ivs-flabel">期間</span>
               <div class="sf-seg ivs-seg" id="ivsHDays">
                 <button type="button" class="sf-seg-btn" data-d="7">7天</button>
@@ -7524,7 +7585,7 @@ function createAdminRouter() {
               <button type="button" class="sf-seg-btn" id="ivsHMore" style="border:1px solid var(--ivs-border);border-radius:8px;display:none;"></button>
             </div>
             <div class="ivs-heat-scroll" id="ivsHM"></div>
-            <div class="ivs-hm-legend"><span>−8%</span><span class="ivs-hm-grad"></span><span>＋8%</span><span style="margin-left:8px;">格子越深＝盤差越大，點格子看下方詳情</span></div>
+            <div class="ivs-hm-legend"><span id="ivsHLgMin">−100%</span><span class="ivs-hm-grad"></span><span id="ivsHLgMax">＋100%</span><span style="margin-left:8px;">格子越深＝盤差越大，點格子看下方詳情</span></div>
           </div>
           <div class="ivs-card" style="margin-bottom:0;">
             <div class="ivs-card-h"><div class="ivs-card-t">期間盤差排行</div></div>
@@ -7552,7 +7613,7 @@ function createAdminRouter() {
         "use strict";
         var ICPNO=${JSON.stringify(icpno)};
         var WHS=${whJson};
-        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hideZero:false, hDays:14, hOnly:false, hShowV:false, hShowAll:true, hQ:"", hSel:null};
+        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hideZero:false, hDays:14, hOnly:false, hShowV:false, hShowAll:true, hQ:"", hSel:null, hScale:100};
         var klineCache={}; // code|wh -> {scope,bars,variance}
         var heatCache={};  // wh|days -> {dates,items}
         var root=document.querySelector(".ivs-root");
@@ -7896,7 +7957,7 @@ function createAdminRouter() {
         }
         function divColor(v){
           if(v==null) return "";
-          var t=Math.max(-1,Math.min(1,v/8)),mid=css("--ivs-mid"),pole=t<0?css("--ivs-neg"):css("--ivs-pos");
+          var t=Math.max(-1,Math.min(1,v/S.hScale)),mid=css("--ivs-mid"),pole=t<0?css("--ivs-neg"):css("--ivs-pos");
           var k=Math.round(Math.pow(Math.abs(t),0.7)*100);
           return "color-mix(in oklab, "+pole+" "+k+"%, "+mid+")";
         }
@@ -7915,6 +7976,8 @@ function createAdminRouter() {
           var j=heatCache[S.wh+"|"+S.hDays];
           if(!j) return;
           var vis=heatVisible(j);
+          document.getElementById("ivsHLgMin").textContent="−"+S.hScale+"%";
+          document.getElementById("ivsHLgMax").textContent="＋"+S.hScale+"%";
           document.getElementById("ivsHCount").textContent="期間有盤點 "+vis.all+" 品項、有盤差 "+vis.diffCount+" 項；列出 "+vis.list.length+" 列（依最大 |盤差%| 排序）";
           var more=document.getElementById("ivsHMore");
           more.style.display=vis.total>HTOP?"":"none";
@@ -7929,7 +7992,7 @@ function createAdminRouter() {
             j.dates.forEach(function(d){
               var c=it.cells[d],v=c?c.v:null;
               var sel=S.hSel&&S.hSel.code===it.code&&S.hSel.d===d?" sel":"";
-              var fg=(S.hShowV&&v!=null&&Math.abs(v)>4)?"#fff":"inherit";
+              var fg=(S.hShowV&&v!=null&&Math.abs(v)>S.hScale/2)?"#fff":"inherit";
               h+='<button type="button" class="hmg-cell '+(S.hShowV?"showv":"")+sel+(v==null?" na":"")+'" data-code="'+esc(it.code)+'" data-d="'+d+'" style="background:'+divColor(v)+';color:'+(S.hShowV&&v!=null?fg:"")+'">'+(v==null?"":(v>0?"+":"")+v)+'</button>';
             });
           });
@@ -7939,7 +8002,7 @@ function createAdminRouter() {
               var it=j.items.filter(function(x){return x.code===td.dataset.code;})[0];
               var c=it&&it.cells[td.dataset.d];
               showTip('<div class="td">'+esc(it?it.name:"")+' · '+esc(td.dataset.d)+'</div>'+
-                (c?'<div class="tr"><span>系統（盤點當下）</span><b>'+fmtN(c.sys)+'</b></div><div class="tr"><span>實盤</span><b>'+fmtN(c.counted)+'</b></div><div class="tr"><span>盤差</span><b>'+(c.v>0?"+":"")+c.v+'%</b></div>':'<div class="tr"><span>當日未盤點</span></div>')+
+                (c?'<div class="tr"><span>系統（盤點當下）</span><b>'+fmtN(c.sys)+'</b></div>'+(c.adj?'<div class="tr"><span>庫存調整</span><b>'+(c.adj>0?"+":"")+c.adj+'</b></div><div class="tr"><span>系統＋調整</span><b>'+fmtN(c.sys_adj)+'</b></div>':'')+'<div class="tr"><span>實盤</span><b>'+fmtN(c.counted)+'</b></div><div class="tr"><span>盤差'+(c.adj?"（含調整）":"")+'</span><b>'+(c.v>0?"+":"")+c.v+'%</b></div>':'<div class="tr"><span>當日未盤點</span></div>')+
                 '<div style="color:var(--ivs-mut);margin-top:2px;">點擊查看下方詳情</div>',ev.clientX,ev.clientY);
             });
             td.addEventListener("mouseleave",hideTip);
@@ -7972,7 +8035,7 @@ function createAdminRouter() {
           box.hidden=false;
           var c=it.cells[S.hSel.d];
           document.getElementById("ivsDrillT").textContent=(it.name||it.code)+(it.spec?"（"+it.spec+"）":"")+" — 明細下鑽";
-          document.getElementById("ivsDrillN").textContent="選取日 "+S.hSel.d+(c?("：盤差 "+(c.v>0?"+":"")+c.v+"%（系統 "+fmtN(c.sys)+"／實盤 "+fmtN(c.counted)+"）"):"：當日未盤點");
+          document.getElementById("ivsDrillN").textContent="選取日 "+S.hSel.d+(c?("：盤差 "+(c.v>0?"+":"")+c.v+"%（系統"+(c.adj?"＋調整 "+fmtN(c.sys_adj):" "+fmtN(c.sys))+"／實盤 "+fmtN(c.counted)+"）"):"：當日未盤點");
           var key=it.code+"|"+S.wh;
           var render=function(kj){
             var vmap={}; (kj.variance||[]).forEach(function(v){ vmap[v.d]={p:v.var_pct,c:v.counted,s:v.sys}; });
@@ -7991,6 +8054,11 @@ function createAdminRouter() {
         document.getElementById("ivsHQ").addEventListener("input",function(){ S.hQ=this.value.trim(); drawHeat(); });
         document.getElementById("ivsHOnly").addEventListener("change",function(){ S.hOnly=this.checked; drawHeat(); });
         document.getElementById("ivsHShowV").addEventListener("change",function(){ S.hShowV=this.checked; drawHeat(); });
+        document.getElementById("ivsHScale").addEventListener("click",function(ev){
+          var b=ev.target.closest("button"); if(!b) return;
+          this.querySelectorAll("button").forEach(function(x){x.classList.remove("on");}); b.classList.add("on");
+          S.hScale=+b.dataset.s; drawHeat();
+        });
         document.getElementById("ivsHMore").addEventListener("click",function(){ S.hShowAll=!S.hShowAll; drawHeat(); });
         document.getElementById("ivsHDays").addEventListener("click",function(ev){
           var b=ev.target.closest("button"); if(!b) return;
