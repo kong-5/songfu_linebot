@@ -356,6 +356,11 @@ function initSqlite(dbPath) {
         // OHLC 同 erp_stock_daily（open=當日首推時的昨收、high/low=當日各次推送極值）。
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_stock_wh_daily (icpno TEXT NOT NULL DEFAULT '00', wh_code TEXT NOT NULL, erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, qty_open REAL, qty_high REAL, qty_low REAL, updated_at TEXT, PRIMARY KEY (icpno, wh_code, erp_code, snap_date))");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_daily_date ON erp_stock_wh_daily(icpno, wh_code, snap_date)");
+        // [未來銷貨加回 2026-07-17] 提前打進凌越的「未來日期銷貨」會即時扣掉 SK_NOWQTY，使快照低於實際在架量。
+        // 內網代理隨庫存推送順帶查未來日期 A1(銷貨)−A2(銷退) 逐料號淨量，塞進此表（獨立表，庫存推送全表覆蓋不會洗掉）。
+        // qty＝該料號未來日期銷貨淨量（正＝顯示時要「加回」）。開關（app_settings.stock_future_reversal_enabled）
+        // 打開時顯示庫存＝凌越快照＋人工調整＋此加回；關閉時遮蔽（回原凌越量方便對照查詢）。只影響內部顯示，不流入凌越回寫。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_future_sales (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -1161,6 +1166,8 @@ async function initPg() {
                 await client.query("ALTER TABLE erp_stock_daily ADD COLUMN IF NOT EXISTS qty_low DOUBLE PRECISION");
                 await client.query("CREATE TABLE IF NOT EXISTS erp_stock_wh_daily (icpno TEXT NOT NULL DEFAULT '00', wh_code TEXT NOT NULL, erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, qty_open DOUBLE PRECISION, qty_high DOUBLE PRECISION, qty_low DOUBLE PRECISION, updated_at TEXT, PRIMARY KEY (icpno, wh_code, erp_code, snap_date))");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_daily_date ON erp_stock_wh_daily(icpno, wh_code, snap_date)");
+                // [未來銷貨加回 2026-07-17] 未來日期銷貨淨量（與 initSqlite 對應）：獨立表，隨庫存推送覆蓋。
+                await client.query("CREATE TABLE IF NOT EXISTS erp_future_sales (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
             }
             catch (_) { /* table may already exist */ }
             try {
