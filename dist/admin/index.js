@@ -2244,6 +2244,7 @@ const STK_CLIENT_JS = `
   var ITEMS = DATA.items || [];
   var ASSIGN = DATA.assign || {};
   var WHNAME = DATA.whname || {};
+  var FUT_ON = !!DATA.futOn;   // 未來銷貨加回開關是否打開（開＝it.q 已含加回）
   // 品項照片（第四波）：料號→版本（1＝原有；上傳後改為 Date.now() 作快取破壞）
   var PHOTOS = {}; (DATA.photos || []).forEach(function(c){ PHOTOS[String(c)] = 1; });
   var ICON_CAM = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 5.5h2l1-1.5h3l1 1.5h2a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z"/><circle cx="8" cy="8.5" r="2"/></svg>';
@@ -2252,6 +2253,7 @@ const STK_CLIENT_JS = `
     view: document.getElementById('stkView'),
     hideZero: document.getElementById('stkHideZero'),
     lowOnly: document.getElementById('stkLowOnly'),
+    futRev: document.getElementById('stkFutRev'),
     exportBtn: document.getElementById('stkExport'),
     refresh: document.getElementById('stkRefresh'),
     rail: document.getElementById('stkRail'),
@@ -2283,10 +2285,17 @@ const STK_CLIENT_JS = `
     if(PHOTOS[it.c]){ var v=(PHOTOS[it.c]>1)?('?v='+PHOTOS[it.c]):''; return '<td class="stk-photo"><img class="stk-thumb" loading="lazy" alt="" src="/admin/inventory/item-photo/'+encodeURIComponent(it.c)+v+'" data-photo="'+esc(it.c)+'"></td>'; }
     return '<td class="stk-photo"><button type="button" class="stk-upbtn" data-upload="'+esc(it.c)+'">'+ICON_CAM+'上傳</button></td>';
   }
+  // 未來銷貨加回 badge：開關開＝藍底「未來+N」（it.q 已含）；關＝灰底提示（存在但未加回）
+  function futBadge(it){
+    if(!it.fut) return '';
+    var v=it.fut; var sign=(v>0?'+':'');
+    if(FUT_ON){ return '<span title="已加回未來日期銷貨 '+sign+v+'（原凌越 '+fmtQty(it.qraw)+'）" style="margin-left:6px;font-size:10.5px;font-weight:700;color:#0369a1;background:#e0f2fe;border-radius:5px;padding:1px 5px;white-space:nowrap;">未來'+sign+v+'</span>'; }
+    return '<span title="有未來日期銷貨 '+sign+v+'（目前未加回；打開上方『未來銷貨加回』會計入顯示庫存）" style="margin-left:6px;font-size:10.5px;font-weight:600;color:#94a3b8;background:#f1f5f9;border-radius:5px;padding:1px 5px;white-space:nowrap;">未來'+sign+v+'</span>';
+  }
   function rowHtml(it){
     var s=safetyOf(it.c); var neg=it.q<0; var low=(it.q>0&&s>0&&it.q<s);
     var cls=neg?'stk-neg':(low?'stk-low':'');
-    return '<tr class="'+cls+'"'+(TXN_ENABLED?(' data-code="'+esc(it.c)+'" data-name="'+esc(it.n)+'"'):'')+'><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+(it.adj?('<span title="含人工調整 '+(it.adj>0?'+':'')+it.adj+'（原凌越 '+fmtQty(it.qraw)+'）" style="margin-left:6px;font-size:10.5px;font-weight:700;color:#8250df;background:#f3eefd;border-radius:5px;padding:1px 5px;white-space:nowrap;">調'+(it.adj>0?'+':'')+it.adj+'</span>'):'')+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td>'+photoCell(it)+'</tr>';
+    return '<tr class="'+cls+'"'+(TXN_ENABLED?(' data-code="'+esc(it.c)+'" data-name="'+esc(it.n)+'"'):'')+'><td class="stk-code">'+esc(it.c)+'</td><td class="stk-name" title="'+esc(it.n)+'">'+esc(it.n)+'</td><td class="stk-spec">'+esc(it.s)+'</td><td class="stk-unit">'+esc(it.u)+'</td><td class="stk-qty">'+fmtQty(it.q)+(it.adj?('<span title="含人工調整 '+(it.adj>0?'+':'')+it.adj+'（原凌越 '+fmtQty(it.qraw)+'）" style="margin-left:6px;font-size:10.5px;font-weight:700;color:#8250df;background:#f3eefd;border-radius:5px;padding:1px 5px;white-space:nowrap;">調'+(it.adj>0?'+':'')+it.adj+'</span>'):'')+futBadge(it)+'</td><td class="stk-wh">'+esc(whsOf(it).map(whLabel).join('、'))+'</td>'+photoCell(it)+'</tr>';
   }
   function theadHtml(){ return '<thead><tr><th>料號</th><th>品名</th><th>規格</th><th>單位</th><th class="stk-qty">目前庫存</th><th>凌越倉別</th><th class="stk-photo">照片</th></tr></thead>'; }
   function renderList(list){
@@ -2340,6 +2349,13 @@ const STK_CLIENT_JS = `
   els.hideZero.checked=state.hideZero;
   els.hideZero.addEventListener('change',function(){ state.hideZero=els.hideZero.checked; state.wh=''; save(); render(); });
   els.lowOnly.addEventListener('change',function(){ state.low=els.lowOnly.checked; state.wh=''; render(); });
+  // 未來銷貨加回：全域設定，切換後存後台再重載（顯示量含加回/遮蔽由後端算）
+  if(els.futRev){ els.futRev.addEventListener('change',function(){
+    var on=els.futRev.checked; els.futRev.disabled=true;
+    fetch('/admin/inventory/stock/future-toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:on})})
+      .then(function(r){return r.json();}).then(function(){ location.reload(); })
+      .catch(function(){ els.futRev.disabled=false; els.futRev.checked=!on; });
+  }); }
   els.exportBtn.addEventListener('click',function(){
     var lines=['料號,品名,規格,單位,目前庫存,凌越倉別'];
     function q(x){ x=(x==null?'':String(x)); return '"'+x.replace(/"/g,'""')+'"'; }
@@ -2349,10 +2365,11 @@ const STK_CLIENT_JS = `
   });
   els.refresh.addEventListener('click',function(){
     els.refresh.disabled=true;
-    els.status.style.display=''; els.status.className='stk-status stk-status-wait'; els.status.textContent='已送出更新請求，等待內網代理刷新…';
+    els.status.style.display=''; els.status.className='stk-status stk-status-wait'; els.status.textContent='已送出更新請求（本公司），等待內網代理刷新…';
     var baseline='';
     var clickAt=new Date().toISOString();
-    fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){ baseline=m.snapshot_at||''; return fetch('/admin/inventory/stock/refresh',{method:'POST'}); }).then(function(r){return r.json();}).then(function(){
+    // 只重推當頁公司（DATA.icpno）：不必動整合代理設定即可換公司更新
+    fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){ baseline=m.snapshot_at||''; return fetch('/admin/inventory/stock/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:DATA.icpno||''})}); }).then(function(r){return r.json();}).then(function(){
       var tries=0; var iv=setInterval(function(){
         tries++;
         fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){
@@ -6959,6 +6976,7 @@ function createAdminRouter() {
           <input type="date" name="date" value="${escapeAttr(date)}" onchange="this.form.submit()" class="stk-date">
           ${selWh ? `<input type="hidden" name="wh" value="${escapeAttr(selWh)}">` : ""}
         </form>
+        <select id="stkRefreshIcp" class="sf-input" style="width:auto;padding:4px 8px;font-size:12.5px;" title="要更新哪家公司的庫存（免動整合代理設定）"><option value="">全公司</option>${Object.entries(erp_companies_js_1.ERP_COMPANY_NAMES).map(([c, n]) => `<option value="${c}">${escapeHtml(n)}</option>`).join("")}</select>
         <button type="button" class="stk-togbtn" id="stkRefreshInv">↻ 更新最新庫存</button>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/anomalies?date=${encodeURIComponent(date)}" title="當日盤差品項＋可能原因，可推送 LINE 群組請大家複查">異常排查表</a>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
@@ -7007,10 +7025,13 @@ function createAdminRouter() {
         }); }
         // 更新最新庫存：觸發內網代理拉一次凌越，成功後重載頁面（對最新盤差就會更新）
         var rb=document.getElementById('stkRefreshInv'), msg=document.getElementById('stkRefreshMsg');
+        var icpSel=document.getElementById('stkRefreshIcp');
         if(rb){ rb.addEventListener('click',function(){
-          rb.disabled=true; msg.textContent='已送出更新請求，等待內網代理刷新…';
+          rb.disabled=true;
+          var icp=(icpSel&&icpSel.value)||'';
+          msg.textContent='已送出更新請求'+(icp?('（'+icpSel.options[icpSel.selectedIndex].text+'）'):'（全公司）')+'，等待內網代理刷新…';
           var baseline='', clickAt=new Date().toISOString();
-          fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){ baseline=m.snapshot_at||''; return fetch('/admin/inventory/stock/refresh',{method:'POST'}); }).then(function(){
+          fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){ baseline=m.snapshot_at||''; return fetch('/admin/inventory/stock/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icpno:icp})}); }).then(function(){
             var tries=0; var iv=setInterval(function(){
               tries++;
               fetch('/admin/inventory/stock/status').then(function(r){return r.json();}).then(function(m){
@@ -8833,6 +8854,12 @@ function createAdminRouter() {
         // 人工調整值：顯示庫存＝凌越快照 + delta（彌補系統誤差）。keyed by 料號（本頁已限定單一公司）。
         const adjMap = {};
         try { (await db.prepare("SELECT erp_code, delta FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno) || []).forEach((r) => { adjMap[String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
+        // [未來銷貨加回] 提前打進凌越的未來日期銷貨會扣掉快照量 → futMap 記每料號未來淨量（正＝要加回）。
+        // 開關 stock_future_reversal_enabled=1 時顯示量含加回；關閉時遮蔽（回原凌越量方便對照查詢）。
+        const futMap = {};
+        try { (await db.prepare("SELECT erp_code, qty FROM erp_future_sales WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno) || []).forEach((r) => { futMap[String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) { }
+        let futOn = false;
+        try { const r = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("stock_future_reversal_enabled"); futOn = !!(r && String(r.value) === "1"); } catch (_) { }
         const assignRows = await db.prepare(`
       SELECT p.erp_code AS code, w.name AS wh_name, w.sort_order AS wh_sort, COALESCE(iwp.safety_stock, 0) AS safety
       FROM inventory_warehouse_products iwp
@@ -8851,14 +8878,18 @@ function createAdminRouter() {
             const c = String(r.erp_code || "");
             const raw = Number(r.qty || 0);
             const adj = Number(adjMap[c] || 0);
+            const fut = Number(futMap[c] || 0);
+            // 顯示量＝凌越 + 人工調整（+ 未來銷貨加回，僅開關打開時）
+            const shown = (raw + adj) + (futOn ? fut : 0);
             return {
                 c,
                 n: String(r.name || ""),
                 s: String(r.spec || ""),
                 u: String(r.unit || ""),
-                q: adj ? Math.round((raw + adj) * 100) / 100 : raw, // 顯示量＝凌越 + 調整
-                qraw: adj ? raw : undefined, // 原凌越量（有調整時給 badge/tooltip）
+                q: (adj || (futOn && fut)) ? Math.round(shown * 100) / 100 : raw, // 顯示量
+                qraw: (adj || fut) ? raw : undefined, // 原凌越量（有調整/未來加回時給 badge/tooltip）
                 adj: adj || undefined,
+                fut: fut || undefined, // 未來銷貨淨量（恆帶，供 badge；是否計入 q 由 futOn 決定）
                 w: String(r.wh_code || ""),
             };
         });
@@ -8874,7 +8905,7 @@ function createAdminRouter() {
         let photoCodes = [];
         try { photoCodes = (await db.prepare("SELECT erp_code FROM erp_stock_item_photo").all() || []).map((r) => String(r.erp_code || "")).filter(Boolean); } catch (_) { photoCodes = []; }
         // 保留多公司 icpno（多公司架構）＋ photos（照片清單），兩者都給前端
-        const dataJson = JSON.stringify({ items, assign, whname, icpno, photos: photoCodes }).replace(/</g, "\\u003c");
+        const dataJson = JSON.stringify({ items, assign, whname, icpno, futOn, photos: photoCodes }).replace(/</g, "\\u003c");
         const meta = await readStockMeta();
         // 快照時間按公司顯示（推送時每家各記一份；查無＝該公司還沒推過）
         let snapAt = meta.snapshot_at;
@@ -8925,6 +8956,7 @@ function createAdminRouter() {
             </div>
             <label class="sf-switch-label"><input type="checkbox" id="stkHideZero"><span class="sf-switch"></span>隱藏 0</label>
             <label class="sf-switch-label"><input type="checkbox" id="stkLowOnly"><span class="sf-switch"></span>只看低量/負量</label>
+            <label class="sf-switch-label" title="提前打進凌越的『未來日期銷貨』會先扣掉庫存；打開＝把這批未出貨的量加回顯示，關閉＝遮蔽回原凌越量方便對照查詢。"><input type="checkbox" id="stkFutRev"${futOn ? " checked" : ""}><span class="sf-switch"></span>未來銷貨加回</label>
           </div>
           <div class="stk-toolbar-right">
             <span class="stk-meta" id="stkMeta">資料時間：<b>${escapeHtml(snapLabel)}</b> · <span id="stkCount">${items.length}</span> 品項 · 內網代理最後連線：<b title="${escapeHtml(agentTitle)}"${agentStale ? ' style="color:#b91c1c;"' : ""}>${escapeHtml(agentLabel)}</b></span>
@@ -9008,12 +9040,29 @@ function createAdminRouter() {
         });
     });
     // 使用者點「庫存更新」→ 設定待處理旗標（內網 agent long-poll 撿走）
-    router.post("/inventory/stock/refresh", async (req, res) => {
+    // [依公司自主更新 2026-07-17] 可帶 icpno＝只重推該公司（不必動整合代理 LY_ICPNO 設定）；
+    // 省略/空＝沿用代理設定（一般為 all＝全公司），維持舊行為。旗標另存 erp_stock_refresh_icpno 供代理讀。
+    router.post("/inventory/stock/refresh", express_1.default.json(), async (req, res) => {
         try {
             const now = new Date().toISOString();
+            const icpno = (req.body && req.body.icpno != null && String(req.body.icpno).trim() !== "")
+                ? (0, erp_companies_js_1.normIcpno)(req.body.icpno) : "";
             await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", now);
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_icpno", icpno);
             await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "requested");
-            res.json({ ok: true, requested_at: now });
+            res.json({ ok: true, requested_at: now, icpno });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
+    // [未來銷貨加回] 開關：全域設定（app_settings.stock_future_reversal_enabled='1'/'0'）。
+    // 打開＝顯示庫存把未來日期銷貨淨量加回；關閉＝遮蔽回原凌越量方便對照查詢。只影響顯示，不寫回凌越。
+    router.post("/inventory/stock/future-toggle", express_1.default.json(), async (req, res) => {
+        try {
+            const on = req.body?.on === true || req.body?.on === "1" || req.body?.on === 1;
+            await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("stock_future_reversal_enabled", on ? "1" : "0");
+            res.json({ ok: true, on });
         }
         catch (e) {
             res.status(500).json({ error: String(e?.message || e) });
@@ -13532,6 +13581,22 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 }
                 whRows = Array.from(whMap.values());
             }
+            // [未來銷貨加回 2026-07-17] 頂層 future_sales（來自 ly_stock_push.py 查未來日期 A1−A2 淨量）：
+            // 「欄位存在且為陣列」＝本批查詢成功 → 同交易內按公司覆蓋 erp_future_sales（含空陣列＝清空該公司加回）；
+            // 欄位不存在（查詢失敗/舊代理未帶）→ 完全不動該表，保留上一份加回。用 Map 以 erp_code 去重。
+            const hasFut = Array.isArray(body.future_sales);
+            let futRows = null;
+            if (hasFut) {
+                const futMap = new Map();
+                for (const f of body.future_sales) {
+                    const c = String(f?.erp_code ?? f?.code ?? "").trim();
+                    if (!c)
+                        continue;
+                    const q = Number(f?.qty);
+                    futMap.set(c, [c, Number.isFinite(q) ? q : 0, snapshotAt]);
+                }
+                futRows = Array.from(futMap.values());
+            }
             // [fix 2026-07-08] 全表覆蓋（DELETE + 分批 INSERT + meta 更新）包進單一交易：
             // 過去無交易，推送中途失敗（網路斷、pool 瞬斷）會留下「半空的庫存表」且快照時間未更新，
             // 使用者看到的是殘缺庫存卻無從察覺；交易失敗整批回滾＝保留上一份完整快照。
@@ -13629,6 +13694,21 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         await h.prepare("INSERT INTO erp_stock_wh_daily (icpno, wh_code, erp_code, snap_date, qty, qty_open, qty_high, qty_low, updated_at) VALUES " + ph).run(...flat);
                     }
                 }
+                // [未來銷貨加回] future_sales 帶陣列（即使空）＝本批查詢成功 → 按公司覆蓋（空＝清空該公司加回，
+                // 表示已無未來銷貨、加回歸零）；沒帶＝查詢失敗/舊代理，上面 futRows 為 null 完全不動、保留上一份。
+                if (futRows) {
+                    await h.prepare("DELETE FROM erp_future_sales WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").run(icpno);
+                    const FCHUNK = 100;
+                    for (let i = 0; i < futRows.length; i += FCHUNK) {
+                        const chunk = futRows.slice(i, i + FCHUNK);
+                        const ph = chunk.map(() => "(?,?,?,?)").join(",");
+                        const flat = [];
+                        for (const r of chunk)
+                            flat.push(icpno, ...r); // r = [erp_code, qty, at]
+                        await h.prepare("INSERT INTO erp_future_sales (icpno, erp_code, qty, updated_at) VALUES " + ph).run(...flat);
+                    }
+                    await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_future_sales_snapshot_at", snapshotAt);
+                }
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
                 // 每家公司各自的快照時間/筆數（顯示用；legacy 兩鍵維持＝最後一次推送）
@@ -13642,8 +13722,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 await db.transaction(doReplace);
             else
                 await doReplace(db);
-            console.log("[admin] inventory-push 完成：items", rows.length, "筆；warehouse_qty", whRows ? whRows.length + " 筆（分倉快照已覆蓋）" : "未帶（分倉快照保留上一份）");
-            res.json({ ok: true, count: rows.length, warehouse_qty_count: whRows ? whRows.length : null, snapshot_at: snapshotAt });
+            console.log("[admin] inventory-push 完成：items", rows.length, "筆；warehouse_qty", whRows ? whRows.length + " 筆（分倉快照已覆蓋）" : "未帶（分倉快照保留上一份）", "；future_sales", futRows ? futRows.length + " 筆（未來銷貨加回已覆蓋）" : "未帶（加回保留上一份）");
+            res.json({ ok: true, count: rows.length, warehouse_qty_count: whRows ? whRows.length : null, future_sales_count: futRows ? futRows.length : null, snapshot_at: snapshotAt });
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/inventory-push", e?.message || e);
@@ -15072,11 +15152,16 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_stock_refresh_requested_at");
                 const reqAt = row && row.value ? String(row.value).trim() : "";
                 if (reqAt) {
+                    // [依公司自主更新] 一起讀出這次請求指定的公司（空＝全公司，代理沿用自身 LY_ICPNO 設定）。
+                    let reqIcpno = "";
+                    try { const ir = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_stock_refresh_icpno"); reqIcpno = ir && ir.value ? String(ir.value).trim() : ""; }
+                    catch (_) { }
                     // 一領到就清掉旗標：避免推送失敗時旗標一直在、代理每次輪詢又重撈重推（無限重試風暴、狂打凌越）。
                     // 單次請求＝單次嘗試；失敗就等使用者再按或下次定時推。成功推送時 inventory-push 也會再清一次（冪等）。
                     await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_requested_at", "");
+                    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_icpno", "");
                     await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_refresh_status", "running");
-                    res.json({ refresh: true, requested_at: reqAt });
+                    res.json({ refresh: true, requested_at: reqAt, icpno: reqIcpno });
                     return;
                 }
                 if (Date.now() >= deadline) {

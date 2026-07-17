@@ -294,8 +294,10 @@ def next_time_label(times: list) -> str:
     return f"{h:02d}:{m:02d}（明日）"
 
 
-def cloud_poll_wait(base: str, key: str, timeout_sec: int = 25) -> bool:
-    """掛長連線等後台『庫存更新』；回 True=有人點了。連線失敗會丟例外（供上層判斷斷線）。"""
+def cloud_poll_wait(base: str, key: str, timeout_sec: int = 25) -> dict:
+    """掛長連線等後台『庫存更新』；回 {refresh: bool, icpno}。
+    icpno＝使用者在網站指定要更新的公司（空＝全公司，沿用本代理 LY_ICPNO 設定）。
+    連線失敗會丟例外（供上層判斷斷線）。"""
     url = base.rstrip("/") + f"/admin/lingyue-writeback/inventory-wait?timeout={timeout_sec}"
     req = urllib.request.Request(
         url, method="GET",
@@ -303,7 +305,7 @@ def cloud_poll_wait(base: str, key: str, timeout_sec: int = 25) -> bool:
     )
     with urllib.request.urlopen(req, timeout=timeout_sec + 15) as resp:
         res = json.loads(resp.read().decode("utf-8") or "{}")
-    return bool(res.get("refresh"))
+    return res if isinstance(res, dict) else {}
 
 
 def cloud_wait_orders(base: str, key: str, timeout_sec: int = 25) -> list:
@@ -514,8 +516,11 @@ class AgentEngine:
         self.log("■ 代理已停止（背景連線會在下個週期收掉）")
 
     # ── 碰凌越的實際動作（都要拿 erp_lock）─────────────────────
-    def do_stock_push(self, reason: str = ""):
-        base, key, icpno = self.cfg["cloud_base"], self.cfg["writeback_key"], self.cfg["icpno"]
+    def do_stock_push(self, reason: str = "", icpno_override: str = ""):
+        base, key = self.cfg["cloud_base"], self.cfg["writeback_key"]
+        # [依公司自主更新] 網站按「更新此公司庫存」會帶 icpno_override＝只重推該公司；
+        # 空＝定時/啟動/全域刷新，沿用本代理設定（LY_ICPNO，一般為 all）。免改整合代理設定即可換公司更新。
+        icpno = (str(icpno_override).strip() or self.cfg["icpno"])
         if not base or not key:
             self.log("⚠ 尚未設定網址/金鑰，無法推庫存（請按⚙設定）")
             return
@@ -760,8 +765,10 @@ class AgentEngine:
                 self.state["cloud"] = "ok"
                 self.state["cloud_last"] = now_full()
                 self._log_once("cloud", None)
-                if got:
-                    self.do_stock_push(reason="按鈕觸發")
+                if got.get("refresh"):
+                    req_icp = str(got.get("icpno") or "").strip()
+                    reason = f"按鈕觸發·公司{req_icp}" if req_icp else "按鈕觸發"
+                    self.do_stock_push(reason=reason, icpno_override=req_icp)
                 self._scheduled_stock_push(pushed)
             except urllib.error.HTTPError as e:
                 # 伺服器有回應＝連得到；只是這支端點/金鑰的問題

@@ -37,6 +37,14 @@
 | 預設入庫倉別 | `SK_RKWHNO` | 後台倉別**只認凌越倉號**（如 FN005/Y99），不是自建倉 |
 | **停用碼** | **`SK_STOP`** | **`1`=停用；推送時一律過濾掉不推**（`ly_stock_push.py`） |
 - 庫存快照存 `erp_stock_items`（**按公司 icpno 覆蓋**）；後台「庫存管理 → 目前庫存」顯示（公司分段切換）。
+- **未來銷貨加回（2026-07-17）**：先打「明天以後」的銷貨單會即時扣 SK_NOWQTY → 推送順帶查未來日期
+  A1−A2 逐料號淨量（payload `future_sales`，`LY_FUTURE_DAYS` 預設 60 天）存 `erp_future_sales`（按公司覆蓋、
+  查失敗不帶＝保留上一份）。目前庫存頁「未來銷貨加回」開關（`app_settings.stock_future_reversal_enabled`）
+  開＝顯示量加回未來淨量（藍 badge「未來+N」）、關＝遮蔽回原凌越量方便對照。**只影響目前庫存頁顯示**，
+  不進盤點「最新系統／盤差」、不寫回凌越。
+- **依公司自主更新（2026-07-17）**：`stock/refresh` 可帶 `icpno`（旗標 `erp_stock_refresh_icpno`）→
+  `inventory-wait` 回 `{refresh, icpno}` → 代理 `do_stock_push(icpno_override)` 只重推該公司。
+  目前庫存頁按鈕＝當頁公司；每日盤點頁按鈕旁有公司下拉（預設全公司）。免改代理 LY_ICPNO 即可換公司更新。
 
 ## 松揚掃碼盤點（多公司，2026-07-10 新）
 - **松揚＝同一套凌越的公司代碼 `02`**（00 松富、01 龍港、03 松成）。`erp_stock_items`/`erp_warehouse`
