@@ -6960,6 +6960,7 @@ function createAdminRouter() {
           ${selWh ? `<input type="hidden" name="wh" value="${escapeAttr(selWh)}">` : ""}
         </form>
         <button type="button" class="stk-togbtn" id="stkRefreshInv">↻ 更新最新庫存</button>
+        <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/anomalies?date=${encodeURIComponent(date)}" title="當日盤差品項＋可能原因，可推送 LINE 群組請大家複查">異常排查表</a>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
         <span id="stkRefreshMsg" style="font-size:12px;color:#8a5a10;"></span>
       </div>
@@ -7208,6 +7209,170 @@ function createAdminRouter() {
         }
         res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
         res.type("text/csv").send("﻿" + lines.join("\r\n"));
+    });
+    // ============================================================
+    // 盤點異常排查表（2026-07-17）：當日「對最新盤差≠0」品項＋依訊號自動列可能原因，
+    // 可勾選後推送 LINE 群組請大家複查。原因訊號：盤差方向（實盤偏多/偏少）、
+    // 跨倉持有（分倉表他倉有量）、他倉負庫存、已掛庫存調整。純提示不寫任何帳。
+    // ============================================================
+    function anomalyCauses(it, others) {
+        const c = [];
+        if (it.diffLatest > 0) {
+            c.push("進貨已到、進貨單未入帳", "銷貨單先開但貨未出", "銷退回倉、銷退單未入", "盤點多計（單位/箱散/重複掃）");
+        } else {
+            c.push("貨已出、銷貨單未入帳", "進貨單已入但貨未到/短交", "報廢耗損未入單", "盤點漏盤（其他存放位置）");
+        }
+        if (others.length) {
+            c.push("跨倉持有（" + others.map((o) => o.wh + "：" + o.qty).join("、") + "）→ 查調撥單/是否記錯倉");
+            if (others.some((o) => o.qty < 0)) c.push("他倉帳面為負 → 出貨/進貨單很可能開錯倉");
+        }
+        if (it.adj) c.push("已掛庫存調整 " + (it.adj > 0 ? "+" : "") + it.adj + " → 確認是否與新誤差重複補償");
+        return c;
+    }
+    // 當日異常清單（GET 頁與 POST 送出共用同一權威，避免送出內容與畫面分岔）
+    async function loadStocktakeAnomalies(date) {
+        const latestMap = {};
+        try { (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) { }
+        const adjMap = {};
+        try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
+        const day = await loadStocktakeDay(date, latestMap, adjMap);
+        const xwhCache = {};
+        const getXwh = async (icp) => {
+            if (xwhCache[icp]) return xwhCache[icp];
+            const m = {};
+            try {
+                for (const r of (await db.prepare("SELECT erp_code, wh_code, qty FROM erp_stock_wh_qty WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icp)) || [])
+                    (m[String(r.erp_code)] = m[String(r.erp_code)] || []).push({ wh: String(r.wh_code), qty: Number(r.qty || 0) });
+            } catch (_) { /* 無分倉資料＝略過跨倉訊號 */ }
+            xwhCache[icp] = m;
+            return m;
+        };
+        const list = [];
+        for (const x of day) {
+            const icp = (0, erp_companies_js_1.normIcpno)(x.session.icpno);
+            const xm = await getXwh(icp);
+            for (const it of x.items) {
+                if (it.diffLatest == null || it.diffLatest === 0) continue;
+                const others = (xm[it.code] || []).filter((w) => w.wh !== String(x.session.wh_code || "") && w.qty !== 0);
+                const pct = Math.round((it.diffLatest / Math.max(Math.abs(it.latest || 0), 1)) * 1000) / 10;
+                list.push({ key: icp + ":" + String(x.session.wh_code || "") + ":" + it.code, icp, co: (0, erp_companies_js_1.erpCompanyName)(icp), wh: String(x.session.wh_code || ""), whName: String(x.session.wh_name || ""), it, pct, causes: anomalyCauses(it, others) });
+            }
+        }
+        list.sort((a, b) => Math.abs(b.pct || 0) - Math.abs(a.pct || 0));
+        return list;
+    }
+    router.get("/inventory/anomalies", async (req, res) => {
+        const qd = String(req.query.date || "").trim();
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
+        const list = await loadStocktakeAnomalies(date);
+        let groups = [];
+        try { groups = (await db.prepare("SELECT group_id, group_name FROM stocktake_group ORDER BY group_name").all()) || []; } catch (_) { groups = []; }
+        let defGroup = "";
+        try { const r = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("stocktake_anomaly_group_id"); defGroup = r && r.value ? String(r.value) : ""; } catch (_) { }
+        const n2 = (v) => (v == null ? "—" : String(Math.round(Number(v) * 100) / 100));
+        const rowsHtml = list.map((a) => `
+      <tr>
+        <td style="text-align:center;"><input type="checkbox" name="keys" value="${escapeAttr(a.key)}" checked form="anomSend"></td>
+        <td style="white-space:nowrap;">${escapeHtml(a.whName || a.wh)}${a.icp !== "00" ? `<span class="wh-co2">${escapeHtml(a.co)}</span>` : ""}</td>
+        <td style="font-variant-numeric:tabular-nums;white-space:nowrap;">${escapeHtml(a.it.code)}</td>
+        <td>${escapeHtml(a.it.name)}${a.it.spec ? `<span style="margin-left:6px;font-size:11px;color:var(--notion-text-muted,#9b9a97);">${escapeHtml(a.it.spec)}</span>` : ""}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;">${a.it.adj ? `${n2(a.it.latestRaw)} <span style="color:#8250df;">調${a.it.adj > 0 ? "+" : ""}${a.it.adj}</span> ＝<b>${n2(a.it.latest)}</b>` : `<b>${n2(a.it.latest)}</b>`}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums;">${n2(a.it.counted)}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:${a.it.diffLatest > 0 ? "#1f7a46" : "#b3261e"};white-space:nowrap;">${a.it.diffLatest > 0 ? "+" : ""}${n2(a.it.diffLatest)} <span style="font-weight:400;font-size:11px;">(${a.pct > 0 ? "+" : ""}${a.pct}%)</span></td>
+        <td style="font-size:12px;color:var(--notion-text,#37352f);">${a.causes.map((cz) => `<span class="anom-cause">${escapeHtml(cz)}</span>`).join("")}</td>
+      </tr>`).join("");
+        const groupOpts = groups.map((g) => `<option value="${escapeAttr(String(g.group_id))}" ${String(g.group_id) === defGroup ? "selected" : ""}>${escapeHtml(String(g.group_name || g.group_id))}</option>`).join("");
+        const banner = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已推送 ${escapeHtml(String(req.query.ok))} 項到群組。</div>` : (req.query.err ? `<div style="background:#fdecec;color:#b3261e;padding:10px 12px;border-radius:8px;margin-bottom:12px;">推送失敗：${escapeHtml(String(req.query.err))}</div>` : "");
+        const body = `
+      <style>
+        .anom-cause{display:inline-block;font-size:11px;color:#5b616e;background:var(--notion-bg,#f7f6f3);border:1px solid var(--notion-border,#e3e2e0);border-radius:99px;padding:1px 8px;margin:1px 3px 1px 0;white-space:nowrap;}
+        .wh-co2{margin-left:5px;font-size:10px;font-weight:700;color:#2383e2;background:#e8f1fd;padding:1px 6px;border-radius:5px;}
+      </style>
+      <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點</a> / 異常排查表</div>
+      <h1 class="notion-page-title">異常排查表</h1>
+      <p class="notion-hint" style="margin:-2px 0 14px;">列出當日<b>對最新盤差 ≠ 0</b>（實盤 vs 最新系統＋調整）的品項，依盤差方向與跨倉/調整訊號自動列<b>可能原因</b>。勾選後可推送到 LINE 群組請大家複查——只是提示排查方向，<b>不會動任何帳</b>。</p>
+      ${banner}
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;">
+        <form method="get" action="/admin/inventory/anomalies" style="display:inline-flex;margin:0;">
+          <input type="date" name="date" value="${escapeAttr(date)}" onchange="this.form.submit()" class="sf-input" style="width:auto;">
+        </form>
+        <span style="flex:1"></span>
+        <form method="post" action="/admin/inventory/anomalies/send" id="anomSend" style="display:inline-flex;gap:8px;align-items:center;margin:0;" onsubmit="return confirm('確定推送勾選的異常品項到所選群組？');">
+          <input type="hidden" name="date" value="${escapeAttr(date)}">
+          <select name="group_id" class="sf-input" style="width:auto;min-width:180px;" ${groups.length ? "" : "disabled"}>
+            ${groupOpts || `<option value="">（尚無已知群組）</option>`}
+          </select>
+          <button type="submit" class="btn-primary" ${(!groups.length || !list.length) ? "disabled" : ""}>推送到群組複查</button>
+        </form>
+      </div>
+      <div class="notion-card" style="padding:0;overflow:auto;">
+        <table>
+          <thead><tr><th style="text-align:center;">選</th><th>倉庫</th><th>料號</th><th>品名</th><th style="text-align:right;">最新系統<br><span style="font-weight:400;font-size:10px;">快照/調整/加總</span></th><th style="text-align:right;">實盤</th><th style="text-align:right;">對最新盤差(%)</th><th>可能原因（排查方向）</th></tr></thead>
+          <tbody>${rowsHtml || `<tr><td colspan="8" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此日期沒有「對最新盤差 ≠ 0」的品項 🎉</td></tr>`}</tbody>
+        </table>
+      </div>`;
+        res.type("text/html").send(notionPage("異常排查表", body, "inventory", res));
+    });
+    router.post("/inventory/anomalies/send", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const qd = String(req.body?.date || "").trim();
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
+        const back = "/admin/inventory/anomalies?date=" + encodeURIComponent(date);
+        try {
+            const groupId = String(req.body?.group_id || "").trim();
+            if (!groupId) { res.redirect(back + "&err=" + encodeURIComponent("未選擇群組")); return; }
+            let keys = req.body?.keys;
+            keys = Array.isArray(keys) ? keys : (keys ? [keys] : []);
+            const keySet = new Set(keys.map(String));
+            const list = (await loadStocktakeAnomalies(date)).filter((a) => keySet.has(a.key));
+            if (!list.length) { res.redirect(back + "&err=" + encodeURIComponent("沒有勾選任何品項")); return; }
+            const token = (process.env.LINE_CHANNEL_ACCESS_TOKEN || "").trim();
+            if (!token) { res.redirect(back + "&err=" + encodeURIComponent("LINE_CHANNEL_ACCESS_TOKEN 未設定")); return; }
+            // 訊息組裝：按倉分段、每則 ≤4200 字自動分則
+            const n2 = (v) => (v == null ? "—" : String(Math.round(Number(v) * 100) / 100));
+            const header = `📋 盤點異常排查表 ${date}（共 ${list.length} 項）\n請大家幫忙複查，確認實際狀況後回報：`;
+            const texts = [];
+            let cur = header;
+            let lastWh = "";
+            let idx = 0;
+            for (const a of list) {
+                idx++;
+                const whKey = a.icp + ":" + a.wh;
+                const whTag = `\n\n【${a.icp === "00" ? "" : a.co + "｜"}${a.whName || a.wh} ${a.wh}】`;
+                const sysTxt = a.it.adj ? `帳${n2(a.it.latestRaw)} 調${a.it.adj > 0 ? "+" : ""}${a.it.adj}＝${n2(a.it.latest)}` : `帳${n2(a.it.latest)}`;
+                const itemTxt = `\n${idx}. ${a.it.name}${a.it.spec ? "（" + a.it.spec + "）" : ""} ${a.it.code}` +
+                    `\n　${sysTxt}｜實盤${n2(a.it.counted)}｜差${a.it.diffLatest > 0 ? "+" : ""}${n2(a.it.diffLatest)}（${a.pct > 0 ? "+" : ""}${a.pct}%）` +
+                    `\n　排查：${a.causes.join("／")}`;
+                let block = (lastWh !== whKey ? whTag : "") + itemTxt;
+                if ((cur + block).length > 4200) { // 超長自動分則（換則重印倉庫標頭）
+                    texts.push(cur);
+                    cur = `📋 盤點異常排查表 ${date}（續）`;
+                    block = whTag + itemTxt;
+                }
+                cur += block;
+                lastWh = whKey;
+            }
+            texts.push(cur);
+            for (let i = 0; i < texts.length; i += 5) {
+                const batch = texts.slice(i, i + 5).map((t) => ({ type: "text", text: t.slice(0, 4900) }));
+                const resp = await fetch("https://api.line.me/v2/bot/message/push", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ to: groupId, messages: batch }),
+                });
+                if (!resp.ok) {
+                    const t = await resp.text().catch(() => "");
+                    throw new Error("LINE push " + resp.status + " " + t.slice(0, 150));
+                }
+            }
+            // 記住這次選的群組，下次預設帶入
+            try { await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("stocktake_anomaly_group_id", groupId); } catch (_) { }
+            console.log("[admin] 異常排查表已推送：", date, list.length, "項 →", groupId.slice(0, 12) + "…");
+            res.redirect(back + "&ok=" + list.length);
+        }
+        catch (e) {
+            console.error("[admin] anomalies send", e?.message || e);
+            res.redirect(back + "&err=" + encodeURIComponent(String(e?.message || e).slice(0, 120)));
+        }
     });
     // ============================================================
     // 庫存統計圖表（2026-07-16）：三欄式（日K/週K/月K｜倉庫｜品項搜尋）＋盤差熱力圖
