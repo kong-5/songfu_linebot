@@ -72,6 +72,7 @@
   - 遷移：舊 `stocktake_group` 於 DB init 一次性帶入 `group_features`（非客戶群→訂單 off；已綁客戶群→訂單 on 保留收單），冪等。`stocktake_group` 保留為群組探索來源，行為已不再依賴它。
 - **後台每日盤點** `/admin/inventory`：選日期一次列出當日各倉盤點卡片（盤點人、比例、
   **盤差/盤差%**、含中貨、效期），可「只看盤差」、CSV 匯出。舊自建庫房盤點在 `/admin/inventory/legacy`。
+- **異常排查表** `/admin/inventory/anomalies`（每日盤點頁入口）：當日「對最新盤差≠0」品項＋依訊號自動列**可能原因**（盤差方向→進貨未入/銷貨未開等、跨倉持有、他倉負庫存、已掛調整），勾選後推送 LINE 群組請大家複查（群組清單＝`stocktake_group`，記住上次選擇 `app_settings.stocktake_anomaly_group_id`）；純提示不寫帳。
 - 資料表：`stocktake_session`（一倉一日一筆）、`stocktake_count`（逐品項，含 `mid_qty`）、
   `erp_warehouse`（倉號→中文名＋納入盤點）、`group_features`（群組三功能開關）、`stocktake_group`（舊白名單／探索來源）、`stocktake_expiry_item`。
 
