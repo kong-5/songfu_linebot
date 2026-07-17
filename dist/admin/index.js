@@ -6795,8 +6795,8 @@ function createAdminRouter() {
               <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}${hot ? " stk-hot" : ""}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
                 <td>${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
-                <td class="stk-num stk-sep">${fmtN(it.sys)}</td>
-                <td class="stk-num">${countForm(it)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}${it.editedAt ? `<span class="stk-edited" title="複盤修正 ${escapeAttr(stkAdminTwTime(it.editedAt))}${it.editedBy ? " · " + escapeAttr(it.editedBy) : ""}">✎ ${escapeHtml(stkAdminTwTime(it.editedAt))}</span>` : ""}</td>
+                <td class="stk-num stk-sep col-sys">${fmtN(it.sys)}</td>
+                <td class="stk-num col-cnt">${countForm(it)}${it.mid ? `<span class="stk-mid">含中 ${it.mid}</span>` : ""}${it.editedAt ? `<span class="stk-edited" title="複盤修正 ${escapeAttr(stkAdminTwTime(it.editedAt))}${it.editedBy ? " · " + escapeAttr(it.editedBy) : ""}">✎ ${escapeHtml(stkAdminTwTime(it.editedAt))}</span>` : ""}</td>
                 <td class="stk-num stk-diff">${it.diff == null ? "—" : `${(it.diff > 0 ? "+" : "") + it.diff}<span class="stk-pctp">(${diffPct(it)})</span>`}</td>
                 <td class="stk-num stk-latest stk-sep">${it.latest == null ? "—" : (it.adj ? `<span class="stk-lraw" title="凌越快照（未含調整）">${fmtN(it.latestRaw)}</span><span class="stk-ladj" title="庫存調整（誤差補償）">調 ${it.adj > 0 ? "+" : ""}${it.adj}</span><span class="stk-lsum" title="加總＝凌越快照＋調整">＝${fmtN(it.latest)}</span>` : fmtN(it.latest))}</td>
                 <td class="stk-num ${dLatestCls(it.diffLatest)}">${it.diffLatest == null ? "—" : `<b>${(it.diffLatest > 0 ? "+" : "") + it.diffLatest}</b><span class="stk-pctp">(${latestPct(it)})</span>`}</td>
@@ -6815,24 +6815,25 @@ function createAdminRouter() {
                 <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
                 <span class="stk-badge" title="「最新系統」欄的資料基準：分倉＝該倉在凌越的分倉庫存量；總量＝全公司總庫存量（該倉無分倉資料時的後備）">最新基準：${sel.latestSource === "warehouse" ? "分倉" : "總量"}</span>
                 <button type="button" class="stk-togbtn sm" id="stkOnlyDiff">只看盤差</button>
+                <button type="button" class="stk-togbtn sm" id="stkShowSys" title="顯示/隱藏「系統(盤點當下)」欄——凍結的當下系統量；平常看盤差就好，需要對數字再打開">顯示系統(當下)</button>
                 <button type="button" class="stk-ibtn" id="stkInfo2" aria-expanded="false" aria-label="盤差計算說明" title="盤差計算說明">${SF_ICONS.info}</button>
               </div>
             </div>
             <div class="stk-note" id="stkInfo2Box" hidden>紅底＝盤差(對當下)超過 <b>±5%</b> 的品項。「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
             <div style="overflow-x:auto;">
-            <table class="stk-tbl">
+            <table class="stk-tbl" id="stkTbl">
               <thead>
                 <tr>
                   <th rowspan="2">料號</th>
                   <th rowspan="2">品名</th>
-                  <th colspan="3" class="stk-grp">盤點當下 <span class="stk-th2">凍結・送出 ${escapeHtml(stkAdminTwTime(s.submitted_at) || "—")}</span></th>
+                  <th colspan="3" class="stk-grp" id="stkGrpNow">盤點當下 <span class="stk-th2">凍結・送出 ${escapeHtml(stkAdminTwTime(s.submitted_at) || "—")}</span></th>
                   <th colspan="2" class="stk-grp">最新庫存 <span class="stk-th2">快照 ${escapeHtml(stkAdminTwTime(sel.latestSource === "warehouse" ? stockMeta.wh_snapshot_at : stockMeta.snapshot_at) || "—")}・已含調整</span></th>
                   <th rowspan="2" class="stk-sep">調整<br><span class="stk-th2">誤差補償</span></th>
                   <th rowspan="2">效期</th>
                 </tr>
                 <tr>
-                  <th class="stk-num stk-sep">系統</th>
-                  <th class="stk-num">實盤 <span class="stk-th2">可改·含中</span></th>
+                  <th class="stk-num stk-sep col-sys">系統</th>
+                  <th class="stk-num col-cnt">實盤 <span class="stk-th2">可改·含中</span></th>
                   <th class="stk-num">盤差 <span class="stk-th2">(%)</span></th>
                   <th class="stk-num stk-sep">系統 <span class="stk-th2">快照/調整/加總</span></th>
                   <th class="stk-num">盤差 <span class="stk-th2">(%)</span></th>
@@ -6910,6 +6911,9 @@ function createAdminRouter() {
         .stk-lraw{display:block;}
         .stk-ladj{display:block;font-size:10.5px;font-weight:600;color:#8250df;}
         .stk-lsum{display:block;font-size:11.5px;font-weight:700;border-top:1px solid var(--notion-border,#e3e2e0);margin-top:1px;padding-top:1px;}
+        /* 「系統(盤點當下)」欄預設隱藏（數字太多不好讀），按「顯示系統(當下)」再展開 */
+        .stk-tbl.nosys .col-sys{display:none;}
+        .stk-tbl.nosys th.col-cnt,.stk-tbl.nosys td.col-cnt{border-left:1px solid var(--notion-border,#e3e2e0);}
         tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}
         tr.stk-p .stk-diff{color:#1f7a46;font-weight:700;}
         tr.stk-z .stk-diff{color:#9b9a97;}
@@ -7005,6 +7009,18 @@ function createAdminRouter() {
           var rows=document.querySelectorAll('tr[data-diff]');
           Array.prototype.forEach.call(rows,function(tr){ tr.style.display=(on&&tr.getAttribute('data-diff')==='0')?'none':''; });
         }); }
+        // 「系統(盤點當下)」欄預設隱藏（減少數字量），切換記在 localStorage；表頭群組 colspan 同步 3↔2
+        var sysBtn=document.getElementById('stkShowSys'), tbl=document.getElementById('stkTbl');
+        if(sysBtn&&tbl){
+          var showSys=false; try{ showSys=localStorage.getItem('stk.showSysNow')==='1'; }catch(_){}
+          var applySys=function(){
+            tbl.classList.toggle('nosys',!showSys);
+            var g=document.getElementById('stkGrpNow'); if(g) g.setAttribute('colspan', showSys?'3':'2');
+            sysBtn.classList.toggle('on',showSys);
+          };
+          sysBtn.addEventListener('click',function(){ showSys=!showSys; try{ localStorage.setItem('stk.showSysNow',showSys?'1':'0'); }catch(_){} applySys(); });
+          applySys();
+        }
         // 更新最新庫存：觸發內網代理拉一次凌越，成功後重載頁面（對最新盤差就會更新）
         var rb=document.getElementById('stkRefreshInv'), msg=document.getElementById('stkRefreshMsg');
         if(rb){ rb.addEventListener('click',function(){
