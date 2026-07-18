@@ -9435,15 +9435,35 @@ function createAdminRouter() {
             const action = String(req.body?.action || "").trim();
             const barcode = String(req.body?.barcode || "").trim();
             if (!barcode) { back("&err=" + encodeURIComponent("缺少條碼")); return; }
+            // [fix 2026-07-18 稽核] 條碼對照異動留軌跡（誰/何時/舊值新值）。
+            const bcSnap = (r) => (r ? { erp_code: r.erp_code, qty_per_scan: r.qty_per_scan } : null);
+            const auditBc = async (act, before, after, extra) => {
+                try {
+                    await logDataChange(req, {
+                        entityType: "product_barcode",
+                        entityId: icpno + ":" + barcode,
+                        action: act,
+                        summary: `條碼對照 ${act} ${barcode}（公司 ${icpno}）` + (extra ? "：" + extra : ""),
+                        meta: { icpno, barcode, before: before ?? null, after: after ?? null },
+                    });
+                }
+                catch (e) { console.warn("[admin] 條碼稽核寫入失敗（不阻斷）:", e?.message || e); }
+            };
+            const who = String(res.locals.adminUser || req.adminUsername || "");
+            const createdBy = "admin:" + String(req.adminUsername || "");
             if (action === "delete") {
+                const before = await db.prepare("SELECT erp_code, qty_per_scan FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").get(icpno, barcode);
                 await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
+                if (before) await auditBc("delete", bcSnap(before), null, `解除綁定（原料號 ${before.erp_code}）`);
                 back("&ok=1"); return;
             }
             let qps = Number(req.body?.qty_per_scan);
             if (!Number.isFinite(qps) || qps <= 0) qps = 1;
             const now = new Date().toISOString();
             if (action === "update") {
+                const before = await db.prepare("SELECT erp_code, qty_per_scan FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").get(icpno, barcode);
                 await db.prepare("UPDATE product_barcode SET qty_per_scan = ?, updated_at = ? WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(qps, now, icpno, barcode);
+                if (before && Number(before.qty_per_scan) !== qps) await auditBc("update", bcSnap(before), { erp_code: before.erp_code, qty_per_scan: qps }, `箱碼倍數 ${before.qty_per_scan} → ${qps}`);
                 back("&ok=1"); return;
             }
             // add：驗證料號存在（該公司庫存快照），可攜 upsert（先刪後插）
@@ -9451,9 +9471,15 @@ function createAdminRouter() {
             if (!erpCode) { back("&err=" + encodeURIComponent("缺少料號")); return; }
             const item = await db.prepare("SELECT erp_code FROM erp_stock_items WHERE erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(erpCode, icpno);
             if (!item) { back("&err=" + encodeURIComponent("查無料號 " + erpCode + "（該公司庫存快照裡沒有）")); return; }
-            await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
-            await db.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                .run(icpno, barcode, erpCode, qps, "admin", "後台", now, now);
+            const before = await db.prepare("SELECT erp_code, qty_per_scan FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").get(icpno, barcode);
+            // [fix 2026-07-18 M1] 先刪後插包同一交易：過去兩句獨立 auto-commit，之間失敗＝綁定被刪卻沒補回。
+            // created_by 改記真實操作者（過去寫死 "admin"/"後台"，稽核抓不到人）。
+            await db.transaction(async (h) => {
+                await h.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
+                await h.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                    .run(icpno, barcode, erpCode, qps, createdBy, who || "後台", now, now);
+            });
+            await auditBc(before ? "update" : "create", bcSnap(before), { erp_code: erpCode, qty_per_scan: qps }, `綁定料號 ${before && before.erp_code !== erpCode ? (before.erp_code + " → ") : ""}${erpCode}`);
             back("&ok=1");
         }
         catch (e) {
@@ -9658,8 +9684,23 @@ function createAdminRouter() {
             if (!item) { res.status(404).json({ error: "查無此品項（料號 " + erpCode + "）" }); return; }
             const now = new Date().toISOString();
             const who = String(res.locals.adminUser || req.adminUsername || "後台");
-            await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
-            await db.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(icpno, barcode, erpCode, qps, "admin:" + String(req.adminUsername || ""), who, now, now);
+            const before = await db.prepare("SELECT erp_code, qty_per_scan FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").get(icpno, barcode);
+            // [fix 2026-07-18 M1] 先刪後插包同一交易，之間失敗不會留下「綁定被刪卻沒補回」的空窗。
+            await db.transaction(async (h) => {
+                await h.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
+                await h.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(icpno, barcode, erpCode, qps, "admin:" + String(req.adminUsername || ""), who, now, now);
+            });
+            // [fix 2026-07-18 稽核] 掃碼邊掃邊綁也留軌跡（誰/何時/舊值新值）。
+            try {
+                await logDataChange(req, {
+                    entityType: "product_barcode",
+                    entityId: icpno + ":" + barcode,
+                    action: before ? "update" : "create",
+                    summary: `條碼對照（掃碼綁定）${before ? "update" : "create"} ${barcode}（公司 ${icpno}）：綁定料號 ${before && before.erp_code !== erpCode ? (before.erp_code + " → ") : ""}${erpCode}`,
+                    meta: { icpno, barcode, before: before ? { erp_code: before.erp_code, qty_per_scan: before.qty_per_scan } : null, after: { erp_code: erpCode, qty_per_scan: qps } },
+                });
+            }
+            catch (e) { console.warn("[admin] 掃碼綁定稽核寫入失敗（不阻斷）:", e?.message || e); }
             res.json({ ok: true, item: { c: String(item.erp_code), n: String(item.name || ""), s: String(item.spec || ""), u: String(item.unit || ""), sys: Number(item.qty || 0), q: qps } });
         } catch (e) { console.error("[admin scan bind]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
