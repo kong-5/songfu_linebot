@@ -16114,6 +16114,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           ${req.query.ok === "unconfirmed" ? "<div class=\"sf-pill\" style=\"margin-bottom:8px;\">已撤銷確認</div>" : ""}
           ${req.query.ok === "rerecog" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已重新辨識明細</div>" : ""}
           ${req.query.ok === "raw_applied" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已補登並解析</div>" : ""}
+          ${req.query.ok === "date_saved" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已更新出貨日期</div>" : ""}
+          ${req.query.ok === "date_unchanged" ? "<div class=\"sf-pill\" style=\"margin-bottom:8px;\">出貨日期未變更（與原日期相同）</div>" : ""}
+          ${req.query.ok === "approved_prev" ? "<div class=\"sf-pill ok\" style=\"margin-bottom:8px;\">已確認上一筆訂單</div>" : ""}
           ${req.query.err === "product" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">請選擇有效品項</div>" : ""}
           ${req.query.err === "rerecog" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：無法解析出品項（請檢查 Gemini 金鑰與原始文字）</div>" : ""}
           ${req.query.err === "rerecog_empty" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：此訂單沒有可解析的原始文字（請用「補登／修正」貼上叫貨內容）</div>" : ""}
@@ -16124,6 +16127,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           ${req.query.err === "rerecog_vision" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：有圖片附件但無法辨識（請設定 Vision 或 Gemini 金鑰）</div>" : ""}
           ${req.query.err === "apply_raw_empty" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">請貼上內容後再送出</div>" : ""}
           ${req.query.err === "apply_raw_parse" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">無法解析，請檢查內容或 Gemini 金鑰</div>" : ""}
+          ${(() => {
+            // 通用 err 顯示：approve 守衛（作廢/客訴單）與 set-date 等 POST 端把完整中文訊息放在 ?err=，
+            // 這裡沒有對應代碼分支就會被吞掉（伺服器有擋、使用者無感）。未知代碼一律原文顯示。
+            const knownErr = ["product", "rerecog", "rerecog_empty", "rerecog_gemini", "rerecog_gemini_empty", "rerecog_split", "rerecog_line", "rerecog_vision", "apply_raw_empty", "apply_raw_parse"];
+            const e = typeof req.query.err === "string" ? req.query.err : "";
+            return e && !knownErr.includes(e) ? `<div class="sf-pill bad" style="margin-bottom:8px;">${escapeHtml(e)}</div>` : "";
+          })()}
         </div>
         <div class="sf-root" style="padding:0 32px 24px 32px;background:var(--bg-0);">
         <div class="order-action-toolbar" style="display:flex;gap:8px;align-items:center;margin:0 0 14px;flex-wrap:wrap;">
@@ -19260,9 +19270,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         res.type("text/html").send(notionPage("訂貨單", sheetBody, "", res));
     });
     router.get("/customers/new", async (req, res) => {
+        // POST /customers/new 失敗會重導 ?err=（含「群組已綁定其他客戶」完整訊息）；沒渲染會讓使用者以為建立成功。
+        const errRaw = typeof req.query.err === "string" ? req.query.err : "";
+        const errMsg = errRaw === "name" ? "請填寫客戶名稱後再送出" : errRaw;
+        const errBanner = errMsg ? `<div class="sf-pill bad" style="margin-bottom:12px;">${escapeHtml(errMsg)}</div>` : "";
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / 新增客戶</div>
         <h1 class="notion-page-title">新增客戶</h1>
+        ${errBanner}
         <div class="notion-card">
           <form method="post" action="/admin/customers/new">
             <label>客戶名稱 <input type="text" name="name" required placeholder="例：XX餐廳" style="width:100%;"></label>
@@ -19608,7 +19623,17 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             // 群組功能白名單（辨識訂單／盤點／空籃）：以此客戶綁定的 LINE 群組 ID 為鍵；無設定＝三項全開。
             const hasGroupId = !!(customer.line_group_id && String(customer.line_group_id).trim());
             const gfeat = await group_features_js_1.getGroupFeatures(db, customer.line_group_id);
-            const editMsg = req.query.ok === "alias" ? "<p style='color:green'>已新增專用別名。</p>" : req.query.ok === "alias_del" ? "<p style='color:green'>已刪除專用別名。</p>" : req.query.err === "alias" ? "<p style='color:red'>請填寫別名與品項。</p>" : req.query.err === "dup" ? "<p style='color:red'>此客戶已存在相同別名。</p>" : "";
+            // POST /customers/:id/edit 失敗會重導 ?err=（name／「群組已綁定其他客戶」完整訊息／儲存失敗）；
+            // 舊版只認 alias/dup，其他訊息被吞掉（伺服器有擋、使用者無感），未知代碼一律原文顯示。
+            const editErrRaw = typeof req.query.err === "string" ? req.query.err : "";
+            const editErrMsg = editErrRaw === "alias" ? "請填寫別名與品項。"
+                : editErrRaw === "dup" ? "此客戶已存在相同別名。"
+                : editErrRaw === "name" ? "請填寫客戶名稱後再送出。"
+                : editErrRaw;
+            const editMsg = req.query.ok === "alias" ? "<p style='color:green'>已新增專用別名。</p>"
+                : req.query.ok === "alias_del" ? "<p style='color:green'>已刪除專用別名。</p>"
+                : editErrMsg ? `<p style='color:red'>${escapeHtml(editErrMsg)}</p>`
+                : "";
             const custAliases = await db.prepare(`
       SELECT cpa.id, cpa.alias, p.name AS product_name
       FROM customer_product_aliases cpa
