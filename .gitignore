@@ -7,3 +7,4 @@ __pycache__/
 *.local
 # 含密碼的暫存檔，加入 .env 後可刪除
 scripts/env-cloudsql-add.txt
+cloudsql_export_data_*.sql

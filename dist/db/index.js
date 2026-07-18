@@ -22,7 +22,9 @@ function sqlForPg(sql) {
     // [fix 2026-07-14] fail-fast：其餘 SQLite 專屬語法本轉換層「轉不動」，過去會原樣送進 PG
     // 直到雲端 500 才發現（本機 SQLite 全測不出）。改成一進來就丟明確錯誤，
     // 逼寫的人當場用 isPg 雙分支或可攜語法（ON CONFLICT / to_char …）。
-    const unsupported = s.match(/INSERT\s+OR\s+(REPLACE|IGNORE)\s|strftime\s*\(|GROUP_CONCAT\s*\(|\bdate\s*\(\s*['"]now['"]/i);
+    // [fix 2026-07-17] 補攔 datetime(...)：上面只轉換無修飾詞的 datetime('now')，
+    // 帶修飾詞寫法（如 datetime('now','+8 hours')）過去會漏網原樣送進 PG 執行期才炸。
+    const unsupported = s.match(/INSERT\s+OR\s+(REPLACE|IGNORE)\s|strftime\s*\(|GROUP_CONCAT\s*\(|\bdate\s*\(\s*['"]now['"]|\bdatetime\s*\(/i);
     if (unsupported) {
         throw new Error("sqlForPg: SQL 含 SQLite 專屬語法「" + unsupported[0].trim() + "」，PG 無法執行。" +
             "請改用可攜寫法（ON CONFLICT…DO UPDATE / to_char）或依 DATABASE_URL 分支。SQL 開頭：" + s.slice(0, 120));
@@ -1110,19 +1112,27 @@ async function initPg() {
             }
             catch (_) { /* table may already exist */ }
             // [migration 2026-07-10] 多公司（松富00＋松揚02…）：主鍵改 (icpno, erp_code)；舊資料補 icpno='00'。
+            // [fix 2026-07-17] 比照 erp_stock_wh_qty：包交易＋守門條件改「PK 不含 icpno 就重跑」。
+            // 原本非交易且守門只認「PK 恰為單欄 erp_code」——DROP pkey 成功後 ADD PRIMARY KEY 失敗
+            //（連線中斷/鎖逾時）會留下「無主鍵」狀態，下次啟動守門不成立→永不重試，
+            // 所有 ON CONFLICT (icpno, erp_code) upsert（庫存推送）從此整批失敗。
             try {
                 const pkRes = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'erp_stock_items'::regclass AND i.indisprimary");
                 const pkCols = (pkRes.rows || []).map((r) => String(r.attname));
-                if (pkCols.length === 1 && pkCols[0] === "erp_code") {
+                if (!pkCols.includes("icpno")) {
+                    await client.query("BEGIN");
                     await client.query("UPDATE erp_stock_items SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
-                    await client.query("ALTER TABLE erp_stock_items DROP CONSTRAINT erp_stock_items_pkey");
+                    // 過往半途失敗期間表可能無主鍵、混入重複列 → 先去重（同鍵留一筆）再建 PK
+                    await client.query("DELETE FROM erp_stock_items a USING erp_stock_items b WHERE a.ctid < b.ctid AND a.icpno = b.icpno AND a.erp_code = b.erp_code");
+                    await client.query("ALTER TABLE erp_stock_items DROP CONSTRAINT IF EXISTS erp_stock_items_pkey");
                     await client.query("ALTER TABLE erp_stock_items ALTER COLUMN icpno SET NOT NULL");
                     await client.query("ALTER TABLE erp_stock_items ALTER COLUMN icpno SET DEFAULT '00'");
                     await client.query("ALTER TABLE erp_stock_items ADD PRIMARY KEY (icpno, erp_code)");
+                    await client.query("COMMIT");
                     console.log("[migration] erp_stock_items 主鍵改為 (icpno, erp_code)");
                 }
             }
-            catch (e) { console.warn("[migration] erp_stock_items 多公司主鍵遷移失敗:", e?.message || e); }
+            catch (e) { try { await client.query("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_stock_items 多公司主鍵遷移失敗:", e?.message || e); }
             try {
                 // 凌越分倉庫存（資料種類 000009「目前庫存-廠內倉」）快照：每「品項×倉別」一筆。
                 // 由 inventory-push 的頂層 warehouse_qty 全表覆蓋（DELETE+INSERT；接收端下一階段實作）；
@@ -1149,7 +1159,9 @@ async function initPg() {
                 }
                 catch (e) { try { await client.query("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_stock_wh_qty 多公司主鍵遷移失敗:", e?.message || e); }
                 // [fix 2026-07-10] 品項照片（與 initSqlite 對應）：獨立表，跨庫存全表覆蓋保留
-                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_item_photo (erp_code TEXT PRIMARY KEY, photo_url TEXT, updated_by TEXT, updated_at TEXT)");
+                // [fix 2026-07-17] icpno 直接進 CREATE：先前只靠前面較早執行的 ALTER 補欄，
+                // 全新 PG 庫首次啟動時 ALTER 先跑（表還不存在、失敗被吞）→ 首啟缺欄、照片上傳 500，重啟才自癒。
+                await client.query("CREATE TABLE IF NOT EXISTS erp_stock_item_photo (erp_code TEXT PRIMARY KEY, photo_url TEXT, updated_by TEXT, updated_at TEXT, icpno TEXT)");
                 // 庫存人工調整值（彌補凌越系統誤差，免重整）：每公司每料號一個總調整值 delta（獨立表，庫存推送不會洗掉）。
                 await client.query("CREATE TABLE IF NOT EXISTS stock_adjustment (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, delta DOUBLE PRECISION NOT NULL DEFAULT 0, name TEXT, spec TEXT, unit TEXT, base_qty DOUBLE PRECISION, counted_qty DOUBLE PRECISION, note TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
                 // 每日庫存快照（供盤點「必盤」判定：跟昨天/上次有無變動）：庫存推送時一天存一份（最後一次為準）。
@@ -1169,20 +1181,24 @@ async function initPg() {
             }
             catch (_) { /* table may already exist */ }
             // [migration 2026-07-10] 倉別也按公司：主鍵改 (icpno, code)；舊資料補 icpno='00'。
+            // [fix 2026-07-17] 同 erp_stock_items：包交易＋守門改「PK 不含 icpno 就重跑」（可自半途失敗復原）。
             try {
                 await client.query("ALTER TABLE erp_warehouse ADD COLUMN IF NOT EXISTS icpno TEXT");
                 const whPkRes = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'erp_warehouse'::regclass AND i.indisprimary");
                 const whPk = (whPkRes.rows || []).map((r) => String(r.attname));
-                if (whPk.length === 1 && whPk[0] === "code") {
+                if (!whPk.includes("icpno")) {
+                    await client.query("BEGIN");
                     await client.query("UPDATE erp_warehouse SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
-                    await client.query("ALTER TABLE erp_warehouse DROP CONSTRAINT erp_warehouse_pkey");
+                    await client.query("DELETE FROM erp_warehouse a USING erp_warehouse b WHERE a.ctid < b.ctid AND a.icpno = b.icpno AND a.code = b.code");
+                    await client.query("ALTER TABLE erp_warehouse DROP CONSTRAINT IF EXISTS erp_warehouse_pkey");
                     await client.query("ALTER TABLE erp_warehouse ALTER COLUMN icpno SET NOT NULL");
                     await client.query("ALTER TABLE erp_warehouse ALTER COLUMN icpno SET DEFAULT '00'");
                     await client.query("ALTER TABLE erp_warehouse ADD PRIMARY KEY (icpno, code)");
+                    await client.query("COMMIT");
                     console.log("[migration] erp_warehouse 主鍵改為 (icpno, code)");
                 }
             }
-            catch (e) { console.warn("[migration] erp_warehouse 多公司主鍵遷移失敗:", e?.message || e); }
+            catch (e) { try { await client.query("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_warehouse 多公司主鍵遷移失敗:", e?.message || e); }
             try {
                 // 商品條碼對照（掃碼盤點/進貨用）：一個品項可多條碼；qty_per_scan=掃一下代表幾個單位（箱碼>1）。
                 await client.query("CREATE TABLE IF NOT EXISTS product_barcode (icpno TEXT NOT NULL DEFAULT '00', barcode TEXT NOT NULL, erp_code TEXT NOT NULL, qty_per_scan DOUBLE PRECISION NOT NULL DEFAULT 1, note TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, barcode))");
