@@ -2928,6 +2928,27 @@ function createAdminRouter() {
             console.error("[admin] data_change_log insert failed", e);
         }
     }
+    // [fix 2026-07-18 稽核] 群組功能開關（辨識訂單/盤點/空籃）異動須留軌跡：開錯會漏單/漏盤。
+    // 讀當前有效設定當 before，寫入後只在「真有變動」時記錄舊值→新值＋操作者。
+    async function setGroupFeaturesAudited(req, groupId, feats, source) {
+        const gid = String(groupId || "").replace(/\s/g, "").trim();
+        if (!gid) return;
+        let before = null;
+        try { before = await group_features_js_1.getGroupFeatures(db, gid); }
+        catch (_) { /* 讀失敗→before 視為未知，仍照常寫入並記錄 */ }
+        await group_features_js_1.setGroupFeatures(db, gid, feats);
+        const after = { order: !!feats.order, stocktake: !!feats.stocktake, basket: !!feats.basket };
+        const changed = !before || before.order !== after.order || before.stocktake !== after.stocktake || before.basket !== after.basket;
+        if (!changed) return;
+        const fmt = (f) => `辨識訂單${f.order ? "開" : "關"}/盤點${f.stocktake ? "開" : "關"}/空籃${f.basket ? "開" : "關"}`;
+        await logDataChange(req, {
+            entityType: "group_features",
+            entityId: gid,
+            action: "set",
+            summary: `群組功能（${source}）${gid}：${before ? fmt(before) : "（預設）"} → ${fmt(after)}`,
+            meta: { source, before, after },
+        });
+    }
     /**
      * 在備註欄補上「原 X 單位」前綴；如備註已有相同前綴則不重複加。
      */
@@ -7165,8 +7186,24 @@ function createAdminRouter() {
             const now = new Date().toISOString();
             const who = String(res.locals.adminUser || req.adminUsername || "");
             const createdBy = "admin:" + String(req.adminUsername || "");
+            // [fix 2026-07-18 稽核] 庫存調整直接影響顯示庫存與盤差，異動須留軌跡（誰/何時/舊值新值）。
+            const adjSnap = (r) => (r ? { delta: r.delta, base_qty: r.base_qty, counted_qty: r.counted_qty, note: r.note } : null);
+            const auditAdj = async (act, before, after, extra) => {
+                try {
+                    await logDataChange(req, {
+                        entityType: "stock_adjustment",
+                        entityId: icpno + ":" + erpCode,
+                        action: act,
+                        summary: `庫存調整 ${act} ${erpCode}（公司 ${icpno}）` + (extra ? "：" + extra : ""),
+                        meta: { icpno, erpCode, before: before ?? null, after: after ?? null },
+                    });
+                }
+                catch (e) { console.warn("[admin] 庫存調整稽核寫入失敗（不阻斷）:", e?.message || e); }
+            };
             if (action === "delete") {
+                const before = await db.prepare("SELECT * FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").get(icpno, erpCode);
                 await db.prepare("DELETE FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode);
+                if (before) await auditAdj("delete", adjSnap(before), null, `刪除（原 delta ${before.delta}）`);
                 done("adjok=1"); return;
             }
             const cur = await db.prepare("SELECT * FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").get(icpno, erpCode);
@@ -7197,6 +7234,7 @@ function createAdminRouter() {
                 note = cur ? cur.note : null;
                 if (delta === 0) { // 實盤與系統一致→不需調整；原本有的話移除
                     await db.prepare("DELETE FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode);
+                    if (cur) await auditAdj("delete", adjSnap(cur), null, "套用實盤後與系統一致，移除調整");
                     done("adjok=1"); return;
                 }
             }
@@ -7210,7 +7248,7 @@ function createAdminRouter() {
                 spec = String((cur && cur.spec) || (stock && stock.spec) || "");
                 unit = String((cur && cur.unit) || (stock && stock.unit) || "");
                 note = req.body?.note != null ? String(req.body.note).slice(0, 200) : (cur ? cur.note : null);
-                if (delta === 0) { await db.prepare("DELETE FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode); done("adjok=1"); return; }
+                if (delta === 0) { await db.prepare("DELETE FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND erp_code = ?").run(icpno, erpCode); if (cur) await auditAdj("delete", adjSnap(cur), null, "調整值歸零，移除調整"); done("adjok=1"); return; }
             }
             else { done("adjerr=" + encodeURIComponent("未知動作")); return; }
             const createdAt = (cur && cur.created_at) ? cur.created_at : now;
@@ -7222,6 +7260,7 @@ function createAdminRouter() {
             } else {
                 await db.prepare("INSERT OR REPLACE INTO stock_adjustment (icpno, erp_code, delta, name, spec, unit, base_qty, counted_qty, note, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(icpno, erpCode, delta, name, spec, unit, baseQty, countedQty, note, createdByKeep, createdByNameKeep, createdAt, now);
             }
+            await auditAdj(cur ? "update" : "create", adjSnap(cur), { delta, base_qty: baseQty, counted_qty: countedQty, note }, `delta ${cur ? (cur.delta + " → ") : ""}${delta}`);
             done("adjok=1");
         }
         catch (e) {
@@ -9828,7 +9867,7 @@ function createAdminRouter() {
                 universe.set(id, { order: true, stocktake: false, basket: true });
             }
             for (const [gid, feats] of universe) {
-                await group_features_js_1.setGroupFeatures(db, gid, feats);
+                await setGroupFeaturesAudited(req, gid, feats, "群組功能總表");
             }
             res.redirect("/admin/customers/groups?ok=1");
         }
@@ -19792,11 +19831,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 // 只在完整編輯表單（含 feat_form 標記）時寫入，避免部分欄位的 AJAX 儲存把開關全清成關。
                 if (req.body.feat_form === "1") {
                     try {
-                        await group_features_js_1.setGroupFeatures(db, lineGroupId, {
+                        await setGroupFeaturesAudited(req, lineGroupId, {
                             order: req.body.feat_order === "1",
                             stocktake: req.body.feat_stocktake === "1",
                             basket: req.body.feat_basket === "1",
-                        });
+                        }, "客戶編輯");
                     }
                     catch (e) { console.warn("[admin] group_features 儲存失敗:", e?.message || e); }
                 }
