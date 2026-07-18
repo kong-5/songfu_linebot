@@ -156,6 +156,14 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
     });
     try {
         const doWrite = async (tx) => {
+            // 樂觀鎖必須在交易內再比對一次：交易外那次檢查通過後、交易開始前的窗口內，
+            // 他人可能已 commit——若只靠交易外檢查，這裡的 DELETE 會把對方剛送出的整場盤點
+            // 刪掉重寫且不報 409（唯一索引兜不住已被刪的列）。
+            const txSess = await tx.prepare(`SELECT submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).get(whCode, date, icpno);
+            const txSubmittedAt = (txSess && txSess.submitted_at != null && txSess.submitted_at !== "") ? String(txSess.submitted_at) : null;
+            if (txSubmittedAt !== baseSubmittedAt) {
+                throw StkApiError(409, "開頁後已有他人送出此倉盤點，請重載後續盤再送出", "conflict_stale");
+            }
             await tx.prepare(`DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?)`).run(whCode, date, icpno);
             await tx.prepare(`DELETE FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).run(whCode, date, icpno);
             await tx.prepare("INSERT INTO stocktake_session (id, wh_code, wh_name, count_date, status, group_id, created_by, created_by_name, item_count, counted_count, created_at, submitted_at, icpno) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")

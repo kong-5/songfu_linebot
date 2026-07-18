@@ -1674,7 +1674,8 @@ function createLineWebhook() {
                         scheduleAutoFinalize(groupId, session);
                         scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         const ocrLine = ocrText || "[圖片]";
-                        const orderDateVal = (await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId))?.order_date || getTaipeiOrderDate();
+                        const sessOrderMeta = await db.prepare("SELECT order_date, order_sub_split_key FROM orders WHERE id = ?").get(session.orderId);
+                        const orderDateVal = sessOrderMeta?.order_date || getTaipeiOrderDate();
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
                             // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶（rebuild 過濾語意見 helper 註解），
@@ -1703,25 +1704,41 @@ function createLineWebhook() {
                                 await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db, { pushTo: groupId });
                             }
                         }
-                        else if (parsedFromImg.length > 0) {
-                            // [fix 2026-07-10] 改走 duplicateAttachmentToOrders（含 (order_id, line_message_id) 冪等查重），重試路徑不重複掛圖
-                            await duplicateAttachmentToOrders(db, messageId, [session.orderId], nowSql);
-                            await insertParsedItemsForOrder(db, session.orderId, session.customerId, parsedFromImg, fallbackUnitImg, curLineMessageId);
+                        else {
+                            // [fix 2026-07-17] 比照文字路徑（見下方 parsed.length > 0 分支）：session.orderId 可能是
+                            // 子客戶拆單訂單（本 session 由拆單建立且無主客戶桶時）。無子客戶標記的圖片品項/OCR
+                            // 必須導回主客戶桶，否則結單 rebuild 依 split key 過濾會把這批品項整批丟掉（漏出貨）。
+                            let targetOrderId = session.orderId;
+                            let rawSeeded = false;
+                            const sessKey = sessOrderMeta?.order_sub_split_key != null ? String(sessOrderMeta.order_sub_split_key).trim() : "";
+                            if (sessKey !== "") {
+                                const t = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
+                                    customerId: session.customerId,
+                                    orderDate: orderDateVal,
+                                    groupId,
+                                    subKey: "",
+                                    rawMessage: ocrLine,
+                                    lineMessageId: curLineMessageId,
+                                });
+                                targetOrderId = t.orderId;
+                                rawSeeded = t.created; // 新建時 raw 已放 ocrLine，下方不再附加避免重複
+                                mergeSessionOrderIds(session, [targetOrderId]);
+                            }
+                            // [fix 2026-07-10] 冪等掛附件（(order_id, line_message_id) 查重），重試路徑不重複掛圖
+                            await duplicateAttachmentToOrders(db, messageId, [targetOrderId], nowSql);
+                            if (parsedFromImg.length > 0)
+                                await insertParsedItemsForOrder(db, targetOrderId, session.customerId, parsedFromImg, fallbackUnitImg, curLineMessageId);
                             // [fix 2026-07-10 #63回歸] OCR 文字附加改走 appendRawLineToOrders 原子 UPDATE
                             //（原「SELECT raw → 串接 → UPDATE」讀改寫在併發下互相蓋寫），
                             // 接手逾時租約重跑時啟用 skipIfPresent（整段比對）避免同段 OCR 重複附加。
-                            await appendRawLineToOrders(db, [session.orderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
-                        }
-                        else {
-                            // [fix 2026-07-10] 同上：冪等掛附件；OCR 附加同上改原子 UPDATE＋重跑冪等
-                            await duplicateAttachmentToOrders(db, messageId, [session.orderId], nowSql);
-                            await appendRawLineToOrders(db, [session.orderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
+                            if (!rawSeeded)
+                                await appendRawLineToOrders(db, [targetOrderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         }
                     }
                     else {
                         const orderDate = getTaipeiOrderDate();
                         // [fix 2026-07-08] 累加品項的同日訂單查詢須排除作廢(deleted)/客訴(complaint)軟刪除單，否則員工作廢後客戶再叫貨會附加進作廢單→漏出貨；並加 ORDER BY order_no 讓拆單後多張同日單附加到穩定的第一張。
-                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customer.id, orderDate);
+                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(order_sub_split_key,'') = '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customer.id, orderDate);
                         const ocrLine = ocrText || "[圖片]";
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
@@ -1831,7 +1848,7 @@ function createLineWebhook() {
                     const lineForRaw = String(text || "").trim();
                     if (!rest) {
                         // [fix 2026-07-08] 排除作廢/客訴軟刪除單並加 ORDER BY，避免累加進作廢單、附加到不穩定的任意單。
-                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
+                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(order_sub_split_key,'') = '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
                         let orderId;
                         if (orderRow) {
                             orderId = orderRow.id;
@@ -1907,7 +1924,7 @@ function createLineWebhook() {
                         continue;
                     }
                     // [fix 2026-07-08] 排除作廢/客訴軟刪除單並加 ORDER BY，避免累加進作廢單、附加到不穩定的任意單。
-                    let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
+                    let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(order_sub_split_key,'') = '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
                     let orderId;
                     if (orderRow) {
                         orderId = orderRow.id;
@@ -2115,7 +2132,7 @@ function createLineWebhook() {
                                     if (!(await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(db))) {
                                         await lineClient.pushMessage(groupId, {
                                             type: "text",
-                                            text: `提醒：您寫「以上 ${claimed} 收單」，但我們目前辨識到 ${totalItems} 項。請對照 30 秒後的訂單明細確認，有缺漏可傳「線上改單」修改。`,
+                                            text: `提醒：您寫「以上 ${claimed} 收單」，但我們目前辨識到 ${totalItems} 項。有缺漏可傳「線上改單」修改。`,
                                         });
                                     }
                                 } catch (e) {

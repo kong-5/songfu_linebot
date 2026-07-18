@@ -2933,6 +2933,30 @@ function createAdminRouter() {
      * @param {string} [restrictUnit] 若提供：只處理 unit = 此值的品項（給「剛新增單位規則時」用）
      * @returns {Promise<{converted:number, byUnit:Object, skipped?:string, masterUnit?:string}>}
      */
+    /** [fix 2026-07-17] 後台改品項時同步寫 order_item_edits 軌跡（與 webhook/line.js 的 recordOrderItemEdit 同款）。
+     * 背景：結單整單重辨識（rebuild）會 DELETE 全部品項依 raw_message 重建，重建後只重放本表軌跡——
+     * 後台人工修正（改量改單位/作廢/手動加項）原本完全沒寫軌跡 → 同日客戶再在群組傳訊息、
+     * session 重開掛回同單，結單 rebuild 就把後台修正默默還原。
+     * match_key＝品項 raw_name 快照正規化（與重放端共用 normalizeOrderItemMatchKey，勿另寫）。
+     * 作廢記為 delete：重放時該品項不再重建（等價於不出貨）；作廢原因/快照仍留在 data_change_log。
+     * 寫入失敗僅告警不阻斷：修改本身已生效，只是結單 rebuild 可能還原（降級而非中斷操作）。 */
+    async function recordAdminOrderItemEdit({ orderId, action, rawName, quantity, unit, remark, editedBy }) {
+        try {
+            const matchKey = (0, rebuild_order_from_sources_js_1.normalizeOrderItemMatchKey)(rawName);
+            await db.prepare(
+                "INSERT INTO order_item_edits (id, order_id, action, match_key, raw_name, quantity, unit, remark, edited_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ).run((0, id_js_1.newId)("oie"), orderId, action, matchKey,
+                rawName != null ? String(rawName) : null,
+                quantity != null && Number.isFinite(Number(quantity)) ? Number(quantity) : null,
+                unit != null && String(unit).trim() !== "" ? String(unit).trim() : null,
+                remark != null && String(remark).trim() !== "" ? String(remark).trim() : null,
+                editedBy != null && String(editedBy).trim() !== "" ? String(editedBy).trim() : null,
+                new Date().toISOString());
+        }
+        catch (e) {
+            console.warn("[admin] 改單軌跡寫入失敗（結單 rebuild 可能還原此人工修正）orderId=%s action=%s: %s", orderId, action, e?.message || e);
+        }
+    }
     async function autoConvertOrderItemsToKg(req, productId, restrictUnit) {
         const product = await db.prepare("SELECT id, name, unit FROM products WHERE id = ?").get(productId);
         if (!product) return { converted: 0, byUnit: {}, skipped: "no_product" };
@@ -2967,6 +2991,7 @@ function createAdminRouter() {
             const origForRemark = (Number.isInteger(q) ? String(q) : String(q));
             const newRemark = buildOrigUnitRemark(origForRemark, u, it.remark);
             await db.prepare("UPDATE order_items SET quantity = ?, unit = '公斤', remark = ? WHERE id = ?").run(newQty, newRemark, it.id);
+            await recordAdminOrderItemEdit({ orderId: it.order_id, action: "set", rawName: it.raw_name, quantity: newQty, unit: "公斤", remark: newRemark, editedBy: "admin:auto_convert" });
             converted++;
             byUnit[u] = (byUnit[u] || 0) + 1;
             try {
@@ -6709,15 +6734,16 @@ function createAdminRouter() {
         const pendingWh = includedWh.filter((w) => !countedWh.has(whKeyOf(w.icpno, w.code)));
         const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
         const fmtN = (n) => (n == null ? "—" : String(n));
+        // [fix 2026-07-17] 分母統一為 max(|基準|,1)（與統計圖表 statsVarPct、異常排查表同一口徑）：
+        // 原式 diff/sys 在負庫存（正常情況，可為負）時符號反轉——sys=-5 實盤 0 → diff=+5 卻顯示 -100%，
+        // 數字與％正負互相矛盾，且同一筆盤差在每日盤點頁與異常排查表顯示不同。
         const diffPct = (it) => {
             if (it.diff == null) return "—";
-            if (it.sys === 0) return it.diff === 0 ? "0%" : "—";
-            return ((it.diff / it.sys) * 100).toFixed(1) + "%";
+            return ((it.diff / Math.max(Math.abs(Number(it.sys) || 0), 1)) * 100).toFixed(1) + "%";
         };
         const latestPct = (it) => {
             if (it.diffLatest == null || it.latest == null) return "—";
-            if (it.latest === 0) return it.diffLatest === 0 ? "0%" : "—";
-            return ((it.diffLatest / it.latest) * 100).toFixed(1) + "%";
+            return ((it.diffLatest / Math.max(Math.abs(Number(it.latest) || 0), 1)) * 100).toFixed(1) + "%";
         };
         const diffCls = (it) => (it.diff == null ? "" : it.diff === 0 ? "stk-z" : it.diff > 0 ? "stk-p" : "stk-n");
         const expiryTxt = (arr) => (arr || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"} × ${b.qty || "?"}`).join("、");
@@ -6789,8 +6815,9 @@ function createAdminRouter() {
             // 複盤：實盤可直接改（confirm 確認、寫修改軌跡）；盤差／對最新盤差把 % 用括號併進同一欄。
             const countForm = (it) => `<form method="post" action="/admin/inventory/count-edit" style="display:inline-flex;gap:3px;align-items:center;justify-content:flex-end;" onsubmit="return confirm('複盤修正 ${escapeAttr(it.code)}：實盤改為 '+this.counted.value+'？（會留下修改軌跡）');"><input type="hidden" name="session_id" value="${escapeAttr(s.id)}"><input type="hidden" name="erp_code" value="${escapeAttr(it.code)}"><input type="hidden" name="back" value="${escapeAttr(backQ)}"><input type="number" name="counted" value="${it.counted == null ? "" : escapeAttr(String(it.counted))}" step="any" class="stk-editqty" title="複盤：直接改實盤數"><button type="submit" class="stk-adjbtn" title="送出複盤修正（會留修改軌跡）">改</button></form>`;
             const rowsHtml = sel.items.map((it) => {
-                // 紅底＝盤差(對當下)超過 ±5% 才標（sys=0 時 % 無意義，不標）；不再以正負號決定整列底色
-                const hot = it.diff != null && it.sys !== 0 && Math.abs((it.diff / it.sys) * 100) > 5;
+                // 紅底＝盤差(對當下)超過 ±5% 才標；不再以正負號決定整列底色
+                // [fix 2026-07-17] 分母同 diffPct 改 max(|sys|,1)（負庫存/零庫存口徑統一）
+                const hot = it.diff != null && Math.abs((it.diff / Math.max(Math.abs(Number(it.sys) || 0), 1)) * 100) > 5;
                 return `
               <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}${hot ? " stk-hot" : ""}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
@@ -7198,13 +7225,16 @@ function createAdminRouter() {
         try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMapCsv[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) {}
         const day = await loadStocktakeDay(date, latestMapCsv, adjMapCsv);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
-        const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量(凌越),調整值,最新系統量(加總),最新系統基準,對最新盤差,效期明細,盤點人,送出時間"];
+        // [fix 2026-07-17] 加「公司」欄（多公司同日盤點且倉號跨公司撞號時 CSV 原本無法分辨）；
+        // 盤差% 分母改 max(|sys|,1)（與頁面 diffPct/統計圖表同口徑，負庫存不再符號反轉）。
+        const lines = ["日期,公司,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量(凌越),調整值,最新系統量(加總),最新系統基準,對最新盤差,效期明細,盤點人,送出時間"];
         for (const { session: s, items, latestSource } of day) {
             const baseTxt = latestSource === "warehouse" ? "分倉" : "總量";
+            const coTxt = (0, erp_companies_js_1.erpCompanyName)(s.icpno);
             for (const it of items) {
-                const dp = it.diff == null ? "" : (it.sys === 0 ? "" : ((it.diff / it.sys) * 100).toFixed(1) + "%");
+                const dp = it.diff == null ? "" : ((it.diff / Math.max(Math.abs(Number(it.sys) || 0), 1)) * 100).toFixed(1) + "%";
                 const exp = (it.expiry || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"}x${b.qty || "?"}`).join(" / ");
-                lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latestRaw == null ? "" : it.latestRaw, it.adj || "", it.latest == null ? "" : it.latest, baseTxt, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
+                lines.push([date, coTxt, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latestRaw == null ? "" : it.latestRaw, it.adj || "", it.latest == null ? "" : it.latest, baseTxt, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
             }
         }
         res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
@@ -9258,8 +9288,9 @@ function createAdminRouter() {
             if (!erpCode) { back("&err=" + encodeURIComponent("缺少料號")); return; }
             const item = await db.prepare("SELECT erp_code FROM erp_stock_items WHERE erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(erpCode, icpno);
             if (!item) { back("&err=" + encodeURIComponent("查無料號 " + erpCode + "（該公司庫存快照裡沒有）")); return; }
-            await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
-            await db.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+            // [fix 2026-07-17] 先刪後插→ON CONFLICT upsert（原子；理由同 LIFF 綁定端點）
+            await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ? AND icpno <> ?").run(icpno, barcode, icpno);
+            await db.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (icpno, barcode) DO UPDATE SET erp_code = EXCLUDED.erp_code, qty_per_scan = EXCLUDED.qty_per_scan, created_by = EXCLUDED.created_by, created_by_name = EXCLUDED.created_by_name, updated_at = EXCLUDED.updated_at")
                 .run(icpno, barcode, erpCode, qps, "admin", "後台", now, now);
             back("&ok=1");
         }
@@ -9465,8 +9496,9 @@ function createAdminRouter() {
             if (!item) { res.status(404).json({ error: "查無此品項（料號 " + erpCode + "）" }); return; }
             const now = new Date().toISOString();
             const who = String(res.locals.adminUser || req.adminUsername || "後台");
-            await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
-            await db.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(icpno, barcode, erpCode, qps, "admin:" + String(req.adminUsername || ""), who, now, now);
+            // [fix 2026-07-17] 先刪後插→ON CONFLICT upsert（原子；理由同 LIFF 綁定端點）
+            await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ? AND icpno <> ?").run(icpno, barcode, icpno);
+            await db.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (icpno, barcode) DO UPDATE SET erp_code = EXCLUDED.erp_code, qty_per_scan = EXCLUDED.qty_per_scan, created_by = EXCLUDED.created_by, created_by_name = EXCLUDED.created_by_name, updated_at = EXCLUDED.updated_at").run(icpno, barcode, erpCode, qps, "admin:" + String(req.adminUsername || ""), who, now, now);
             res.json({ ok: true, item: { c: String(item.erp_code), n: String(item.name || ""), s: String(item.spec || ""), u: String(item.unit || ""), sys: Number(item.qty || 0), q: qps } });
         } catch (e) { console.error("[admin scan bind]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
@@ -11593,6 +11625,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             await db.prepare(
                 "UPDATE order_items SET voided_at = " + nowSql + ", voided_by = ?, void_reason = ?, void_note = ? WHERE id = ? AND need_review = 1"
             ).run(actor, "ai_wrong", "（從待對應清單作廢）", itemId);
+            // [fix 2026-07-17] 作廢寫 delete 軌跡：結單 rebuild 重放時不再重建此品項（否則作廢品項會復活）
+            await recordAdminOrderItemEdit({ orderId: snap.order_id, action: "delete", rawName: snap.raw_name, editedBy: "admin:" + actor });
             try {
                 await logDataChange(req, {
                     entityType: "order_item",
@@ -13495,6 +13529,14 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const icpno = String(body.icpno || "00").trim() || "00";
+            // [fix 2026-07-17] icpno 必須是兩碼數字（比照 cash-ingest 的 normIcpno 精神但採硬驗證）：
+            // 內網 LY_ICPNO 誤填（如 "2"、"0 2"）原本會整批寫進非法 icpno——SQL 端 COALESCE 正規化
+            // 永遠比不到它（孤兒資料、正確推送的 DELETE 也刪不掉），JS 端 normIcpno 卻回退 '00'
+            // 把這批混進松富的報表。非法直接 400 讓代理端 log 立刻看得到設定錯誤。
+            if (!/^\d{2}$/.test(icpno)) {
+                res.status(400).json({ error: "icpno 必須是兩碼數字（如 00/01/02/03），收到：" + icpno });
+                return;
+            }
             const snapshotAt = (typeof body.snapshot_at === "string" && body.snapshot_at.trim())
                 ? body.snapshot_at.trim() : new Date().toISOString();
             const rows = [];
@@ -17960,7 +18002,35 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=apply_raw_parse&back=" + encodeURIComponent(backTo) + "#pasteRaw");
                 return;
             }
-            await db.prepare("UPDATE orders SET raw_message = ? WHERE id = ?").run(finalRaw, orderId);
+            // [fix 2026-07-17] Gemini 解析（10-40 秒）期間 LINE 端可能又原子附加了新叫貨行；
+            // 原本整欄盲目覆寫會把新行洗掉 → 之後任何結單 rebuild 依 raw 重建就永久漏該品項（斷單）。
+            // 改樂觀鎖條件式覆寫：raw 仍等於解析前快照才覆寫；否則把期間新增的尾段併回再試。
+            // 尾段品項本次 rebuild 未含（依 finalRaw 重建），但 raw 已保留，下次結單 rebuild 會補回。
+            let rawSnap = String(order.raw_message || "");
+            let nextRaw = finalRaw;
+            let applied = false;
+            for (let attempt = 0; attempt < 3 && !applied; attempt++) {
+                const r = await db.prepare("UPDATE orders SET raw_message = ? WHERE id = ? AND COALESCE(raw_message, '') = ?").run(nextRaw, orderId, rawSnap);
+                if ((r?.changes ?? 0) > 0) {
+                    applied = true;
+                    break;
+                }
+                const cur = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(orderId);
+                const curRaw = String(cur?.raw_message || "");
+                if (curRaw.startsWith(rawSnap)) {
+                    nextRaw = nextRaw + curRaw.slice(rawSnap.length);
+                    rawSnap = curRaw;
+                }
+                else {
+                    // raw 被整段改寫（如另一位管理員同時套用）→ 放棄覆寫避免互相蓋，明細維持本次重建結果
+                    break;
+                }
+            }
+            if (!applied) {
+                console.warn("[admin] apply-raw-text raw_message 併發衝突，未覆寫 orderId=%s", orderId);
+                res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=apply_raw_conflict&back=" + encodeURIComponent(backTo) + "#pasteRaw");
+                return;
+            }
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=raw_applied&back=" + encodeURIComponent(backTo) + "#items");
         }
         catch (e) {
@@ -17982,7 +18052,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const body = req.body;
-            const existingItems = await db.prepare("SELECT id, quantity, unit, remark, sub_customer FROM order_items WHERE order_id = ?").all(orderId);
+            const existingItems = await db.prepare("SELECT id, raw_name, quantity, unit, remark, sub_customer FROM order_items WHERE order_id = ?").all(orderId);
             const fmtQty = (v) => {
                 const n = Number(v);
                 if (!Number.isFinite(n))
@@ -18029,6 +18099,12 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                         : originTag;
                 }
                 await db.prepare("UPDATE order_items SET quantity = ?, unit = ?, remark = ?, sub_customer = ?, include_export = 1 WHERE id = ? AND order_id = ?").run(nextQty, nextUnit, nextRemark || null, subCustomerInput || null, itemId, orderId);
+                // [fix 2026-07-17] 量或單位有實際變動才寫改單軌跡（表單會整批送出所有品項，
+                // 未變動的列不記，避免軌跡灌水影響 rebuild 消耗式匹配）。
+                const prevQtyNum = Number.isFinite(Number(row.quantity)) ? Number(row.quantity) : null;
+                if (prevQtyNum !== nextQty || prevUnit !== nextUnit) {
+                    await recordAdminOrderItemEdit({ orderId, action: "set", rawName: row.raw_name, quantity: nextQty, unit: nextUnit, remark: nextRemark || null, editedBy: "admin:" + (req.adminUsername || "system") });
+                }
                 const ordRaw = body["ord_" + row.id];
                 const ordNum = parseInt(String(ordRaw || ""), 10);
                 if (Number.isFinite(ordNum) && ordNum > 0) {
@@ -18086,6 +18162,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         await db.prepare(
             "UPDATE order_items SET voided_at = " + nowSql + ", voided_by = ?, void_reason = ?, void_note = ? WHERE id = ? AND order_id = ?"
         ).run(actor, reason, note || null, itemId, orderId);
+        // [fix 2026-07-17] 作廢寫 delete 軌跡：結單 rebuild 重建後重放時不再重建此品項（否則作廢品項會復活再出貨）
+        await recordAdminOrderItemEdit({ orderId, action: "delete", rawName: snap.raw_name, editedBy: "admin:" + actor });
         // AI 回饋：若是 AI 辨識錯誤且有對應到 product_id，把該 hint 加 wrong_count
         if (reason === "ai_wrong" && snap.product_id && snap.raw_name && order.customer_id) {
             try {
@@ -18927,6 +19005,8 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
         const itemId = (0, id_js_1.newId)("item");
         await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer, confidence_score) VALUES (?, ?, ?, ?, ?, ?, 0, 1, NULL, 100)").run(itemId, orderId, productId, product.name, qty, unit);
+        // [fix 2026-07-17] 手動加項寫 add 軌跡：結單 rebuild 只依 raw_message 重建，無軌跡時人工加的品項會被整批洗掉
+        await recordAdminOrderItemEdit({ orderId, action: "add", rawName: product.name, quantity: qty, unit, editedBy: "admin:" + (req.adminUsername || "system") });
         // 插入位置：after_item_id = 要插在哪一項之後（沒帶或找不到 → 排最後）。
         // 全部重編 display_order（既有品項可能從未存過排序、display_order 皆為 NULL）。
         try {
@@ -21635,7 +21715,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         }
     });
     router.get("/import", async (req, res) => {
-        const msg = req.query.ok ? `<p style='color:green'>已匯入 ${req.query.ok} 筆品項。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
+        const msg = req.query.ok ? `<p style='color:green'>已匯入 ${escapeHtml(String(req.query.ok))} 筆品項。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 匯入品項</div>
         <h1 class="notion-page-title">匯入品項</h1>
