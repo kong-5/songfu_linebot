@@ -66,6 +66,12 @@ function registerTrainingRoutes(router, ctx) {
 
     function page(res, title, activeKey, subKey, icp, inner) {
         const body = `
+        <style>
+          /* [fix 2026-07-17] 刪除從 GET 連結改成 POST 表單（GET 直接刪資料可被跨站誘點觸發，
+             SameSite=Lax 擋不住頂層導航）；此按鈕維持原連結外觀 */
+          .tr-delform{display:inline;margin:0;}
+          .tr-delbtn{background:none;border:none;padding:0;color:var(--accent,#2383e2);text-decoration:underline;cursor:pointer;font:inherit;}
+        </style>
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/training?c=${icp}">教育訓練</a>${title ? " / " + esc(title) : ""}</div>
         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:2px 0 12px;">
           <h1 class="notion-page-title" style="margin:0;">教育訓練</h1>
@@ -197,7 +203,7 @@ function registerTrainingRoutes(router, ctx) {
             <td>${r.status === "active" ? '<span class="sf-pill ok">在職</span>' : '<span class="sf-pill">離職</span>'}</td>
             <td>${esc(r.note || "")}</td>
             <td style="white-space:nowrap;"><a href="/admin/training/employees?c=${icp}&edit=${encodeURIComponent(r.id)}#empForm">編輯</a>
-              | <a href="/admin/training/employees/${encodeURIComponent(r.id)}/delete?c=${icp}" onclick="return confirm('確定刪除此員工？其歷史簽到紀錄仍保留。')">刪除</a></td>
+              | <form class="tr-delform" method="post" action="/admin/training/employees/${encodeURIComponent(r.id)}/delete?c=${icp}" onsubmit="return confirm('確定刪除此員工？其歷史簽到紀錄仍保留。')"><button type="submit" class="tr-delbtn">刪除</button></form></td>
           </tr>`).join("");
         const inner = `
         ${msgBar(req)}
@@ -234,7 +240,7 @@ function registerTrainingRoutes(router, ctx) {
         }
         res.redirect(`/admin/training/employees?c=${icp}&ok=1`);
     });
-    router.get("/training/employees/:id/delete", async (req, res) => {
+    router.post("/training/employees/:id/delete", async (req, res) => {
         const icp = icpOf(req);
         await db.prepare("DELETE FROM training_employee WHERE id = ?").run(req.params.id);
         res.redirect(`/admin/training/employees?c=${icp}&ok=${encodeURIComponent("已刪除")}`);
@@ -260,7 +266,7 @@ function registerTrainingRoutes(router, ctx) {
             <td>${c.status ? `<span class="sf-pill ${c.status === "符合" ? "ok" : c.status === "待改善" ? "bad" : "info"}">${esc(c.status)}</span>` : ""}</td>
             <td class="mono" style="white-space:nowrap;">${esc(c.check_date || "")}</td>
             <td>${esc(c.checked_by || "")}</td>
-            <td><a href="/admin/training/system/pddro/${encodeURIComponent(c.id)}/delete?c=${icp}" onclick="return confirm('刪除此查核記錄？')">刪除</a></td>
+            <td><form class="tr-delform" method="post" action="/admin/training/system/pddro/${encodeURIComponent(c.id)}/delete?c=${icp}" onsubmit="return confirm('刪除此查核記錄？')"><button type="submit" class="tr-delbtn">刪除</button></form></td>
           </tr>`).join("");
         const inner = `
         ${msgBar(req)}
@@ -328,7 +334,7 @@ function registerTrainingRoutes(router, ctx) {
             .run(newId("pddro"), icp, phase, (req.body.item || "").trim() || null, (req.body.result || "").trim() || null, (req.body.evidence || "").trim() || null, (req.body.status || "").trim() || null, actorOf(req) || null, (req.body.check_date || "").trim() || null, nowIso());
         res.redirect(`/admin/training/system?c=${icp}&ok=1`);
     });
-    router.get("/training/system/pddro/:id/delete", async (req, res) => {
+    router.post("/training/system/pddro/:id/delete", async (req, res) => {
         const icp = icpOf(req);
         await db.prepare("DELETE FROM training_pddro_check WHERE id = ?").run(req.params.id);
         res.redirect(`/admin/training/system?c=${icp}&ok=${encodeURIComponent("已刪除")}`);
@@ -353,7 +359,7 @@ function registerTrainingRoutes(router, ctx) {
               <td>${esc(p.goal || "")}</td>
               <td style="text-align:center;">${c.d}/${c.t}</td>
               <td style="white-space:nowrap;"><a href="/admin/training/plans/${encodeURIComponent(p.id)}?c=${icp}">明細</a>
-                | <a href="/admin/training/plans/${encodeURIComponent(p.id)}/delete?c=${icp}" onclick="return confirm('刪除此年度計畫及其所有排定項目？')">刪除</a></td>
+                | <form class="tr-delform" method="post" action="/admin/training/plans/${encodeURIComponent(p.id)}/delete?c=${icp}" onsubmit="return confirm('刪除此年度計畫及其所有排定項目？')"><button type="submit" class="tr-delbtn">刪除</button></form></td>
             </tr>`;
         }).join("");
         const inner = `
@@ -397,7 +403,7 @@ function registerTrainingRoutes(router, ctx) {
             res.redirect(`/admin/training/plans/${encodeURIComponent(nid)}?c=${icp}&ok=1`);
         }
     });
-    router.get("/training/plans/:id/delete", async (req, res) => {
+    router.post("/training/plans/:id/delete", async (req, res) => {
         const icp = icpOf(req);
         const doDel = async (h) => {
             await h.prepare("DELETE FROM training_plan_item WHERE plan_id = ?").run(req.params.id);
@@ -428,7 +434,7 @@ function registerTrainingRoutes(router, ctx) {
               ${i.course_id ? `<a href="/admin/training/courses/${encodeURIComponent(i.course_id)}?c=${icp}">看課程</a>`
                 : `<form method="post" action="/admin/training/plans/items/${encodeURIComponent(i.id)}/to-course" style="display:inline;"><input type="hidden" name="c" value="${icp}"><button type="submit" class="btn sm">轉為課程</button></form>`}
               | <a href="/admin/training/plans/${encodeURIComponent(plan.id)}?c=${icp}&item=${encodeURIComponent(i.id)}#itemForm">編輯</a>
-              | <a href="/admin/training/plans/items/${encodeURIComponent(i.id)}/delete?c=${icp}&plan=${encodeURIComponent(plan.id)}" onclick="return confirm('刪除此項目？')">刪除</a>
+              | <form class="tr-delform" method="post" action="/admin/training/plans/items/${encodeURIComponent(i.id)}/delete?c=${icp}&plan=${encodeURIComponent(plan.id)}" onsubmit="return confirm('刪除此項目？')"><button type="submit" class="tr-delbtn">刪除</button></form>
             </td>
           </tr>`).join("");
         const inner = `
@@ -512,7 +518,7 @@ function registerTrainingRoutes(router, ctx) {
         }
         res.redirect(`/admin/training/plans/${encodeURIComponent(planId)}?c=${icp}&ok=1`);
     });
-    router.get("/training/plans/items/:id/delete", async (req, res) => {
+    router.post("/training/plans/items/:id/delete", async (req, res) => {
         const icp = icpOf(req);
         const planId = (req.query.plan || "").trim();
         await db.prepare("DELETE FROM training_plan_item WHERE id = ?").run(req.params.id);
@@ -546,7 +552,7 @@ function registerTrainingRoutes(router, ctx) {
             <td style="text-align:right;">${c.hours != null ? esc(c.hours) : ""}</td>
             <td>${c.status === "done" ? '<span class="sf-pill ok">已辦</span>' : '<span class="sf-pill">規劃</span>'}</td>
             <td style="white-space:nowrap;"><a href="/admin/training/courses/${encodeURIComponent(c.id)}?c=${icp}">明細</a>
-              | <a href="/admin/training/courses/${encodeURIComponent(c.id)}/delete?c=${icp}" onclick="return confirm('刪除此課程及其簽到／滿意度／成效？')">刪除</a></td>
+              | <form class="tr-delform" method="post" action="/admin/training/courses/${encodeURIComponent(c.id)}/delete?c=${icp}" onsubmit="return confirm('刪除此課程及其簽到／滿意度／成效？')"><button type="submit" class="tr-delbtn">刪除</button></form></td>
           </tr>`).join("");
         const inner = `
         ${msgBar(req)}
@@ -612,7 +618,7 @@ function registerTrainingRoutes(router, ctx) {
             res.redirect(`/admin/training/courses/${encodeURIComponent(nid)}?c=${icp}&ok=1`);
         }
     });
-    router.get("/training/courses/:id/delete", async (req, res) => {
+    router.post("/training/courses/:id/delete", async (req, res) => {
         const icp = icpOf(req);
         const cid = req.params.id;
         const doDel = async (h) => {
@@ -671,7 +677,7 @@ function registerTrainingRoutes(router, ctx) {
             <td style="text-align:center;">${s.useful_score || "—"}</td>
             <td style="text-align:center;"><b>${s.overall_score || "—"}</b></td>
             <td>${esc(s.comment || "")}</td>
-            <td><a href="/admin/training/courses/survey/${encodeURIComponent(s.id)}/delete?c=${icp}&course=${encodeURIComponent(c.id)}" onclick="return confirm('刪除此份問卷？')">刪除</a></td>
+            <td><form class="tr-delform" method="post" action="/admin/training/courses/survey/${encodeURIComponent(s.id)}/delete?c=${icp}&course=${encodeURIComponent(c.id)}" onsubmit="return confirm('刪除此份問卷？')"><button type="submit" class="tr-delbtn">刪除</button></form></td>
           </tr>`).join("");
         const scoreSel = (name) => `<select name="${name}"><option value="">—</option>${[5, 4, 3, 2, 1].map((n) => `<option value="${n}">${n}</option>`).join("")}</select>`;
 
@@ -806,7 +812,7 @@ function registerTrainingRoutes(router, ctx) {
             .run(newId("tsvy"), cid, (req.body.respondent || "").trim() || null, sc("content_score"), sc("instructor_score"), sc("useful_score"), sc("overall_score"), (req.body.comment || "").trim() || null, nowIso());
         res.redirect(`/admin/training/courses/${encodeURIComponent(cid)}?c=${icp}&ok=1`);
     });
-    router.get("/training/courses/survey/:id/delete", async (req, res) => {
+    router.post("/training/courses/survey/:id/delete", async (req, res) => {
         const icp = icpOf(req);
         const courseId = (req.query.course || "").trim();
         await db.prepare("DELETE FROM training_survey WHERE id = ?").run(req.params.id);
