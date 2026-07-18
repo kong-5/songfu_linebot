@@ -396,6 +396,14 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_count_audit (id TEXT PRIMARY KEY, session_id TEXT, icpno TEXT, wh_code TEXT, count_date TEXT, erp_code TEXT, name TEXT, old_counted REAL, new_counted REAL, actor TEXT, actor_name TEXT, note TEXT, created_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_count_audit_session ON stocktake_count_audit(session_id)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
+    }
+    catch (_) { }
+    try {
+        // [2026-07-17] 盤點「進行中」鎖＋草稿雲端備援（一倉一日一筆）：
+        // device_id/holder_name/last_seen_at＝目前持鎖裝置（心跳續租、逾時視為棄鎖可接手），
+        // payload＝該裝置未送出的盤點草稿 JSON（手機當機/LINE 清快取後可從伺服器帶回）。
+        // 送出成功時由 submitStocktake 同交易刪除。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_draft (icpno TEXT NOT NULL DEFAULT '00', wh_code TEXT NOT NULL, count_date TEXT NOT NULL, device_id TEXT, holder_name TEXT, payload TEXT, started_at TEXT, last_seen_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, wh_code, count_date))");
         // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
         sqlite.exec("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
         // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。
@@ -1219,6 +1227,11 @@ async function initPg() {
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_by_name TEXT");
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_count_audit (id TEXT PRIMARY KEY, session_id TEXT, icpno TEXT, wh_code TEXT, count_date TEXT, erp_code TEXT, name TEXT, old_counted DOUBLE PRECISION, new_counted DOUBLE PRECISION, actor TEXT, actor_name TEXT, note TEXT, created_at TEXT)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_audit_session ON stocktake_count_audit(session_id)");
+            }
+            catch (_) { /* tables may already exist */ }
+            try {
+                // [2026-07-17] 盤點「進行中」鎖＋草稿雲端備援（與 initSqlite 對應；語意見該處註解）
+                await client.query("CREATE TABLE IF NOT EXISTS stocktake_draft (icpno TEXT NOT NULL DEFAULT '00', wh_code TEXT NOT NULL, count_date TEXT NOT NULL, device_id TEXT, holder_name TEXT, payload TEXT, started_at TEXT, last_seen_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, wh_code, count_date))");
                 // 多公司盤點（松富00＋松揚02…）：場次記公司代碼，NULL 視為 '00'
                 await client.query("ALTER TABLE stocktake_session ADD COLUMN IF NOT EXISTS icpno TEXT");
                 // [migration 2026-07-13] 效期品也按公司：erp_code 單一主鍵 → (icpno, erp_code)；舊資料補 icpno='00'。

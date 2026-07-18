@@ -138,6 +138,7 @@ function createLiffRouter() {
                 createdBy: v.sub || "",
                 createdByName: String(body.name || v.name || "").trim(),
                 baseSubmittedAt: body.baseSubmittedAt,
+                deviceId: body.deviceId,
             });
             res.json(out);
         } catch (e) {
@@ -146,6 +147,25 @@ function createLiffRouter() {
                 return;
             }
             console.error("[liff stocktake submit]", e);
+            res.status(500).json({ error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+    // [2026-07-17] 盤點鎖＋草稿雲端備援（進倉認領／心跳上傳草稿／離開釋放；邏輯在 stocktake-api.js）
+    router.post("/api/stocktake/draft-sync", express_1.json({ limit: "1mb" }), async (req, res) => {
+        try {
+            const v = await stkAuth(req, res); if (!v) return;
+            const body = req.body || {};
+            const icpno = (0, erp_companies_js_1.normIcpno)(body.icpno);
+            const db = (0, index_js_1.getDb)(dbPath);
+            const out = await stocktake_api_js_1.syncStocktakeDraft(db, {
+                icpno, whCode: String(body.warehouse || "").trim(), date: body.date,
+                deviceId: body.deviceId, name: String(body.name || v.name || "").trim(),
+                payload: body.payload, force: !!body.force, release: !!body.release,
+            });
+            res.json(out);
+        } catch (e) {
+            if (e && e.name === "StkApiError") { res.status(e.httpStatus).json({ error: e.message, ...(e.code ? { code: e.code } : {}) }); return; }
+            console.error("[liff stocktake draft-sync]", e);
             res.status(500).json({ error: String(e?.message || e).slice(0, 200) });
         }
     });

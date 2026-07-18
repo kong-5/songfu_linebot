@@ -9514,11 +9514,28 @@ function createAdminRouter() {
                 createdBy: "admin:" + String(req.adminUsername || ""),
                 createdByName: String(body.name || res.locals.adminUser || req.adminUsername || "").trim(),
                 baseSubmittedAt: body.baseSubmittedAt,
+                deviceId: body.deviceId,
             });
             res.json(out);
         } catch (e) {
             if (e && e.name === "StkApiError") { res.status(e.httpStatus).json({ error: e.message, ...(e.code ? { code: e.code } : {}) }); return; }
             console.error("[admin scan submit]", e?.message || e);
+            res.status(500).json({ error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+    // [2026-07-17] 盤點鎖＋草稿雲端備援（掃碼頁；邏輯在 stocktake-api.js）
+    router.post("/scan/draft-sync", express_1.default.json({ limit: "1mb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const out = await stocktake_api_js_1.syncStocktakeDraft(db, {
+                icpno: scanIc(body.icpno), whCode: String(body.warehouse || "").trim(), date: body.date,
+                deviceId: body.deviceId, name: String(body.name || res.locals.adminUser || req.adminUsername || "").trim(),
+                payload: body.payload, force: !!body.force, release: !!body.release,
+            });
+            res.json(out);
+        } catch (e) {
+            if (e && e.name === "StkApiError") { res.status(e.httpStatus).json({ error: e.message, ...(e.code ? { code: e.code } : {}) }); return; }
+            console.error("[admin scan draft-sync]", e?.message || e);
             res.status(500).json({ error: String(e?.message || e).slice(0, 200) });
         }
     });
@@ -9571,11 +9588,28 @@ function createAdminRouter() {
                 createdBy: "admin:" + String(req.adminUsername || ""),
                 createdByName: String(body.name || res.locals.adminUser || req.adminUsername || "").trim(),
                 baseSubmittedAt: body.baseSubmittedAt,
+                deviceId: body.deviceId,
             });
             res.json(out);
         } catch (e) {
             if (e && e.name === "StkApiError") { res.status(e.httpStatus).json({ error: e.message, ...(e.code ? { code: e.code } : {}) }); return; }
             console.error("[admin entry submit]", e?.message || e);
+            res.status(500).json({ error: String(e?.message || e).slice(0, 200) });
+        }
+    });
+    // [2026-07-17] 盤點鎖＋草稿雲端備援（網頁版盤點入口；邏輯在 stocktake-api.js）
+    router.post("/inventory/entry/draft-sync", express_1.default.json({ limit: "1mb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const out = await stocktake_api_js_1.syncStocktakeDraft(db, {
+                icpno: scanIc(body.icpno), whCode: String(body.warehouse || "").trim(), date: body.date,
+                deviceId: body.deviceId, name: String(body.name || res.locals.adminUser || req.adminUsername || "").trim(),
+                payload: body.payload, force: !!body.force, release: !!body.release,
+            });
+            res.json(out);
+        } catch (e) {
+            if (e && e.name === "StkApiError") { res.status(e.httpStatus).json({ error: e.message, ...(e.code ? { code: e.code } : {}) }); return; }
+            console.error("[admin entry draft-sync]", e?.message || e);
             res.status(500).json({ error: String(e?.message || e).slice(0, 200) });
         }
     });
