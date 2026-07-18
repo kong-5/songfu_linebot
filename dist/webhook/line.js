@@ -565,6 +565,35 @@ async function insertOrderRowWithSplitMeta(db, getNextOrderNo, nowSql, { orderDa
     }
     throw lastErr || new Error("insertOrderRowWithSplitMeta: 重試 3 次仍失敗");
 }
+/** [fix 2026-07-18] 訊息層級建單冪等（防 H2 重複訂單／作廢單復活）。
+ * LINE webhook 與 Cloud Tasks 皆 at-least-once：同一則訊息可能重投遞。既有防線：
+ *   - processed_line_messages 租約：成功標 'done' 後同訊息永久略過；失敗才釋放讓重跑。
+ *   - 四個建單點的「同日重用查詢」：重投遞會撈回上次建的 pending 單、品項再被 src 去重擋掉。
+ * 殘餘洞：上次建了單、之後被人工作廢/客訴，且租約已因前次失敗釋放時，重投遞的同日重用
+ * 查詢刻意排除作廢單→撈不到→又開一張新 pending 單、品項重灌＝把人工作廢的單硬生生復活。
+ * 本 helper 用 orders.line_message_id（已建索引 idx_orders_line_message_id）精準對到
+ * 「這則訊息開的那張單」：
+ *   - 非作廢 → 回 { orderId, voided:false }：重用（redelivery 落回同一張，品項 per-order 去重生效）。
+ *   - 已作廢/客訴 → 回 { orderId, voided:true }：呼叫端尊重作廢，重投遞不再建單也不灌品項。
+ *   - 查無 → 回 null：走既有同日重用／新建。
+ * 只認 line_message_id、不碰拆單唯一索引，故不影響子客戶拆單（一則訊息本就會寫進多張子單，
+ * 且拆單走 findOrCreateSplitTargetOrder，不經此 helper）。 */
+async function findPriorOrderForLineMessage(db, lineMessageId) {
+    const mid = lineMessageId != null && String(lineMessageId).trim() !== "" ? String(lineMessageId).trim() : null;
+    if (!mid)
+        return null;
+    try {
+        const row = await db.prepare("SELECT id, status FROM orders WHERE line_message_id = ? ORDER BY order_no LIMIT 1").get(mid);
+        if (!row)
+            return null;
+        const st = String(row.status || "").toLowerCase().trim();
+        return { orderId: row.id, voided: st === "deleted" || st === "complaint" };
+    }
+    catch (_) {
+        // 舊庫無 line_message_id 欄位等：降級回 null，行為同未加 guard（不阻斷收單）。
+        return null;
+    }
+}
 // [refactor 2026-07-14] 標桶＋找目標單邏輯抽到共用 lib，後台拆單（move-items / split-by-sub-customer）也用同一份。
 const { markSameDayMainOrdersAsSplitBase, findSplitTargetOrderId, isSplitKeyUniqueConflict } = require("../lib/order-split.js");
 /** [fix 2026-07-10] 依子客戶分流時「找到或建立」目標訂單（比照後台 resolveSplitTargetOrder）。
@@ -611,6 +640,19 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
     if (!rows.length)
         return { inserted: 0, skipped: false };
     const srcMid = srcLineMessageId != null && String(srcLineMessageId).trim() !== "" ? String(srcLineMessageId).trim() : null;
+    // [fix 2026-07-18 安全網] 一律不把品項寫進已作廢/客訴的訂單（任何路徑）——與訊息層級建單守衛互補：
+    // 就算某條路徑漏了守衛、或並發下目標單剛被作廢，也不會把品項灌進作廢單造成幽靈出貨。
+    // 拆單安全：拆單建立的是 pending 子單，不受此影響（不像「跨單去重」會誤刪第二個子客戶品項）。
+    // 交易外快篩；交易內（doInsert）會以同一條件再檢一次防並發。
+    try {
+        const st0 = await db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId);
+        const st0s = String(st0?.status || "").toLowerCase().trim();
+        if (st0s === "deleted" || st0s === "complaint") {
+            console.log("[LINE] 品項略過：目標訂單已作廢/客訴 orderId=%s status=%s", orderId, st0s);
+            return { inserted: 0, skipped: true };
+        }
+    }
+    catch (_) { /* 查詢失敗不阻斷收單，交由交易內覆檢 */ }
     // 冪等預檢（交易外快篩；交易內會再檢一次防並發）
     if (srcMid) {
         try {
@@ -672,6 +714,11 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
     }
     // ── 交易內：純寫入（sqlite transaction 限制：fn 內不得 await 外部 I/O） ──
     const doInsert = async (h) => {
+        // [fix 2026-07-18 安全網] 交易內權威覆檢：目標單若已作廢/客訴則不寫入（防並發下剛被作廢）。
+        const stx = await h.prepare("SELECT status FROM orders WHERE id = ?").get(orderId);
+        const stxs = String(stx?.status || "").toLowerCase().trim();
+        if (stxs === "deleted" || stxs === "complaint")
+            return { inserted: 0, skipped: true };
         if (srcMid) {
             const dup = await h.prepare("SELECT COUNT(*) AS n FROM order_items WHERE order_id = ? AND src_line_message_id = ?").get(orderId, srcMid);
             if (dup && Number(dup.n || 0) > 0)
@@ -1762,8 +1809,17 @@ function createLineWebhook() {
                             }
                         }
                         else {
+                            // [fix 2026-07-18] 訊息層級建單冪等：圖片訊息 redelivery 重用原單、作廢單不復活。
+                            const priorForMsg = await findPriorOrderForLineMessage(db, curLineMessageId);
+                            if (priorForMsg && priorForMsg.voided) {
+                                console.log("[LINE] 作廢單重投遞略過（不復活，圖片）messageId=%s order=%s", curLineMessageId, priorForMsg.orderId);
+                                continue;
+                            }
                             let orderId;
-                            if (orderRow) {
+                            if (priorForMsg) {
+                                orderId = priorForMsg.orderId;
+                            }
+                            else if (orderRow) {
                                 orderId = orderRow.id;
                             }
                             else {
@@ -1830,10 +1886,20 @@ function createLineWebhook() {
                         console.log("[LINE] 進入收單流程 customerId=%s orderDate=%s rest=%s", customerId, orderDate, rest.slice(0, 50));
                     const lineForRaw = String(text || "").trim();
                     if (!rest) {
+                        // [fix 2026-07-18] 訊息層級建單冪等（見 findPriorOrderForLineMessage）：redelivery 重用原單、
+                        // 作廢單不復活。無命中才走同日重用/新建。
+                        const priorForMsg = await findPriorOrderForLineMessage(db, curLineMessageId);
+                        if (priorForMsg && priorForMsg.voided) {
+                            console.log("[LINE] 作廢單重投遞略過（不復活）messageId=%s order=%s", curLineMessageId, priorForMsg.orderId);
+                            continue;
+                        }
                         // [fix 2026-07-08] 排除作廢/客訴軟刪除單並加 ORDER BY，避免累加進作廢單、附加到不穩定的任意單。
-                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
+                        let orderRow = priorForMsg ? null : await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
                         let orderId;
-                        if (orderRow) {
+                        if (priorForMsg) {
+                            orderId = priorForMsg.orderId;
+                        }
+                        else if (orderRow) {
                             orderId = orderRow.id;
                         }
                         else {
@@ -1906,10 +1972,19 @@ function createLineWebhook() {
                         }
                         continue;
                     }
+                    // [fix 2026-07-18] 訊息層級建單冪等：redelivery 重用原單、作廢單不復活。
+                    const priorForMsg = await findPriorOrderForLineMessage(db, curLineMessageId);
+                    if (priorForMsg && priorForMsg.voided) {
+                        console.log("[LINE] 作廢單重投遞略過（不復活）messageId=%s order=%s", curLineMessageId, priorForMsg.orderId);
+                        continue;
+                    }
                     // [fix 2026-07-08] 排除作廢/客訴軟刪除單並加 ORDER BY，避免累加進作廢單、附加到不穩定的任意單。
-                    let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
+                    let orderRow = priorForMsg ? null : await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
                     let orderId;
-                    if (orderRow) {
+                    if (priorForMsg) {
+                        orderId = priorForMsg.orderId;
+                    }
+                    else if (orderRow) {
                         orderId = orderRow.id;
                     }
                     else {
@@ -2251,10 +2326,19 @@ function createLineWebhook() {
                 // 不再要求先輸入「收單」；若尚未有 session，收到文字即自動開單
                 if (groupId && !collectingByGroup.has(groupId)) {
                     const autoOrderDate = getTaipeiOrderDate();
+                    // [fix 2026-07-18] 訊息層級建單冪等：redelivery 重用原單、作廢單不復活。
+                    const priorForMsg = await findPriorOrderForLineMessage(db, curLineMessageId);
+                    if (priorForMsg && priorForMsg.voided) {
+                        console.log("[LINE] 作廢單重投遞略過（不復活，自動開單）messageId=%s order=%s", curLineMessageId, priorForMsg.orderId);
+                        continue;
+                    }
                     // [fix 2026-07-08] 自動開單累加的同日訂單查詢須排除作廢/客訴軟刪除單，否則作廢後客戶再叫貨會附加進作廢單→漏出貨；並加 ORDER BY 取穩定的第一張。
-                    let autoOrder = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, autoOrderDate);
+                    let autoOrder = priorForMsg ? null : await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, autoOrderDate);
                     let autoOrderId;
-                    if (autoOrder) {
+                    if (priorForMsg) {
+                        autoOrderId = priorForMsg.orderId;
+                    }
+                    else if (autoOrder) {
                         autoOrderId = autoOrder.id;
                     }
                     else {
@@ -2623,4 +2707,6 @@ exports._testables = {
     findOrCreateSplitTargetOrder,
     getNextOrderNo,
     insertParsedItemsForOrder,
+    insertOrderRowWithSplitMeta,
+    findPriorOrderForLineMessage,
 };
