@@ -3683,6 +3683,8 @@ function createAdminRouter() {
         const now = new Date().toISOString();
         users.push({ username, name, passwordHash: hashAdminPassword(password), title, status: "pending", createdAt: now });
         await saveAdminUsers(users);
+        // [fix 2026-07-18 稽核] 帳號異動留軌跡；一律不記 passwordHash／密碼明文。
+        try { await logDataChange(req, { entityType: "admin_user", entityId: username, action: "create", summary: `新增帳號 ${username}（${name}，職稱 ${title}，待核准）`, meta: { username, name, title, status: "pending" } }); } catch (_) {}
         res.redirect("/admin/users?ok=add");
     });
     router.post("/users/approve", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
@@ -3702,6 +3704,7 @@ function createAdminRouter() {
         users[ix].approvedBy = req.adminUsername;
         users[ix].approvedAt = new Date().toISOString();
         await saveAdminUsers(users);
+        try { await logDataChange(req, { entityType: "admin_user", entityId: target, action: "approve", summary: `核准帳號 ${target}`, meta: { before: { status: "pending" }, after: { status: "active", approvedBy: req.adminUsername } } }); } catch (_) {}
         res.redirect("/admin/users?ok=approve");
     });
     router.post("/users/set-status", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
@@ -3721,8 +3724,10 @@ function createAdminRouter() {
             res.redirect("/admin/users");
             return;
         }
+        const beforeStatus = users[ix].status;
         users[ix].status = status;
         await saveAdminUsers(users);
+        if (beforeStatus !== status) { try { await logDataChange(req, { entityType: "admin_user", entityId: target, action: "set_status", summary: `帳號 ${target} 狀態：${beforeStatus || "—"} → ${status}`, meta: { before: { status: beforeStatus }, after: { status } } }); } catch (_) {} }
         res.redirect("/admin/users?ok=status");
     });
     router.post("/users/set-title", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
@@ -3734,8 +3739,10 @@ function createAdminRouter() {
             const users = await loadAdminUsers();
             const ix = users.findIndex((x) => x.username === target);
             if (ix >= 0 && name) {
+                const beforeName = users[ix].name;
                 users[ix].name = name;
                 await saveAdminUsers(users);
+                if (beforeName !== name) { try { await logDataChange(req, { entityType: "admin_user", entityId: target, action: "set_title", summary: `更新負責人姓名：${beforeName || "—"} → ${name}`, meta: { before: { name: beforeName }, after: { name } } }); } catch (_) {} }
             }
             res.redirect("/admin/users?ok=status");
             return;
@@ -3748,10 +3755,15 @@ function createAdminRouter() {
             res.redirect("/admin/users");
             return;
         }
+        const beforeTitle = { title: users[ix].title, name: users[ix].name, canCash: !!users[ix].canCash };
         users[ix].title = title;
         if (name) users[ix].name = name;
         users[ix].canCash = (req.body.can_cash === "1" || req.body.can_cash === "on");
         await saveAdminUsers(users);
+        const afterTitle = { title, name: name || beforeTitle.name, canCash: users[ix].canCash };
+        if (beforeTitle.title !== afterTitle.title || beforeTitle.name !== afterTitle.name || beforeTitle.canCash !== afterTitle.canCash) {
+            try { await logDataChange(req, { entityType: "admin_user", entityId: target, action: "set_title", summary: `帳號 ${target} 職稱/權限異動：${beforeTitle.title || "—"} → ${title}`, meta: { before: beforeTitle, after: afterTitle } }); } catch (_) {}
+        }
         res.redirect("/admin/users?ok=status");
     });
     router.post("/users/reset-password", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
@@ -3795,12 +3807,14 @@ function createAdminRouter() {
             res.redirect("/admin/users?err=last");
             return;
         }
+        const removed = users.find((x) => x.username === delName);
         const next = users.filter((x) => x.username !== delName);
         if (next.length === users.length) {
             res.redirect("/admin/users");
             return;
         }
         await saveAdminUsers(next);
+        try { await logDataChange(req, { entityType: "admin_user", entityId: delName, action: "delete", summary: `刪除帳號 ${delName}`, meta: { before: removed ? { username: removed.username, name: removed.name, title: removed.title, status: removed.status } : null, after: null } }); } catch (_) {}
         res.redirect("/admin/users?ok=del");
     });
     router.post("/users/line-bind-link", express_1.default.urlencoded({ extended: true }), requireManager, async (req, res) => {
