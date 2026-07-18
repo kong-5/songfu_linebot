@@ -42,6 +42,14 @@ async function computeMustCount(db, opts) {
         const cur = {};
         (await db.prepare("SELECT erp_code, qty FROM erp_stock_items WHERE wh_code = ? AND " + norm + " = ?").all(whCode, icpno) || [])
             .forEach((r) => { cur[String(r.erp_code)] = Number(r.qty || 0); });
+        // [fix 2026-07-17] 目前分倉量（該倉有 000009 分倉列時）：退回基準 lastcount 用。
+        // stocktake_count.sys_qty 在該倉有分倉資料時凍結的是「分倉量」（見 stocktake-api.js getStocktakeItems），
+        // 原本一律拿「公司總量」去比——品項跨倉持有時差值恆大，走 fallback 的倉（新公司/快照中斷）會整倉誤標必盤。
+        let curWh = null;
+        try {
+            const wq = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ? AND " + norm + " = ?").all(whCode, icpno);
+            if ((wq || []).length) { curWh = {}; for (const r of wq) curWh[String(r.erp_code)] = Number(r.qty || 0); }
+        } catch (_) { curWh = null; }
         // 昨天（或最近一個「今天以前」）的每日快照
         let ymap = null;
         const prev = await db.prepare("SELECT MAX(snap_date) AS d FROM erp_stock_daily WHERE " + norm + " = ? AND snap_date < ?").get(icpno, today);
@@ -63,7 +71,11 @@ async function computeMustCount(db, opts) {
             if (ymap && Object.prototype.hasOwnProperty.call(ymap, code)) { base = ymap[code]; src = "yesterday"; }
             else if (lmap && Object.prototype.hasOwnProperty.call(lmap, code)) { base = lmap[code]; src = "lastcount"; }
             if (base == null) return;
-            if (Math.abs(cur[code] - base) >= threshold) { out.set.add(code); out.base[code] = base; out.src[code] = src; }
+            // lastcount 基準的「目前值」要用同一把尺：凍結時是分倉量就比分倉量（無分倉列＝公司總量）
+            const curVal = (src === "lastcount" && curWh) ? Number(curWh[code] || 0) : cur[code];
+            // [fix 2026-07-17] 門檻 0＝「有變動就必盤」：|0|>=0 恆真會把零變動品項全標紅，改嚴格大於
+            const diff = Math.abs(curVal - base);
+            if (threshold > 0 ? diff >= threshold : diff > 0) { out.set.add(code); out.base[code] = base; out.src[code] = src; }
         });
     } catch (_) { /* 必盤判定失敗不擋盤點 */ }
     return out;
