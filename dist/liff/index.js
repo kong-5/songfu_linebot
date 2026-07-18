@@ -204,9 +204,11 @@ function createLiffRouter() {
             const item = await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(erpCode, icpno);
             if (!item) { res.status(404).json({ error: "查無此品項（料號 " + erpCode + "）" }); return; }
             const now = new Date().toISOString();
-            // 可攜 upsert（sqlite/pg 通用）：先刪後插
-            await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
-            await db.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+            // [fix 2026-07-17] 原「先刪後插」非原子：兩支手機同時綁同一條碼會撞 PK 直接 500，
+            // DELETE 與 INSERT 之間崩潰則舊綁定遺失。改 ON CONFLICT upsert（sqlite/pg 皆支援）；
+            // 仍先清「正規化後同鍵、但 icpno 寫法不同」的殘留舊列，避免同條碼雙綁。
+            await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ? AND icpno <> ?").run(icpno, barcode, icpno);
+            await db.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (icpno, barcode) DO UPDATE SET erp_code = EXCLUDED.erp_code, qty_per_scan = EXCLUDED.qty_per_scan, created_by = EXCLUDED.created_by, created_by_name = EXCLUDED.created_by_name, updated_at = EXCLUDED.updated_at")
                 .run(icpno, barcode, erpCode, qps, v.sub || "", String(v.name || "").trim(), now, now);
             res.json({ ok: true, item: { c: String(item.erp_code), n: String(item.name || ""), s: String(item.spec || ""), u: String(item.unit || ""), sys: Number(item.qty || 0), q: qps } });
         } catch (e) { console.error("[liff scan bind]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }

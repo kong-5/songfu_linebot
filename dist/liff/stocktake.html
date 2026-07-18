@@ -437,7 +437,9 @@
 
   // ---------- 自動暫存（防電話中斷 / LIFF 重載遺失盤點）----------
   // 一邊盤一邊把「上貨/中貨/效期/展開狀態」存進本機，重開同倉同日自動接回。
-  function draftKey(code,date){ return 'stk_draft_'+(code||'')+'_'+(date||''); }
+  // [fix 2026-07-17] 草稿鍵必須含公司代碼（比照 scan.html）：凌越倉號可跨公司重複，
+  // 同機同日先盤松富某倉再切松揚同倉號時，舊鍵會互相覆蓋草稿、恢復時把別家公司的數字帶進本倉。
+  function draftKey(code,date){ return 'stk_draft_'+(S.icpno||'00')+'_'+(code||'')+'_'+(date||''); }
   function draftKeyCur(){ return S.wh?draftKey(S.wh.code,S.date):''; }
   var _saveT=null;
   function writeDraftNow(){
