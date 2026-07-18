@@ -37,6 +37,7 @@
   .pk-i .n{font-size:15px;font-weight:700;line-height:1.2;}
   .pk-i .m{font-size:12px;color:var(--txt-3);margin-top:2px;font-variant-numeric:tabular-nums;}
   .pk-done{font-size:11px;font-weight:700;color:var(--pos);background:var(--pos-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
+  .pk-lock{font-size:11px;font-weight:700;color:var(--neg);background:var(--neg-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
   .pk-arrow{color:var(--txt-3);font-size:20px;flex:none;}
   .empty{text-align:center;color:var(--txt-3);padding:36px 16px;line-height:1.6;}
   /* header */
@@ -241,6 +242,32 @@
   function loadDraft(){try{var s=localStorage.getItem(draftKey());return s?JSON.parse(s):null;}catch(_){return null;}}
   function clearDraft(){try{localStorage.removeItem(draftKey());}catch(_){}}
 
+  // ---------- [2026-07-17] 盤點鎖＋草稿雲端備援（與 stocktake.html 同協定，同一張 stocktake_draft） ----------
+  // 進倉先認領此倉（有人正在盤＝擋下，可強制接手）；心跳每 40 秒續租並把已掃數量上傳伺服器——
+  // 手機當機/LINE 清快取/換裝置都能從雲端帶回，不用重掃。
+  function devId(){ try{var k='stk_devid',v=localStorage.getItem(k);if(!v){v='d'+Date.now().toString(36)+Math.random().toString(36).slice(2,10);localStorage.setItem(k,v);}return v;}catch(_){if(!window.__stkDev)window.__stkDev='d'+Math.random().toString(36).slice(2);return window.__stkDev;} }
+  function draftSyncUrl(){ return WEB?(APIB+'/draft-sync'):'/liff/api/stocktake/draft-sync'; }
+  function postKA(path,body){ // keepalive 版 post（關頁/切背景也送得出去；不走 _handleRes 避免背景觸發續登跳轉）
+    var opt={method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
+    if(WEB) opt.credentials='same-origin'; else opt.headers['Authorization']='Bearer '+freshToken();
+    return fetch(path,opt).then(function(r){return r.json().catch(function(){return {};});}).catch(function(){return null;});
+  }
+  var _hbT=null;
+  function scanPayload(){ return {src:'scan',counts:S.counts,order:S.order,extra:S.extra}; }
+  function syncDraftUp(){
+    if(!S.wh) return;
+    postKA(draftSyncUrl(),{icpno:S.icpno,warehouse:S.wh.code,date:S.date,deviceId:devId(),name:S.name,payload:scanPayload()}).then(function(res){
+      if(res&&res.locked){ stopHeartbeat(); stopScan(); var nm=res.by||'另一位使用者'; S.wh=null; alert('此倉已被「'+nm+'」接手盤點，此畫面已停止。已掃內容仍保存在本機草稿。'); showPicker(); }
+    });
+  }
+  function startHeartbeat(){ stopHeartbeat(); _hbT=setInterval(syncDraftUp,40000); }
+  function stopHeartbeat(){ if(_hbT){ clearInterval(_hbT); _hbT=null; } }
+  function releaseLock(){ // 離開此倉：釋放鎖並順帶上傳最終草稿（雲端草稿保留，重進可接回）
+    if(!S.wh) return; stopHeartbeat();
+    postKA(draftSyncUrl(),{icpno:S.icpno,warehouse:S.wh.code,date:S.date,deviceId:devId(),release:true,payload:scanPayload()});
+  }
+  window.addEventListener('pagehide',function(){ flushDraftNow(); syncDraftUp(); });
+
   // ---------- 開始 ----------
   function getParam(k){
     try{var u=new URL(location.href);var v=u.searchParams.get(k);if(v)return v;}catch(_){}
@@ -286,7 +313,7 @@
           return '<button class="pk" data-w="'+esc(w.code)+'">'
             +'<div class="pk-ic">▦</div>'
             +'<div class="pk-i"><div class="n">'+esc(w.name||w.code)+'</div><div class="m">'+esc(w.code)+' · '+esc(String(w.items))+' 項</div></div>'
-            +(w.countedToday?'<span class="pk-done">今日已盤</span>':'')
+            +(w.counting!=null?'<span class="pk-lock">盤點中'+(w.counting?('·'+esc(w.counting)):'')+'</span>':(w.countedToday?'<span class="pk-done">今日已盤</span>':''))
             +'<span class="pk-arrow">›</span></button>';
         }).join('')+'</div>';
       }
@@ -304,8 +331,29 @@
   }
 
   // ---------- 載入倉庫品項＋條碼對照 ----------
-  function openWarehouse(code){
+  // [2026-07-17] 進倉先認領盤點鎖：有人正在盤 → 擋下（可強制接手）；認領成功帶回雲端草稿備援。
+  function showLockedScreen(code,by){
+    stopHeartbeat();
+    showCenter('<div style="font-size:40px">⛔</div>'
+      +'<div style="font-size:16px;font-weight:700;color:var(--txt)">此倉有人正在盤點</div>'
+      +'<div style="max-width:280px;font-size:13.5px;color:var(--txt-2);line-height:1.6">「'+esc(by||'另一位使用者')+'」正在盤點此倉。為避免互相覆蓋，同一時間只能一個人盤。</div>'
+      +'<button class="btn-primary" id="lkBack" style="margin-top:8px">返回倉庫清單</button>'
+      +'<button id="lkForce" style="margin-top:4px;background:none;border:none;color:var(--txt-3);text-decoration:underline;font-size:13px;cursor:pointer;font-family:inherit">強制接手（對方畫面會停止）</button>');
+    document.getElementById('lkBack').addEventListener('click',function(){ showPicker(); });
+    document.getElementById('lkForce').addEventListener('click',function(){
+      if(!confirm('確定強制接手？「'+(by||'對方')+'」的盤點畫面會停止（其已輸入內容仍保存在對方裝置的草稿裡）。')) return;
+      openWarehouse(code,true);
+    });
+  }
+  function openWarehouse(code,force){
     showCenter('<div class="spin"></div><div>載入品項與條碼…</div>');
+    postKA(draftSyncUrl(),{icpno:S.icpno,warehouse:code,deviceId:devId(),name:S.name,force:!!force}).then(function(lk){
+      if(lk&&lk.locked){ showLockedScreen(code,lk.by||''); return; }
+      var cloudDraft=(lk&&lk.ok&&lk.draft&&lk.draft.src==='scan')?lk.draft:null;
+      openWarehouseItems(code,cloudDraft);
+    });
+  }
+  function openWarehouseItems(code,cloudDraft){
     Promise.all([
       api(apiUrl('items')+'?warehouse='+encodeURIComponent(code)+'&icpno='+encodeURIComponent(S.icpno)),
       api(apiUrl('barcodes')+'?icpno='+encodeURIComponent(S.icpno))
@@ -325,21 +373,27 @@
         if(s.counted!=null||s.mid!=null){S.counts[c]=String(tot);S.order.push(c);}
         S.savedMeta[c]={mid:(s.mid==null?null:Number(s.mid)),expiry:(s.expiry&&s.expiry.length?s.expiry:[])};
       });
-      // 本機未送出草稿：逐鍵合併、略過空值（比照 stocktake.html 的 #63 回歸修法）。
+      // 未送出草稿：逐鍵合併、略過空值（比照 stocktake.html 的 #63 回歸修法）。
       // ⚠ 不可整包取代：saved 可能帶回「他人剛送出」的品項，整包用舊草稿蓋掉＋開頁拿到的新
       //   baseSubmittedAt 讓樂觀鎖放行 → 送出時把他人整場盤點洗掉。
+      // [2026-07-17] 合併順序：saved → 雲端草稿（伺服器備援）→ 本機草稿（此裝置最新，優先）
+      var applyDraftCounts=function(d){
+        if(d.counts){Object.keys(d.counts).forEach(function(k){var v=d.counts[k];if(v==null||String(v)==='')return;S.counts[k]=v;});}
+        if(d.extra){Object.keys(d.extra).forEach(function(k){if(d.extra[k])S.extra[k]=d.extra[k];});}
+      };
+      if(cloudDraft) applyDraftCounts(cloudDraft);
       var dr=loadDraft();
-      if(dr){
-        if(dr.counts){Object.keys(dr.counts).forEach(function(k){var v=dr.counts[k];if(v==null||String(v)==='')return;S.counts[k]=v;});}
-        if(dr.extra){Object.keys(dr.extra).forEach(function(k){if(dr.extra[k])S.extra[k]=dr.extra[k];});}
-        // order 重建：草稿順序優先，補上 saved 有而草稿沒有的品項
+      if(dr) applyDraftCounts(dr);
+      if(dr||cloudDraft){
+        // order 重建：本機草稿順序優先 → 雲端草稿順序 → saved 順序
         var ord=[],seen={};
         var push=function(c){if(!seen[c]&&S.counts[c]!=null&&S.counts[c]!==''){seen[c]=1;ord.push(c);}};
-        (dr.order||[]).forEach(push);S.order.forEach(push);Object.keys(S.counts).forEach(push);
+        ((dr&&dr.order)||[]).forEach(push);((cloudDraft&&cloudDraft.order)||[]).forEach(push);S.order.forEach(push);Object.keys(S.counts).forEach(push);
         S.order=ord;
       }
       renderScan();
       startScan();
+      startHeartbeat();
     }).catch(function(){showCenter('<div>⚠ 載入失敗，請稍後再試</div>');});
   }
 
@@ -362,7 +416,7 @@
         +'<div class="sec-t" id="scListT"></div><div id="scList"></div>'
       +'</div>'
       +'<div class="bar"><div class="bar-in"><div class="s" id="scBarTxt"></div><button class="submit" id="scSubmit">送出盤點</button></div></div>';
-    document.getElementById('scBack').addEventListener('click',function(){stopScan();showPicker();});
+    document.getElementById('scBack').addEventListener('click',function(){stopScan();flushDraftNow();releaseLock();S.wh=null;showPicker();});
     document.getElementById('scPause').addEventListener('click',function(){
       if(S.scanning){pauseScan();this.textContent='繼續';}else{resumeScan();this.textContent='暫停';}
     });
@@ -394,6 +448,7 @@
   // 切到背景（切 App、鎖屏）就整個關掉相機與解碼，回前景再自動重啟——長時間盤點時最省電、避免手機一直發燙
   document.addEventListener('visibilitychange',function(){
     if(document.visibilityState==='hidden'){
+      flushDraftNow(); syncDraftUp(); // [2026-07-17] 切背景立即存本機＋推雲端備援
       if(S.scanning&&(S.engine==='native'||S.engine==='zxing')){ S._resumeOnShow=true; stopScan(); }
     } else if(S._resumeOnShow){
       S._resumeOnShow=false; startScan();
@@ -703,15 +758,17 @@
       if(mid!=null){if(v>=mid){good=Math.round((v-mid)*100)/100;}else{mid=v;good=0;}}
       counts.push({code:it.c,name:it.n,spec:it.s,unit:it.u,sys:it.sys,counted:good,mid:mid,expiry:(meta&&meta.expiry)||[]});
     });
-    post(apiUrl('submit'),{warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:S.baseSubmittedAt}).then(function(res){
+    post(apiUrl('submit'),{warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:S.baseSubmittedAt,deviceId:devId()}).then(function(res){
       if(res.error){
         btn.disabled=false;btn.textContent='送出盤點';
+        if(res.code==='locked'){alert(res.error);openWarehouse(S.wh.code);return;}
         if(res.code==='conflict_stale'||res.code==='conflict_taken'){alert('這個倉今天已經有人送出盤點了。\n將重新載入最新資料並合併你未送出的數量，請確認後再送出。');openWarehouse(S.wh.code);return;}
         alert('送出失敗：'+res.error);return;
       }
-      clearDraft();stopScan();
+      stopHeartbeat();clearDraft();stopScan();
+      var whLabel=S.wh.name||S.wh.code; S.wh=null; // 送出後切背景不再把已送出內容同步回草稿/重新搶鎖
       showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">盤點已送出</div>'
-        +'<div>'+esc(S.wh.name||S.wh.code)+'（'+esc(coName())+'）· '+esc(S.date)+'</div>'
+        +'<div>'+esc(whLabel)+'（'+esc(coName())+'）· '+esc(S.date)+'</div>'
         +'<div style="font-size:13px;color:var(--txt-3)">已記錄 '+esc(String(res.counted))+' 項</div>'
         +'<button class="btn-primary" id="scClose" style="margin-top:8px">完成</button>');
       document.getElementById('scClose').addEventListener('click',function(){try{if(liff.isInClient())liff.closeWindow();else showPicker();}catch(_){showPicker();}});

@@ -514,6 +514,12 @@ function detectCustomerIntent(text) {
             }
         }
     }
+    // [fix 2026-07-17] 「再加3把蔥」同時命中 modify_order（加3把）與 add_to_order（再加），
+    // 原優先序 modify > add 會把單純加購當改單處理（收單中：不寫 raw、不解析 → 品項完全不入單，
+    // 只剩訂單 remark，客戶以為叫到了）。無「改」字＝不是改數量，降級成補叫貨照常解析入單。
+    if (primaryIntent === "modify_order" && matched.some((x) => x.intent === "add_to_order") && !/改/.test(t)) {
+        primaryIntent = "add_to_order";
+    }
     return {
         intent: primaryIntent,
         keywords: matched.map(x => x.keyword),
@@ -1253,8 +1259,10 @@ function createLineWebhook() {
                 //      status='processing' 且租約（claimed_at）未逾時 → 他實例處理中，略過；
                 //      租約逾時（前一實例當機／卡死）→ 條件式 UPDATE claimed_at（樂觀鎖，WHERE 帶舊值，
                 //      同時搶只有一個 changes=1）搶到才接手重跑（lineMessageIsRetry=true → 下游冪等路徑）；
-                //   3) 處理成功 → finally 改標 status='done'；失敗 → finally 只刪自己的 processing 佔位列，
-                //      LINE redelivery 可整則重跑，不會永久斷單。
+                //   3) 處理成功 → finally 改標 status='done'；失敗 → finally 把自己的佔位列改標 status='failed'
+                //      （[fix 2026-07-17] 原本是 DELETE：redelivery 重跑時佔位重新 INSERT、lineMessageIsRetry=false
+                //      → raw 附加不走 skipIfPresent 冪等，前次若在 append raw 之後才失敗會把同段文字再附加一次），
+                //      redelivery 看到 failed 列即知是重跑 → 走冪等路徑，不會永久斷單。
                 // 佔位查詢／INSERT 失敗一律放行（寧可重複不可斷單；仍有記憶體 Set + dupByOrder 兩層防護）。
                 if (curLineMessageId) {
                     try {
@@ -1272,26 +1280,40 @@ function createLineWebhook() {
                             const claimRow = await db.prepare("SELECT status, claimed_at FROM processed_line_messages WHERE message_id = ?").get(curLineMessageId);
                             // 舊列 status=NULL＝舊語意的完成標記；列消失（極端競態：他實例失敗剛刪除）也保守略過，等 redelivery
                             const claimSt = claimRow && claimRow.status != null ? String(claimRow.status).trim().toLowerCase() : "done";
-                            if (claimSt !== "processing") {
+                            // [fix 2026-07-17] 前次執行「確定失敗」（failed 標記）→ 原子改回 processing 接手重跑，
+                            // 且標 lineMessageIsRetry（下游 raw 附加走 skipIfPresent 冪等，前次已附加的不再重複）。
+                            if (claimSt === "failed") {
+                                const refire = await db.prepare("UPDATE processed_line_messages SET status = 'processing', claimed_at = ? WHERE message_id = ? AND status = 'failed'").run(nowIso, curLineMessageId);
+                                if ((refire?.changes ?? 0) !== 1) {
+                                    console.log("[LINE] failed 佔位已被他實例接手，略過 messageId=%s", curLineMessageId);
+                                    continue;
+                                }
+                                claimNowIso = nowIso;
+                                lineMessageIsRetry = true;
+                                console.warn("[LINE] 重跑前次失敗的訊息 messageId=%s（前次可能已寫入部分資料，下游改走冪等路徑）", curLineMessageId);
+                            }
+                            else if (claimSt !== "processing") {
                                 console.log("[LINE] 持久化去重命中（processed_line_messages，已成功處理過），略過重複訊息 messageId=%s", curLineMessageId);
                                 continue;
                             }
-                            const claimedMs = claimRow.claimed_at != null ? Date.parse(String(claimRow.claimed_at)) : NaN;
-                            const leaseExpired = !Number.isFinite(claimedMs) || (Date.now() - claimedMs) > PROCESSED_LINE_MSG_LEASE_MS;
-                            if (!leaseExpired) {
-                                console.log("[LINE] 他實例處理中（processing 租約未逾時），略過 messageId=%s claimed_at=%s", curLineMessageId, claimRow.claimed_at);
-                                continue;
+                            else {
+                                const claimedMs = claimRow.claimed_at != null ? Date.parse(String(claimRow.claimed_at)) : NaN;
+                                const leaseExpired = !Number.isFinite(claimedMs) || (Date.now() - claimedMs) > PROCESSED_LINE_MSG_LEASE_MS;
+                                if (!leaseExpired) {
+                                    console.log("[LINE] 他實例處理中（processing 租約未逾時），略過 messageId=%s claimed_at=%s", curLineMessageId, claimRow.claimed_at);
+                                    continue;
+                                }
+                                const takeover = claimRow.claimed_at != null
+                                    ? await db.prepare("UPDATE processed_line_messages SET claimed_at = ? WHERE message_id = ? AND status = 'processing' AND claimed_at = ?").run(nowIso, curLineMessageId, claimRow.claimed_at)
+                                    : await db.prepare("UPDATE processed_line_messages SET claimed_at = ? WHERE message_id = ? AND status = 'processing' AND claimed_at IS NULL").run(nowIso, curLineMessageId);
+                                if ((takeover?.changes ?? 0) !== 1) {
+                                    console.log("[LINE] 逾時租約已被他實例接手（或已完成），略過 messageId=%s", curLineMessageId);
+                                    continue;
+                                }
+                                claimNowIso = nowIso; // 接手成功：佔位列 claimed_at 已改為本次的 nowIso
+                                lineMessageIsRetry = true;
+                                console.warn("[LINE] 接手逾時 processing 租約重跑 messageId=%s（原 claimed_at=%s，前次可能已寫入部分資料，下游改走冪等路徑）", curLineMessageId, claimRow.claimed_at);
                             }
-                            const takeover = claimRow.claimed_at != null
-                                ? await db.prepare("UPDATE processed_line_messages SET claimed_at = ? WHERE message_id = ? AND status = 'processing' AND claimed_at = ?").run(nowIso, curLineMessageId, claimRow.claimed_at)
-                                : await db.prepare("UPDATE processed_line_messages SET claimed_at = ? WHERE message_id = ? AND status = 'processing' AND claimed_at IS NULL").run(nowIso, curLineMessageId);
-                            if ((takeover?.changes ?? 0) !== 1) {
-                                console.log("[LINE] 逾時租約已被他實例接手（或已完成），略過 messageId=%s", curLineMessageId);
-                                continue;
-                            }
-                            claimNowIso = nowIso; // 接手成功：佔位列 claimed_at 已改為本次的 nowIso
-                            lineMessageIsRetry = true;
-                            console.warn("[LINE] 接手逾時 processing 租約重跑 messageId=%s（原 claimed_at=%s，前次可能已寫入部分資料，下游改走冪等路徑）", curLineMessageId, claimRow.claimed_at);
                         }
                     } catch (e) {
                         // 佔位失敗不可阻斷正常收單（放行；仍有記憶體 Set + dupByOrder 兩層防護）
@@ -1674,7 +1696,8 @@ function createLineWebhook() {
                         scheduleAutoFinalize(groupId, session);
                         scheduleOrderConfirmReply(groupId, session).catch(()=>{});
                         const ocrLine = ocrText || "[圖片]";
-                        const orderDateVal = (await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId))?.order_date || getTaipeiOrderDate();
+                        const sessOrderMeta = await db.prepare("SELECT order_date, order_sub_split_key FROM orders WHERE id = ?").get(session.orderId);
+                        const orderDateVal = sessOrderMeta?.order_date || getTaipeiOrderDate();
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
                             // [fix 2026-07-10] 拆單前先把當日 NULL 主訂單標成 '' 桶（rebuild 過濾語意見 helper 註解），
@@ -1703,25 +1726,41 @@ function createLineWebhook() {
                                 await reply(lineClient, event.replyToken, `收到您的訂單！已為您自動拆分為 ${map.size} 張獨立訂單（${formatSplitSubNamesForReply(new Set(map.keys()))}），我們將盡快處理。`, db, { pushTo: groupId });
                             }
                         }
-                        else if (parsedFromImg.length > 0) {
-                            // [fix 2026-07-10] 改走 duplicateAttachmentToOrders（含 (order_id, line_message_id) 冪等查重），重試路徑不重複掛圖
-                            await duplicateAttachmentToOrders(db, messageId, [session.orderId], nowSql);
-                            await insertParsedItemsForOrder(db, session.orderId, session.customerId, parsedFromImg, fallbackUnitImg, curLineMessageId);
+                        else {
+                            // [fix 2026-07-17] 比照文字路徑（見下方 parsed.length > 0 分支）：session.orderId 可能是
+                            // 子客戶拆單訂單（本 session 由拆單建立且無主客戶桶時）。無子客戶標記的圖片品項/OCR
+                            // 必須導回主客戶桶，否則結單 rebuild 依 split key 過濾會把這批品項整批丟掉（漏出貨）。
+                            let targetOrderId = session.orderId;
+                            let rawSeeded = false;
+                            const sessKey = sessOrderMeta?.order_sub_split_key != null ? String(sessOrderMeta.order_sub_split_key).trim() : "";
+                            if (sessKey !== "") {
+                                const t = await findOrCreateSplitTargetOrder(db, getNextOrderNo, nowSql, {
+                                    customerId: session.customerId,
+                                    orderDate: orderDateVal,
+                                    groupId,
+                                    subKey: "",
+                                    rawMessage: ocrLine,
+                                    lineMessageId: curLineMessageId,
+                                });
+                                targetOrderId = t.orderId;
+                                rawSeeded = t.created; // 新建時 raw 已放 ocrLine，下方不再附加避免重複
+                                mergeSessionOrderIds(session, [targetOrderId]);
+                            }
+                            // [fix 2026-07-10] 冪等掛附件（(order_id, line_message_id) 查重），重試路徑不重複掛圖
+                            await duplicateAttachmentToOrders(db, messageId, [targetOrderId], nowSql);
+                            if (parsedFromImg.length > 0)
+                                await insertParsedItemsForOrder(db, targetOrderId, session.customerId, parsedFromImg, fallbackUnitImg, curLineMessageId);
                             // [fix 2026-07-10 #63回歸] OCR 文字附加改走 appendRawLineToOrders 原子 UPDATE
                             //（原「SELECT raw → 串接 → UPDATE」讀改寫在併發下互相蓋寫），
                             // 接手逾時租約重跑時啟用 skipIfPresent（整段比對）避免同段 OCR 重複附加。
-                            await appendRawLineToOrders(db, [session.orderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
-                        }
-                        else {
-                            // [fix 2026-07-10] 同上：冪等掛附件；OCR 附加同上改原子 UPDATE＋重跑冪等
-                            await duplicateAttachmentToOrders(db, messageId, [session.orderId], nowSql);
-                            await appendRawLineToOrders(db, [session.orderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
+                            if (!rawSeeded)
+                                await appendRawLineToOrders(db, [targetOrderId], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         }
                     }
                     else {
                         const orderDate = getTaipeiOrderDate();
                         // [fix 2026-07-08] 累加品項的同日訂單查詢須排除作廢(deleted)/客訴(complaint)軟刪除單，否則員工作廢後客戶再叫貨會附加進作廢單→漏出貨；並加 ORDER BY order_no 讓拆單後多張同日單附加到穩定的第一張。
-                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customer.id, orderDate);
+                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(order_sub_split_key,'') = '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customer.id, orderDate);
                         const ocrLine = ocrText || "[圖片]";
                         if (parsedFromImg.length > 0 && mustSplitOrdersBySubCustomer(parsedFromImg)) {
                             const map = groupParsedItemsBySubCustomer(parsedFromImg);
@@ -1819,7 +1858,14 @@ function createLineWebhook() {
                 const intentRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_trigger_intent");
                 const intentKeywords = (intentRow?.value ?? "幫我送\n明天\n今天早上要\n要送\n訂\n叫貨\n送過來\n請送").split(/\n/).map((s) => s.trim()).filter(Boolean);
                 const triggerMatch = startTriggers.find((t) => text === t || text.startsWith(t + " ") || text.startsWith(t + "\n"));
-                const intentMatch = !triggerMatch && text.length >= 2 && intentKeywords.some((k) => text.includes(k));
+                let intentMatch = !triggerMatch && text.length >= 2 && intentKeywords.some((k) => text.includes(k));
+                // [fix 2026-07-17] 客訴/退貨關鍵詞優先於「模糊收單意圖」：像「上次送的菜壞掉了，訂單要退」
+                // 含「訂」會被當收單訊息送 AI 解析建單，排在後面的早期客訴攔截永遠跑不到、管理員收不到推播。
+                // 只降級模糊 intentMatch；明確觸發詞（如「收單」開頭）不動。
+                if (intentMatch) {
+                    const ciPre = detectCustomerIntent(text);
+                    if (ciPre.intent === "complaint" || ciPre.intent === "return_request") intentMatch = false;
+                }
                 const effectiveRest = triggerMatch ? (text.slice(triggerMatch.length).trim() || "") : (intentMatch ? text : "");
                 const isStartOrder = triggerMatch || intentMatch;
                 if (isStartOrder) {
@@ -1831,7 +1877,7 @@ function createLineWebhook() {
                     const lineForRaw = String(text || "").trim();
                     if (!rest) {
                         // [fix 2026-07-08] 排除作廢/客訴軟刪除單並加 ORDER BY，避免累加進作廢單、附加到不穩定的任意單。
-                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
+                        let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(order_sub_split_key,'') = '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
                         let orderId;
                         if (orderRow) {
                             orderId = orderRow.id;
@@ -1907,7 +1953,7 @@ function createLineWebhook() {
                         continue;
                     }
                     // [fix 2026-07-08] 排除作廢/客訴軟刪除單並加 ORDER BY，避免累加進作廢單、附加到不穩定的任意單。
-                    let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
+                    let orderRow = await db.prepare("SELECT id, raw_message FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(order_sub_split_key,'') = '' AND COALESCE(LOWER(TRIM(status)),'') NOT IN ('deleted','complaint') ORDER BY order_no").get(customerId, orderDate);
                     let orderId;
                     if (orderRow) {
                         orderId = orderRow.id;
@@ -2115,7 +2161,7 @@ function createLineWebhook() {
                                     if (!(await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(db))) {
                                         await lineClient.pushMessage(groupId, {
                                             type: "text",
-                                            text: `提醒：您寫「以上 ${claimed} 收單」，但我們目前辨識到 ${totalItems} 項。請對照 30 秒後的訂單明細確認，有缺漏可傳「線上改單」修改。`,
+                                            text: `提醒：您寫「以上 ${claimed} 收單」，但我們目前辨識到 ${totalItems} 項。有缺漏可傳「線上改單」修改。`,
                                         });
                                     }
                                 } catch (e) {
@@ -2493,15 +2539,17 @@ function createLineWebhook() {
                         }
                     } else {
                         releaseLineWebhookMessageOnce(curLineMessageId);
-                        // [fix 2026-07-10 #63回歸] 失敗釋放同樣帶 claimed_at 條件只刪「自己的」processing 列：
-                        // 被他實例接手後不可誤刪接手者的佔位；claimNowIso 為 null（放行路徑、沒有自己的列）
-                        // 則完全不刪——舊寫法會把「他實例正在處理」的 processing 列刪掉造成雙跑。
+                        // [fix 2026-07-10 #63回歸] 失敗釋放同樣帶 claimed_at 條件只動「自己的」processing 列：
+                        // 被他實例接手後不可誤動接手者的佔位；claimNowIso 為 null（放行路徑、沒有自己的列）則不動。
+                        // [fix 2026-07-17] 由 DELETE 改為標 status='failed'：redelivery 重跑時看到 failed 列
+                        // 即知是「前次失敗的重跑」→ lineMessageIsRetry=true、raw 附加走 skipIfPresent 冪等。
+                        // 舊 DELETE 寫法會讓重跑看起來像全新訊息，前次在 append raw 之後才失敗時同段文字被附加兩次。
                         if (claimNowIso != null) {
                             try {
-                                await db.prepare("DELETE FROM processed_line_messages WHERE message_id = ? AND status = 'processing' AND claimed_at = ?").run(curLineMessageId, claimNowIso);
-                            } catch (_) { /* best-effort：刪不掉時租約 10 分鐘後逾時仍可被接手，不阻斷 */ }
+                                await db.prepare("UPDATE processed_line_messages SET status = 'failed' WHERE message_id = ? AND status = 'processing' AND claimed_at = ?").run(curLineMessageId, claimNowIso);
+                            } catch (_) { /* best-effort：標不到時租約 10 分鐘後逾時仍可被接手，不阻斷 */ }
                         }
-                        console.warn("[LINE] 訊息處理失敗，已釋放去重佔位供 LINE redelivery 重試 messageId=%s", curLineMessageId);
+                        console.warn("[LINE] 訊息處理失敗，佔位已標 failed 供 LINE redelivery 冪等重跑 messageId=%s", curLineMessageId);
                     }
                 }
             }

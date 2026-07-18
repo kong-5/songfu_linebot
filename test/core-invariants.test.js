@@ -156,3 +156,48 @@ test("9. 品名清洗 regex（salsa 不再被 [\\\\s] 洗壞）", () => {
     assert.equal(clean("salsa 醬 5kg"), "salsa 醬 5kg");
     assert.equal(clean("高麗菜， 兩箱。"), "高麗菜 兩箱");
 });
+
+test("10. 盤點鎖＋草稿雲端備援：互斥/接手/釋放保草稿/送出清鎖", async () => {
+    const db = await freshDb();
+    const api = require("../dist/lib/stocktake-api.js");
+    const today = api.stkTaipeiDate();
+    await db.prepare("INSERT INTO erp_warehouse (icpno, code, name, include_stocktake, sort_order) VALUES ('02','FN005','松揚雜貨',1,1)").run();
+    await db.prepare("INSERT INTO erp_stock_items (icpno, erp_code, name, spec, unit, qty, wh_code) VALUES ('02','P1','白米','30KG/包','包',12,'FN005')").run();
+    // A 進倉認領 → ok（無既有草稿）
+    const a1 = await api.syncStocktakeDraft(db, { icpno: "02", whCode: "FN005", date: today, deviceId: "devA", name: "阿明" });
+    assert.equal(a1.ok, true);
+    assert.equal(a1.draft, null);
+    // B 進倉 → 被鎖（A 心跳未逾時）
+    const b1 = await api.syncStocktakeDraft(db, { icpno: "02", whCode: "FN005", date: today, deviceId: "devB", name: "小華" });
+    assert.equal(b1.locked, true);
+    assert.equal(b1.by, "阿明");
+    // A 心跳上傳草稿 → ok；倉庫清單顯示「盤點中·阿明」
+    const a2 = await api.syncStocktakeDraft(db, { icpno: "02", whCode: "FN005", date: today, deviceId: "devA", name: "阿明", payload: { src: "stk", counts: { P1: "9" } } });
+    assert.equal(a2.ok, true);
+    const whs = await api.listStocktakeWarehouses(db, { icpno: "02" });
+    assert.equal(whs.warehouses[0].counting, "阿明");
+    // B 強制接手 → ok 且帶回 A 的雲端草稿；A 再心跳 → locked（畫面停止）
+    const b2 = await api.syncStocktakeDraft(db, { icpno: "02", whCode: "FN005", date: today, deviceId: "devB", name: "小華", force: true });
+    assert.equal(b2.ok, true);
+    assert.equal(b2.draft.counts.P1, "9");
+    const a3 = await api.syncStocktakeDraft(db, { icpno: "02", whCode: "FN005", date: today, deviceId: "devA", name: "阿明", payload: { src: "stk", counts: { P1: "8" } } });
+    assert.equal(a3.locked, true);
+    assert.equal(a3.by, "小華");
+    // B 釋放（帶最終草稿）→ 鎖解除但草稿保留；C 進倉可認領並帶回草稿
+    await api.syncStocktakeDraft(db, { icpno: "02", whCode: "FN005", date: today, deviceId: "devB", release: true, payload: { src: "stk", counts: { P1: "11" } } });
+    const whs2 = await api.listStocktakeWarehouses(db, { icpno: "02" });
+    assert.equal(whs2.warehouses[0].counting, undefined);
+    const c1 = await api.syncStocktakeDraft(db, { icpno: "02", whCode: "FN005", date: today, deviceId: "devC", name: "阿草" });
+    assert.equal(c1.ok, true);
+    assert.equal(c1.draft.counts.P1, "11");
+    // 他人（devX）持鎖時 C 送出 → 409 locked；C 自己（devC 持鎖）送出 → ok 且鎖＋草稿清除
+    let threw = null;
+    try {
+        await api.submitStocktake(db, { icpno: "02", whCode: "FN005", date: today, counts: [{ code: "P1", name: "白米", spec: "", unit: "包", sys: 12, counted: 11 }], createdBy: "U9", createdByName: "外人", baseSubmittedAt: null, deviceId: "devX" });
+    } catch (e) { threw = e; }
+    assert.ok(threw && threw.code === "locked", "他人持有未逾時鎖時送出應 409 locked");
+    const ok = await api.submitStocktake(db, { icpno: "02", whCode: "FN005", date: today, counts: [{ code: "P1", name: "白米", spec: "", unit: "包", sys: 12, counted: 11 }], createdBy: "U3", createdByName: "阿草", baseSubmittedAt: null, deviceId: "devC" });
+    assert.equal(ok.ok, true);
+    const row = await db.prepare("SELECT COUNT(*) AS n FROM stocktake_draft WHERE wh_code='FN005'").get();
+    assert.equal(Number(row.n), 0, "submit 成功應同交易清掉鎖與雲端草稿");
+});

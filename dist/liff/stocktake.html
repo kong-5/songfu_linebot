@@ -43,6 +43,7 @@
   .pk-i .m{font-size:12px;color:var(--txt-3);margin-top:2px;font-variant-numeric:tabular-nums;}
   .pk-done{font-size:11px;font-weight:700;color:var(--pos);background:var(--pos-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
   .pk-draft{font-size:11px;font-weight:700;color:var(--warn);background:var(--warn-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
+  .pk-lock{font-size:11px;font-weight:700;color:var(--neg);background:var(--neg-soft);padding:2px 8px;border-radius:6px;white-space:nowrap;}
   .pk-arrow{color:var(--txt-3);font-size:20px;flex:none;}
   /* 網站版頂列（後台帳號登入時才出現，給一條明確的返回路徑，不然全螢幕頁不知怎麼回去） */
   .web-topbar{position:sticky;top:0;z-index:30;height:46px;box-sizing:border-box;display:flex;align-items:center;gap:12px;padding:0 14px;background:var(--card);border-bottom:1px solid var(--line);}
@@ -205,7 +206,15 @@
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
       progN:function(d,a){return '已盤 '+d+'/'+a;},barN:function(d,a){return '已盤 '+d+'/'+a+' · 未盤 '+(a-d);},
       confirm:function(wh,d,a){return '送出盤點？\n\n倉庫：'+wh+'\n已盤 '+d+'/'+a+' 項（未盤的會標「未盤」）';},
-      recorded:function(c,t){return '已記錄 '+c+'/'+t+' 項，未盤 '+(t-c)+' 項';}
+      recorded:function(c,t){return '已記錄 '+c+'/'+t+' 項，未盤 '+(t-c)+' 項';},
+      lockedTitle:'此倉有人正在盤點',
+      lockedBy:function(n){return '「'+(n||'另一位使用者')+'」正在盤點此倉。為避免互相覆蓋，同一時間只能一個人盤。';},
+      lockedBack:'返回倉庫清單',
+      lockedForce:'強制接手（對方畫面會停止）',
+      lockedForceConfirm:function(n){return '確定強制接手？「'+(n||'對方')+'」的盤點畫面會停止（其已輸入內容仍保存在對方裝置的草稿裡）。';},
+      takenOver:function(n){return '此倉已被「'+(n||'另一位使用者')+'」接手盤點，此畫面已停止。你已輸入的內容仍保存在本機草稿。';},
+      countingBadge:function(n){return n?('盤點中·'+n):'盤點中';},
+      cloudResumed:'已從雲端帶回未送出的盤點'
     },
     vi:{
       loading:'Đang tải…',liffNotSet:'⚠ Chưa cấu hình LIFF ID',liffFail:'⚠ Khởi tạo LIFF thất bại',
@@ -236,7 +245,15 @@
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
       progN:function(d,a){return 'Đã kiểm '+d+'/'+a;},barN:function(d,a){return 'Đã kiểm '+d+'/'+a+' · Chưa '+(a-d);},
       confirm:function(wh,d,a){return 'Gửi kiểm kê?\n\nKho: '+wh+'\nĐã kiểm '+d+'/'+a+' (mục chưa kiểm sẽ được đánh dấu "Chưa")';},
-      recorded:function(c,t){return 'Đã ghi '+c+'/'+t+' mục, chưa kiểm '+(t-c)+' mục';}
+      recorded:function(c,t){return 'Đã ghi '+c+'/'+t+' mục, chưa kiểm '+(t-c)+' mục';},
+      lockedTitle:'Kho này đang có người kiểm',
+      lockedBy:function(n){return '"'+(n||'Người khác')+'" đang kiểm kho này. Mỗi lần chỉ một người kiểm để tránh ghi đè dữ liệu.';},
+      lockedBack:'Quay lại danh sách kho',
+      lockedForce:'Tiếp quản (màn hình bên kia sẽ dừng)',
+      lockedForceConfirm:function(n){return 'Tiếp quản kho này? Màn hình của "'+(n||'người kia')+'" sẽ dừng kiểm (dữ liệu họ nhập vẫn còn trong máy họ).';},
+      takenOver:function(n){return 'Kho này đã bị "'+(n||'người khác')+'" tiếp quản, màn hình này đã dừng. Dữ liệu bạn nhập vẫn còn trong máy này.';},
+      countingBadge:function(n){return n?('Đang kiểm·'+n):'Đang kiểm';},
+      cloudResumed:'Đã khôi phục từ máy chủ (chưa gửi)'
     }
   };
   var initLang='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') initLang='vi'; }catch(_){}
@@ -437,7 +454,9 @@
 
   // ---------- 自動暫存（防電話中斷 / LIFF 重載遺失盤點）----------
   // 一邊盤一邊把「上貨/中貨/效期/展開狀態」存進本機，重開同倉同日自動接回。
-  function draftKey(code,date){ return 'stk_draft_'+(code||'')+'_'+(date||''); }
+  // [fix 2026-07-17] 草稿鍵必須含公司代碼（比照 scan.html）：凌越倉號可跨公司重複，
+  // 同機同日先盤松富某倉再切松揚同倉號時，舊鍵會互相覆蓋草稿、恢復時把別家公司的數字帶進本倉。
+  function draftKey(code,date){ return 'stk_draft_'+(S.icpno||'00')+'_'+(code||'')+'_'+(date||''); }
   function draftKeyCur(){ return S.wh?draftKey(S.wh.code,S.date):''; }
   var _saveT=null;
   function writeDraftNow(){
@@ -464,9 +483,33 @@
     if(_saveT){ clearTimeout(_saveT); _saveT=null; }
     if(!hasAnyInput()&&!hasDraft(S.wh.code,S.date)) return;
     writeDraftNow();
+    syncDraftUp(true); // [2026-07-17] 同步推上雲端備援（keepalive：關頁/切背景也送得出去）
   }
   function loadDraft(code,date){ try{ var s=localStorage.getItem(draftKey(code,date)); return s?JSON.parse(s):null; }catch(_){ return null; } }
   function clearDraft(){ try{ localStorage.removeItem(draftKeyCur()); }catch(_){} }
+
+  // ---------- [2026-07-17] 盤點鎖＋草稿雲端備援 ----------
+  // 進倉先向伺服器認領此倉（一倉一日一鎖）：有人正在盤（心跳未逾時）就擋下不能進，杜絕互相覆蓋；
+  // 心跳每 40 秒續租並把草稿上傳伺服器——手機當機/LINE 清快取/換裝置都能從雲端把已盤數字帶回。
+  function devId(){ try{ var k='stk_devid',v=localStorage.getItem(k); if(!v){ v='d'+Date.now().toString(36)+Math.random().toString(36).slice(2,10); localStorage.setItem(k,v); } return v; }catch(_){ if(!window.__stkDev) window.__stkDev='d'+Math.random().toString(36).slice(2); return window.__stkDev; } }
+  function apiPost(path,body,keepalive){
+    return fetch(path,{method:'POST',keepalive:!!keepalive,headers:{'Content-Type':'application/json','Authorization':'Bearer '+freshToken()},body:JSON.stringify(body)})
+      .then(function(r){ return r.json().catch(function(){return {};}); }).catch(function(){ return null; });
+  }
+  var _hbT=null;
+  function draftPayload(){ return {src:'stk',counts:S.counts,mid:S.mid,midOpen:S.midOpen,batches:S.batches,expanded:S.expanded}; }
+  function syncDraftUp(keepalive){
+    if(!S.wh) return;
+    apiPost(STK+'/draft-sync',{icpno:S.icpno,warehouse:S.wh.code,date:S.date,deviceId:devId(),name:S.name,payload:draftPayload()},keepalive).then(function(res){
+      if(res&&res.locked){ stopHeartbeat(); var nm=res.by||''; S.wh=null; alert(t('takenOver')(nm)); showPicker(); }
+    });
+  }
+  function startHeartbeat(){ stopHeartbeat(); _hbT=setInterval(function(){ syncDraftUp(false); },40000); }
+  function stopHeartbeat(){ if(_hbT){ clearInterval(_hbT); _hbT=null; } }
+  function releaseLock(){ // 回倉庫清單＝離開此倉：釋放鎖並順帶上傳最終草稿（雲端草稿保留，下一位或本人重進可接回）
+    if(!S.wh) return; stopHeartbeat();
+    apiPost(STK+'/draft-sync',{icpno:S.icpno,warehouse:S.wh.code,date:S.date,deviceId:devId(),release:true,payload:(hasAnyInput()?draftPayload():null)},true);
+  }
   function hasDraft(code,date){ try{ return !!localStorage.getItem(draftKey(code,date)); }catch(_){ return false; } }
   function cleanOldDrafts(){ // 開頁時清掉非今日的舊草稿，避免 localStorage 累積
     try{
@@ -529,7 +572,7 @@
           return '<button class="pk" data-w="'+esc(w.code)+'">'
             +'<div class="pk-ic">📦</div>'
             +'<div class="pk-i"><div class="n">'+esc(w.name||w.code)+'</div><div class="m">'+esc(w.code)+' · '+esc(t('itemsN')(w.items))+'</div></div>'
-            +(draft?'<span class="pk-draft">'+esc(t('drafting'))+'</span>':(w.countedToday?'<span class="pk-done">'+esc(t('countedToday'))+'</span>':''))
+            +(w.counting!=null?'<span class="pk-lock">'+esc(t('countingBadge')(w.counting))+'</span>':(draft?'<span class="pk-draft">'+esc(t('drafting'))+'</span>':(w.countedToday?'<span class="pk-done">'+esc(t('countedToday'))+'</span>':'')))
             +'<span class="pk-arrow">›</span></button>';
         }).join('')+'</div>';
       }
@@ -541,8 +584,30 @@
   }
 
   // ---------- 載入某倉品項 ----------
-  function openWarehouse(code){
+  // [2026-07-17] 進倉前先認領盤點鎖：有人正在盤（心跳未逾時）→ 擋下顯示鎖畫面（可強制接手）；
+  // 認領成功時伺服器回既有雲端草稿（本機草稿遺失時的備援）。認領網路失敗不擋盤點（心跳會補認領）。
+  function showLockedScreen(code,by){
+    stopHeartbeat();
+    showCenter('<div style="font-size:40px">⛔</div>'
+      +'<div style="font-size:16px;font-weight:700;color:var(--txt)">'+esc(t('lockedTitle'))+'</div>'
+      +'<div style="max-width:280px;font-size:13.5px;color:var(--txt-2);line-height:1.6">'+esc(t('lockedBy')(by))+'</div>'
+      +'<button class="btn-primary" id="lkBack" style="margin-top:8px">'+esc(t('lockedBack'))+'</button>'
+      +'<button id="lkForce" style="margin-top:4px;background:none;border:none;color:var(--txt-3);text-decoration:underline;font-size:13px;cursor:pointer;font-family:inherit">'+esc(t('lockedForce'))+'</button>');
+    document.getElementById('lkBack').addEventListener('click',function(){ showPicker(); });
+    document.getElementById('lkForce').addEventListener('click',function(){
+      if(!confirm(t('lockedForceConfirm')(by))) return;
+      openWarehouse(code,true);
+    });
+  }
+  function openWarehouse(code,force){
     showCenter('<div class="spin"></div><div>'+t('loadItems')+'</div>');
+    apiPost(STK+'/draft-sync',{icpno:S.icpno,warehouse:code,deviceId:devId(),name:S.name,force:!!force}).then(function(lk){
+      if(lk&&lk.locked){ showLockedScreen(code,lk.by||''); return; }
+      var cloudDraft=(lk&&lk.ok&&lk.draft&&lk.draft.src==='stk')?lk.draft:null;
+      openWarehouseItems(code,cloudDraft);
+    });
+  }
+  function openWarehouseItems(code,cloudDraft){
     api(STK+'/items?warehouse='+encodeURIComponent(code)+'&icpno='+encodeURIComponent(S.icpno)).then(function(res){
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
       S.wh=res.warehouse; S.date=res.date; S.items=res.items||[]; S.counts={}; S.mid={}; S.midOpen={}; S.batches={}; S.expanded={};
@@ -564,29 +629,33 @@
       //   若整包用 A 的草稿取代，B 的資料會被清掉，A 再送出就把 B 盤好的品項全數蓋空。
       //   合併後：B 已存的鍵保留、A 草稿有的鍵以 A 為準（counts/mid/midOpen/expanded 都是
       //   「品項代碼→值」的物件；batches 是「品項代碼→批號陣列」的物件，同鍵整組以草稿為準）。
-      S.draftRestored=false;
+      S.draftRestored=false; S.cloudRestored=false;
+      // [fix 2026-07-10 #63回歸] 合併時略過草稿值為 ''／null 的鍵：''＝該品項「未盤」＝無資訊
+      // （submit 端本來就略過 ''），不該蓋掉他人已送出、由 saved 帶回的值——否則 A 開頁久放的
+      // 空白草稿會把 B 剛盤好的品項回彈成未盤。batches 的空陣列同理（＝沒填任何批號）。
+      // trade-off：若使用者「刻意清空」某格想取消已送出的值，重載後會回彈成伺服器值；
+      // 兩害相權取其輕（誤清他人資料會直接造成盤點資料遺失，回彈只需再清一次）。
+      var mergeSkipEmpty=function(base,draft,isEmpty){
+        var out=Object.assign({},base);
+        Object.keys(draft||{}).forEach(function(k){ var v=draft[k]; if(isEmpty(v)) return; out[k]=v; });
+        return out;
+      };
+      var emptyStr=function(v){ return v==null||String(v)===''; };
+      var emptyArr=function(v){ return v==null||(Array.isArray(v)&&v.length===0); };
+      var applyDraftObj=function(d){
+        if(d.counts) S.counts=mergeSkipEmpty(S.counts,d.counts,emptyStr);
+        if(d.mid) S.mid=mergeSkipEmpty(S.mid,d.mid,emptyStr);
+        if(d.midOpen) S.midOpen=Object.assign({},S.midOpen,d.midOpen);
+        if(d.batches) S.batches=mergeSkipEmpty(S.batches,d.batches,emptyArr);
+        if(d.expanded) S.expanded=Object.assign({},S.expanded,d.expanded);
+      };
+      // [2026-07-17] 合併順序：saved（已送出續盤）→ 雲端草稿（伺服器備援，本機草稿遺失時救回）
+      // → 本機草稿（此裝置最新輸入，優先權最高）
+      if(cloudDraft){ applyDraftObj(cloudDraft); S.cloudRestored=true; }
       var dr=loadDraft(S.wh.code,S.date);
-      if(dr){
-        // [fix 2026-07-10 #63回歸] 合併時略過草稿值為 ''／null 的鍵：''＝該品項「未盤」＝無資訊
-        // （submit 端本來就略過 ''），不該蓋掉他人已送出、由 saved 帶回的值——否則 A 開頁久放的
-        // 空白草稿會把 B 剛盤好的品項回彈成未盤。batches 的空陣列同理（＝沒填任何批號）。
-        // trade-off：若使用者「刻意清空」某格想取消已送出的值，重載後會回彈成伺服器值；
-        // 兩害相權取其輕（誤清他人資料會直接造成盤點資料遺失，回彈只需再清一次）。
-        var mergeSkipEmpty=function(base,draft,isEmpty){
-          var out=Object.assign({},base);
-          Object.keys(draft||{}).forEach(function(k){ var v=draft[k]; if(isEmpty(v)) return; out[k]=v; });
-          return out;
-        };
-        var emptyStr=function(v){ return v==null||String(v)===''; };
-        var emptyArr=function(v){ return v==null||(Array.isArray(v)&&v.length===0); };
-        if(dr.counts) S.counts=mergeSkipEmpty(S.counts,dr.counts,emptyStr);
-        if(dr.mid) S.mid=mergeSkipEmpty(S.mid,dr.mid,emptyStr);
-        if(dr.midOpen) S.midOpen=Object.assign({},S.midOpen,dr.midOpen);
-        if(dr.batches) S.batches=mergeSkipEmpty(S.batches,dr.batches,emptyArr);
-        if(dr.expanded) S.expanded=Object.assign({},S.expanded,dr.expanded);
-        S.draftRestored=true;
-      }
+      if(dr){ applyDraftObj(dr); S.draftRestored=true; }
       renderCount();
+      startHeartbeat();
     }).catch(function(){ showCenter('<div>'+t('loadItemsFail')+'</div>'); });
   }
 
@@ -666,7 +735,7 @@
     var done=S.items.filter(isCounted).length, all=S.items.length;
     app.innerHTML=''
       +'<header><div class="head-main"><button class="back" id="stBack">'+esc(t('backWh'))+'</button>'
-        +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(t('countDay'))+' '+esc(S.date)+' · '+esc(t('totalN')(all))+(S.draftRestored?' · <b style="color:var(--pos)">'+esc(t('draftResumed'))+'</b>':(S.resumed?' · <b style="color:var(--accent)">'+esc(t('resumed'))+'</b>':''))+'</div></div>'
+        +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(t('countDay'))+' '+esc(S.date)+' · '+esc(t('totalN')(all))+(S.draftRestored?' · <b style="color:var(--pos)">'+esc(t('draftResumed'))+'</b>':(S.cloudRestored?' · <b style="color:var(--pos)">'+esc(t('cloudResumed'))+'</b>':(S.resumed?' · <b style="color:var(--accent)">'+esc(t('resumed'))+'</b>':'')))+'</div></div>'
         +'<button class="lang" id="stLang">'+esc(t('langBtn'))+'</button></div>'
         +'<div class="prog"><div class="prog-bar"><div class="prog-fill" id="stFill"></div></div><div class="prog-num"><span id="stProgTxt"></span></div></div>'
         +'<div class="tools"><div class="search"><input id="stQ" type="search" enterkeyhint="search" placeholder="'+esc(t('searchPh'))+'" autocomplete="off" value="'+esc(S.q)+'"></div>'
@@ -686,7 +755,7 @@
     document.getElementById('stFill').style.width=(all?Math.round(done/all*100):0)+'%';
   }
   function bindCount(){
-    document.getElementById('stBack').addEventListener('click',showPicker);
+    document.getElementById('stBack').addEventListener('click',function(){ writeDraftNow(); releaseLock(); S.wh=null; showPicker(); });
     document.getElementById('stLang').addEventListener('click',toggleLang);
     var t2=null, qEl=document.getElementById('stQ');
     qEl.addEventListener('input',function(e){ if(t2)clearTimeout(t2); t2=setTimeout(function(){ S.q=e.target.value.trim(); relist(); },120); });
@@ -757,7 +826,7 @@
       counts.push({ code:it.c, name:it.n, spec:it.s, unit:it.u, sys:it.sys, counted:(g==null?null:g), mid:(m==null?null:m), expiry:bx });
     });
     fetch(STK+'/submit',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+freshToken()},
-      body:JSON.stringify({warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:(S.baseSubmittedAt==null?null:S.baseSubmittedAt)})
+      body:JSON.stringify({warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:(S.baseSubmittedAt==null?null:S.baseSubmittedAt),deviceId:devId()})
     }).then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {status:r.status,res:j,redirected:r.redirected}; }); }).then(function(o){
       var res=o.res||{};
       if(WEB&&(o.status===401||o.status===403||o.redirected)){ // 後台 cookie 逾期：草稿保住，重登後台再送（不誤判成功清草稿）
@@ -767,14 +836,15 @@
         relogin(); return; // ID Token 過期：草稿已保住，續登回來自動帶回再送
       }
       if(o.status===409){
-        // 開頁後已有他人送出此倉盤點（樂觀鎖/唯一約束擋下）：提示後重新載入資料，
+        // 開頁後已有他人送出此倉盤點（樂觀鎖/唯一約束/盤點鎖擋下）：提示後重新載入資料，
         // 本機草稿（localStorage）未清除，重載後會照舊蓋回，不會遺失已盤內容
         btn.disabled=false; btn.textContent=t('submit');
-        alert(res.code==='conflict_taken'?t('conflictTaken'):t('conflictStale'));
+        alert(res.code==='locked'?(res.error||t('conflictStale')):(res.code==='conflict_taken'?t('conflictTaken'):t('conflictStale')));
         openWarehouse(S.wh.code);
         return;
       }
       if(res.error){ btn.disabled=false; btn.textContent=t('submit'); alert(t('submitFail')+res.error); return; }
+      stopHeartbeat(); // 送出成功：伺服器已同交易清掉鎖與雲端草稿，停止心跳避免又把鎖搶回來
       clearDraft(); // 已送出，清掉本機暫存
       var whLabel=S.wh.name||S.wh.code, dateLabel=S.date;
       S.wh=null; // 避免之後切背景時 flushDraft 又把已送出的內容寫回草稿

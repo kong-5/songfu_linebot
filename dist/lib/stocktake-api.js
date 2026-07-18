@@ -5,6 +5,7 @@ exports.stkTaipeiDate = stkTaipeiDate;
 exports.listStocktakeWarehouses = listStocktakeWarehouses;
 exports.getStocktakeItems = getStocktakeItems;
 exports.submitStocktake = submitStocktake;
+exports.syncStocktakeDraft = syncStocktakeDraft;
 /**
  * [refactor 2026-07-14] 盤點 API 共用實作（單一權威）。
  * 過去 warehouses / items / submit 三套幾乎逐字複製在三處：
@@ -43,6 +44,63 @@ function stkTaipeiDate(at) {
 
 const ICP = "COALESCE(NULLIF(TRIM(icpno),''),'00')";
 
+// [2026-07-17] 盤點「進行中」鎖的存活時間：心跳（前端約 40 秒一次）超過此時間未續租＝棄鎖，
+// 他人可直接接手。夠長容忍網路不穩/切 App，夠短不會把倉庫卡死。
+const STK_LOCK_TTL_MS = 3 * 60 * 1000;
+
+/**
+ * [2026-07-17] 盤點鎖＋草稿雲端備援（stocktake_draft，一倉一日一筆）。單一端點三用途：
+ * - 進倉認領（payload 不帶）：搶到鎖回 { ok, draft: 伺服器既有草稿 }；被別台裝置持有且未逾時
+ *   → { locked: true, by, lastSeenAt }（force=true 可強制接手）。
+ * - 心跳＋草稿上傳（payload 帶物件）：續租並覆蓋伺服器草稿；鎖被接手 → { locked: true, by }。
+ * - release=true：離開時釋放（只刪自己裝置持有的列；草稿一併移除——localStorage 仍有一份）。
+ * 認領為原子操作：INSERT ON CONFLICT DO NOTHING 搶新列；已有列時用條件式 UPDATE
+ * （自己的裝置／空鎖／逾時／force 才搶得到），與凌越回寫 /wait 的租約同一套路。
+ */
+async function syncStocktakeDraft(db, { icpno, whCode, date: dateRaw, deviceId, name, payload, force, release }) {
+    whCode = String(whCode || "").trim();
+    const dev = String(deviceId || "").trim();
+    if (!whCode || !dev) throw StkApiError(400, "缺少 warehouse 或 deviceId");
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(dateRaw || "")) ? String(dateRaw) : stkTaipeiDate();
+    const now = new Date().toISOString();
+    const holderName = String(name || "").trim().slice(0, 60);
+    if (release) {
+        // 釋放鎖但保留（可順帶更新）payload：離開的人的未送出草稿留在雲端，
+        // 下一位（或本人換裝置）認領時帶回續盤。整列 DELETE 只發生在 submit 成功（盤點定案）時。
+        const relPayload = (payload === undefined || payload === null) ? null : JSON.stringify(payload).slice(0, 500000);
+        await db.prepare(`UPDATE stocktake_draft SET device_id = '', payload = COALESCE(?, payload), last_seen_at = NULL, updated_at = ? WHERE wh_code = ? AND count_date = ? AND ${ICP} = ? AND device_id = ?`).run(relPayload, now, whCode, date, icpno, dev);
+        return { ok: true, released: true };
+    }
+    // 順手清掉「昨日之前」的舊草稿（盤點日期僅限今/昨，更舊的必為殘留）
+    try { await db.prepare("DELETE FROM stocktake_draft WHERE count_date < ?").run(stkTaipeiDate(new Date(Date.now() - 86400000))); } catch (_) { }
+    const staleBefore = new Date(Date.now() - STK_LOCK_TTL_MS).toISOString();
+    const payloadStr = (payload === undefined || payload === null) ? null : JSON.stringify(payload).slice(0, 500000);
+    let claimed = false;
+    try {
+        const r = await db.prepare("INSERT INTO stocktake_draft (icpno, wh_code, count_date, device_id, holder_name, payload, started_at, last_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (icpno, wh_code, count_date) DO NOTHING")
+            .run(icpno, whCode, date, dev, holderName, payloadStr, now, now, now);
+        claimed = ((r && r.changes) || 0) > 0;
+    } catch (_) { /* 罕見撞列（非正規化舊列）→ 走下方 UPDATE 認領 */ }
+    if (!claimed) {
+        // payload 用 COALESCE：心跳帶草稿就覆蓋，進倉認領（不帶）保留既有草稿供帶回
+        const r2 = await db.prepare(`UPDATE stocktake_draft SET device_id = ?, holder_name = ?, payload = COALESCE(?, payload), last_seen_at = ?, updated_at = ? WHERE wh_code = ? AND count_date = ? AND ${ICP} = ? AND (device_id = ? OR device_id IS NULL OR device_id = '' OR COALESCE(last_seen_at, '') < ? OR ? = 1)`)
+            .run(dev, holderName, payloadStr, now, now, whCode, date, icpno, dev, staleBefore, force ? 1 : 0);
+        claimed = ((r2 && r2.changes) || 0) > 0;
+    }
+    if (!claimed) {
+        const cur = await db.prepare(`SELECT holder_name, last_seen_at FROM stocktake_draft WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).get(whCode, date, icpno);
+        return { locked: true, by: cur ? String(cur.holder_name || "") : "", lastSeenAt: cur ? (cur.last_seen_at || null) : null };
+    }
+    if (payloadStr != null) return { ok: true };
+    // 進倉認領：帶回伺服器既有草稿（同一人換裝置/清快取後可接回未送出的內容）
+    let draft = null;
+    try {
+        const row = await db.prepare(`SELECT payload FROM stocktake_draft WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).get(whCode, date, icpno);
+        if (row && row.payload) { const p = JSON.parse(String(row.payload)); if (p && typeof p === "object") draft = p; }
+    } catch (_) { draft = null; }
+    return { ok: true, draft };
+}
+
 async function listStocktakeWarehouses(db, { icpno }) {
     const date = stkTaipeiDate();
     const whRows = await db.prepare(`SELECT code, name, include_stocktake, sort_order FROM erp_warehouse WHERE ${ICP} = ?`).all(icpno);
@@ -50,11 +108,18 @@ async function listStocktakeWarehouses(db, { icpno }) {
     const cnt = {}; (cntRows || []).forEach((r) => { cnt[String(r.code)] = Number(r.cnt || 0); });
     const doneRows = await db.prepare(`SELECT DISTINCT wh_code FROM stocktake_session WHERE count_date = ? AND status = 'submitted' AND ${ICP} = ?`).all(date, icpno);
     const done = {}; (doneRows || []).forEach((r) => { done[String(r.wh_code)] = true; });
+    // [2026-07-17] 各倉「進行中」鎖（未逾時）：倉庫清單顯示「盤點中·誰」，他人進倉會被擋
+    const locks = {};
+    try {
+        const staleBefore = new Date(Date.now() - STK_LOCK_TTL_MS).toISOString();
+        (await db.prepare(`SELECT wh_code, holder_name FROM stocktake_draft WHERE count_date = ? AND ${ICP} = ? AND device_id IS NOT NULL AND device_id <> '' AND COALESCE(last_seen_at, '') >= ?`).all(date, icpno, staleBefore) || [])
+            .forEach((r) => { locks[String(r.wh_code)] = String(r.holder_name || ""); });
+    } catch (_) { /* 鎖表缺失不擋清單 */ }
     let list;
     if ((whRows || []).length) {
-        list = whRows.filter((w) => Number(w.include_stocktake) === 1).map((w) => ({ code: String(w.code), name: String(w.name || ""), sort: Number(w.sort_order || 0), items: cnt[String(w.code)] || 0, countedToday: !!done[String(w.code)] }));
+        list = whRows.filter((w) => Number(w.include_stocktake) === 1).map((w) => ({ code: String(w.code), name: String(w.name || ""), sort: Number(w.sort_order || 0), items: cnt[String(w.code)] || 0, countedToday: !!done[String(w.code)], ...(locks[String(w.code)] !== undefined ? { counting: locks[String(w.code)] } : {}) }));
     } else {
-        list = Object.keys(cnt).map((code) => ({ code, name: "", sort: 0, items: cnt[code], countedToday: !!done[code] }));
+        list = Object.keys(cnt).map((code) => ({ code, name: "", sort: 0, items: cnt[code], countedToday: !!done[code], ...(locks[code] !== undefined ? { counting: locks[code] } : {}) }));
     }
     list.sort((a, b) => (a.sort - b.sort) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
     return { date, warehouses: list };
@@ -125,7 +190,7 @@ function isUniqueConflict(e) {
     return /UNIQUE constraint failed/i.test(String((e && e.message) || ""));
 }
 
-async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, createdBy, createdByName, baseSubmittedAt: baseRaw }) {
+async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, createdBy, createdByName, baseSubmittedAt: baseRaw, deviceId }) {
     if (!whCode || !Array.isArray(counts)) throw StkApiError(400, "缺少 warehouse 或 counts");
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(dateRaw || "")) ? String(dateRaw) : stkTaipeiDate();
     // 日期限制：只允許台北時區「今日或昨日」，不得覆寫任意歷史日
@@ -145,6 +210,17 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
     if (curSubmittedAt !== baseSubmittedAt) {
         throw StkApiError(409, "開頁後已有他人送出此倉盤點，請重載後續盤再送出", "conflict_stale");
     }
+    // [2026-07-17] 盤點鎖：他台裝置正持有此倉未逾時的鎖（如被強制接手）→ 擋下送出，
+    // 避免被接手者按下送出把接手者盤到一半的內容覆蓋。舊客戶端不帶 deviceId 則略過（相容）。
+    const dev = String(deviceId || "").trim();
+    if (dev) {
+        try {
+            const lockRow = await db.prepare(`SELECT device_id, holder_name, last_seen_at FROM stocktake_draft WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).get(whCode, date, icpno);
+            if (lockRow && lockRow.device_id && String(lockRow.device_id) !== dev && String(lockRow.last_seen_at || "") >= new Date(Date.now() - STK_LOCK_TTL_MS).toISOString()) {
+                throw StkApiError(409, `「${String(lockRow.holder_name || "另一位使用者")}」正在盤點此倉（可能已接手），請重載確認後再送出`, "locked");
+            }
+        } catch (e) { if (e && e.name === "StkApiError") throw e; /* 鎖表缺失不擋送出 */ }
+    }
     // 交易外先把所有列算好；交易內只做純寫入（sqlite transaction 限制：fn 內不得 await 外部 I/O）
     const sid = newId("stk");
     const countRows = counts.map((c) => {
@@ -156,6 +232,14 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
     });
     try {
         const doWrite = async (tx) => {
+            // 樂觀鎖必須在交易內再比對一次：交易外那次檢查通過後、交易開始前的窗口內，
+            // 他人可能已 commit——若只靠交易外檢查，這裡的 DELETE 會把對方剛送出的整場盤點
+            // 刪掉重寫且不報 409（唯一索引兜不住已被刪的列）。
+            const txSess = await tx.prepare(`SELECT submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).get(whCode, date, icpno);
+            const txSubmittedAt = (txSess && txSess.submitted_at != null && txSess.submitted_at !== "") ? String(txSess.submitted_at) : null;
+            if (txSubmittedAt !== baseSubmittedAt) {
+                throw StkApiError(409, "開頁後已有他人送出此倉盤點，請重載後續盤再送出", "conflict_stale");
+            }
             await tx.prepare(`DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?)`).run(whCode, date, icpno);
             await tx.prepare(`DELETE FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).run(whCode, date, icpno);
             await tx.prepare("INSERT INTO stocktake_session (id, wh_code, wh_name, count_date, status, group_id, created_by, created_by_name, item_count, counted_count, created_at, submitted_at, icpno) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -168,6 +252,10 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
                 for (const row of chunk) params.push(...row);
                 await tx.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, updated_at) VALUES " + ph).run(...params);
             }
+            // [2026-07-17] 送出成功＝此倉此日盤點定案：同交易清掉「進行中」鎖與雲端草稿
+            //（他人之後進倉會由 saved 帶回剛送出的值續盤，不再需要草稿；
+            //  交易內不 try/catch——PG 25P02 毒化規則，失敗就讓整批 ROLLBACK）
+            await tx.prepare(`DELETE FROM stocktake_draft WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).run(whCode, date, icpno);
         };
         if (typeof db.transaction === "function") await db.transaction(doWrite);
         else await doWrite(db);
