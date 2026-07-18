@@ -18221,13 +18221,36 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const body = req.body;
-            const existingItems = await db.prepare("SELECT id, quantity, unit, remark, sub_customer FROM order_items WHERE order_id = ?").all(orderId);
+            const existingItems = await db.prepare("SELECT id, quantity, unit, remark, sub_customer, raw_name FROM order_items WHERE order_id = ?").all(orderId);
             const fmtQty = (v) => {
                 const n = Number(v);
                 if (!Number.isFinite(n))
                     return "";
                 return Number.isInteger(n) ? String(n) : String(n).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
             };
+            // [fix 2026-07-18] 數量驗證前移＋明確報錯：舊版非法數量（空白／非數字／負數）被靜默還原成
+            // 舊值卻仍回 ok:true，使用者看到「✓ 已儲存明細」以為改成功、其實輸入被丟棄。改為先整批驗證，
+            // 任一非法即整筆拒絕（不半套寫入）並回可自救訊息（哪個品項、什麼值、怎麼改）。
+            const qtyErrors = [];
+            for (const row of existingItems) {
+                const itemId = row.id;
+                if (!(("qty_" + itemId) in body))
+                    continue; // 該列未送出 qty（作廢列等）→ 不驗
+                const raw = String(body["qty_" + itemId] ?? "").trim();
+                const name = String(row.raw_name || "").trim() || ("品項#" + itemId);
+                if (raw === "") { qtyErrors.push(`「${name}」未填數量`); continue; }
+                const n = Number(raw);
+                if (!Number.isFinite(n)) { qtyErrors.push(`「${name}」數量「${raw}」不是有效數字`); continue; }
+                if (n < 0) { qtyErrors.push(`「${name}」數量不可為負數（${raw}）`); continue; }
+            }
+            if (qtyErrors.length) {
+                const shown = qtyErrors.slice(0, 3).join("；");
+                const more = qtyErrors.length > 3 ? `（另有 ${qtyErrors.length - 3} 項）` : "";
+                const msg = `數量格式錯誤：${shown}${more}。請輸入 0 或正數後再儲存。`;
+                if (wantsJson) { res.status(400).json({ ok: false, error: msg }); return; }
+                res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent(msg));
+                return;
+            }
             for (const row of existingItems) {
                 const itemId = row.id;
                 // [fix 2026-07-08] 只更新「表單有送出欄位」的品項。作廢品項在明細頁不會渲染
