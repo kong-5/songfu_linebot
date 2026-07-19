@@ -145,6 +145,26 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
     if (curSubmittedAt !== baseSubmittedAt) {
         throw StkApiError(409, "開頁後已有他人送出此倉盤點，請重載後續盤再送出", "conflict_stale");
     }
+    // [fix 2026-07-19] 數量伺服器端驗證：前端（stocktake.html/scan.html）雖已擋，但伺服器不得信任前端
+    // ——入口不只一個（LIFF 盤點頁／網頁版／掃碼 /scan/submit），任一前端有 bug 或直接打 API，壞值會靜默進帳。
+    // 舊版只 Number()：非數字 →NaN→「NaN||0」靜默變 0（實盤被記成 0＝憑空盤差/誤判短少），負數也照收。
+    // null/空白＝未盤，允許；一旦有值必須是有限數且 >= 0。任一非法整筆拒絕（不半套寫入、不讓 NaN 變 0）。
+    const qtyErrors = [];
+    for (const c of counts) {
+        const nm = String((c && (c.name || c.code)) || "").trim() || "(未命名品項)";
+        for (const [field, label] of [["counted", "實盤"], ["mid", "中貨"]]) {
+            const raw = c ? c[field] : null;
+            if (raw == null || raw === "") continue;
+            const n = Number(raw);
+            if (!Number.isFinite(n)) { qtyErrors.push("「" + nm + "」" + label + "數量「" + raw + "」不是有效數字"); }
+            else if (n < 0) { qtyErrors.push("「" + nm + "」" + label + "數量不可為負數（" + raw + "）"); }
+        }
+    }
+    if (qtyErrors.length) {
+        const shown = qtyErrors.slice(0, 3).join("；");
+        const more = qtyErrors.length > 3 ? "（另有 " + (qtyErrors.length - 3) + " 項）" : "";
+        throw StkApiError(400, "盤點數量格式錯誤：" + shown + more + "。請改成 0 或正數後再送出。", "bad_qty");
+    }
     // 交易外先把所有列算好；交易內只做純寫入（sqlite transaction 限制：fn 內不得 await 外部 I/O）
     const sid = newId("stk");
     const countRows = counts.map((c) => {
