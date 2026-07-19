@@ -1873,7 +1873,9 @@ function sfSidebar(active, opts = {}) {
       <details class="sf-nav-group" ${["inventory","inv-entry","inv-scan","inv-stock","inv-stats","inv-adjust","inv-settings"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">庫存管理</div></summary>
         ${item("/admin/inventory", "inventory", "clipboard", "盤點")}
+        ${item("/admin/scan", "inv-scan", "search", "掃碼盤點")}
         ${item("/admin/inventory/stock", "inv-stock", "box", "目前庫存")}
+        ${item("/admin/inventory/stats", "inv-stats", "chartBar", "庫存統計")}
         ${item("/admin/inventory/adjustments", "inv-adjust", "refresh", "庫存調整")}
         ${item("/admin/inventory/warehouse-settings", "inv-settings", "pin", "盤點設定")}
       </details>
@@ -2868,6 +2870,26 @@ function createAdminRouter() {
         };
     }
     const db = (0, index_js_1.getDb)(dbPath);
+    // [UX 2026-07-19 C] 記住上次選的公司、跨庫存頁沿用：解決「松揚員工每進一頁先切一次公司、
+    // 且各頁預設不一致（stock/settings 預設 00、adjustments/barcodes/expiry 預設 02）」。
+    // 帶 ?icpno＝明確選公司→用它並寫 cookie 記住；沒帶→沿用上次 cookie；再沒有才用該頁預設。
+    // 只作用於庫存頁；收款頁用另一種寫法不受影響（收款不與庫存共用公司記憶）。
+    function stickyIcpno(req, res, fallback) {
+        const fb = fallback == null ? "00" : fallback;
+        const q = req && req.query ? req.query.icpno : undefined;
+        if (q != null && String(q).trim() !== "") {
+            const ic = erp_companies_js_1.normIcpno(q, fb);
+            try { res.cookie("sf_icpno", ic, { path: "/admin", sameSite: "Lax", maxAge: 180 * 86400000 }); }
+            catch (_) { /* 設 cookie 失敗不阻斷頁面 */ }
+            return ic;
+        }
+        try {
+            const ck = parseAdminCookies(req.headers.cookie || "").sf_icpno;
+            if (ck && /^\d{2}$/.test(String(ck).trim())) return String(ck).trim();
+        }
+        catch (_) { /* 無 cookie／解析失敗→用該頁預設 */ }
+        return fb;
+    }
     async function logDataChange(req, opts) {
         const logId = (0, id_js_1.newId)("dcl");
         const actor = req.adminUsername || "";
@@ -7234,7 +7256,7 @@ function createAdminRouter() {
         }
     });
     router.get("/inventory/adjustments", async (req, res) => {
-        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno, "02");
+        const icpno = stickyIcpno(req, res, "02");
         const companies = await listStockCompanies();
         if (companies.indexOf(icpno) < 0) companies.push(icpno);
         companies.sort();
@@ -7561,7 +7583,7 @@ function createAdminRouter() {
     };
     router.get("/inventory/stats/items", async (req, res) => {
         try {
-            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const icpno = stickyIcpno(req, res);
             const q = String(req.query.q || "").trim().toLowerCase();
             let rows = (await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno)) || [];
             if (q)
@@ -7577,7 +7599,7 @@ function createAdminRouter() {
     });
     router.get("/inventory/stats/kline", async (req, res) => {
         try {
-            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const icpno = stickyIcpno(req, res);
             const code = String(req.query.code || "").trim();
             const wh = String(req.query.wh || "").trim();
             if (!code) { res.status(400).json({ error: "缺少料號" }); return; }
@@ -7623,7 +7645,7 @@ function createAdminRouter() {
     // 整倉序列（品項總覽小圖用）：一次回該倉（或全公司）所有品項近 N 天的期末量＋盤點點
     router.get("/inventory/stats/series", async (req, res) => {
         try {
-            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const icpno = stickyIcpno(req, res);
             const wh = String(req.query.wh || "").trim();
             const days = Math.min(60, Math.max(7, parseInt(String(req.query.days || "30"), 10) || 30));
             const since = statsTaipeiDateAgo(days - 1);
@@ -7701,7 +7723,7 @@ function createAdminRouter() {
     });
     router.get("/inventory/stats/heatmap", async (req, res) => {
         try {
-            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const icpno = stickyIcpno(req, res);
             const wh = String(req.query.wh || "").trim();
             const days = Math.min(31, Math.max(7, parseInt(String(req.query.days || "14"), 10) || 14));
             const since = statsTaipeiDateAgo(days - 1);
@@ -7745,7 +7767,7 @@ function createAdminRouter() {
         }
     });
     router.get("/inventory/stats", async (req, res) => {
-        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+        const icpno = stickyIcpno(req, res);
         let whs = [];
         try { whs = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY sort_order, code").all(icpno)) || []; } catch (_) { whs = []; }
         const coSeg = Object.entries(erp_companies_js_1.ERP_COMPANY_NAMES).map(([c, n]) => `<a class="sf-seg-btn ${c === icpno ? "on" : ""}" href="/admin/inventory/stats?icpno=${c}">${escapeHtml(n)}</a>`).join("");
@@ -8952,7 +8974,7 @@ function createAdminRouter() {
         return Array.from(set).sort();
     }
     router.get("/inventory/stock", async (req, res) => {
-        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+        const icpno = stickyIcpno(req, res);
         const companies = await listStockCompanies();
         // 各公司品項數（左欄公司選擇器顯示；沒推過的公司顯示「未推」）
         const companyCounts = {};
@@ -9215,7 +9237,7 @@ function createAdminRouter() {
     router.get("/inventory/stock/txn", async (req, res) => {
         try {
             const code = String(req.query.code || "").trim();
-            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const icpno = stickyIcpno(req, res);
             if (!code) { res.status(400).json({ error: "缺少料號" }); return; }
             const resRow = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("erp_txn_res_" + icpno + "_" + code);
             if (resRow && resRow.value) {
@@ -9257,7 +9279,7 @@ function createAdminRouter() {
         return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 16px;">${t("/admin/inventory/warehouse-settings", "wh", "倉庫設定")}${t("/admin/inventory/barcodes", "barcode", "條碼對照")}${t("/admin/inventory/expiry-items", "expiry", "效期品設定")}</div>`;
     };
     router.get("/inventory/warehouse-settings", async (req, res) => {
-        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+        const icpno = stickyIcpno(req, res);
         const companies = await listStockCompanies();
         const list = await loadWarehouseRows(icpno);
         const ok = req.query.ok ? `<div style="background:#e7f5e9;color:#2e7d32;padding:10px 12px;border-radius:8px;margin-bottom:12px;">已儲存。</div>` : "";
@@ -9326,7 +9348,7 @@ function createAdminRouter() {
     });
     // ── 條碼對照：商品條碼 ↔ 品項（LIFF 掃碼盤點/進貨用；掃碼頁綁的也在這裡管理） ──
     router.get("/inventory/barcodes", async (req, res) => {
-        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno, "02");
+        const icpno = stickyIcpno(req, res, "02");
         const companies = await listStockCompanies();
         if (companies.indexOf(icpno) < 0) companies.push(icpno);
         companies.sort();
@@ -9454,7 +9476,7 @@ function createAdminRouter() {
     });
     // ── 效期品設定：標記哪些料號在盤點時要填效期／批號（分公司獨立，可整倉一次帶入，例如松揚雜貨庫房）──
     router.get("/inventory/expiry-items", async (req, res) => {
-        const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno, "02");
+        const icpno = stickyIcpno(req, res, "02");
         const companies = await listStockCompanies();
         if (companies.indexOf(icpno) < 0) companies.push(icpno);
         companies.sort();

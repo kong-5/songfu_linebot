@@ -1507,6 +1507,9 @@ function createLineWebhook() {
                         }
                         const stkCoName = (0, erp_companies_js_1.erpCompanyName)(stkIcpno);
                         const stkLiffId = (process.env.LIFF_ID_STOCKTAKE || "2010106501-VocNwkbA").trim();
+                        // [UX 2026-07-19] 掃碼盤點頁（手機當 PDA）過去只能從後台進、現場找不到入口；卡片補一顆按鈕。
+                        // 僅在 LIFF_ID_SCAN 有設定時顯示（未設定＝掃碼頁不會動，就不放避免連錯 LIFF）。
+                        const scanLiffId = (process.env.LIFF_ID_SCAN || "").trim();
                         const whRows = await db.prepare("SELECT code, name, sort_order FROM erp_warehouse WHERE include_stocktake = 1 AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY sort_order, code").all(stkIcpno);
                         if (!whRows || whRows.length === 0) {
                             if (lineClient && event.replyToken) {
@@ -1528,6 +1531,12 @@ function createLineWebhook() {
                             type: "button", style: "primary", color: "#1d4ed8", height: "sm", margin: "md",
                             action: { type: "uri", label: whRows.length > shown.length ? `其他倉庫（共 ${whRows.length}）` : "開啟盤點選單", uri: `https://liff.line.me/${stkLiffId}?icpno=${encodeURIComponent(stkIcpno)}` },
                         });
+                        if (scanLiffId) {
+                            btns.push({
+                                type: "button", style: "secondary", height: "sm", margin: "sm",
+                                action: { type: "uri", label: "📷 掃碼盤點", uri: `https://liff.line.me/${scanLiffId}?icpno=${encodeURIComponent(stkIcpno)}` },
+                            });
+                        }
                         if (lineClient && event.replyToken) {
                             try {
                                 await lineClient.replyMessage(event.replyToken, {
