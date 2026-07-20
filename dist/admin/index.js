@@ -6863,7 +6863,7 @@ function createAdminRouter() {
               </div>
             </div>
             <div class="stk-note" id="stkInfo2Box" hidden>紅底＝盤差(對當下)超過 <b>±5%</b> 的品項。「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
-            <div style="overflow-x:auto;">
+            <div class="stk-tblwrap">
             <table class="stk-tbl">
               <thead>
                 <tr>
@@ -6939,8 +6939,14 @@ function createAdminRouter() {
         .stk-badge{font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:6px;background:#eef0f3;color:#5b616e;}
         .stk-badge.ok{background:#e7f6ee;color:#1f7a46;}
         .stk-badge.warn{background:#fdecec;color:#b3261e;}
-        .stk-tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
-        .stk-tbl th{position:sticky;top:0;text-align:left;padding:5px 10px;background:var(--notion-bg,#f7f6f3);border-bottom:1px solid var(--notion-border,#e3e2e0);font-size:11px;color:#787774;font-weight:600;}
+        /* 凍結表頭：外層 stk-tblwrap 是垂直捲動容器（sticky 只在最近的捲動容器內生效——
+           舊版只有 overflow-x:auto、不會垂直捲，表頭從來凍不住）。border-collapse 用 separate，
+           collapse 模式下 sticky 表頭的框線會留在原位不跟著貼齊。 */
+        .stk-tblwrap{overflow:auto;max-height:max(420px,calc(100vh - 230px));}
+        /* overflow:visible 蓋掉全域 table{overflow:hidden}（圓角裁切用）——hidden 會讓 table 自己
+           變成 sticky 的定位容器，表頭凍不住；圓角由外層 .stk-card 裁切即可。 */
+        .stk-tbl{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px;overflow:visible;border:0;border-radius:0;}
+        .stk-tbl th{position:sticky;top:0;z-index:2;text-align:left;padding:5px 10px;background:var(--notion-bg,#f7f6f3);border-bottom:1px solid var(--notion-border,#e3e2e0);font-size:11px;color:#787774;font-weight:600;}
         .stk-th2{font-size:9.5px;font-weight:500;color:#9b9a97;}
         .stk-tbl td{padding:3px 10px;border-bottom:1px solid var(--notion-border-soft,#f0efed);vertical-align:middle;white-space:nowrap;}
         .stk-name{max-width:230px;overflow:hidden;text-overflow:ellipsis;}
@@ -6965,7 +6971,7 @@ function createAdminRouter() {
         .stk-grp{text-align:center !important;border-left:1px solid var(--notion-border,#e3e2e0);border-bottom:1px solid var(--notion-border-soft,#f0efed);}
         th.stk-sep,td.stk-sep{border-left:1px solid var(--notion-border,#e3e2e0);}
         .stk-tbl thead tr:first-child th{top:0;}
-        .stk-tbl thead tr+tr th{top:23px;}
+        .stk-tbl thead tr+tr th{top:24px;} /* 後備值；載入後由 JS 量實際第一列高度校正 */
         .stk-togbtn{font-size:12.5px;padding:6px 12px;border-radius:8px;border:1px solid var(--notion-border,#e3e2e0);background:var(--notion-card,#fff);color:#5b616e;cursor:pointer;}
         .stk-togbtn.sm{padding:4px 10px;font-size:11.5px;}
         .stk-togbtn.on{background:#2383e2;border-color:#2383e2;color:#fff;}
@@ -7037,6 +7043,15 @@ function createAdminRouter() {
         // ⓘ 說明開合（入口說明＋盤差計算說明）
         function infoWire(btnId,boxId){ var b=document.getElementById(btnId),x=document.getElementById(boxId); if(!b||!x)return; b.addEventListener('click',function(){ var open=x.hidden; x.hidden=!open; b.setAttribute('aria-expanded',String(open)); }); }
         infoWire('stkInfo1','stkInfo1Box'); infoWire('stkInfo2','stkInfo2Box');
+        // 凍結表頭：第二列表頭的 sticky top ＝ 第一列實際高度（CSS 的 24px 只是後備值，字級/縮放不同會對不齊）
+        function stkStickyFix(){
+          Array.prototype.forEach.call(document.querySelectorAll('.stk-tblwrap table thead'),function(th){
+            if(th.rows.length<2) return;
+            var h=th.rows[0].getBoundingClientRect().height;
+            if(h>0) Array.prototype.forEach.call(th.rows[1].cells,function(c){ c.style.top=h+'px'; });
+          });
+        }
+        stkStickyFix(); window.addEventListener('resize',stkStickyFix);
         // 跨倉品項搜尋：當日所有倉的已盤品項，模糊比對品名/料號/規格；輸入時蓋掉下方三欄、清空還原
         var SDATA=${searchJson};
         var sq=document.getElementById('stkQ'), sc=document.getElementById('stkSearchCard'), grid=document.getElementById('stkGrid');
@@ -7048,7 +7063,7 @@ function createAdminRouter() {
           SDATA.forEach(function(w){ w.items.forEach(function(it){ if(((it.c||'')+' '+(it.n||'')+' '+(it.s||'')).toLowerCase().indexOf(q)>=0) rows.push({w:w,it:it}); }); });
           var dateVal=(document.querySelector('.stk-date')||{}).value||'';
           var h='<div class="stk-card-h"><div class="stk-card-t"><b>搜尋「'+escH(sq.value.trim())+'」</b><span class="stk-code2">當日已盤品項中符合 '+rows.length+' 筆</span></div></div>';
-          h+='<div style="overflow-x:auto;"><table class="stk-tbl"><thead><tr><th>料號</th><th>品名</th><th>公司</th><th>倉庫</th><th class="stk-num">系統(當下)</th><th class="stk-num">實盤</th><th class="stk-num">盤差</th><th></th></tr></thead><tbody>';
+          h+='<div class="stk-tblwrap"><table class="stk-tbl"><thead><tr><th>料號</th><th>品名</th><th>公司</th><th>倉庫</th><th class="stk-num">系統(當下)</th><th class="stk-num">實盤</th><th class="stk-num">盤差</th><th></th></tr></thead><tbody>';
           if(rows.length){ rows.slice(0,80).forEach(function(r){ var d=r.it.d;
             h+='<tr'+(d?' class="'+(d<0?'stk-n':'stk-p')+'"':'')+'><td class="stk-code">'+escH(r.it.c)+'</td><td>'+escH(r.it.n)+(r.it.s?'<span class="stk-spec">'+escH(r.it.s)+'</span>':'')+'</td><td>'+escH(r.w.co)+'</td><td>'+escH(r.w.whName)+'</td><td class="stk-num">'+(r.it.sys==null?'—':r.it.sys)+'</td><td class="stk-num">'+(r.it.ct==null?'—':r.it.ct)+'</td><td class="stk-num stk-diff">'+(d==null?'—':(d>0?'+':'')+d)+'</td><td><a href="/admin/inventory?date='+encodeURIComponent(dateVal)+'&wh='+encodeURIComponent(r.w.key)+'" style="font-size:12px;">到該倉 →</a></td></tr>'; }); }
           else h+='<tr><td colspan="8" style="text-align:center;color:#787774;padding:14px;">當日已盤品項中找不到「'+escH(sq.value.trim())+'」（未盤到的品項不在此清單）</td></tr>';
