@@ -65,6 +65,15 @@ check("同時間 → 無嫌疑", not s2)
 _, _, s3 = mod.find_audit_times({"SP_NO": "A1"})
 check("無時間欄 → 無嫌疑（不誤報）", not s3)
 
+# 重傳判別（--suspects 用）：凌越主表常無建立欄、只有異動欄
+check("只有異動欄有值 → 重傳嫌疑",
+      mod.is_retransmitted({"SP_MODIFYDATE": "2026-07-20 12:44:34"}))
+check("異動欄空 → 非重傳（一次寫定）", not mod.is_retransmitted({"SP_NO": "A1"}))
+check("異動晚於建立 → 重傳", mod.is_retransmitted(
+    {"SP_CREATEDATE": "2026-07-20 06:00:00", "SP_MODIFYDATE": "2026-07-20 12:00:00"}))
+check("異動=建立 → 非重傳", not mod.is_retransmitted(
+    {"SP_CREATEDATE": "2026-07-20 06:00:00", "SP_MODIFYDATE": "2026-07-20 06:00:00"}))
+
 # 皇宮菜案例：銷貨 6.3、訂購 6.0 → delta +0.3
 rep = mod.build_doc_report(
     {"SP_NO": "A202607070085", "SP_CTNO": "AC30014", "SP_CTNAME": "(泓泉) 名泓餐廳",

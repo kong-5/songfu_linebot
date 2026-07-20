@@ -29,6 +29,7 @@ ly_edi_qty_check.py — 抓幾張「寺岡 EDI 回轉銷貨單」的明細數量
   python ly_edi_qty_check.py --doc A202607070085      # 指定單號（可重複帶多張）
   python ly_edi_qty_check.py --code 10200010          # 只列含某料號的行（可逗號分隔多個）
   python ly_edi_qty_check.py --no-orders              # 不比對訂貨單（最省查詢）
+  python ly_edi_qty_check.py --suspects               # 當日「被重傳過」嫌疑單清單（只查主表一次）
   python ly_edi_qty_check.py --json                   # JSON 輸出（好貼回去核對）
 
 環境變數：LY_ICPNO 公司代碼，預設 "00"（松富）。
@@ -103,6 +104,17 @@ def find_audit_times(rec: dict):
             modify = norm_dt(v)
     suspect = bool(create and modify and modify > create)
     return create, modify, suspect
+
+
+def is_retransmitted(rec: dict) -> bool:
+    """單頭有「異動時間」（且晚於建立時間，或無建立欄）＝寫入後被重傳過。
+
+    2026-07-20 核實的判別式：EDI 首次寫入正常過帳；同號重建不重過帳。凌越 SP_ 主表
+    多半沒有建立時間欄、只有異動時間欄，故「異動欄有值」即為重傳訊號（一次寫定的
+    對照單如 A202607200016/0060 此欄為空、帳完全正確）。
+    """
+    create, modify, _ = find_audit_times(rec)
+    return bool(modify and (not create or modify > create))
 
 
 def build_doc_report(main: dict, details: list, ordered_by_skno: dict | None) -> dict:
@@ -224,6 +236,29 @@ def run(args) -> int:
     code_filter = {c.strip() for c in (args.code or "").split(",") if c.strip()}
     with_orders = not args.no_orders
 
+    # --suspects：只查主表一次，列出「寫入後被重傳過」的 A 開頭單（帳可能凍結在第一版）。
+    # 2026-07-20 核實：LY(EDI) 首次寫入會正常過帳；同號重建才不重過帳。單頭「異動時間」
+    # 有值＝被重傳過＝嫌疑單；無值的對照單（如 A202607200016/0060）連實秤小數都全對。
+    if args.suspects:
+        ds = (lystk.resolve_date(args.date or "today")).isoformat()
+        print(f"▶ 查 {ds} 銷貨單主表  ICPNO={icpno}（{company}）… 只查主表一次", flush=True)
+        rows = lystk.query(icpno=icpno, idakd=IDAKD_SALES, date=ds) or []
+        a_rows = sorted((r for r in rows if is_a_series(r.get("SP_NO"))),
+                        key=lambda r: str(r.get("SP_NO", "")))
+        sus = []
+        for r in a_rows:
+            if is_retransmitted(r):
+                sus.append((str(r.get("SP_NO", "")).strip(), find_audit_times(r)[1],
+                            str(r.get("SP_CTNO", "")).strip(),
+                            str(r.get("SP_CTNAME", "")).strip()))
+        print(f"\n── {ds} A 開頭單 {len(a_rows)} 張，其中 {len(sus)} 張寫入後被重傳過（嫌疑單）──")
+        for no, m, ctno, ctname in sorted(sus, key=lambda x: x[1]):
+            print(f"  {no:<16} 異動 {m}  {ctno} {ctname}")
+        if sus:
+            print("\n這些單的存貨異動帳大概率凍結在第一版（訂購量）；秤重品項的實秤差都沒過帳。")
+            print("抽驗單據內容：--doc <單號>；對帳側請拉凌越「貨品存貨異動明細表」比對。")
+        return 0
+
     # 1) 決定要看哪幾張單（主表：指定單號逐張查；否則抓當天 A 開頭前 N 張）
     ds = None
     if args.doc:
@@ -310,6 +345,8 @@ def build_parser():
     p.add_argument("--code", help="只列含這些料號的行，逗號分隔（如 10200010）")
     p.add_argument("--no-orders", action="store_true",
                    help="不回查訂貨單比對訂購量（查詢量最省）")
+    p.add_argument("--suspects", action="store_true",
+                   help="只列「寫入後被重傳過」的 A 開頭單清單（帳可能凍結在第一版；只查主表一次）")
     p.add_argument("--json", action="store_true", help="輸出 JSON（供貼回核對/程式串接）")
     p.add_argument("--timeout", type=int, default=60, help="連線/操作逾時秒數（預設 60）")
     return p
