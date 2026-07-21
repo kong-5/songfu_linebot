@@ -74,6 +74,13 @@ check("異動晚於建立 → 重傳", mod.is_retransmitted(
 check("異動=建立 → 非重傳", not mod.is_retransmitted(
     {"SP_CREATEDATE": "2026-07-20 06:00:00", "SP_MODIFYDATE": "2026-07-20 06:00:00"}))
 
+# 異動人辨識（--suspects 用來分 EDI vs 出單人員手改）
+check("抓 SP_MODIFYNAME", mod.find_modify_person(
+    {"SP_MODIFYDATE": "2026-07-21 05:00:00", "SP_MODIFYNAME": "系統管理員"}) == "系統管理員")
+check("真人名字照抓", mod.find_modify_person({"SP_MODIFYNAME": "莊美玲"}) == "莊美玲")
+check("無異動人欄 → 空字串", mod.find_modify_person({"SP_NO": "A1"}) == "")
+check("不誤抓日期欄", mod.find_modify_person({"SP_MODIFYDATE": "2026-07-21 05:00:00"}) == "")
+
 # 皇宮菜案例：銷貨 6.3、訂購 6.0 → delta +0.3
 rep = mod.build_doc_report(
     {"SP_NO": "A202607070085", "SP_CTNO": "AC30014", "SP_CTNAME": "(泓泉) 名泓餐廳",

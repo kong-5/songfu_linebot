@@ -117,6 +117,24 @@ def is_retransmitted(rec: dict) -> bool:
     return bool(modify and (not create or modify > create))
 
 
+def find_modify_person(rec: dict) -> str:
+    """單頭「異動人」欄（凌越多為 SP_MODIFYNAME）；用關鍵字找，查不到回 ''。
+
+    這欄是關鍵岔路：系統管理員＝EDI(LY 帳號)自動回寫、真人名字＝出單人員手動改過，
+    兩者都造成「改單未重過帳」但修正對象不同（178go 流程 vs 凌越重審/出單 SOP）。
+    """
+    for k, v in rec.items():                       # 優先精確：*MODIFY*NAME*
+        ku = k.upper()
+        if "MODIFY" in ku and "NAME" in ku and str(v or "").strip():
+            return str(v).strip()
+    for k, v in rec.items():                       # 退路：MODIFY+(MAN/USER/MAKER)，排除 DATE
+        ku = k.upper()
+        if "MODIFY" in ku and "DATE" not in ku and \
+           any(t in ku for t in ("MAN", "USER", "MAKER")) and str(v or "").strip():
+            return str(v).strip()
+    return ""
+
+
 def build_doc_report(main: dict, details: list, ordered_by_skno: dict | None) -> dict:
     """組一張單的比對結果（純函式，好測）。
 
@@ -246,17 +264,26 @@ def run(args) -> int:
         a_rows = sorted((r for r in rows if is_a_series(r.get("SP_NO"))),
                         key=lambda r: str(r.get("SP_NO", "")))
         sus = []
+        by_person = {}
         for r in a_rows:
             if is_retransmitted(r):
-                sus.append((str(r.get("SP_NO", "")).strip(), find_audit_times(r)[1],
+                person = find_modify_person(r) or "(異動人未知)"
+                by_person[person] = by_person.get(person, 0) + 1
+                sus.append((str(r.get("SP_NO", "")).strip(), find_audit_times(r)[1], person,
                             str(r.get("SP_CTNO", "")).strip(),
                             str(r.get("SP_CTNAME", "")).strip()))
-        print(f"\n── {ds} A 開頭單 {len(a_rows)} 張，其中 {len(sus)} 張寫入後被重傳過（嫌疑單）──")
-        for no, m, ctno, ctname in sorted(sus, key=lambda x: x[1]):
-            print(f"  {no:<16} 異動 {m}  {ctno} {ctname}")
+        print(f"\n── {ds} A 開頭單 {len(a_rows)} 張，其中 {len(sus)} 張寫入後被重傳/改過（嫌疑單）──")
+        print(f"  {'單號':<16}{'異動時間':<21}{'異動人':<10}客戶")
+        for no, m, person, ctno, ctname in sorted(sus, key=lambda x: x[1]):
+            print(f"  {no:<16}{m:<21}{person:<10}{ctno} {ctname}")
         if sus:
-            print("\n這些單的存貨異動帳大概率凍結在第一版（訂購量）；秤重品項的實秤差都沒過帳。")
-            print("抽驗單據內容：--doc <單號>；對帳側請拉凌越「貨品存貨異動明細表」比對。")
+            print("\n  依異動人分布（判別是 EDI 自動改，還是出單人員手改）：")
+            for person, n in sorted(by_person.items(), key=lambda x: -x[1]):
+                print(f"    {person:<12} {n} 張")
+            print("\n  系統管理員＝EDI(LY 帳號)自動回寫；真人名字＝出單人員手動改過。")
+            print("  兩者都造成『改了單、沒重過帳』，但修正對象不同：")
+            print("    EDI 那批 → 178go 回寫流程；手改那批 → 凌越修改是否觸發重審／出單 SOP。")
+            print("  抽驗單頭全欄位（含審核狀態/建立時間，確認欄名）：--doc <單號>。")
         return 0
 
     # 1) 決定要看哪幾張單（主表：指定單號逐張查；否則抓當天 A 開頭前 N 張）
