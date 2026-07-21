@@ -4010,12 +4010,14 @@ function createAdminRouter() {
                 <div class="sf-card-title">${SF_ICONS.bell} 回覆與靜音</div>
               </div>
               <div style="padding:16px 18px;display:flex;flex-direction:column;gap:14px;">
-                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
-                  <input type="checkbox" name="line_bot_ai_gate" value="1" ${s.aiGate ? "checked" : ""} style="margin-top:3px;">
+                <label class="sf-switch-label" style="align-items:flex-start;white-space:normal;font-size:13px;">
+                  <input type="checkbox" name="line_bot_ai_gate" value="1" ${s.aiGate ? "checked" : ""}>
+                  <span class="sf-switch" style="margin-top:2px;"></span>
                   <span><strong style="color:var(--txt-1);">啟用 AI 過濾</strong><br><span style="font-size:12px;color:var(--txt-3);">僅對「非收單關鍵字」的閒聊不回覆。需設定 GOOGLE_GEMINI_API_KEY。</span></span>
                 </label>
-                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
-                  <input type="checkbox" name="line_bot_suppress_reply" value="1" ${s.suppressCustomerReply ? "checked" : ""} style="margin-top:3px;">
+                <label class="sf-switch-label" style="align-items:flex-start;white-space:normal;font-size:13px;">
+                  <input type="checkbox" name="line_bot_suppress_reply" value="1" ${s.suppressCustomerReply ? "checked" : ""}>
+                  <span class="sf-switch" style="margin-top:2px;"></span>
                   <span><strong style="color:var(--txt-1);">對客戶訊息靜音</strong><br><span style="font-size:12px;color:var(--txt-3);">仍照常收單並寫入訂單；僅不向群組發送一般回覆與 30 秒結單推播。「取得群組ID」「群組ID」仍會回覆（供綁定）。</span></span>
                 </label>
               </div>
@@ -4026,8 +4028,9 @@ function createAdminRouter() {
                 <div class="sf-card-title">${SF_ICONS.check} 訂單編號自動確認回覆</div>
               </div>
               <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px;">
-                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
-                  <input type="checkbox" name="line_order_confirm_reply_enabled" value="1" ${s.orderConfirmReplyEnabled ? "checked" : ""} style="margin-top:3px;">
+                <label class="sf-switch-label" style="align-items:flex-start;white-space:normal;font-size:13px;">
+                  <input type="checkbox" name="line_order_confirm_reply_enabled" value="1" ${s.orderConfirmReplyEnabled ? "checked" : ""}>
+                  <span class="sf-switch" style="margin-top:2px;"></span>
                   <span><strong style="color:var(--txt-1);">啟用</strong><br><span style="font-size:12px;color:var(--txt-3);">客戶最後一則訊息後若 N 秒內無新訊息，自動回覆「感謝您的下訂，訂單已成立，訂單編號：XXX」。預設關閉。</span></span>
                 </label>
                 <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt-2);">
@@ -4042,8 +4045,9 @@ function createAdminRouter() {
                 <div class="sf-card-title">${SF_ICONS.bell} 每日訂單摘要推播（內稽用）</div>
               </div>
               <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px;">
-                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
-                  <input type="checkbox" name="daily_summary_push_enabled" value="1" ${dailySummaryEnabled ? "checked" : ""} style="margin-top:3px;">
+                <label class="sf-switch-label" style="align-items:flex-start;white-space:normal;font-size:13px;">
+                  <input type="checkbox" name="daily_summary_push_enabled" value="1" ${dailySummaryEnabled ? "checked" : ""}>
+                  <span class="sf-switch" style="margin-top:2px;"></span>
                   <span><strong style="color:var(--txt-1);">啟用</strong><br><span style="font-size:12px;color:var(--txt-3);">每日於指定時刻自動推送 Flex Message 給每個客戶 LINE 群組，列出當日所有訂單品項。客戶有錯誤可立刻回覆。預設關閉。</span></span>
                 </label>
                 <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt-2);flex-wrap:wrap;">
@@ -4666,7 +4670,7 @@ function createAdminRouter() {
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <a class="sf-btn primary" href="/admin/scan-tool" title="用手機相機掃條碼：速查庫存或快速建檔">${SF_ICONS.search}<span>掃碼速查</span></a>
               <a class="sf-btn" href="/admin/export">${SF_ICONS.dl}<span>當日報表</span></a>
-              ${(process.env.LIFF_ID_ORDER_REVIEW||"").trim() ? `<button type="button" class="sf-btn" onclick="(async()=>{try{await navigator.clipboard.writeText('https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');this.querySelector('span').textContent='已複製，請貼到 LINE';setTimeout(()=>this.querySelector('span').textContent='手機審核連結',2000);}catch(e){prompt('複製失敗，請手動複製：','https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');}})();" title="複製訂單審核 LIFF 連結，貼到 LINE 開啟"><span>📱 手機審核連結</span></button>` : ""}
+              ${(process.env.LIFF_ID_ORDER_REVIEW||"").trim() ? `<button type="button" class="sf-btn" onclick="(async()=>{try{await navigator.clipboard.writeText('https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');this.querySelector('span').textContent='已複製，請貼到 LINE';setTimeout(()=>this.querySelector('span').textContent='手機審核連結',2000);}catch(e){prompt('複製失敗，請手動複製：','https://liff.line.me/${escapeAttr((process.env.LIFF_ID_ORDER_REVIEW||'').trim())}');}})();" title="複製訂單審核 LIFF 連結，貼到 LINE 開啟">${SF_ICONS.phone}<span>手機審核連結</span></button>` : ""}
               <a class="sf-btn primary" href="/admin/orders?need_review=1">${SF_ICONS.check}<span>批次簽核 (${pendingOrders})</span></a>
             </div>
           </div>
@@ -4736,7 +4740,7 @@ function createAdminRouter() {
               <div style="padding:16px;">
                 ${chartTotal>0
                   ? `<div style="display:flex;align-items:flex-end;gap:4px;height:140px;">${flowBarsHtml}</div>`
-                  : `<div style="height:140px;display:flex;align-items:center;justify-content:center;color:var(--txt-3);font-size:13px;border:1px dashed var(--line);border-radius:var(--radius);background:var(--bg-2);">📊 今日（依收單時間）尚未收到訂單</div>`}
+                  : `<div style="height:140px;display:flex;align-items:center;justify-content:center;gap:6px;color:var(--txt-3);font-size:13px;border:1px dashed var(--line);border-radius:var(--radius);background:var(--bg-2);">${SF_ICONS.chartBar} 今日（依收單時間）尚未收到訂單</div>`}
                 <div style="margin-top:16px;padding-top:14px;border-top:var(--hairline);display:flex;gap:24px;font-size:12px;color:var(--txt-2);flex-wrap:wrap;">
                   ${chartTotal>0?`<span>尖峰 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${peakH}:00</strong></span>`:""}
                   <span>今日收單 <strong class="mono" style="color:var(--txt-1);margin-left:6px;">${chartTotal}</strong></span>
@@ -5570,7 +5574,7 @@ function createAdminRouter() {
                 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}[c])); }
                 window.bskCloseModal = function(){ modalBg.style.display='none'; };
                 window.bskOpenDetail = async function(cid, cname, ym){
-                  modalTitle.textContent = '📋 ' + cname + '　' + ym + ' 明細';
+                  modalTitle.innerHTML = '${sfInlineIcon("clipboard")} ' + esc(cname) + '　' + esc(ym) + ' 明細';
                   modalBody.innerHTML = '<div style="padding:40px;text-align:center;color:var(--txt-3);">載入中…</div>';
                   modalBg.style.display = 'flex';
                   try {
@@ -5626,7 +5630,7 @@ function createAdminRouter() {
                         + '<td colspan="2"></td></tr></tfoot>';
                     }
                     html += '</table>'
-                      + '<div style="padding:12px 16px;border-top:1px solid var(--line);background:var(--bg-1);font-size:12px;color:var(--txt-3);">💡 編輯：請司機在 LINE 群組重新打「<b>空籃</b>」，從 LIFF 重新提交即可覆蓋當天數字。</div>';
+                      + '<div style="padding:12px 16px;border-top:1px solid var(--line);background:var(--bg-1);font-size:12px;color:var(--txt-3);">${sfInlineIcon("bulb")} 編輯：請司機在 LINE 群組重新打「<b>空籃</b>」，從 LIFF 重新提交即可覆蓋當天數字。</div>';
                     // 變更紀錄
                     function fmtTime(iso){ if(!iso) return ''; try { return new Date(iso).toLocaleString('zh-TW',{hour12:false}); } catch(_) { return String(iso); } }
                     function fmtActor(actor, reporter){
@@ -5646,7 +5650,7 @@ function createAdminRouter() {
                       }).join('');
                     }
                     const histList = data.history || [];
-                    let histHtml = '<div style="padding:14px 16px 8px;border-top:2px solid var(--line);background:var(--bg-1);"><div style="font-weight:600;font-size:14px;margin-bottom:8px;">📜 變更紀錄（' + histList.length + ' 筆）</div>';
+                    let histHtml = '<div style="padding:14px 16px 8px;border-top:2px solid var(--line);background:var(--bg-1);"><div style="font-weight:600;font-size:14px;margin-bottom:8px;">${sfInlineIcon("history")} 變更紀錄（' + histList.length + ' 筆）</div>';
                     if (!histList.length) {
                       histHtml += '<div style="color:var(--txt-3);font-size:12px;padding:8px 0;">本月尚無變更紀錄。</div>';
                     } else {
@@ -6859,7 +6863,7 @@ function createAdminRouter() {
                 <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
                 <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
                 <span class="stk-badge" title="「最新系統」欄的資料基準：分倉＝該倉在凌越的分倉庫存量；總量＝全公司總庫存量（該倉無分倉資料時的後備）">最新基準：${sel.latestSource === "warehouse" ? "分倉" : "總量"}</span>
-                <button type="button" class="stk-togbtn sm" id="stkOnlyDiff">只看盤差</button>
+                <label class="sf-switch-label" style="font-size:11.5px;"><input type="checkbox" id="stkOnlyDiff"><span class="sf-switch"></span>只看盤差</label>
                 <button type="button" class="stk-ibtn" id="stkInfo2" aria-expanded="false" aria-label="盤差計算說明" title="盤差計算說明">${SF_ICONS.info}</button>
               </div>
             </div>
@@ -7072,8 +7076,8 @@ function createAdminRouter() {
           sc.innerHTML=h; sc.style.display=''; grid.style.display='none';
         }); }
         var btn=document.getElementById('stkOnlyDiff');
-        if(btn){ var on=false; btn.addEventListener('click',function(){
-          on=!on; btn.classList.toggle('on',on);
+        if(btn){ btn.addEventListener('change',function(){
+          var on=btn.checked;
           var rows=document.querySelectorAll('tr[data-diff]');
           Array.prototype.forEach.call(rows,function(tr){ tr.style.display=(on&&tr.getAttribute('data-diff')==='0')?'none':''; });
         }); }
@@ -7494,7 +7498,7 @@ function createAdminRouter() {
       <div class="notion-card" style="padding:0;overflow:auto;">
         <table>
           <thead><tr><th style="text-align:center;">選</th><th>倉庫</th><th>料號</th><th>品名</th><th style="text-align:right;">最新系統<br><span style="font-weight:400;font-size:10px;">快照/調整/加總</span></th><th style="text-align:right;">實盤</th><th style="text-align:right;">對最新盤差(%)</th><th>可能原因（排查方向）</th></tr></thead>
-          <tbody>${rowsHtml || `<tr><td colspan="8" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此日期沒有「對最新盤差 ≠ 0」的品項 🎉</td></tr>`}</tbody>
+          <tbody>${rowsHtml || `<tr><td colspan="8" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此日期沒有「對最新盤差 ≠ 0」的品項 ${sfInlineIcon("spark")}</td></tr>`}</tbody>
         </table>
       </div>
       ${list.length ? `
@@ -7907,9 +7911,6 @@ function createAdminRouter() {
           --ivs-neg:#3987e5;--ivs-pos:#e66767;--ivs-mid:#383835;}
         .ivs-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 14px;}
         .ivs-flabel{font-size:12px;color:var(--ivs-mut);}
-        .sf-seg.ivs-seg{display:inline-flex;gap:3px;border:1px solid var(--ivs-border);border-radius:9px;padding:3px;background:transparent;}
-        .sf-seg.ivs-seg .sf-seg-btn{border:0;background:transparent;color:var(--ivs-ink2);font:inherit;font-size:12.5px;font-weight:600;padding:4px 12px;border-radius:7px;cursor:pointer;text-decoration:none;white-space:nowrap;}
-        .sf-seg.ivs-seg .sf-seg-btn.on{background:var(--ivs-card);color:inherit;box-shadow:0 1px 3px rgba(15,15,15,.12);}
         .ivs-grid3{display:grid;grid-template-columns:150px 235px minmax(0,1fr);gap:14px;align-items:start;}
         @media (max-width:1020px){ .ivs-grid3{grid-template-columns:1fr;} }
         .ivs-col{background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:12px;overflow:hidden;}
@@ -11869,7 +11870,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / LINE 綁定檢查</div>
         <h1 class="notion-page-title">LINE 綁定檢查</h1>
         <div class="notion-card" style="border-left:4px solid #e03;background:var(--notion-sidebar);">
-          <h2 style="margin-top:0;">⚠️ 仍顯示「尚未綁定」請先確認</h2>
+          <h2 style="margin-top:0;">${sfInlineIcon("warn")} 仍顯示「尚未綁定」請先確認</h2>
           <p><strong>收單機器人只會讀取「與本頁相同網址」的後台資料。</strong>若您是在<strong>本機 (localhost)</strong>或其它網址開後台、編輯客戶並填了 LINE 群組 ID，那份資料<strong>不會</strong>被 Cloud Run 上的收單用到。</p>
           <p>請務必：用瀏覽器打開<strong>與本頁相同的網址</strong>（例如 <code>https://您的服務.run.app/admin</code>），到「客戶管理」→ 點該客戶「編輯」→ 在「LINE 群組 ID」貼上群組內傳「取得群組ID」後機器人回傳的那串 → 儲存。下方表格即為<strong>本服務目前</strong>的綁定狀態。</p>
         </div>
@@ -12246,7 +12247,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     pieces.push(`<span class="osi osi-warn" title="${n} 項待確認">!</span>`);
                 }
                 if (o.sheet_exported_at) {
-                    pieces.push(`<span class="osi osi-sheet" title="已開啟／匯出揀貨單">🖨</span>`);
+                    pieces.push(`<span class="osi osi-sheet" title="已開啟／匯出揀貨單">${SF_ICONS.printer}</span>`);
                 }
                 if (o.lingyue_exported_at) {
                     pieces.push(`<span class="osi osi-xlsx" title="已匯出凌越 Excel">▦</span>`);
@@ -12341,7 +12342,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                     ? `<span class="sf-pill ok">✓ 已確認</span>${approvedMeta}`
                     : (n > 0 ? `<span class="sf-pill warn">${n} 待確認</span>` : `<span class="sf-pill">待簽核</span>`);
                 const expIcons = [
-                    o.sheet_exported_at ? `<span class="sf-pill" title="已匯出揀貨單">🖨</span>` : "",
+                    o.sheet_exported_at ? `<span class="sf-pill" title="已匯出揀貨單">${SF_ICONS.printer}</span>` : "",
                     o.lingyue_exported_at ? `<span class="sf-pill" title="已匯出凌越 Excel">▦</span>` : "",
                 ].join(" ");
                 // mobile 3 列卡片
@@ -12514,7 +12515,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           ${req.query.ok === "approved" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單標記為已確認</div>" : ""}
           ${req.query.ok === "date" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">已將選取訂單改到新出貨日（訂單編號不變）</div>" : ""}
           ${req.query.err === "baddate" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">改出貨日失敗：請確認已勾選訂單並選了有效日期</div>" : ""}
-          ${req.query.ok === "approved_done" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">🎉 全部待確認都處理完了</div>" : ""}
+          ${req.query.ok === "approved_done" ? "<div class=\"sf-pill ok\" style=\"align-self:flex-start;\">" + SF_ICONS.spark + "全部待確認都處理完了</div>" : ""}
           ${req.query.err === "none" ? "<div class=\"sf-pill bad\" style=\"align-self:flex-start;\">請先勾選要處理的訂單</div>" : ""}
           <div class="sf3-grid cols2">
             <div class="sf3-col">
@@ -14844,7 +14845,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           </div>
           <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
             <label style="display:inline-flex;gap:6px;align-items:center;font-size:13px;cursor:pointer;"><input type="checkbox" id="ccCashOnly" checked> 只看收現金客戶（匯款/月結不列）</label>
-            <input type="text" id="ccSearch" class="sf-input" placeholder="🔍 打單號或客戶找單（例外收現也找得到）" style="width:280px;max-width:100%;">
+            <div style="position:relative;width:280px;max-width:100%;">
+              <input type="text" id="ccSearch" class="sf-input" placeholder="打單號或客戶找單（例外收現也找得到）" style="width:100%;padding-left:28px;">
+              <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.search}</span>
+            </div>
             <span style="color:#787774;font-size:12px;">顯示 <span id="ccShownN">0</span> 筆・未收 <span id="ccShownDue">0</span></span>
           </div>
           <table class="cc-table">
@@ -15215,7 +15219,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
       <div class="notion-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
           <div style="color:#787774;font-size:13px;">共 <span id="cmCount">${rows.length}</span> 家${qs ? "（篩選後）" : ""}${showAll ? "（含停用/舊客戶）" : "（僅有效客戶：未停用且一年內有交易）"}${(!showAll && rows.filter((r) => !r.last_txn).length) ? `<br><span style="color:#c62828;">⚠ 其中 ${rows.filter((r) => !r.last_txn).length} 家「最後交易日」未同步（顯示為 —），需用<b>新版 ly_sales_push.py</b>「立即取單」後才能依交易日過濾舊客戶。</span>` : ""}</div>
-          <input type="text" id="cmFilter" class="sf-input" placeholder="🔍 即時搜尋（客戶名／編號／路線）" style="width:260px;max-width:100%;">
+          <div style="position:relative;width:260px;max-width:100%;">
+            <input type="text" id="cmFilter" class="sf-input" placeholder="即時搜尋（客戶名／編號／路線）" style="width:100%;padding-left:28px;">
+            <span style="position:absolute;left:8px;top:10px;color:var(--txt-3);">${SF_ICONS.search}</span>
+          </div>
         </div>
         <table><thead><tr><th>客戶編號</th><th>客戶名稱</th><th style="background:#eef3fb;">路線</th><th>結帳方式</th><th>最後交易</th><th style="text-align:center;">收現金</th><th>備註</th><th></th></tr></thead>
         <tbody id="cmBody">${rows.map(tr).join("") || `<tr><td colspan="8" style="text-align:center;color:#9b9a97;padding:16px;">尚無客戶資料——內網「立即取單」推過（新版腳本）後就會帶入。</td></tr>`}</tbody></table>
@@ -16108,7 +16115,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             if (missingLines.length) {
                 const missingBody = buildRawMatchHtml(missingLines.join("\n"), items, convoMatched);
                 missingCard = `<div style="background:#fffbeb;border:1px solid #fde68a;border-left:3px solid #d97706;border-radius:8px;padding:7px 10px;">
-                  <div style="font-size:11px;color:#92400e;font-weight:700;margin-bottom:2px;">📄 客戶叫貨內容<span style="font-weight:400;color:#b45309;margin-left:6px;">（取自訂單全文，對話紀錄未逐則記錄）</span></div>
+                  <div style="font-size:11px;color:#92400e;font-weight:700;margin-bottom:2px;">${sfInlineIcon("doc")} 客戶叫貨內容<span style="font-weight:400;color:#b45309;margin-left:6px;">（取自訂單全文，對話紀錄未逐則記錄）</span></div>
                   <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:#78350f;">${missingBody}</div>
                 </div>`;
             }
@@ -16117,7 +16124,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 const timeShort = full.length >= 16 ? full.slice(11, 16) : full;
                 if (String(m.sender_kind) === "employee") {
                     return `<div style="background:#f3f4f6;border:1px solid #e5e7eb;border-left:3px solid #9ca3af;border-radius:8px;padding:7px 10px;">
-                      <div style="font-size:11px;color:#4b5563;font-weight:700;margin-bottom:2px;">🧑‍💼 ${escapeHtml(m.sender_name || "同事")}<span style="font-weight:600;">（同事）</span><span style="font-weight:400;color:#6b7280;margin-left:6px;" title="${escapeAttr(full)}">${escapeHtml(timeShort)}</span></div>
+                      <div style="font-size:11px;color:#4b5563;font-weight:700;margin-bottom:2px;">${sfInlineIcon("user")} ${escapeHtml(m.sender_name || "同事")}<span style="font-weight:600;">（同事）</span><span style="font-weight:400;color:#6b7280;margin-left:6px;" title="${escapeAttr(full)}">${escapeHtml(timeShort)}</span></div>
                       <div style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:#374151;">${escapeHtml(m.text || "")}</div>
                     </div>`;
                 }
@@ -17254,9 +17261,9 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               </div>
               <p style="font-size:13px;color:var(--notion-text-muted,#787774);margin:0 0 10px;">這次的修正要記住嗎？（記住後，之後相同辨識文字會自動套用）</p>
               <div style="display:flex;flex-direction:column;gap:8px;">
-                <button type="button" class="btn" id="confirmScopeNone" style="text-align:left;padding:10px 12px;">📝 <strong>只改這一筆</strong>　<span style="color:var(--notion-text-muted,#787774);font-size:12px;">不記憶，下次重新辨識</span></button>
-                <button type="button" class="btn btn-primary" id="confirmScopeCustomer" style="text-align:left;padding:10px 12px;">👤 <strong>記住此客戶</strong>　<span style="opacity:.85;font-size:12px;">此客戶以後都這樣對應（推薦）</span></button>
-                <button type="button" class="btn" id="confirmScopeGlobal" style="text-align:left;padding:10px 12px;">🏢 <strong>記住全公司</strong>　<span style="color:var(--notion-text-muted,#787774);font-size:12px;">所有客戶都套用（謹慎使用）</span></button>
+                <button type="button" class="btn" id="confirmScopeNone" style="text-align:left;padding:10px 12px;">${sfInlineIcon("edit")} <strong>只改這一筆</strong>　<span style="color:var(--notion-text-muted,#787774);font-size:12px;">不記憶，下次重新辨識</span></button>
+                <button type="button" class="btn btn-primary" id="confirmScopeCustomer" style="text-align:left;padding:10px 12px;">${sfInlineIcon("user")} <strong>記住此客戶</strong>　<span style="opacity:.85;font-size:12px;">此客戶以後都這樣對應（推薦）</span></button>
+                <button type="button" class="btn" id="confirmScopeGlobal" style="text-align:left;padding:10px 12px;">${sfInlineIcon("building")} <strong>記住全公司</strong>　<span style="color:var(--notion-text-muted,#787774);font-size:12px;">所有客戶都套用（謹慎使用）</span></button>
               </div>
               <div class="notion-modal-actions" style="margin-top:12px;"><button type="button" class="btn" id="confirmBackBtn">← 重新選品項</button></div>
             </div>
@@ -19301,7 +19308,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 timelineItems.push({
                     ts: m.created_at,
                     html: `<div style="border-left:3px solid #2383e2;padding:10px 14px;margin-bottom:8px;background:var(--bg-1);border-radius:0 6px 6px 0;">
-                      <div style="font-size:12px;color:var(--txt-3);margin-bottom:4px;">👤 ${escapeHtml(empLabel)} 回覆 · ${formatTs(m.created_at)}</div>
+                      <div style="font-size:12px;color:var(--txt-3);margin-bottom:4px;">${sfInlineIcon("user")} ${escapeHtml(empLabel)} 回覆 · ${formatTs(m.created_at)}</div>
                       <div style="white-space:pre-wrap;font-size:13px;">${escapeHtml(preview)}</div>
                     </div>`
                 });
@@ -19339,7 +19346,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 timelineItems.push({
                     ts: o.updated_at,
                     html: `<div style="border-left:3px solid #d1d5db;padding:10px 14px;margin-bottom:8px;background:var(--bg-1);border-radius:0 6px 6px 0;">
-                      <div style="font-size:12px;color:var(--txt-3);margin-bottom:4px;">📨 客戶同期訊息（訂單 <a href="/admin/orders/${encodeURIComponent(o.id)}">${escapeHtml(o.order_no || o.id)}</a>） · ${escapeHtml(o.order_date)} ${formatTs(o.updated_at)}</div>
+                      <div style="font-size:12px;color:var(--txt-3);margin-bottom:4px;">${sfInlineIcon("mail")} 客戶同期訊息（訂單 <a href="/admin/orders/${encodeURIComponent(o.id)}">${escapeHtml(o.order_no || o.id)}</a>） · ${escapeHtml(o.order_date)} ${formatTs(o.updated_at)}</div>
                       <div style="white-space:pre-wrap;font-size:13px;">${escapeHtml(short)}</div>
                     </div>`
                 });
@@ -19388,11 +19395,11 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                       </label>
                       <label style="font-size:13px;color:var(--txt-2);">處理人
                         <input type="text" name="handler" class="sf-input" value="${escapeAttr(handlerVal || suggestedHandler)}" placeholder="例：阿榮、客服小敏" style="margin-top:4px;">
-                        ${(!handlerVal && suggestedHandler) ? `<span style="font-size:11px;color:var(--ok);display:block;margin-top:4px;">🪄 已依員工回覆自動帶入「${escapeHtml(suggestedHandler)}」，可修改後再儲存</span>` : ""}
+                        ${(!handlerVal && suggestedHandler) ? `<span style="font-size:11px;color:var(--ok);display:block;margin-top:4px;">${sfInlineIcon("wand")} 已依員工回覆自動帶入「${escapeHtml(suggestedHandler)}」，可修改後再儲存</span>` : ""}
                       </label>
                       <label style="font-size:13px;color:var(--txt-2);">處理備註
                         <textarea name="note" class="sf-input" rows="8" placeholder="記錄處理經過、客戶回覆、補償方案等" style="margin-top:4px;font-family:inherit;">${escapeHtml(noteVal || suggestedNote)}</textarea>
-                        ${(!noteVal && suggestedNote) ? `<span style="font-size:11px;color:var(--ok);display:block;margin-top:4px;">🪄 已彙整對話內容自動帶入，可修改／補充後再儲存</span>` : ""}
+                        ${(!noteVal && suggestedNote) ? `<span style="font-size:11px;color:var(--ok);display:block;margin-top:4px;">${sfInlineIcon("wand")} 已彙整對話內容自動帶入，可修改／補充後再儲存</span>` : ""}
                       </label>
                       <button type="submit" class="sf-btn primary">儲存</button>
                       ${handling?.resolved_at ? `<div style="font-size:12px;color:var(--txt-3);">解決時間：${escapeHtml(formatTs(handling.resolved_at))}</div>` : ""}
@@ -19718,7 +19725,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
         const editLink = fromOrders
             ? `<a href="/admin/customers/${encodeURIComponent(customer.id)}/edit?from=orders">編輯</a>`
             : `<a href="/admin/customers/${encodeURIComponent(customer.id)}/edit">編輯</a>`;
-        const view360Link = `<a href="/admin/customers/${encodeURIComponent(customer.id)}/360" style="margin-left:12px;font-weight:600;color:var(--accent);">📊 360 完整檔案</a>`;
+        const view360Link = `<a href="/admin/customers/${encodeURIComponent(customer.id)}/360" style="margin-left:12px;font-weight:600;color:var(--accent);">${sfInlineIcon("chartBar")} 360 完整檔案</a>`;
         const aliasRows = aliases.map((a) => `<tr><td>${escapeHtml(a.alias)}</td><td>${escapeHtml(a.product_name)}</td></tr>`).join("");
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/customers">客戶管理</a> / ${escapeHtml(customer.name)}</div>
@@ -20083,7 +20090,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
             </div>
             <label style="font-size:12px;color:var(--txt-2);">叫貨備註／習慣說明 <textarea class="sf-input" name="order_notes" placeholder="此客戶叫貨的習慣、特定說法或規則，僅供內部參考" style="margin-top:4px;min-height:60px;">${v(customer.order_notes)}</textarea></label>
             <label style="font-size:12px;color:var(--txt-2);">專屬子客戶/分店名單（逗號分隔） <input class="sf-input" type="text" name="known_sub_customers" value="${v(customer.known_sub_customers)}" placeholder="例：東大附小,豐源國小,馬蘭國小" style="margin-top:4px;"></label>
-            <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt-1);"><input type="checkbox" name="active" value="1" ${activeChecked ? "checked" : ""}> 啟用（未勾選＝停用）</label>
+            <label class="sf-switch-label" style="font-size:13px;color:var(--txt-1);"><input type="checkbox" name="active" value="1" ${activeChecked ? "checked" : ""}><span class="sf-switch"></span>啟用（未勾選＝停用）</label>
             <div style="border-top:1px solid var(--line, #eceae5);margin-top:4px;padding-top:12px;">
               <div style="font-size:12px;color:var(--txt-2);margin-bottom:2px;font-weight:600;">此群組功能（白名單）</div>
               <p style="margin:0 0 10px;font-size:12px;color:var(--txt-3);line-height:1.5;">勾選＝開啟。辨識訂單／空籃預設開、<b>盤點預設關</b>（白名單制）。關閉「辨識訂單」後，機器人仍會收訊息、仍回應 <b>#盤點</b>／<b>空籃</b>／取得群組ID 等指令，只是<b>不把一般文字當訂單解析</b>（適合內部群）。${hasGroupId ? "" : "<br><span style=\"color:var(--bad,#b3261e);\">尚未填 LINE 群組 ID，功能設定要先綁定群組 ID 才會生效。</span>"}</p>
@@ -20569,7 +20576,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
               </div>
               <label style="font-size:12px;color:var(--txt-2);">叫貨備註／習慣說明 <textarea class="sf-input" name="order_notes" style="margin-top:4px;min-height:56px;"></textarea></label>
               <label style="font-size:12px;color:var(--txt-2);">專屬子客戶/分店（逗號分隔） <input class="sf-input" type="text" name="known_sub_customers" placeholder="例：東大附小,豐源國小" style="margin-top:4px;"></label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt-1);"><input type="checkbox" name="active" value="1"> 啟用（未勾選＝停用）</label>
+              <label class="sf-switch-label" style="font-size:13px;color:var(--txt-1);"><input type="checkbox" name="active" value="1"><span class="sf-switch"></span>啟用（未勾選＝停用）</label>
               <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap;">
                 <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
                   <a class="sf-btn sm ghost" id="custEditAdvanced" href="#" target="_blank" title="別名、客戶畫像等進階設定">別名／完整檔案…</a>
@@ -22476,9 +22483,10 @@ YY小吃, C5678...,</pre>
             drafts = await db.prepare("SELECT id, type, title, created_at, updated_at FROM broadcast_messages WHERE status = 'draft' ORDER BY updated_at DESC LIMIT 50").all();
             sent = await db.prepare("SELECT id, type, title, sent_at, sent_count FROM broadcast_messages WHERE status = 'sent' ORDER BY sent_at DESC LIMIT 50").all();
         } catch (_) { /* table may not exist yet on first run */ }
-        const typeLabel = (t) => ({ promo: "⚡ 限時優惠", notice: "📢 公告", calendar: "📅 行事曆", image: "🖼️ 圖片" })[t] || t || "—";
+        const typeIcon = (t) => SF_ICONS[{ promo: "bolt", notice: "megaphone", calendar: "calendar", image: "image" }[t]] || "";
+        const typeLabel = (t) => ({ promo: "限時優惠", notice: "公告", calendar: "行事曆", image: "圖片" })[t] || t || "—";
         const draftRows = drafts.map(d => `<tr>
-          <td><span class="sf-pill">${escapeHtml(typeLabel(d.type))}</span></td>
+          <td><span class="sf-pill">${typeIcon(d.type)}${escapeHtml(typeLabel(d.type))}</span></td>
           <td><a href="/admin/broadcast/edit/${encodeURIComponent(d.id)}" style="font-weight:500;color:var(--txt-1);">${escapeHtml(d.title || "（未命名）")}</a></td>
           <td class="mono" style="font-size:11px;color:var(--txt-3);white-space:nowrap;">${escapeHtml(String(d.updated_at || d.created_at || "").slice(0,16).replace("T"," "))}</td>
           <td style="text-align:right;white-space:nowrap;">
@@ -22488,7 +22496,7 @@ YY小吃, C5678...,</pre>
           </td>
         </tr>`).join("");
         const sentRows = sent.map(s => `<tr>
-          <td><span class="sf-pill">${escapeHtml(typeLabel(s.type))}</span></td>
+          <td><span class="sf-pill">${typeIcon(s.type)}${escapeHtml(typeLabel(s.type))}</span></td>
           <td>${escapeHtml(s.title || "（未命名）")}</td>
           <td class="mono" style="font-size:11px;color:var(--txt-3);white-space:nowrap;">${escapeHtml(String(s.sent_at || "").slice(0,16).replace("T"," "))}</td>
           <td class="mono" style="text-align:right;">${escapeHtml(String(s.sent_count != null ? s.sent_count : "—"))}</td>
@@ -22756,7 +22764,7 @@ YY小吃, C5678...,</pre>
               </div>
               <div style="padding:18px 22px;display:flex;flex-direction:column;gap:14px;">
                 <div style="padding:14px;background:var(--warn-soft);border:1px solid var(--warn);border-radius:var(--radius);">
-                  <div style="font-size:13px;color:var(--warn);font-weight:600;margin-bottom:6px;">⚠️ 訊息送出後無法收回</div>
+                  <div style="font-size:13px;color:var(--warn);font-weight:600;margin-bottom:6px;">${sfInlineIcon("warn")} 訊息送出後無法收回</div>
                   <div style="font-size:12px;color:var(--txt-2);line-height:1.6;">LINE 沒有提供訊息收回 API。若送錯需要發更正訊息（會額外計入訊息額度）。</div>
                 </div>
                 <div style="display:grid;grid-template-columns:80px 1fr;gap:10px;font-size:13px;">
@@ -23917,7 +23925,7 @@ ${sentInfo}
 <form id="del-${e.id}" method="post" action="/admin/calendar/${encodeURIComponent(e.id)}/delete?back=${encodeURIComponent(`/admin/calendar?y=${year}&m=${month}`)}" style="display:none;"></form>
 </div>`).join("");
                 const quickAnnLink = hasHoliday
-                    ? `<a href="/admin/announcements/new?template=holiday_red&from_calendar=${encodeURIComponent(c.iso)}" class="cal-make-ann" title="一鍵建立節日休假公告">📢 公告</a>`
+                    ? `<a href="/admin/announcements/new?template=holiday_red&from_calendar=${encodeURIComponent(c.iso)}" class="cal-make-ann" title="一鍵建立節日休假公告">${sfInlineIcon("megaphone")} 公告</a>`
                     : "";
                 return `<td class="cal-cell${isToday ? " cal-today" : ""}${isWeekend ? " cal-weekend" : ""}">
 <div class="cal-day">${c.day}</div>
@@ -25157,15 +25165,15 @@ function voidReasonModalHtml(opts) {
     const title = opts.title || "作廢此訂單";
     const desc = opts.desc || "選擇作廢原因（會記住下一次預設），可由「已作廢訂單」恢復。";
     const reasons = [
-        { value: "not_order", icon: "🚫", label: "非訂單訊息", hint: "匯款證明、寒喧、門市互動等" },
-        { value: "duplicate", icon: "🔁", label: "重複叫貨", hint: "同一筆叫貨被讀進 2 次" },
-        { value: "customer_cancelled", icon: "❌", label: "客戶取消", hint: "客戶主動說不要了" },
-        { value: "customer_complaint", icon: "💬", label: "客訴問題", hint: "" },
-        { value: "ai_wrong", icon: "🤖", label: "AI 辨識整單錯誤", hint: "會回饋學習庫" },
-        { value: "staff_error", icon: "🧑‍💼", label: "內部錯誤", hint: "" },
-        { value: "other", icon: "📝", label: "其他", hint: "" },
+        { value: "not_order", icon: "stop", label: "非訂單訊息", hint: "匯款證明、寒喧、門市互動等" },
+        { value: "duplicate", icon: "refresh", label: "重複叫貨", hint: "同一筆叫貨被讀進 2 次" },
+        { value: "customer_cancelled", icon: "x", label: "客戶取消", hint: "客戶主動說不要了" },
+        { value: "customer_complaint", icon: "message", label: "客訴問題", hint: "" },
+        { value: "ai_wrong", icon: "robot", label: "AI 辨識整單錯誤", hint: "會回饋學習庫" },
+        { value: "staff_error", icon: "user", label: "內部錯誤", hint: "" },
+        { value: "other", icon: "edit", label: "其他", hint: "" },
     ];
-    const rowsHtml = reasons.map((r) => `<label class="void-reason-row"><input type="radio" name="${prefix}_reason_pick" value="${r.value}"><span class="void-reason-icon">${r.icon}</span><span class="void-reason-text"><strong>${r.label}</strong>${r.hint ? `<br><span style="font-size:11px;color:var(--txt-3);">${r.hint}</span>` : ""}</span></label>`).join("\n                ");
+    const rowsHtml = reasons.map((r) => `<label class="void-reason-row"><input type="radio" name="${prefix}_reason_pick" value="${r.value}"><span class="void-reason-icon">${SF_ICONS[r.icon] || ""}</span><span class="void-reason-text"><strong>${r.label}</strong>${r.hint ? `<br><span style="font-size:11px;color:var(--txt-3);">${r.hint}</span>` : ""}</span></label>`).join("\n                ");
     return `
           <div id="${prefix}Modal" class="notion-modal-overlay" style="display:none;z-index:1200;" role="dialog" aria-modal="true" aria-labelledby="${prefix}ModalTitle">
             <div class="notion-modal" style="max-width:460px;">
@@ -25189,7 +25197,7 @@ function voidReasonModalHtml(opts) {
             .void-reason-row:hover { background:var(--bg-2);border-color:var(--txt-3); }
             .void-reason-row input[type=radio] { margin-top:3px; }
             .void-reason-row.is-selected { background:#fee2e2;border-color:#dc2626; }
-            .void-reason-icon { font-size:18px;line-height:1;margin-top:1px;flex:0 0 auto; }
+            .void-reason-icon { display:inline-flex;align-items:center;color:var(--txt-2);line-height:1;margin-top:1px;flex:0 0 auto; }
             .void-reason-text { flex:1;line-height:1.4; }
           </style>
           <script>

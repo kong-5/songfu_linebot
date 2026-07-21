@@ -53,6 +53,10 @@ const SF_ICONS = {
   stop: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5.5 2.5h5l3 3v5l-3 3h-5l-3-3v-5z"/><path d="M8 5v3.5"/><circle cx="8" cy="11" r=".7" fill="currentColor"/></svg>',
   tag: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.5" cy="5.5" r="1"/></svg>',
   trendingUp: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"><path d="M2 11l4-4 2.5 2.5L14 4"/><path d="M10 4h4v4"/></svg>',
+  phone: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="4.5" y="1.5" width="7" height="13" rx="1.4"/><path d="M7 12.5h2"/></svg>',
+  building: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 13.5V2.5h7v11M10 6h3v7.5M2 13.5h12"/><path d="M5 5h1M7.5 5h1M5 7.5h1M7.5 7.5h1M5 10h1M7.5 10h1"/></svg>',
+  robot: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="5" width="10" height="8" rx="1.4"/><path d="M8 5V3M8 3h.01M1.5 8.5v2M14.5 8.5v2"/><circle cx="6" cy="8.5" r=".7" fill="currentColor"/><circle cx="10" cy="8.5" r=".7" fill="currentColor"/><path d="M6.2 11h3.6"/></svg>',
+  bulb: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5a4.2 4.2 0 0 0-2.4 7.6c.6.5.9 1 .9 1.7h3c0-.7.3-1.2.9-1.7A4.2 4.2 0 0 0 8 1.5z"/><path d="M6.5 12.8h3M7 14.5h2"/></svg>',
 };
 
 /** 內嵌用行內圖示（非 flex 容器如按鈕、分頁、標籤內用）。回傳 <span class="sfi">SVG</span> */
