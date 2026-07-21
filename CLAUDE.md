@@ -1,7 +1,7 @@
 # CLAUDE.md — 松富物流 LINE Bot / 後台（給每個新對話先讀）
 
 這份是「架構定案 + 不要再重複踩」的權威清單。**動到相關功能前先讀這份**；細節看 `docs/`。
-最後更新：2026-07-18
+最後更新：2026-07-21
 
 ---
 
@@ -69,6 +69,9 @@
   （`(icpno,barcode)`→料號＋`qty_per_scan` 箱碼倍數），**邊掃邊綁**建檔；後台總管理在「庫存管理 → 條碼對照」。
   掃描引擎鏈：BarcodeDetector → **zxing 純 JS（本地 vendor，iPhone LINE 瀏覽器用這條）** →
   liff.scanCodeV2 → 手動輸入。細節與上線步驟（要開新 LIFF app、開 scanQR）見 `docs/松揚-掃碼盤點.md`。
+- **掃碼頁已中越雙語（2026-07-21）**：與盤點頁**共用 `stk_lang`** localStorage 鍵（切一次兩頁同步），
+  新增文案要同時補 scan.html I18N 的 zh/vi 兩組。草稿鍵：掃碼 `scan_draft_<icpno>_<倉>_<日期>`、
+  盤點 `stk_draft_<icpno>_<倉>_<日期>`（**都含公司代碼**，跨公司同倉號才不互染）。
 
 ## LINE 盤點系統（已上線）
 - **LIFF 盤點頁** `dist/liff/stocktake.html`（LIFF `2010106501-VocNwkbA`，端點 `/liff/stocktake`）：
@@ -94,6 +97,21 @@
 - **異常排查表** `/admin/inventory/anomalies`（每日盤點頁入口）：當日「對最新盤差≠0」品項＋依訊號自動列**可能原因**（盤差方向→進貨未入/銷貨未開等、跨倉持有、他倉負庫存、已掛調整），勾選後推送 LINE 群組請大家複查（群組清單＝`stocktake_group`，記住上次選擇 `app_settings.stocktake_anomaly_group_id`）；純提示不寫帳。
 - 資料表：`stocktake_session`（一倉一日一筆）、`stocktake_count`（逐品項，含 `mid_qty`）、
   `erp_warehouse`（倉號→中文名＋納入盤點）、`group_features`（群組三功能開關）、`stocktake_group`（舊白名單／探索來源）、`stocktake_expiry_item`。
+
+## LINE 收單可靠性（2026-07-21 定案）
+- **失敗可重試閉環**：`processLineWebhookEvents` 回傳 `{failed,total}`；Cloud Tasks worker
+  （`/api/worker/process-line-event`）失敗回 **500** 讓佇列重試，`X-CloudTasks-TaskRetryCount`
+  超過 `LINE_TASK_MAX_RETRY`（env，預設 4）即放棄回 200 ＋ ops 告警（`ops_alert_group_id`）。
+- **入口去重 dupByOrder 不再無條件擋**：已有訂單帶該 message id 但 `processed_line_messages`
+  無 done 標記＝前次半途失敗 → 放行並標 `lineMessageIsRetry` 走全冪等重跑路徑
+  （append raw skipIfPresent、品項 src_line_message_id 預檢、附件查重）。**改動去重邏輯前先讀這段。**
+- **PG advisory xact lock**（`DATABASE_URL` 才啟用，交易結束自動釋放）：rebuild 以
+  `rebuild|orderId`、盤點 submit 以 `stk|icpno|倉|日` 串行化——多實例/併發不再品項雙倍或互洗盤點。
+  記憶體 collect session 仍是單實例設計，Cloud Run **max-instances=1 維持**。
+- **rebuild 去重的加叫保護**：原文有「一模一樣的重複行」且**純文字無附件**時跳過
+  `dedupeParsedOrderRows`（同名同量分次加叫是合法的）；有附件一律去重（文字＋拍照雙重解析
+  不可變雙倍）。`parseOrderMessage` 的 `keepDuplicateRows` 選項即為此用。
+- 作廢/客訴單：`rebuildOrderItemsFromOrderSources` 入口早退＋交易內覆檢，一律不重建品項。
 
 ## 子客戶拆單（LINE 收單，2026-07-10 定案）
 - **拆單資格只認客戶主檔 `known_sub_customers`**：未設定的客戶（如娜路灣、南豐）一律不拆——
