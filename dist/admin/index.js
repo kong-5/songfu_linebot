@@ -7781,6 +7781,98 @@ function createAdminRouter() {
             res.status(500).json({ error: String(e?.message || e) });
         }
     });
+    // ── 盤差改善（2026-07-21）：整體盤差隨排查有沒有變好。口徑同熱力圖（含庫存調整、同日同料號跨倉先加總）。
+    //   回傳：每日整體指標（準確率／平均・加權絕對盤差%／盤差品項數）＋ 本週vs上週計分卡 ＋ 進步榜／待改善榜。
+    //   品項再多也只彙總成幾條線＋兩張榜，不逐項畫。
+    router.get("/inventory/stats/improvement", async (req, res) => {
+        try {
+            const icpno = stickyIcpno(req, res);
+            const days = Math.min(60, Math.max(14, parseInt(String(req.query.days || "28"), 10) || 28));
+            const since = statsTaipeiDateAgo(days - 1);
+            let rows = [];
+            try {
+                const sql = "SELECT s.count_date AS d, c.erp_code, c.name, c.spec, c.sys_qty, c.counted_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND s.count_date >= ? AND c.counted_qty IS NOT NULL";
+                rows = (await db.prepare(sql).all(icpno, since)) || [];
+            } catch (_) { rows = []; }
+            const adjMap = await statsAdjMap(icpno);
+            // code → {code,name,spec,days:{date:{sys,counted}}}（同料號跨倉先加總）
+            const items = new Map();
+            for (const r of rows) {
+                const code = String(r.erp_code || "").trim();
+                if (!code) continue;
+                let it = items.get(code);
+                if (!it) { it = { code, name: String(r.name || ""), spec: String(r.spec || ""), days: {} }; items.set(code, it); }
+                const k = String(r.d);
+                const a = it.days[k] || { sys: 0, counted: 0 };
+                a.sys += Number(r.sys_qty || 0);
+                a.counted += Number(r.counted_qty || 0);
+                it.days[k] = a;
+            }
+            // 每日整體彙總
+            const dayAgg = new Map(); // date → {items,itemsDiff,itemsSevere,sumAbsDiff,sumBase,sumAbsPct}
+            for (const it of items.values()) {
+                const adj = Number(adjMap[it.code] || 0);
+                for (const [d, a] of Object.entries(it.days)) {
+                    const sysAdj = a.sys + adj;
+                    const diff = a.counted - sysAdj;
+                    const p = statsVarPct(sysAdj, a.counted);
+                    let g = dayAgg.get(d);
+                    if (!g) { g = { items: 0, itemsDiff: 0, itemsSevere: 0, sumAbsDiff: 0, sumBase: 0, sumAbsPct: 0 }; dayAgg.set(d, g); }
+                    g.items++;
+                    if (Math.round(diff * 100) / 100 !== 0) g.itemsDiff++;
+                    if (Math.abs(p) > 5) g.itemsSevere++;
+                    g.sumAbsDiff += Math.abs(diff);
+                    g.sumBase += Math.max(Math.abs(sysAdj), 1);
+                    g.sumAbsPct += Math.abs(p);
+                }
+            }
+            const daily = [...dayAgg.keys()].sort().map((d) => {
+                const g = dayAgg.get(d);
+                return { date: d, items: g.items, itemsDiff: g.itemsDiff, itemsSevere: g.itemsSevere,
+                    accuracy: g.items ? Math.round((1 - g.itemsDiff / g.items) * 1000) / 10 : 0,
+                    meanAbsPct: g.items ? Math.round((g.sumAbsPct / g.items) * 10) / 10 : 0,
+                    weightedAbsPct: g.sumBase ? Math.round((g.sumAbsDiff / g.sumBase) * 1000) / 10 : 0 };
+            });
+            // 計分卡：以「有資料的最後一天」為錨，本週(近7天) vs 上週(前7天)
+            const shift = (ds, n) => { const dt = new Date(ds + "T00:00:00Z"); dt.setUTCDate(dt.getUTCDate() + n); return dt.toISOString().slice(0, 10); };
+            const latest = daily.length ? daily[daily.length - 1].date : statsTaipeiDateAgo(0);
+            const pool = (lo, hi) => {
+                let it = 0, df = 0, sev = 0, sad = 0, sb = 0, sp = 0, nd = 0;
+                for (const [d, g] of dayAgg) {
+                    if (d >= lo && d <= hi) { it += g.items; df += g.itemsDiff; sev += g.itemsSevere; sad += g.sumAbsDiff; sb += g.sumBase; sp += g.sumAbsPct; nd++; }
+                }
+                return { days: nd, items: it,
+                    accuracy: it ? Math.round((1 - df / it) * 1000) / 10 : null,
+                    meanAbsPct: it ? Math.round((sp / it) * 10) / 10 : null,
+                    weightedAbsPct: sb ? Math.round((sad / sb) * 1000) / 10 : null,
+                    itemsSevere: sev };
+            };
+            const scorecard = { thisWeek: pool(shift(latest, -6), latest), prevWeek: pool(shift(latest, -13), shift(latest, -7)) };
+            // 排行：每品項「前半段 vs 後半段」平均 |盤差%|
+            const mid = statsTaipeiDateAgo(Math.floor(days / 2));
+            const ranks = [];
+            for (const it of items.values()) {
+                const adj = Number(adjMap[it.code] || 0);
+                const f = [], s = [];
+                for (const [d, a] of Object.entries(it.days)) {
+                    const p = Math.abs(statsVarPct(a.sys + adj, a.counted));
+                    (d < mid ? f : s).push(p);
+                }
+                const avg = (arr) => arr.length ? arr.reduce((x, y) => x + y, 0) / arr.length : null;
+                ranks.push({ code: it.code, name: it.name, spec: it.spec, favg: avg(f), savg: avg(s) });
+            }
+            const improved = ranks.filter((r) => r.favg != null && r.savg != null && r.favg > 3 && (r.favg - r.savg) > 1)
+                .sort((a, b) => (b.favg - b.savg) - (a.favg - a.savg)).slice(0, 10)
+                .map((r) => ({ code: r.code, name: r.name, spec: r.spec, from: Math.round(r.favg * 10) / 10, to: Math.round(r.savg * 10) / 10 }));
+            const watch = ranks.filter((r) => r.savg != null && r.savg > 5)
+                .sort((a, b) => b.savg - a.savg).slice(0, 10)
+                .map((r) => ({ code: r.code, name: r.name, spec: r.spec, recent: Math.round(r.savg * 10) / 10, before: r.favg == null ? null : Math.round(r.favg * 10) / 10 }));
+            res.json({ dates: daily.map((d) => d.date), daily, scorecard, improved, watch, days });
+        }
+        catch (e) {
+            res.status(500).json({ error: String(e?.message || e) });
+        }
+    });
     router.get("/inventory/stats", async (req, res) => {
         const icpno = stickyIcpno(req, res);
         let whs = [];
@@ -7866,6 +7958,17 @@ function createAdminRouter() {
         [data-theme="dark"] .ivs-pill.ok{color:#7bcf87;}
         .ivs-drill{margin-top:14px;}
         .ivs-drill-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+        .ivs-score{display:grid;grid-template-columns:repeat(auto-fit,minmax(184px,1fr));gap:12px;margin-bottom:16px;}
+        .ivs-tile{background:var(--ivs-card);border:1px solid var(--ivs-border);border-radius:12px;padding:14px 16px;}
+        .ivs-tile .t-l{font-size:12px;color:var(--ivs-mut);margin-bottom:7px;}
+        .ivs-tile .t-v{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;}
+        .ivs-tile .t-v .arw{color:var(--ivs-mut);font-size:14px;}
+        .ivs-tile .t-d{font-size:12px;font-weight:700;margin-top:5px;}
+        .ivs-tile .t-d.good{color:var(--ivs-down);} .ivs-tile .t-d.bad{color:var(--ivs-up);} .ivs-tile .t-d.flat{color:var(--ivs-mut);}
+        .ivs-irow{display:flex;align-items:center;gap:9px;padding:8px 2px;border-bottom:1px solid var(--ivs-grid);}
+        .ivs-irow .nm{flex:1;min-width:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .ivs-irow .sp{font-size:11px;color:var(--ivs-mut);flex:none;}
+        .ivs-irow .mv{font-size:12px;font-variant-numeric:tabular-nums;flex:none;color:var(--ivs-ink2);}
         @media (max-width:1020px){ .ivs-drill-grid{grid-template-columns:1fr;} }
       </style>
       <div class="ivs-root">
@@ -7879,6 +7982,7 @@ function createAdminRouter() {
         <div class="sf-seg ivs-seg" id="ivsView">
           <button type="button" class="sf-seg-btn on" data-v="charts">${sfInlineIcon("chartLine")} 品項圖表</button>
           <button type="button" class="sf-seg-btn" data-v="heat">${sfInlineIcon("chartBar")} 盤差熱力圖</button>
+          <button type="button" class="sf-seg-btn" data-v="improve">${sfInlineIcon("trendingUp")} 盤差改善</button>
         </div>
         <span style="flex:1"></span>
         <span class="ivs-note" id="ivsScopeNote"></span>
@@ -7981,6 +8085,48 @@ function createAdminRouter() {
           </div>
         </div>
       </div>
+
+      <div id="ivsImprove" hidden>
+        <div class="ivs-heat-tools" style="margin-bottom:14px;">
+          <span class="ivs-flabel">期間</span>
+          <div class="sf-seg ivs-seg" id="ivsIDays">
+            <button type="button" class="sf-seg-btn" data-d="14">14天</button>
+            <button type="button" class="sf-seg-btn on" data-d="28">28天</button>
+            <button type="button" class="sf-seg-btn" data-d="60">60天</button>
+          </div>
+          <span style="flex:1"></span>
+          <span class="ivs-note" id="ivsIScope"></span>
+        </div>
+        <div class="ivs-score" id="ivsICards"></div>
+        <div class="ivs-card">
+          <div class="ivs-card-h">
+            <div class="ivs-card-t">每日盤點準確率</div>
+            <span class="ivs-note">盤差=0 的品項占當日已盤的比例，往上＝越準</span>
+          </div>
+          <div class="ivs-chart" id="ivsIAcc"></div>
+        </div>
+        <div class="ivs-card">
+          <div class="ivs-card-h">
+            <div class="ivs-card-t">每日盤差幅度</div>
+            <div class="ivs-legend">
+              <span class="ivs-lg"><span class="k" style="background:var(--ivs-line);"></span>平均絕對盤差%</span>
+              <span class="ivs-lg"><span class="k" style="background:var(--ivs-up);"></span>加權絕對盤差%（依量）</span>
+            </div>
+          </div>
+          <div class="ivs-chart" id="ivsIMag"></div>
+        </div>
+        <div class="ivs-drill-grid">
+          <div class="ivs-card" style="margin-bottom:0;">
+            <div class="ivs-card-h"><div class="ivs-card-t">進步榜</div><span class="ivs-note">前半段 → 後半段 平均 |盤差%| 降最多</span></div>
+            <div id="ivsIUp"></div>
+          </div>
+          <div class="ivs-card" style="margin-bottom:0;">
+            <div class="ivs-card-h"><div class="ivs-card-t">待改善榜</div><span class="ivs-note">近期仍偏高盤差，建議續盯</span></div>
+            <div id="ivsIWatch"></div>
+          </div>
+        </div>
+      </div>
+
       <div id="ivsTip" role="status"></div>
       </div>
       <script>
@@ -7988,7 +8134,7 @@ function createAdminRouter() {
         "use strict";
         var ICPNO=${JSON.stringify(icpno)};
         var WHS=${whJson};
-        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hideZero:false, hDays:14, hOnly:false, hShowV:false, hShowAll:true, hQ:"", hSel:null, hScale:100};
+        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hideZero:false, hDays:14, hOnly:false, hShowV:false, hShowAll:true, hQ:"", hSel:null, hScale:100, iDays:28, imp:null};
         var klineCache={}; // code|wh -> {scope,bars,variance}
         var heatCache={};  // wh|days -> {dates,items}
         var root=document.querySelector(".ivs-root");
@@ -8441,6 +8587,100 @@ function createAdminRouter() {
           S.hDays=+b.dataset.d; S.hSel=null; loadHeat();
         });
 
+        /* ── 盤差改善 ── */
+        var impCache={};
+        function loadImprove(){
+          if(S.view!=="improve") return;
+          if(impCache[S.iDays]){ S.imp=impCache[S.iDays]; drawImprove(); return; }
+          document.getElementById("ivsICards").innerHTML='<div class="ivs-empty">載入中…</div>';
+          document.getElementById("ivsIAcc").innerHTML=""; document.getElementById("ivsIMag").innerHTML="";
+          document.getElementById("ivsIUp").innerHTML=""; document.getElementById("ivsIWatch").innerHTML="";
+          fetchJson("/admin/inventory/stats/improvement?icpno="+encodeURIComponent(ICPNO)+"&days="+S.iDays)
+            .then(function(j){ impCache[S.iDays]=j; S.imp=j; drawImprove(); })
+            .catch(function(e){ document.getElementById("ivsICards").innerHTML='<div class="ivs-empty">載入失敗：'+esc(e.message)+'</div>'; });
+        }
+        function pctChg(a,b){ if(a==null||b==null||a===0) return null; return Math.round(((a-b)/Math.abs(a))*1000)/10; }
+        function scoreTile(label,cur,prev,unit,higherBetter){
+          if(cur==null){ return '<div class="ivs-tile"><div class="t-l">'+esc(label)+'</div><div class="t-v">—</div><div class="t-d flat">本週尚無盤點</div></div>'; }
+          // 時間序：上週 → 本週（prev → cur），箭頭方向與時間一致才不誤讀
+          var head=(prev==null)?(cur+unit):(prev+unit+' <span class="arw">→</span> '+cur+unit);
+          var better,sub;
+          if(prev==null){ better=null; sub="（無上週可比）"; }
+          else if(higherBetter){ better=cur>=prev; var d=Math.round((cur-prev)*10)/10; sub=(better?"↑ 提升 ":"↓ 下降 ")+Math.abs(d)+" 個百分點"; }
+          else { var pc=pctChg(prev,cur); better=cur<=prev; sub=(pc==null?"":(better?"↓ 縮小 ":"↑ 增加 ")+Math.abs(pc)+"%"); }
+          var cls=(better==null)?"flat":(better?"good":"bad");
+          return '<div class="ivs-tile"><div class="t-l">'+esc(label)+'</div>'+
+            '<div class="t-v">'+head+'</div>'+
+            '<div class="t-d '+cls+'">'+(better==null?"":(better?"改善　":"注意　"))+esc(sub)+'</div></div>';
+        }
+        /* 折線圖（series:[{key,color,label}]，rows:[{date,...}]） */
+        function renderTrend(host,rows,series,opts){
+          opts=opts||{}; host.innerHTML="";
+          if(!rows.length){ host.innerHTML='<div class="ivs-empty">此期間沒有盤點記錄。</div>'; return; }
+          var W=opts.w||960,H=opts.h||260,padL=48,padR=16,padT=16,padB=34;
+          var svg=el("svg",{viewBox:"0 0 "+W+" "+H,"aria-label":esc(opts.aria||"")},host);
+          var n=rows.length;
+          var lo=opts.min!=null?opts.min:Infinity, hi=opts.max!=null?opts.max:-Infinity;
+          if(opts.min==null||opts.max==null) rows.forEach(function(r){ series.forEach(function(s){ var v=r[s.key]; if(v==null)return; if(v<lo)lo=v; if(v>hi)hi=v; }); });
+          if(!isFinite(lo))lo=0; if(!isFinite(hi))hi=1; if(hi<=lo)hi=lo+1;
+          function X(i){ return n<=1?padL+(W-padL-padR)/2:padL+i*(W-padL-padR)/(n-1); }
+          function Y(v){ return padT+(hi-v)*(H-padT-padB)/(hi-lo); }
+          niceTicks(lo,hi,4).forEach(function(v){
+            el("line",{x1:padL,x2:W-padR,y1:Y(v),y2:Y(v),stroke:css("--ivs-grid"),"stroke-width":1},svg);
+            el("text",{x:padL-8,y:Y(v)+4,"text-anchor":"end","font-size":11,fill:css("--ivs-mut"),style:"font-variant-numeric:tabular-nums"},svg).textContent=v+(opts.unit||"");
+          });
+          var lblEvery=Math.ceil(n/8);
+          rows.forEach(function(r,i){ if(i%lblEvery===0||i===n-1) el("text",{x:X(i),y:H-padB+18,"text-anchor":"middle","font-size":11,fill:css("--ivs-mut")},svg).textContent=mdOf(r.date); });
+          series.forEach(function(s){
+            var pts=rows.map(function(r,i){ return r[s.key]==null?null:X(i).toFixed(1)+","+Y(r[s.key]).toFixed(1); }).filter(Boolean);
+            el("polyline",{points:pts.join(" "),fill:"none",stroke:css(s.color),"stroke-width":2,"stroke-linejoin":"round","stroke-linecap":"round"},svg);
+            rows.forEach(function(r,i){ if(r[s.key]==null)return; el("circle",{cx:X(i),cy:Y(r[s.key]),r:3.2,fill:css("--ivs-card"),stroke:css(s.color),"stroke-width":2},svg); });
+          });
+          var slot=(W-padL-padR)/Math.max(1,n-1);
+          var cross=el("g",{style:"display:none"},svg);
+          var cx=el("line",{y1:padT,y2:H-padB,stroke:css("--ivs-mut"),"stroke-width":1,"stroke-dasharray":"3 3"},cross);
+          var hit=el("rect",{x:0,y:0,width:W,height:H,fill:"transparent"},svg);
+          hit.addEventListener("mousemove",function(ev){
+            var box=svg.getBoundingClientRect(),mx=(ev.clientX-box.left)*W/box.width;
+            var i=Math.max(0,Math.min(n-1,Math.round((mx-padL)/slot)));
+            var r=rows[i]; cross.style.display=""; cx.setAttribute("x1",X(i)); cx.setAttribute("x2",X(i));
+            var rowsHtml=series.map(function(s){ return '<div class="tr"><span>'+esc(s.label)+'</span><b>'+(r[s.key]==null?"—":r[s.key]+(opts.unit||""))+'</b></div>'; }).join("");
+            showTip('<div class="td">'+esc(r.date)+'（'+wdOf(r.date)+'）</div>'+rowsHtml+'<div class="tr"><span>已盤品項</span><b>'+r.items+'</b></div>',ev.clientX,ev.clientY);
+          });
+          hit.addEventListener("mouseleave",function(){ cross.style.display="none"; hideTip(); });
+        }
+        function rankList(host,arr,mode){
+          if(!arr.length){ host.innerHTML='<div class="ivs-empty">'+(mode==="up"?"此期間還看不出明顯進步的品項（需前後兩段都有盤點）。":"近期沒有仍偏高盤差的品項，讚！")+'</div>'; return; }
+          host.innerHTML=arr.map(function(r){
+            var nm=esc(r.name||r.code), sp=r.spec?'<span class="sp">'+esc(r.spec)+'</span>':"";
+            var mv=(mode==="up")
+              ? '<span class="mv" style="color:var(--ivs-down)">'+r.from+'% → '+r.to+'%</span>'
+              : '<span class="mv" style="color:var(--ivs-up)">'+(r.before!=null?r.before+'% → ':'')+r.recent+'%</span>';
+            return '<div class="ivs-irow"><span class="nm" title="'+esc(r.name)+'">'+nm+'</span>'+sp+mv+'</div>';
+          }).join("");
+        }
+        function drawImprove(){
+          if(S.view!=="improve"||!S.imp) return;
+          var j=S.imp, sc=j.scorecard||{}, tw=sc.thisWeek||{}, pw=sc.prevWeek||{};
+          document.getElementById("ivsIScope").textContent="近 "+j.days+" 天 · 有盤點 "+(j.daily?j.daily.length:0)+" 天 · 計分卡＝本週 vs 上週";
+          document.getElementById("ivsICards").innerHTML=
+            scoreTile("盤點準確率（盤差=0 占比）",tw.accuracy,pw.accuracy,"%",true)+
+            scoreTile("平均絕對盤差%",tw.meanAbsPct,pw.meanAbsPct,"%",false)+
+            scoreTile("加權絕對盤差%（依量）",tw.weightedAbsPct,pw.weightedAbsPct,"%",false)+
+            scoreTile("嚴重盤差品項（>5%）",tw.itemsSevere==null?null:tw.itemsSevere,pw.itemsSevere==null?null:pw.itemsSevere,"",false);
+          renderTrend(document.getElementById("ivsIAcc"),j.daily,[{key:"accuracy",color:"--ivs-down",label:"盤點準確率"}],{unit:"%",min:0,max:100,aria:"每日盤點準確率"});
+          renderTrend(document.getElementById("ivsIMag"),j.daily,[
+            {key:"meanAbsPct",color:"--ivs-line",label:"平均絕對盤差%"},
+            {key:"weightedAbsPct",color:"--ivs-up",label:"加權絕對盤差%"}],{unit:"%",min:0,aria:"每日盤差幅度"});
+          rankList(document.getElementById("ivsIUp"),j.improved||[],"up");
+          rankList(document.getElementById("ivsIWatch"),j.watch||[],"watch");
+        }
+        document.getElementById("ivsIDays").addEventListener("click",function(ev){
+          var b=ev.target.closest("button"); if(!b) return;
+          this.querySelectorAll("button").forEach(function(x){x.classList.remove("on");}); b.classList.add("on");
+          S.iDays=+b.dataset.d; loadImprove();
+        });
+
         /* ── 檢視切換 ── */
         document.getElementById("ivsView").addEventListener("click",function(ev){
           var b=ev.target.closest("button"); if(!b) return;
@@ -8448,7 +8688,8 @@ function createAdminRouter() {
           S.view=b.dataset.v;
           document.getElementById("ivsCharts").hidden=S.view!=="charts";
           document.getElementById("ivsHeat").hidden=S.view!=="heat";
-          if(S.view==="heat") loadHeat(); else drawCharts();
+          document.getElementById("ivsImprove").hidden=S.view!=="improve";
+          if(S.view==="heat") loadHeat(); else if(S.view==="improve") loadImprove(); else drawCharts();
         });
 
         /* ── 初始：先攤開整倉品項小圖，不預選 ── */
@@ -8456,6 +8697,7 @@ function createAdminRouter() {
         new MutationObserver(function(){
           klineCache={};
           if(S.view==="charts"){ if(S.item&&document.getElementById("ivsListCard").hidden) loadKline(); else drawList(); }
+          else if(S.view==="improve") drawImprove();
           else drawHeat();
         }).observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
       })();
