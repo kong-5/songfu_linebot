@@ -103,7 +103,11 @@
     const profile = await liff.getProfile();
     $("#me-pic").src = profile.pictureUrl || "";
     $("#me-name").textContent = profile.displayName || "(未設定名稱)";
-    $("#me-uid").textContent = profile.userId;
+    // 整串 userId 對員工是雜訊：只顯示前 8 碼＋「…」，完整值留在 title（滑鼠懸停/長按可看）
+    const uid = String(profile.userId || "");
+    const uidEl = $("#me-uid");
+    uidEl.textContent = uid.length > 8 ? uid.slice(0, 8) + "…" : uid;
+    uidEl.title = uid;
     $("#me-row").style.display = "flex";
 
     // 預檢綁定 token（顯示要綁的員工帳號）

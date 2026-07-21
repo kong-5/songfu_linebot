@@ -72,6 +72,7 @@
 
   function setStatus(text){ statusEl.textContent = text; }
   function escapeHtml(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]); }
+  function clip(s, n){ s = String(s == null ? "" : s); return s.length > n ? s.slice(0, n) + "…" : s; }  // 超過才加「…」
   async function api(path, opts){
     const init = Object.assign({headers:{}}, opts || {});
     init.headers["Authorization"] = "Bearer " + (liff.getIDToken() || "");
@@ -177,7 +178,7 @@
       ${alertHtml}
       ${c.crm_handover_notes ? `<div class="card"><h3>📝 交接備註</h3><div class="notes-box">${escapeHtml(c.crm_handover_notes)}</div></div>` : ""}
       ${recentItems.length ? `<div class="card"><h3>🛒 常買 Top ${recentItems.length}</h3>${recentItems.map(it => `<div class="item-row"><span>${escapeHtml(it.name)}</span><span style="color:var(--txt3);" class="mono">${it.count} 次</span></div>`).join("")}</div>` : ""}
-      ${recentComplaints.length ? `<div class="card"><h3>📨 客訴歷史</h3>${recentComplaints.map(c => `<div class="item-row"><span>${escapeHtml(c.order_date)} · ${escapeHtml((c.raw_message || "").slice(0, 30))}…</span><span style="color:${c.handle_status === 'resolved' ? 'var(--ok)' : 'var(--bad)'};font-size:11px;">${c.handle_status === 'resolved' ? '已解決' : '待處理'}</span></div>`).join("")}</div>` : ""}
+      ${recentComplaints.length ? `<div class="card"><h3>📨 客訴歷史</h3>${recentComplaints.map(c => `<div class="item-row"><span>${escapeHtml(c.order_date)} · ${escapeHtml(clip(c.raw_message, 30))}</span><span style="color:${c.handle_status === 'resolved' ? 'var(--ok)' : 'var(--bad)'};font-size:11px;">${c.handle_status === 'resolved' ? '已解決' : '待處理'}</span></div>`).join("")}</div>` : ""}
       ${d.topWeekdays?.length ? `<div class="card"><h3>📅 常下單時段</h3><div style="font-size:13px;color:var(--txt2);">${d.topWeekdays.map(([k,v]) => escapeHtml(k)+'×'+v).join('、')}</div></div>` : ""}
     `;
   }
