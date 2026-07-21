@@ -79,6 +79,7 @@
   - **中價貨**：盤點數旁的小「⋯」點開才填中貨（極少數品項才有，方案B）；**counted_qty 存上＋中合計**，`mid_qty` 單獨保留。
   - **必盤**：盤點清單把「自昨天（或上次盤點）以來凌越有變動」的品項**排到最上面＋標紅「必盤」**（全公司）。權威 helper：`dist/lib/stock-mustcount.js` 的 `computeMustCount`（混合基準：優先比 `erp_stock_daily` 昨天快照、無則退回上次 `stocktake_count.sys_qty`；|變動|≥門檻才算，門檻預設 1、可用 `app_settings.stocktake_mustcount_min_delta` 覆寫）。每日快照由**庫存推送 `inventory-push` 同交易寫入 `erp_stock_daily`**（一天一份、留 90 天；含 K 線 OHLC 欄 `qty_open/qty_high/qty_low`——開＝當日首推時的昨收、高低＝當日各次推送極值、`qty`＝收）。帶 `warehouse_qty` 的推送同時寫**分倉每日快照 `erp_stock_wh_daily`**（同套 OHLC 規則）。
 - **庫存統計圖表** `/admin/inventory/stats`（盤點頁與側欄都有入口）：三欄式（日K/週K/月K＋期間｜倉庫｜品項模糊搜尋）看單品 K 線＋盤差％折線；另一檢視＝**盤差熱力圖**（品項×日期、紅虧藍盈、預設只列有盤差品項 Top 20 依嚴重度排序）＋排行＋點格下鑽。資料 API：`/stats/items`、`/stats/kline`、`/stats/heatmap`。盤差＝盤點凍結當下（`counted−sys`，分母 `max(|sys|,1)`），「當日最後」由一倉一日一筆天然成立、換日即定案，**免結算排程**；分倉 K 線在 `erp_stock_wh_daily` 無資料時自動退回公司層級並標示。
+  - **盤差改善檢視（2026-07-21）**：同頁第三個檢視（`#ivsView` data-v=`improve`），回答「盤差有沒有隨排查變好」。品項再多也只彙總成**計分卡（本週vs上週：準確率／平均・加權絕對盤差%／嚴重品項數）＋每日趨勢折線（準確率、盤差幅度）＋進步榜/待改善榜**，不逐項畫。資料 API：`/stats/improvement?icpno=&days=`（口徑同熱力圖：含庫存調整、同日同料號跨倉先加總；計分卡以有資料的最後一天為錨 pool 近7天/前7天；排行＝品項前半段 vs 後半段平均 |盤差%|）。smoke test：`test/inventory-improvement.test.js`。
 - **群組功能白名單 `group_features`（新，取代舊「盤點群組」開關）**：每個 LINE 群組可分別開關三項功能——
   **辨識訂單／盤點／空籃**。無資料列時**辨識訂單／空籃預設開、盤點預設關**（盤點為 opt-in 白名單制，只有明確設為開的群組才回應 `#盤點`）。權威 helper：`dist/lib/group-features.js`
   的 `getGroupFeatures(db, groupId)`（查不到或出錯：訂單/空籃回開絕不意外斷單、盤點回關）＋ `setGroupFeatures`。
