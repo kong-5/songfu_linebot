@@ -180,7 +180,7 @@
       loading:'載入中…',liffNotSet:'⚠ 尚未設定 LIFF ID（LIFF_ID_STOCKTAKE）',liffFail:'⚠ LIFF 初始化失敗',
       loadWh:'載入倉庫…',pickTitle:'選擇要盤點的倉庫',countDay:'盤點日',noWh:'目前沒有「納入盤點」的倉庫。<br>請先到後台 → 倉庫設定 勾選。',
       countedToday:'今日已盤',loadWhFail:'⚠ 載入倉庫失敗，請稍後再試',loadItems:'載入品項…',loadItemsFail:'⚠ 載入品項失敗',
-      backWh:'‹ 倉庫',done:'已盤',todo:'未盤',searchPh:'搜尋料號 / 品名',fAll:'全部',fTodo:'未盤',fExp:'效期品',hideZero:'隱藏 0',
+      backWh:'‹ 倉庫',done:'已盤',todo:'未盤',searchPh:'搜尋料號 / 品名',fAll:'全部',fTodo:'未盤',fExp:'效期品',
       sys:'系統',qtyPh:'盤點',match:'相符',expChip:'效期',batchTitle:'各效期數量（呆料／到期警示用）',sum:'合計',
       addBatch:'＋ 新增效期',doneBatch:'完成收起 ▴',noMatch:'沒有符合的品項',submit:'送出盤點',submitting:'送出中…',
       sent:'盤點已送出',finish:'完成',submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',langBtn:'Tiếng Việt',resumed:'續盤（已帶回今日已盤）',
@@ -188,7 +188,6 @@
       conflictTaken:'此倉今日盤點已被其他人送出，請重新載入',
       conflictStale:'開頁後已有他人送出此倉盤點，請重載後續盤再送出',
       sumLine:function(g,m,tot){return '上 '+g+'  ＋  中 '+m+'  ＝  合計 '+tot;},
-      showZero:'顯示庫存0',hiddenN:function(n){return '另有 '+n+' 項庫存 0 已隱藏';},
       zeroSep:function(n){return '— 帳上 0（現場有再盤）· '+n+' 項 —';},
       mustCount:'必盤',mcSep:function(n){return '— ⚠ 必盤：昨天以來有異動，務必確認 · '+n+' 項 —';},
       draftResumed:'已回復未送出',drafting:'盤點中(未送出)',
@@ -211,7 +210,7 @@
       loading:'Đang tải…',liffNotSet:'⚠ Chưa cấu hình LIFF ID',liffFail:'⚠ Khởi tạo LIFF thất bại',
       loadWh:'Đang tải kho…',pickTitle:'Chọn kho để kiểm kê',countDay:'Ngày kiểm',noWh:'Chưa có kho nào được chọn kiểm kê.<br>Vui lòng vào Cài đặt kho ở trang quản trị.',
       countedToday:'Đã kiểm hôm nay',loadWhFail:'⚠ Tải kho thất bại, thử lại sau',loadItems:'Đang tải sản phẩm…',loadItemsFail:'⚠ Tải sản phẩm thất bại',
-      backWh:'‹ Kho',done:'Đã kiểm',todo:'Chưa',searchPh:'Tìm mã / tên hàng',fAll:'Tất cả',fTodo:'Chưa kiểm',fExp:'Hàng HSD',hideZero:'Ẩn số 0',
+      backWh:'‹ Kho',done:'Đã kiểm',todo:'Chưa',searchPh:'Tìm mã / tên hàng',fAll:'Tất cả',fTodo:'Chưa kiểm',fExp:'Hàng HSD',
       sys:'Hệ thống',qtyPh:'Đếm',match:'Khớp',expChip:'HSD',batchTitle:'Số lượng theo HSD (cảnh báo hết hạn)',sum:'Tổng',
       addBatch:'＋ Thêm HSD',doneBatch:'Xong ▴',noMatch:'Không có sản phẩm phù hợp',submit:'Gửi kiểm kê',submitting:'Đang gửi…',
       sent:'Đã gửi kiểm kê',finish:'Xong',submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',langBtn:'中文',resumed:'Tiếp tục (đã tải dữ liệu hôm nay)',
@@ -219,7 +218,6 @@
       conflictTaken:'Kiểm kê kho này hôm nay đã được người khác gửi, vui lòng tải lại',
       conflictStale:'Sau khi bạn mở trang, đã có người khác gửi kiểm kê kho này. Vui lòng tải lại, kiểm tiếp rồi gửi lại',
       sumLine:function(g,m,tot){return 'Loại A '+g+'  +  Loại B '+m+'  =  Tổng '+tot;},
-      showZero:'Hiện tồn 0',hiddenN:function(n){return 'Còn '+n+' mục tồn 0 đang ẩn';},
       zeroSep:function(n){return '— Tồn 0 (có hàng thì kiểm) · '+n+' —';},
       mustCount:'Phải kiểm',mcSep:function(n){return '— ⚠ Phải kiểm: có biến động từ hôm qua · '+n+' —';},
       draftResumed:'Đã khôi phục (chưa gửi)',drafting:'Đang kiểm (chưa gửi)',
@@ -240,10 +238,9 @@
     }
   };
   var initLang='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') initLang='vi'; }catch(_){}
-  var initHz=false; try{ if(localStorage.getItem('stk_hz')==='1') initHz=true; }catch(_){}  // 預設不隱藏，0 排最後；可切成隱藏0
   var COMPANY={'00':'松富','01':'龍港','02':'松揚','03':'松成'};
   var CO_ORDER=['00','01','02','03'];
-  var S={idToken:null,name:"",wh:null,date:"",icpno:'00',items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",hz:false,lang:initLang,baseSubmittedAt:null};
+  var S={idToken:null,name:"",wh:null,date:"",icpno:'00',items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",lang:initLang,baseSubmittedAt:null};
   function coName(){return COMPANY[S.icpno]||('公司'+S.icpno);}
   // 公司主題色:松揚(02)橘、其餘藍。改 :root --accent 讓整頁換色。
   function applyCoTheme(){var o=(S.icpno==='02');var r=document.documentElement.style;r.setProperty('--accent',o?'#e8730c':'#2383e2');r.setProperty('--accent-soft',o?'#fdecd9':'#e8f1fd');}

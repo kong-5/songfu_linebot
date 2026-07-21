@@ -189,7 +189,13 @@
       searchIng:'搜尋中…',searchNone:'找不到符合的品項',searchFail:'搜尋失敗，請再試一次',
       scanv2Hint:'此手機用 LINE 內建掃碼：按一下掃一個',
       camDenied:'無法開啟相機（可能未授權）。請到 手機設定 → LINE → 允許相機，再重開此頁。',
-      manualOnly:'這支手機無法用相機連續掃描，請用下方欄位手動輸入條碼／料號（外接藍牙掃描槍對準欄位掃也可以）。'
+      manualOnly:'這支手機無法用相機連續掃描，請用下方欄位手動輸入條碼／料號（外接藍牙掃描槍對準欄位掃也可以）。',
+      reloginStuckTitle:'登入一直逾時',
+      reloginStuck:'登入一直過期（在 LINE App 以外的瀏覽器較容易發生）。你已掃的數量都安全存在這台裝置，沒有遺失。請點下方按鈕重新登入一次，登入後會自動帶回你剛剛掃的資料。',
+      reloginRetry:'重新登入一次',
+      draftDumpTitle:'你已掃的內容（暫存本機，料號 : 數量）',
+      draftCopy:'複製全部盤點內容',
+      draftCopied:'已複製 ✓'
     },
     vi:{
       langBtn:'中文',
@@ -222,7 +228,13 @@
       searchIng:'Đang tìm…',searchNone:'Không tìm thấy sản phẩm',searchFail:'Tìm thất bại, thử lại',
       scanv2Hint:'Điện thoại này dùng quét mã của LINE: nhấn để quét từng mã',
       camDenied:'Không mở được camera (chưa cấp quyền). Vào Cài đặt điện thoại → LINE → cho phép Camera, rồi mở lại trang.',
-      manualOnly:'Điện thoại này không quét liên tục được, vui lòng nhập mã bằng ô bên dưới (máy quét bluetooth cũng dùng được).'
+      manualOnly:'Điện thoại này không quét liên tục được, vui lòng nhập mã bằng ô bên dưới (máy quét bluetooth cũng dùng được).',
+      reloginStuckTitle:'Đăng nhập liên tục hết hạn',
+      reloginStuck:'Đăng nhập liên tục hết hạn (thường xảy ra trên trình duyệt ngoài LINE). Số lượng bạn đã quét được lưu an toàn trên thiết bị này, không bị mất. Vui lòng nhấn nút bên dưới để đăng nhập lại; sau khi đăng nhập sẽ tự động khôi phục dữ liệu vừa quét.',
+      reloginRetry:'Đăng nhập lại',
+      draftDumpTitle:'Nội dung bạn đã quét (lưu tạm trên máy, mã hàng : SL)',
+      draftCopy:'Sao chép toàn bộ nội dung kiểm kê',
+      draftCopied:'Đã sao chép ✓'
     }
   };
   var LANG='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') LANG='vi'; }catch(_){}
@@ -257,10 +269,68 @@
       return;
     }
     var n=0;try{n=parseInt(sessionStorage.getItem('scan_relogin')||'0',10)||0;}catch(_){}
-    if(n>=2){showCenter('<div>⚠ 登入狀態異常（連續續登失敗）。已掃資料在本機草稿，請關閉頁面重開。</div>');return;}
+    if(n>=2){showReloginStuck();return;} // 連續續登仍失敗＝跳轉迴圈：停手、改手動恢復（比照 stocktake.html）
     try{sessionStorage.setItem('scan_relogin',String(n+1));}catch(_){}
     showCenter('<div class="spin"></div><div>登入逾期，重新登入中…</div>');
     try{liff.login({redirectUri:location.href});}catch(_){}
+  }
+  function clearRelogin(){try{sessionStorage.removeItem('scan_relogin');}catch(_){}}
+  // 離線保險（比照 stocktake.html showReloginStuck）：登入完全卡死時，仍能從本機草稿讀回
+  // 今日已掃數量（料號 : 數量）直接顯示＋一鍵複製，資料永遠不會被登入迴圈困住。
+  function todayTpe(){try{return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());}catch(_){return '';}}
+  function currentDrafts(){ // 掃出本機所有「今日」掃碼草稿（key: scan_draft_<icpno>_<倉>_<日期>）
+    var out=[];
+    try{
+      var today=todayTpe();
+      for(var i=0;i<localStorage.length;i++){
+        var k=localStorage.key(i);
+        if(!k||k.indexOf('scan_draft_')!==0||k.length<24) continue;
+        if(k.slice(-10)!==today) continue;                 // 尾端 _YYYY-MM-DD（11 字）中的日期
+        var rest=k.slice(11,k.length-11);                  // 去掉前綴 'scan_draft_'（11 字）與尾端 '_'+日期（11 字）＝ <icpno>_<倉>
+        var d=null;try{d=JSON.parse(localStorage.getItem(k));}catch(_){d=null;}
+        if(d) out.push({wh:rest.replace('_','/'),date:today,d:d});
+      }
+    }catch(_){}
+    return out;
+  }
+  function draftToText(entry){ // 一倉草稿→純文字（料號 : 數量），順序照掃描順序
+    var d=entry.d||{},counts=d.counts||{},lines=[];
+    var codes=(d.order||[]).slice();
+    Object.keys(counts).forEach(function(c){if(codes.indexOf(c)<0)codes.push(c);});
+    codes.forEach(function(c){
+      var v=counts[c];
+      if(v==null||v==='')return;
+      lines.push(c+' : '+v);
+    });
+    return (entry.wh||'')+' / '+entry.date+'\n'+(lines.length?lines.join('\n'):'—');
+  }
+  function copyText(txt,cb){
+    try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(function(){cb&&cb();},function(){fallbackCopy(txt,cb);});return;}}catch(_){}
+    fallbackCopy(txt,cb);
+  }
+  function fallbackCopy(txt,cb){try{var ta=document.createElement('textarea');ta.value=txt;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();document.execCommand('copy');document.body.removeChild(ta);cb&&cb();}catch(_){}}
+  function showReloginStuck(){ // 打破迴圈：停在穩定畫面，按鈕強制登出後重新互動登入，取得全新 ID Token
+    var drafts=currentDrafts();
+    var dumpHtml='';
+    if(drafts.length){
+      var txt=drafts.map(draftToText).join('\n\n');
+      dumpHtml='<div style="margin-top:16px;text-align:left;width:100%;max-width:320px;background:var(--card,#fff);border:1px solid var(--line,#eaeaea);border-radius:12px;padding:12px 14px;box-sizing:border-box">'
+        +'<div style="font-size:12px;color:var(--txt-3);margin-bottom:8px">'+esc(L('draftDumpTitle'))+'</div>'
+        +'<pre style="white-space:pre-wrap;word-break:break-all;font-size:13px;line-height:1.6;color:var(--txt);margin:0;max-height:44vh;overflow:auto;font-family:inherit">'+esc(txt)+'</pre>'
+        +'<button class="btn-primary" id="scCopyDraft" style="margin-top:10px;width:100%">'+esc(L('draftCopy'))+'</button>'
+        +'</div>';
+    }
+    showCenter('<div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(L('reloginStuckTitle'))+'</div>'
+      +'<div style="font-size:14px;color:var(--txt-2);line-height:1.7;max-width:300px;margin:4px auto 0">'+esc(L('reloginStuck'))+'</div>'
+      +'<button class="btn-primary" id="scReloginRetry" style="margin-top:14px">'+esc(L('reloginRetry'))+'</button>'
+      +dumpHtml);
+    document.getElementById('scReloginRetry').addEventListener('click',function(){
+      clearRelogin();
+      try{if(liff.logout)liff.logout();}catch(_){}          // 登出後下一次 login 會強制互動登入，拿到全新 token（打破過期迴圈）
+      try{liff.login({redirectUri:location.href});}catch(_){try{location.reload();}catch(_2){}}
+    });
+    var cp=document.getElementById('scCopyDraft');
+    if(cp)cp.addEventListener('click',function(){copyText(drafts.map(draftToText).join('\n\n'),function(){cp.textContent=L('draftCopied');});});
   }
   function _handleRes(r){
     if(WEB&&(r.status===401||r.status===403||r.redirected)){relogin();return new Promise(function(){});}
