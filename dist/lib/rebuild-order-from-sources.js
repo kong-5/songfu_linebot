@@ -130,8 +130,12 @@ async function replayOrderItemEditsInTx(h, orderId, edits, insertedItems) {
     }
     console.log("[rebuild-order] 人工改單軌跡重放完成 orderId=%s 軌跡=%d 筆（set更新=%d、delete刪除=%d、補插=%d）", orderId, edits.length, setCnt, delCnt, addCnt);
 }
-async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) {
-    parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(Array.isArray(parsed) ? parsed : []);
+async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed, opts) {
+    // opts.skipDedupe：呼叫端已判定「原文真的有重複行」（同名同量分次加叫）時跳過去重，
+    // 否則上午叫 5kg、下午再叫 5kg 會被當成 Gemini 重複輸出丟掉一筆＝漏出貨。
+    parsed = Array.isArray(parsed) ? parsed : [];
+    if (!opts || !opts.skipDedupe)
+        parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(parsed);
     const custRow = await db.prepare("SELECT default_unit FROM customers WHERE id = ?").get(customerId);
     const fallbackUnit = custRow?.default_unit?.trim() || "公斤";
     const convRules = await (0, unit_conversion_js_1.loadUnitConversionRules)(db);
@@ -187,6 +191,11 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
     }
     let blockedStatus = null;
     const doWrite = async (h) => {
+        // 多實例併發防護（PG only）：同一張單的 rebuild 串行化。READ COMMITTED 下兩實例
+        // 同時 DELETE+INSERT，後者的 DELETE 看不到前者未提交的 INSERT → 兩套品項並存＝雙倍出貨。
+        // advisory xact lock 於交易結束自動釋放；SQLite 單連線天然序列化，毋須加鎖。
+        if (process.env.DATABASE_URL)
+            await h.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").get("rebuild|" + String(orderId));
         // 安全網（交易內覆檢，與 insertParsedItemsForOrder 同一道防線）：作廢/客訴單不重建品項。
         // 沒這道檢查時，收單中被標客訴/作廢的單會在結單 rebuild 依 raw 把品項灌回去（幽靈品項→重複出貨）。
         const stRow = await h.prepare("SELECT status FROM orders WHERE id = ?").get(orderId);
@@ -249,9 +258,16 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
         .filter((l) => l && l !== "[圖片]")
         .join("\n")
         .trim();
+    // 同名同量合法加叫偵測：raw 有「一模一樣的重複行」（上午叫5公斤、下午再傳一次同文字）時，
+    // Gemini 對兩行各輸出一筆相同列，去重會丟掉一筆＝漏出貨。原文有重複行＝重複列是真的。
+    // 僅在「純文字、無附件」時放行重複列——有附件時仍去重（防同一張單「文字＋拍照」雙重解析變雙倍）。
+    const srcLines = textForParse ? textForParse.split(/\n/).map((l) => l.trim()).filter(Boolean) : [];
+    const hasDupSourceLines = new Set(srcLines).size !== srcLines.length;
     let parsed = [];
     if (textForParse) {
-        const fromText = await (0, parse_order_message_js_1.parseOrderMessage)(textForParse, fallbackUnit, Object.keys(geminiHintOpts).length ? geminiHintOpts : undefined);
+        // keepDuplicateRows：原文有重複行時要求 parseOrderMessage 不去重（它內部也會 dedupe）
+        const textOpts = { ...geminiHintOpts, ...(hasDupSourceLines ? { keepDuplicateRows: true } : {}) };
+        const fromText = await (0, parse_order_message_js_1.parseOrderMessage)(textForParse, fallbackUnit, Object.keys(textOpts).length ? textOpts : undefined);
         parsed.push(...fromText);
     }
     const token = process.env.LINE_CHANNEL_ACCESS_TOKEN?.trim();
@@ -278,10 +294,13 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
             }
         }
     }
-    if (parsed.length)
-        parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(parsed);
     const hasText = Boolean(textForParse);
     const hasAtt = Boolean(attachmentRows?.length);
+    // 純文字且原文有重複行 → 保留重複列（合法加叫）；其餘情況照舊去重
+    //（有附件必去重：同一張單「文字＋拍照」雙重解析不可變雙倍）。
+    const dedupeSkipped = hasDupSourceLines && !hasAtt;
+    if (parsed.length && !dedupeSkipped)
+        parsed = (0, order_parsed_heuristics_js_1.dedupeParsedOrderRows)(parsed);
     const hasVisionKey = Boolean(process.env.GOOGLE_CLOUD_VISION_API_KEY?.trim());
     const hasGeminiKey = Boolean((0, gemini_order_helpers_js_1.getGeminiApiKey)());
     let error = "parse";
@@ -297,7 +316,7 @@ async function collectParsedFromOrderSources(db, customerId, rawMessage, attachm
         else if (hasText && hasGeminiKey)
             error = "gemini_empty";
     }
-    return { parsed, error };
+    return { parsed, error, dedupeSkipped };
 }
 /** order_sub_split_key：NULL＝未拆單（整張單重算全部品項）；空字串＝拆單後「主客戶／預設」桶；非空＝該子客戶名稱 */
 function filterParsedRowsForOrderSplit(parsed, orderSubSplitKey) {
@@ -320,7 +339,7 @@ async function rebuildOrderItemsFromOrderSources(db, orderId, customerId, rawMes
         if (stv === "deleted" || stv === "complaint")
             return { ok: false, error: "status_" + stv };
     }
-    const { parsed, error } = await collectParsedFromOrderSources(db, customerId, rawMessage, attachmentRows, imageExtraOpts);
+    const { parsed, error, dedupeSkipped } = await collectParsedFromOrderSources(db, customerId, rawMessage, attachmentRows, imageExtraOpts);
     if (!parsed.length)
         return { ok: false, error };
     const meta = await db.prepare("SELECT order_sub_split_key FROM orders WHERE id = ?").get(orderId);
@@ -328,7 +347,7 @@ async function rebuildOrderItemsFromOrderSources(db, orderId, customerId, rawMes
     const filtered = filterParsedRowsForOrderSplit(parsed, splitKey);
     if (!filtered.length)
         return { ok: false, error: splitKey != null ? "split_no_match" : error };
-    const wr = await replaceOrderItemsFromParsedRows(db, orderId, customerId, filtered);
+    const wr = await replaceOrderItemsFromParsedRows(db, orderId, customerId, filtered, dedupeSkipped ? { skipDedupe: true } : undefined);
     if (wr && wr.blockedStatus)
         return { ok: false, error: "status_" + wr.blockedStatus };
     return { ok: true };

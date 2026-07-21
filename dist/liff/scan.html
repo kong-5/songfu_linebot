@@ -155,6 +155,79 @@
   var app=document.getElementById('app');
   var COMPANY={'00':'松富','01':'龍港','02':'松揚','03':'松成'};
   var CO_ORDER=['02','00','01','03']; // 掃碼主要給松揚用，排最前
+
+  // ---------- 中／越 語系（與盤點頁共用 stk_lang：兩頁同一批使用者，切一次兩頁都生效） ----------
+  var I18N={
+    zh:{
+      langBtn:'Tiếng Việt',
+      loadWh:'載入倉庫…',pickTitle:'掃碼盤點',pickSub:'選擇公司與倉庫',countDay:'盤點日',
+      itemsN:function(n){return n+' 項';},countedToday:'今日已盤',
+      loadWhFail:'⚠ 載入倉庫失敗（網路不穩）',retry:'重試',
+      loadItems:'載入品項與條碼…',loadFail:'⚠ 載入失敗（網路不穩）',
+      bcFail:'⚠ 條碼對照載入失敗：',bcFailHint:'網路不穩時會發生，重試即可；不要在此狀態下綁定條碼',
+      backWh:'‹ 倉庫',subScan:'掃碼盤點',camHint:'對準條碼即可（自動連續掃描）',
+      torch:'手電筒',torchOff:'關手電筒',pause:'暫停',resume:'繼續',
+      manualPh:'掃不到？手動輸入條碼或料號',manualGo:'帶入',
+      curHint:'掃到的品項會出現在這裡；同一條碼連掃會累加，或用大鍵盤直接輸入數量。',
+      sysLab:'帳上',notInWh:function(w){return '非本倉品項（'+w+'）';},
+      kpClear:'清',kpOk:'完成',match:'相符',
+      listT:function(n){return '已盤 '+n+' 項（點品項可修改）';},
+      barTxt:function(d,t){return '已盤 <b>'+d+'</b> / 倉內 '+t+' 項';},
+      submit:'送出盤點',submitting:'送出中…',noneScanned:'還沒有掃任何品項',
+      confirmSubmit:function(wh,co,n){return '送出盤點？\n\n倉庫：'+wh+'（'+co+'）\n已盤 '+n+' 項';},
+      conflict:'這個倉今天已經有人送出盤點了。\n將重新載入最新資料並合併你未送出的數量，請確認後再送出。',
+      submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',
+      sent:'盤點已送出',recorded:function(n){return '已記錄 '+n+' 項';},finish:'完成',
+      notFound:'查無品項 ',
+      bindTitle:'新條碼，綁定品項',
+      bindBc:function(bc,co){return '條碼 <b>'+bc+'</b> 還沒對應到'+co+'的品項';},
+      bindSearchPh:'搜尋品名 / 料號 / 規格',
+      bindHint:'找到品項後點一下選取；之後掃這個條碼就會直接帶入。',
+      bindQps:'掃 1 下＝幾個單位？（整箱條碼填入數）',
+      cancel:'取消',bindGo:'綁定並帶入',binding:'綁定中…',
+      bindFail:'綁定失敗：',bindFailRetry:'綁定失敗，請稍後再試',
+      searchIng:'搜尋中…',searchNone:'找不到符合的品項',searchFail:'搜尋失敗，請再試一次',
+      scanv2Hint:'此手機用 LINE 內建掃碼：按一下掃一個',
+      camDenied:'無法開啟相機（可能未授權）。請到 手機設定 → LINE → 允許相機，再重開此頁。',
+      manualOnly:'這支手機無法用相機連續掃描，請用下方欄位手動輸入條碼／料號（外接藍牙掃描槍對準欄位掃也可以）。'
+    },
+    vi:{
+      langBtn:'中文',
+      loadWh:'Đang tải kho…',pickTitle:'Kiểm kê quét mã',pickSub:'Chọn công ty và kho',countDay:'Ngày kiểm',
+      itemsN:function(n){return n+' SP';},countedToday:'Đã kiểm hôm nay',
+      loadWhFail:'⚠ Tải kho thất bại (mạng yếu)',retry:'Thử lại',
+      loadItems:'Đang tải sản phẩm và mã vạch…',loadFail:'⚠ Tải thất bại (mạng yếu)',
+      bcFail:'⚠ Tải bảng mã vạch thất bại: ',bcFailHint:'Do mạng yếu, hãy thử lại; đừng gán mã vạch lúc này',
+      backWh:'‹ Kho',subScan:'Kiểm kê quét mã',camHint:'Hướng camera vào mã vạch (tự quét liên tục)',
+      torch:'Đèn pin',torchOff:'Tắt đèn',pause:'Tạm dừng',resume:'Tiếp tục',
+      manualPh:'Không quét được? Nhập mã vạch / mã hàng',manualGo:'Nhập',
+      curHint:'Sản phẩm quét được sẽ hiện ở đây; quét cùng mã sẽ cộng dồn, hoặc dùng bàn phím lớn nhập số lượng.',
+      sysLab:'Hệ thống',notInWh:function(w){return 'Không thuộc kho này ('+w+')';},
+      kpClear:'Xóa',kpOk:'Xong',match:'Khớp',
+      listT:function(n){return 'Đã kiểm '+n+' SP (nhấn để sửa)';},
+      barTxt:function(d,t){return 'Đã kiểm <b>'+d+'</b> / '+t+' SP trong kho';},
+      submit:'Gửi kiểm kê',submitting:'Đang gửi…',noneScanned:'Chưa quét sản phẩm nào',
+      confirmSubmit:function(wh,co,n){return 'Gửi kiểm kê?\n\nKho: '+wh+' ('+co+')\nĐã kiểm '+n+' SP';},
+      conflict:'Kho này hôm nay đã có người gửi kiểm kê.\nSẽ tải lại dữ liệu mới và gộp số lượng chưa gửi của bạn, vui lòng kiểm tra rồi gửi lại.',
+      submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',
+      sent:'Đã gửi kiểm kê',recorded:function(n){return 'Đã ghi '+n+' mục';},finish:'Xong',
+      notFound:'Không tìm thấy ',
+      bindTitle:'Mã vạch mới, gán sản phẩm',
+      bindBc:function(bc,co){return 'Mã <b>'+bc+'</b> chưa gán với sản phẩm nào của '+co;},
+      bindSearchPh:'Tìm tên / mã hàng / quy cách',
+      bindHint:'Tìm thấy thì nhấn chọn; lần sau quét mã này sẽ tự nhận.',
+      bindQps:'Quét 1 lần = mấy đơn vị? (mã thùng: nhập số lượng trong thùng)',
+      cancel:'Hủy',bindGo:'Gán và nhập',binding:'Đang gán…',
+      bindFail:'Gán thất bại: ',bindFailRetry:'Gán thất bại, thử lại sau',
+      searchIng:'Đang tìm…',searchNone:'Không tìm thấy sản phẩm',searchFail:'Tìm thất bại, thử lại',
+      scanv2Hint:'Điện thoại này dùng quét mã của LINE: nhấn để quét từng mã',
+      camDenied:'Không mở được camera (chưa cấp quyền). Vào Cài đặt điện thoại → LINE → cho phép Camera, rồi mở lại trang.',
+      manualOnly:'Điện thoại này không quét liên tục được, vui lòng nhập mã bằng ô bên dưới (máy quét bluetooth cũng dùng được).'
+    }
+  };
+  var LANG='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') LANG='vi'; }catch(_){}
+  function setLang(l){ LANG=(l==='vi'?'vi':'zh'); try{localStorage.setItem('stk_lang',LANG);}catch(_){} }
+  function L(k){ var d=I18N[LANG]||I18N.zh; return d[k]!=null?d[k]:(I18N.zh[k]||''); }
   function apiUrl(kind){
     if(WEB) return APIB+'/'+kind; // /admin/scan/warehouses|items|barcodes|search|bind|submit
     switch(kind){
@@ -286,24 +359,27 @@
   }
   function showPicker(){
     stopScan();
-    showCenter('<div class="spin"></div><div>載入倉庫…</div>');
+    showCenter('<div class="spin"></div><div>'+esc(L('loadWh'))+'</div>');
     api(apiUrl('warehouses')+'?icpno='+encodeURIComponent(S.icpno)).then(function(res){
       if(res.error){showCenter('<div>⚠ '+esc(res.error)+'</div>');return;}
       var whs=res.warehouses||[];
-      var html='<div class="pk-head"><h1>掃碼盤點</h1>'
-        +'<div class="sub">選擇公司與倉庫 · 盤點日 '+esc(res.date||'')+(S.name?' · '+esc(S.name):'')+'</div></div>'
+      var html='<div class="pk-head"><div style="display:flex;align-items:center;gap:10px;"><h1 style="flex:1;">'+esc(L('pickTitle'))+'</h1>'
+        +'<button id="scLang" style="border:1px solid var(--line,#dcdcdc);background:transparent;border-radius:8px;padding:5px 10px;font-size:13px;color:var(--txt-2,#555);">'+esc(L('langBtn'))+'</button></div>'
+        +'<div class="sub">'+esc(L('pickSub'))+' · '+esc(L('countDay'))+' '+esc(res.date||'')+(S.name?' · '+esc(S.name):'')+'</div></div>'
         +coSegHtml();
       if(!whs.length){html+='<div class="empty">'+esc(coName())+'還沒有「納入盤點」的倉庫。<br>請先讓內網代理推送庫存（公司代碼設 00,01,02,03），<br>再到後台 → 倉庫設定（切到'+esc(coName())+'）勾選要盤的倉。</div>';}
       else{
         html+='<div class="pk-list">'+whs.map(function(w){
           return '<button class="pk" data-w="'+esc(w.code)+'">'
             +'<div class="pk-ic">▦</div>'
-            +'<div class="pk-i"><div class="n">'+esc(w.name||w.code)+'</div><div class="m">'+esc(w.code)+' · '+esc(String(w.items))+' 項</div></div>'
-            +(w.countedToday?'<span class="pk-done">今日已盤</span>':'')
+            +'<div class="pk-i"><div class="n">'+esc(w.name||w.code)+'</div><div class="m">'+esc(w.code)+' · '+esc(L('itemsN')(w.items))+'</div></div>'
+            +(w.countedToday?'<span class="pk-done">'+esc(L('countedToday'))+'</span>':'')
             +'<span class="pk-arrow">›</span></button>';
         }).join('')+'</div>';
       }
       app.innerHTML='<div>'+html+'</div>';
+      var lb=document.getElementById('scLang');
+      if(lb)lb.addEventListener('click',function(){setLang(LANG==='vi'?'zh':'vi');showPicker();});
       Array.prototype.forEach.call(app.querySelectorAll('.co-seg button'),function(b){
         b.addEventListener('click',function(){
           S.icpno=b.getAttribute('data-co');
@@ -314,25 +390,25 @@
       });
       Array.prototype.forEach.call(app.querySelectorAll('.pk'),function(b){b.addEventListener('click',function(){openWarehouse(b.getAttribute('data-w'));});});
     }).catch(function(){
-      showCenter('<div>⚠ 載入倉庫失敗（網路不穩）</div><button class="btn-primary" style="margin-top:8px" id="scPkRetry">重試</button>');
+      showCenter('<div>'+esc(L('loadWhFail'))+'</div><button class="btn-primary" style="margin-top:8px" id="scPkRetry">'+esc(L('retry'))+'</button>');
       var r=document.getElementById('scPkRetry');if(r)r.addEventListener('click',showPicker);
     });
   }
 
   // ---------- 載入倉庫品項＋條碼對照 ----------
   function openWarehouse(code){
-    showCenter('<div class="spin"></div><div>載入品項與條碼…</div>');
+    showCenter('<div class="spin"></div><div>'+esc(L('loadItems'))+'</div>');
     Promise.all([
       api(apiUrl('items')+'?warehouse='+encodeURIComponent(code)+'&icpno='+encodeURIComponent(S.icpno)),
       api(apiUrl('barcodes')+'?icpno='+encodeURIComponent(S.icpno))
     ]).then(function(rs){
       var res=rs[0],bc=rs[1];
-      if(res.error){showCenter('<div>⚠ '+esc(res.error)+'</div><button class="btn-primary" style="margin-top:8px" id="scRetry">重試</button>');var r1=document.getElementById('scRetry');if(r1)r1.addEventListener('click',function(){openWarehouse(code);});return;}
+      if(res.error){showCenter('<div>⚠ '+esc(res.error)+'</div><button class="btn-primary" style="margin-top:8px" id="scRetry">'+esc(L('retry'))+'</button>');var r1=document.getElementById('scRetry');if(r1)r1.addEventListener('click',function(){openWarehouse(code);});return;}
       // ⚠ 條碼對照載入失敗絕不能靜默當空表：空表會讓每個「已綁過」的條碼都跳綁定面板，
       //   員工整倉重綁一次白工、還可能手滑綁錯品項污染 product_barcode（之後所有人掃都帶錯料號）。
       if(bc&&bc.error){
-        showCenter('<div>⚠ 條碼對照載入失敗：'+esc(bc.error)+'</div><div style="font-size:13px;color:var(--txt-3)">網路不穩時會發生，重試即可；不要在此狀態下綁定條碼</div>'
-          +'<button class="btn-primary" style="margin-top:8px" id="scRetry">重試</button>');
+        showCenter('<div>'+esc(L('bcFail'))+esc(bc.error)+'</div><div style="font-size:13px;color:var(--txt-3)">'+esc(L('bcFailHint'))+'</div>'
+          +'<button class="btn-primary" style="margin-top:8px" id="scRetry">'+esc(L('retry'))+'</button>');
         var r2=document.getElementById('scRetry');if(r2)r2.addEventListener('click',function(){openWarehouse(code);});
         return;
       }
@@ -365,7 +441,7 @@
       renderScan();
       startScan();
     }).catch(function(){
-      showCenter('<div>⚠ 載入失敗（網路不穩）</div><button class="btn-primary" style="margin-top:8px" id="scRetry">重試</button>');
+      showCenter('<div>'+esc(L('loadFail'))+'</div><button class="btn-primary" style="margin-top:8px" id="scRetry">'+esc(L('retry'))+'</button>');
       var r=document.getElementById('scRetry');if(r)r.addEventListener('click',function(){openWarehouse(code);});
     });
   }
@@ -377,21 +453,21 @@
   function renderScan(){
     stopScan();
     app.innerHTML=''
-      +'<header><div class="head-main"><button class="back" id="scBack">‹ 倉庫</button>'
-        +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(coName())+' · '+esc(S.date)+' · 掃碼盤點</div></div>'
+      +'<header><div class="head-main"><button class="back" id="scBack">'+esc(L('backWh'))+'</button>'
+        +'<div class="head-t"><h1>'+esc(S.wh.name||S.wh.code)+'</h1><div class="sub">'+esc(coName())+' · '+esc(S.date)+' · '+esc(L('subScan'))+'</div></div>'
       +'</div></header>'
       +'<div class="pad">'
         +'<div class="cam" id="scCam"><video id="scVideo" playsinline muted autoplay></video><div class="cam-line"></div>'
-          +'<div class="cam-tools"><button class="cam-btn" id="scTorch" style="display:none;">手電筒</button><button class="cam-btn" id="scPause">暫停</button></div>'
-          +'<div class="cam-hint" id="scHint">對準條碼即可（自動連續掃描）</div></div>'
-        +'<div class="manual"><input id="scManual" placeholder="掃不到？手動輸入條碼或料號" autocomplete="off"><button id="scManualGo">帶入</button></div>'
+          +'<div class="cam-tools"><button class="cam-btn" id="scTorch" style="display:none;">'+esc(L('torch'))+'</button><button class="cam-btn" id="scPause">'+esc(L('pause'))+'</button></div>'
+          +'<div class="cam-hint" id="scHint">'+esc(L('camHint'))+'</div></div>'
+        +'<div class="manual"><input id="scManual" placeholder="'+esc(L('manualPh'))+'" autocomplete="off"><button id="scManualGo">'+esc(L('manualGo'))+'</button></div>'
         +'<div id="scCur"></div>'
         +'<div class="sec-t" id="scListT"></div><div id="scList"></div>'
       +'</div>'
-      +'<div class="bar"><div class="bar-in"><div class="s" id="scBarTxt"></div><button class="submit" id="scSubmit">送出盤點</button></div></div>';
+      +'<div class="bar"><div class="bar-in"><div class="s" id="scBarTxt"></div><button class="submit" id="scSubmit">'+esc(L('submit'))+'</button></div></div>';
     document.getElementById('scBack').addEventListener('click',function(){stopScan();showPicker();});
     document.getElementById('scPause').addEventListener('click',function(){
-      if(S.scanning){pauseScan();this.textContent='繼續';}else{resumeScan();this.textContent='暫停';}
+      if(S.scanning){pauseScan();this.textContent=L('resume');}else{resumeScan();this.textContent=L('pause');}
     });
     document.getElementById('scManualGo').addEventListener('click',manualGo);
     document.getElementById('scManual').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();manualGo();}});
@@ -453,12 +529,12 @@
           if(caps.torch){
             var tb=document.getElementById('scTorch');var on=false;
             tb.style.display='';
-            tb.addEventListener('click',function(){on=!on;track.applyConstraints({advanced:[{torch:on}]}).catch(function(){});tb.textContent=on?'關手電筒':'手電筒';});
+            tb.addEventListener('click',function(){on=!on;track.applyConstraints({advanced:[{torch:on}]}).catch(function(){});tb.textContent=on?L('torchOff'):L('torch');});
           }
         }catch(_){}
       });
     })
-    .catch(function(){startScanV2OrManual('無法開啟相機（可能未授權）。請到 手機設定 → LINE → 允許相機，再重開此頁。');});
+    .catch(function(){startScanV2OrManual(L('camDenied')+' ');});
   }
   function nativeLoop(){
     if(!S.scanning||S.engine!=='native')return;
@@ -494,7 +570,7 @@
           var raw=String(result.getText()||'').trim();
           if(raw)hitBarcode(raw);
         }
-      }).catch(function(){startScanV2OrManual('無法開啟相機（可能未授權）。請到 手機設定 → LINE → 允許相機，再重開此頁。');});
+      }).catch(function(){startScanV2OrManual(L('camDenied')+' ');});
     }catch(_){startScanV2OrManual();}
   }
   function startScanV2OrManual(prefix){
@@ -503,7 +579,7 @@
     try{canV2=liff.isInClient()&&liff.isApiAvailable&&liff.isApiAvailable('scanCodeV2');}catch(_){}
     if(canV2){
       S.engine='scanv2';S.scanning=true;
-      cam.innerHTML='<div class="scanv2"><button id="scV2">📷 掃描條碼</button><div class="d">'+esc((prefix||'')+'此手機用 LINE 內建掃碼：按一下掃一個')+'</div></div>';
+      cam.innerHTML='<div class="scanv2"><button id="scV2">📷 '+esc(L('subScan'))+'</button><div class="d">'+esc((prefix||'')+L('scanv2Hint'))+'</div></div>';
       document.getElementById('scV2').addEventListener('click',function(){
         liff.scanCodeV2().then(function(r){
           var raw=String((r&&r.value)||'').trim();
@@ -512,7 +588,7 @@
       });
     }else{
       S.engine='manual';
-      cam.innerHTML='<div class="cam-off">'+esc((prefix||'')+'這支手機無法用相機連續掃描，請用下方欄位手動輸入條碼／料號（外接藍牙掃描槍對準欄位掃也可以）。')+'</div>';
+      cam.innerHTML='<div class="cam-off">'+esc((prefix||'')+L('manualOnly'))+'</div>';
     }
   }
   var _lastCode='',_lastAt=0;
@@ -528,7 +604,7 @@
     var hit=S.barcodes[raw];
     if(hit){
       var it=itemOf(hit.c);
-      if(!it){fetchItem(hit.c,function(it2){if(it2)addScan(it2,hit.q||1);else{beep(false);toast('查無品項 '+hit.c);}});return;}
+      if(!it){fetchItem(hit.c,function(it2){if(it2)addScan(it2,hit.q||1);else{beep(false);toast(L('notFound')+hit.c);}});return;}
       addScan(it,hit.q||1);
       return;
     }
@@ -561,22 +637,22 @@
     return '<div class="pad9">'+rows.map(function(r){return r.map(function(k){
       var cls='',lab=k;
       if(k==='⌫')cls='fn';
-      if(k==='C'){cls='fn';lab='清';}
+      if(k==='C'){cls='fn';lab=L('kpClear');}
       if(k==='−1')cls='fn minus';
       if(k==='＋1')cls='fn plus';
-      if(k==='OK'){cls='fn ok';lab='完成';}
+      if(k==='OK'){cls='fn ok';lab=L('kpOk');}
       return '<button data-k="'+esc(k)+'" class="'+cls+'">'+esc(lab)+'</button>';
     }).join('');}).join('')+'</div>';
   }
   function renderCur(){
     var box=document.getElementById('scCur');if(!box)return;
-    if(!S.cur){box.innerHTML='<div class="hint" style="margin:12px 16px 0;">掃到的品項會出現在這裡；同一條碼連掃會累加，或用大鍵盤直接輸入數量。</div>';return;}
+    if(!S.cur){box.innerHTML='<div class="hint" style="margin:12px 16px 0;">'+esc(L('curHint'))+'</div>';return;}
     var it=itemOf(S.cur);if(!it){box.innerHTML='';return;}
     var notInWh=!S.itemIdx[it.c];
     box.innerHTML='<div class="cur"><div class="cur-in"><div class="nm">'+esc(it.n)+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div>'
-      +(notInWh?'<div class="tags"><span class="tag warn">非本倉品項（'+esc(it.w||'?')+'）</span></div>':'')
-      +'<div class="cur-qty"><div class="sysbox">帳上 <b>'+fmt(it.sys)+'</b> '+esc(it.u||'')+'</div>'
+      +(notInWh?'<div class="tags"><span class="tag warn">'+esc(L('notInWh')(it.w||'?'))+'</span></div>':'')
+      +'<div class="cur-qty"><div class="sysbox">'+esc(L('sysLab'))+' <b>'+fmt(it.sys)+'</b> '+esc(it.u||'')+'</div>'
         +'<div class="qdisp'+(S.kpOpen?' editing':'')+'" id="scQd"><span class="v" id="scQv">'+esc(S.counts[it.c]!=null&&S.counts[it.c]!==''?S.counts[it.c]:'0')+'</span><span class="u">'+esc(it.u||'')+'</span></div></div>'
       +'</div>'+(S.kpOpen?kpHtml():'')+'</div>';
     document.getElementById('scQd').addEventListener('click',function(){S.kpOpen=!S.kpOpen;S.kpFresh=true;renderCur();});
@@ -618,19 +694,19 @@
   function diffPill(it){
     var v=parseFloat(S.counts[it.c]);if(!isFinite(v))return '';
     var d=Math.round((v-Number(it.sys||0))*100)/100;
-    if(d===0)return '<span class="diff eq">相符</span>';
+    if(d===0)return '<span class="diff eq">'+esc(L('match'))+'</span>';
     return '<span class="diff '+(d>0?'sp':'sn')+'">'+(d>0?'+'+fmt(d):fmt(d))+'</span>';
   }
   function renderList(){
     var box=document.getElementById('scList'),tt=document.getElementById('scListT');
     if(!box)return;
     var codes=S.order.slice().reverse().filter(function(c){return S.counts[c]!=null&&S.counts[c]!=='';});
-    tt.textContent=codes.length?('已盤 '+codes.length+' 項（點品項可修改）'):'';
+    tt.textContent=codes.length?L('listT')(codes.length):'';
     if(!codes.length){box.innerHTML='';return;}
     box.innerHTML='<div class="list">'+codes.map(function(c){
       var it=itemOf(c);if(!it)return '';
       return '<div class="item" data-c="'+esc(c)+'"><div class="info"><div class="nm">'+esc(it.n)+'</div>'
-        +'<div class="meta">'+esc(c)+' · 帳上 '+fmt(it.sys)+'</div></div>'
+        +'<div class="meta">'+esc(c)+' · '+esc(L('sysLab'))+' '+fmt(it.sys)+'</div></div>'
         +diffPill(it)
         +'<div class="v">'+esc(S.counts[c])+' <span class="su">'+esc(it.u||'')+'</span></div></div>';
     }).join('')+'</div>';
@@ -640,7 +716,7 @@
   }
   function updateBar(){
     var el=document.getElementById('scBarTxt');if(!el)return;
-    el.innerHTML='已盤 <b>'+countedCount()+'</b> / 倉內 '+S.items.length+' 項';
+    el.innerHTML=L('barTxt')(countedCount(),S.items.length);
   }
 
   // ---------- 綁定新條碼 ----------
@@ -653,14 +729,14 @@
     var mask=document.createElement('div');mask.className='sheet-mask';mask.id='bindMask';
     mask.innerHTML='<div class="sheet" style="position:relative;">'
       +'<button class="sheet-x" id="bindX">×</button>'
-      +'<div class="sheet-h"><div class="t">新條碼，綁定品項</div><div class="bc">條碼 <b>'+esc(raw)+'</b> 還沒對應到'+esc(coName())+'的品項</div></div>'
+      +'<div class="sheet-h"><div class="t">'+esc(L('bindTitle'))+'</div><div class="bc">'+L('bindBc')(esc(raw),esc(coName()))+'</div></div>'
       +'<div class="sheet-body">'
         +'<div id="bindSelBox"></div>'
-        +'<div class="search"><input id="bindQ" placeholder="搜尋品名 / 料號 / 規格" autocomplete="off"></div>'
-        +'<div class="hint">找到品項後點一下選取；之後掃這個條碼就會直接帶入。</div>'
+        +'<div class="search"><input id="bindQ" placeholder="'+esc(L('bindSearchPh'))+'" autocomplete="off"></div>'
+        +'<div class="hint">'+esc(L('bindHint'))+'</div>'
         +'<div id="bindRes"></div>'
-        +'<div class="bind-qps"><span class="lab">掃 1 下＝幾個單位？（整箱條碼填入數）</span><input id="bindQps" inputmode="decimal" value="1"></div>'
-        +'<div class="bind-act"><button class="cancel" id="bindCancel">取消</button><button class="go" id="bindGo" disabled>綁定並帶入</button></div>'
+        +'<div class="bind-qps"><span class="lab">'+esc(L('bindQps'))+'</span><input id="bindQps" inputmode="decimal" value="1"></div>'
+        +'<div class="bind-act"><button class="cancel" id="bindCancel">'+esc(L('cancel'))+'</button><button class="go" id="bindGo" disabled>'+esc(L('bindGo'))+'</button></div>'
       +'</div></div>';
     document.body.appendChild(mask);
     var close=function(){
@@ -679,24 +755,24 @@
       if(!B.sel)return;
       var qps=parseFloat(document.getElementById('bindQps').value);
       if(!isFinite(qps)||qps<=0)qps=1;
-      var btn=this;btn.disabled=true;btn.textContent='綁定中…';
+      var btn=this;btn.disabled=true;btn.textContent=L('binding');
       post(apiUrl('bind'),{icpno:S.icpno,barcode:B.barcode,erp_code:B.sel.c,qty_per_scan:qps}).then(function(res){
-        if(res.error){btn.disabled=false;btn.textContent='綁定並帶入';alert('綁定失敗：'+res.error);return;}
+        if(res.error){btn.disabled=false;btn.textContent=L('bindGo');alert(L('bindFail')+res.error);return;}
         S.barcodes[B.barcode]={c:B.sel.c,q:qps};
         if(!S.itemIdx[B.sel.c])S.extra[B.sel.c]=B.sel;
         close();
         addScan(itemOf(B.sel.c),qps);
-      }).catch(function(){btn.disabled=false;btn.textContent='綁定並帶入';alert('綁定失敗，請稍後再試');});
+      }).catch(function(){btn.disabled=false;btn.textContent=L('bindGo');alert(L('bindFailRetry'));});
     });
     setTimeout(function(){var q=document.getElementById('bindQ');if(q)q.focus();},50);
   }
   function bindSearch(q){
     var box=document.getElementById('bindRes');if(!box)return;
     if(!q){box.innerHTML='';return;}
-    box.innerHTML='<div class="hint">搜尋中…</div>';
+    box.innerHTML='<div class="hint">'+esc(L('searchIng'))+'</div>';
     api(apiUrl('search')+'?icpno='+encodeURIComponent(S.icpno)+'&q='+encodeURIComponent(q)).then(function(res){
       var items=res.items||[];
-      if(!items.length){box.innerHTML='<div class="hint">找不到符合的品項</div>';return;}
+      if(!items.length){box.innerHTML='<div class="hint">'+esc(L('searchNone'))+'</div>';return;}
       box.innerHTML=items.map(function(it,i){
         return '<button class="cand" data-i="'+i+'"><div class="info"><div class="nm">'+esc(it.n)+'</div>'
           +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+(it.w?' · 倉 '+esc(it.w):'')+'</div></div>'
@@ -706,19 +782,19 @@
         b.addEventListener('click',function(){
           B.sel=items[+b.getAttribute('data-i')];
           var sb=document.getElementById('bindSelBox');
-          sb.innerHTML='<div class="bind-sel"><div class="nm">'+esc(B.sel.n)+'</div><div class="meta">'+esc(B.sel.c)+(B.sel.s?' · '+esc(B.sel.s):'')+' · 帳上 '+fmt(B.sel.sys)+' '+esc(B.sel.u||'')+'</div></div>';
+          sb.innerHTML='<div class="bind-sel"><div class="nm">'+esc(B.sel.n)+'</div><div class="meta">'+esc(B.sel.c)+(B.sel.s?' · '+esc(B.sel.s):'')+' · '+esc(L('sysLab'))+' '+fmt(B.sel.sys)+' '+esc(B.sel.u||'')+'</div></div>';
           document.getElementById('bindGo').disabled=false;
         });
       });
-    }).catch(function(){box.innerHTML='<div class="hint">搜尋失敗，請再試一次</div>';});
+    }).catch(function(){box.innerHTML='<div class="hint">'+esc(L('searchFail'))+'</div>';});
   }
 
   // ---------- 送出 ----------
   function submit(){
     var codes=S.order.filter(function(c){return S.counts[c]!=null&&S.counts[c]!=='';});
-    if(!codes.length){alert('還沒有掃任何品項');return;}
-    if(!confirm('送出盤點？\n\n倉庫：'+(S.wh.name||S.wh.code)+'（'+coName()+'）\n已盤 '+codes.length+' 項'))return;
-    var btn=document.getElementById('scSubmit');btn.disabled=true;btn.textContent='送出中…';
+    if(!codes.length){alert(L('noneScanned'));return;}
+    if(!confirm(L('confirmSubmit')(S.wh.name||S.wh.code,coName(),codes.length)))return;
+    var btn=document.getElementById('scSubmit');btn.disabled=true;btn.textContent=L('submitting');
     var counts=[];
     codes.forEach(function(c){
       var it=itemOf(c);if(!it)return;
@@ -743,17 +819,17 @@
     });
     post(apiUrl('submit'),{warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:S.baseSubmittedAt}).then(function(res){
       if(res.error){
-        btn.disabled=false;btn.textContent='送出盤點';
-        if(res.code==='conflict_stale'||res.code==='conflict_taken'){alert('這個倉今天已經有人送出盤點了。\n將重新載入最新資料並合併你未送出的數量，請確認後再送出。');openWarehouse(S.wh.code);return;}
-        alert('送出失敗：'+res.error);return;
+        btn.disabled=false;btn.textContent=L('submit');
+        if(res.code==='conflict_stale'||res.code==='conflict_taken'){alert(L('conflict'));openWarehouse(S.wh.code);return;}
+        alert(L('submitFail')+res.error);return;
       }
       clearDraft();stopScan();
-      showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">盤點已送出</div>'
+      showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(L('sent'))+'</div>'
         +'<div>'+esc(S.wh.name||S.wh.code)+'（'+esc(coName())+'）· '+esc(S.date)+'</div>'
-        +'<div style="font-size:13px;color:var(--txt-3)">已記錄 '+esc(String(res.counted))+' 項</div>'
-        +'<button class="btn-primary" id="scClose" style="margin-top:8px">完成</button>');
+        +'<div style="font-size:13px;color:var(--txt-3)">'+esc(L('recorded')(res.counted))+'</div>'
+        +'<button class="btn-primary" id="scClose" style="margin-top:8px">'+esc(L('finish'))+'</button>');
       document.getElementById('scClose').addEventListener('click',function(){try{if(liff.isInClient())liff.closeWindow();else showPicker();}catch(_){showPicker();}});
-    }).catch(function(){btn.disabled=false;btn.textContent='送出盤點';alert('送出失敗，請稍後再試');});
+    }).catch(function(){btn.disabled=false;btn.textContent=L('submit');alert(L('submitFailRetry'));});
   }
 
   boot();

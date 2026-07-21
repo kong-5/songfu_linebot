@@ -1194,6 +1194,10 @@ function createLineWebhook() {
         orderConfirmReplyTimers.set(groupId, t);
     };
     async function processLineWebhookEvents(events) {
+        // 回傳 { failed, total }：Cloud Tasks worker 依 failed>0 回 500 讓佇列重試。
+        // 過去 worker 無從得知事件失敗（例外被本函式逐則吞掉）永遠回 200 →
+        // Gemini 429/DB 瞬斷等於該則訊息永久丟失（斷單）。
+        let failedCount = 0;
         for (const event of events) {
             // [fix 2026-07-10] 本則訊息的去重狀態（供 finally 收尾）：
             // curLineMessageId＝訊息 id；ownsLineMessage＝本次執行通過所有去重、實際「佔有」處理權；
@@ -1314,11 +1318,29 @@ function createLineWebhook() {
                 }
                 curLineMessageId = event.message?.id != null ? String(event.message.id).trim() : null;
                 /** LINE Webhook 逾時重試會帶相同 message.id；與程序內記憶體去重並用，跨程序／重啟後仍可靠。拆單時多筆訂單可共用同一 line_message_id，故不做 UNIQUE 約束。 */
+                // [fix 2026-07-21] dupByOrder 不再無條件擋：前次執行「跑到一半失敗」（例如拆單迴圈
+                // 跑到第 2 家才炸）時已建了帶此 message id 的訂單，但 processed_line_messages 沒有
+                // done 標記（失敗路徑會刪自己的 processing 佔位）。舊行為＝重投遞一進來就被整則略過，
+                // 「失敗釋放租約供重跑」形同虛設、剩下的子客戶品項永久漏掉。
+                // 新行為：有訂單但完成標記非 done → 視為前次半途失敗的重跑，標 lineMessageIsRetry
+                // 走下游全冪等路徑（append raw skipIfPresent、品項 src_line_message_id 預檢、附件查重）。
+                let hadPartialWrites = false;
                 if (curLineMessageId) {
                     const dupByOrder = await db.prepare("SELECT id FROM orders WHERE line_message_id = ? LIMIT 1").get(curLineMessageId);
                     if (dupByOrder) {
-                        console.log("[LINE] 偵測到重複的 messageId，略過處理");
-                        continue;
+                        let doneSt = "done"; // 查詢失敗保守視為已完成（寧可略過不可雙寫）
+                        try {
+                            const pr = await db.prepare("SELECT status FROM processed_line_messages WHERE message_id = ?").get(curLineMessageId);
+                            // 列存在且 status NULL＝舊語意完成標記；沒有列＝前次失敗已釋放
+                            doneSt = pr ? (pr.status == null ? "done" : String(pr.status).trim().toLowerCase()) : "released";
+                        } catch (_) { doneSt = "done"; }
+                        if (doneSt === "done") {
+                            console.log("[LINE] 偵測到重複的 messageId（已完成處理），略過");
+                            continue;
+                        }
+                        // processing（交由下方租約邏輯判斷逾時/接手）或 released（前次失敗）→ 放行重跑
+                        hadPartialWrites = true;
+                        console.warn("[LINE] messageId=%s 已有訂單但無完成標記（前次半途失敗），放行冪等重跑", curLineMessageId);
                     }
                 }
                 // [fix 2026-07-10] 持久化去重＝「租約式原子佔位」（processed_line_messages 新增 status/claimed_at）：
@@ -1375,6 +1397,9 @@ function createLineWebhook() {
                         console.warn("[LINE] 持久化去重佔位失敗（放行）messageId=%s: %s", curLineMessageId, e?.message || e);
                     }
                 }
+                // 前次半途失敗留下的訂單存在 → 本次一律走冪等重跑路徑（含自己 INSERT 佔位成功的情況）
+                if (hadPartialWrites)
+                    lineMessageIsRetry = true;
                 if (!consumeLineWebhookMessageOnce(event.message?.id)) {
                     // [fix 2026-07-10 #63回歸] 罕見時序：DB 佔位 INSERT 成功（前次失敗列已被刪、記憶體 Set 仍記得）
                     // 但記憶體去重擋下 → 剛插入的 processing 列會殘留到租約逾時（10 分鐘）才可被接手。
@@ -1781,6 +1806,9 @@ function createLineWebhook() {
                                 if (!created)
                                     await appendRawLineToOrders(db, [oid], ocrLine, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                                 touchedOrderIds.push(oid);
+                                // 逐家成功即併入 session（不等整個迴圈跑完）：後面某家失敗時，
+                                // 已建好的子單仍掛在 session 上、結單 rebuild 涵蓋得到，不再變孤兒單
+                                mergeSessionOrderIds(session, [oid]);
                                 await duplicateAttachmentToOrders(db, messageId, [oid], nowSql);
                                 await insertParsedItemsForOrder(db, oid, session.customerId, items, fallbackUnitImg, curLineMessageId);
                             }
@@ -2543,6 +2571,8 @@ function createLineWebhook() {
                         if (!created && !idsForRaw.includes(oid))
                             await appendRawLineToOrders(db, [oid], text, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         touchedOrderIds.push(oid);
+                        // 逐家成功即併入 session（同圖片路徑）：後面某家失敗時已建子單不變孤兒
+                        mergeSessionOrderIds(session, [oid]);
                         await insertParsedItemsForOrder(db, oid, cid, items, fallbackUnit, curLineMessageId);
                     }
                     mergeSessionOrderIds(session, touchedOrderIds);
@@ -2575,6 +2605,7 @@ function createLineWebhook() {
             }
             catch (err) {
                 eventFailed = true;
+                failedCount += 1;
                 console.error("[LINE] 處理訊息時錯誤:", err);
                 try {
                     await reply(lineClient, event.replyToken, "抱歉，處理時發生錯誤，請稍後再試。", db);
@@ -2631,7 +2662,7 @@ function createLineWebhook() {
                 }
             }
         }
-
+        return { failed: failedCount, total: events.length };
     }
 
     if (hasLineConfig) {

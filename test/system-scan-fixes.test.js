@@ -100,6 +100,23 @@ test("4. replaceOrderItemsFromParsedRows 交易內覆檢：客訴單不覆寫", 
     assert.equal(rows[0].raw_name, "既有品項", "客訴單品項不得被 DELETE+INSERT 覆寫");
 });
 
+test("5b. skipDedupe：原文有重複行時保留同名同量重複列（合法加叫不再被吃掉）", async () => {
+    const db = await freshDb();
+    const { custId, orderId } = await makeOrder(db, "pending");
+    const dupRows = [
+        { rawName: "高麗菜", quantity: 5, unit: "公斤" },
+        { rawName: "高麗菜", quantity: 5, unit: "公斤" },
+    ];
+    // 預設：去重（防 Gemini 幻覺重複輸出）
+    await replaceOrderItemsFromParsedRows(db, orderId, custId, dupRows);
+    let n = await db.prepare("SELECT COUNT(*) AS n FROM order_items WHERE order_id = ?").get(orderId);
+    assert.equal(Number(n.n), 1, "預設應去重成 1 筆");
+    // skipDedupe（rebuild 判定原文真的有重複行時）：兩筆都保留
+    await replaceOrderItemsFromParsedRows(db, orderId, custId, dupRows, { skipDedupe: true });
+    n = await db.prepare("SELECT COUNT(*) AS n FROM order_items WHERE order_id = ?").get(orderId);
+    assert.equal(Number(n.n), 2, "skipDedupe 應保留兩筆（上午 5kg＋下午 5kg）");
+});
+
 test("5. 正常單 replaceOrderItemsFromParsedRows 照常覆寫（回歸）", async () => {
     const db = await freshDb();
     const { custId, orderId } = await makeOrder(db, "pending");

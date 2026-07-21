@@ -182,6 +182,11 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
     });
     try {
         const doWrite = async (tx) => {
+            // 多實例併發防護（PG only）：同(公司,倉,日)的送出完全串行化——advisory xact lock
+            // 讓下面的交易內樂觀鎖重查在 READ COMMITTED 下也不再有殘餘視窗（交易結束自動釋放）。
+            // SQLite 單連線天然序列化，毋須加鎖。
+            if (process.env.DATABASE_URL)
+                await tx.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").get("stk|" + icpno + "|" + whCode + "|" + date);
             // 樂觀鎖在交易內重查一次（交易外的預檢只是快速失敗）：
             // 否則 A 在「B 通過預檢之後、B 的 DELETE 之前」commit，B 會把 A 剛寫入的
             // session 整場刪掉重插——唯一索引救不了（列已被 B 刪除），A 的盤點靜默遺失。
