@@ -241,7 +241,27 @@
   }
   function refreshSaveBtn(){
     saveBtn.disabled = !hasAnyData();
+    saveDraftBk(); // 每次狀態變動順手落地草稿（所有輸入路徑都會經過這裡）
   }
+
+  // ─── 本機草稿（比照 freezer-temp 的 ft_draft_ 模式）───────────
+  // token 過期 relogin 是整頁跳轉、state 全在記憶體：沒有草稿時司機久放才送出（常見：
+  // 到店先開頁、卸完貨才按送出）整車數字會全丟。輸入即落地、送出成功才清。
+  function draftKeyBk(){ return "bk_draft_" + (state.customerId || "") + "_" + (state.date || ""); }
+  let _bkDraftT = null;
+  function writeDraftBkNow(){
+    if (_bkDraftT) { clearTimeout(_bkDraftT); _bkDraftT = null; }
+    if (!state.customerId) return;
+    try { localStorage.setItem(draftKeyBk(), snapshot()); } catch (_) {}
+  }
+  function saveDraftBk(){
+    if (!state.customerId) return;
+    if (_bkDraftT) clearTimeout(_bkDraftT);
+    _bkDraftT = setTimeout(writeDraftBkNow, 250);
+  }
+  function clearDraftBk(){ try { localStorage.removeItem(draftKeyBk()); } catch (_) {} }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") writeDraftBkNow(); });
+  window.addEventListener("pagehide", writeDraftBkNow);
 
   // ─── 號碼籃網格 ────────────────────────────
   function renderNumberedGrid(){
@@ -405,7 +425,8 @@
       });
       const data = await resp.json();
       if (resp.status === 401 && /expired|IdToken/i.test(String(data?.error||""))) {
-        setStatus("err", "登入逾時，正在重新登入…（填的數字還在畫面上）");
+        writeDraftBkNow(); // relogin 是整頁跳轉：先把數字落地草稿，回來自動帶回
+        setStatus("err", "登入逾時，正在重新登入…（填的數字已暫存，回來會自動帶回）");
         try { liff.login({ redirectUri: window.location.href }); } catch(_){}
         return;
       }
@@ -419,6 +440,7 @@
       // 今日已有紀錄改為 true：留在頁面再送會先跳「覆蓋確認」。
       baseline = snapshot();
       state.hasExisting = true;
+      clearDraftBk(); // 已送出，本機草稿功成身退
       refreshSaveBtn();
       setStatus("ok", "✅ 已記帳，準備送回群組…");
       // 用 liff.sendMessages 以司機身份發到群組（免費）
@@ -457,6 +479,12 @@
     setStatus("", "啟動中…");
 
     if (!LIFF_ID) { setStatus("err", "尚未設定 LIFF_ID_BASKET_LOG"); setSectionsLoading(false); return; }
+    if (typeof liff === "undefined") {
+      // CDN SDK 沒載進來（網路不穩）：不防呆會停在「啟動中…」永不更新
+      setStatus("err", "網路不穩定，LINE 元件沒載入。請關閉此頁，回群組再點一次連結。");
+      setSectionsLoading(false);
+      return;
+    }
 
     try {
       await liff.init({ liffId: LIFF_ID });
@@ -497,7 +525,12 @@
               return;
             }
           }
-        } catch (_) { /* lookup 網路失敗就走原本流程 */ }
+        } catch (_) {
+          // 網路失敗不能落到下面「此群組未綁定客戶」的誤導文案（司機會白跑去找辦公室查設定）
+          setStatus("err", "網路不穩，讀取客戶資料失敗。請關閉此頁、回群組再點一次連結。");
+          setSectionsLoading(false);
+          return;
+        }
       }
       if (!state.customerId) {
         setStatus("err", "缺少 customer 參數，且此群組未綁定客戶。請從群組「空籃」訊息點連結進入。");
@@ -528,6 +561,19 @@
       }
       // [fix 2026-07-10] 載入完成 → 記基準快照；之後 isDirty 只看「有沒有改過載入內容」
       baseline = snapshot();
+      // 本機草稿優先蓋回（relogin 跳轉／上次沒送出的數字）；與伺服器內容相同就當沒草稿
+      try {
+        const dRaw = localStorage.getItem(draftKeyBk());
+        if (dRaw && dRaw !== baseline) {
+          const d = JSON.parse(dRaw);
+          if (d && typeof d === "object") {
+            state.numbered = d.numbered || {};
+            state.square = d.square || { to: 0, pk: 0 };
+            state.round = d.round || { to: 0, pk: 0 };
+            toast("已帶回上次未送出的數字");
+          }
+        }
+      } catch (_) {}
       renderNumberedGrid();
       renderAllKindFields();
       refreshSaveBtn();

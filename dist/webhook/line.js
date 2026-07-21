@@ -686,7 +686,21 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
             }
         }
         itemRemark = (0, unit_conversion_js_1.withOriginCallRemark)(itemRemark, item.quantity, inputUnit, unit);
-        const needReviewFlag = resolved ? 0 : 1;
+        let needReviewFlag = resolved ? 0 : 1;
+        // 極端值防線（文字路徑過去完全沒有；圖片路徑另有 OCR 雜訊過濾）：
+        // 負數或異常大量（>10000，公斤類 >5000）不丟棄也不擋單——強制 need_review＋備註標明，
+        // 出貨前一定有人看過。Gemini 幻覺或電話號碼被誤讀成數量時，不再靜默入庫。
+        {
+            const uNorm = String(unit || "").trim().toLowerCase();
+            const isKgish = uNorm === "公斤" || uNorm === "kg" || uNorm === "k";
+            let extremeNote = null;
+            if (qty < 0) extremeNote = "⚠ 數量為負數，請人工確認原文";
+            else if (qty > 10000 || (isKgish && qty > 5000)) extremeNote = "⚠ 數量異常大（" + qty + (unit || "") + "），請人工確認原文";
+            if (extremeNote) {
+                needReviewFlag = 1;
+                itemRemark = itemRemark ? (itemRemark + "；" + extremeNote) : extremeNote;
+            }
+        }
         const subC = item.subCustomer != null && String(item.subCustomer).trim() !== "" ? String(item.subCustomer).trim() : null;
         const confidence = item.confidenceScore != null && Number.isFinite(Number(item.confidenceScore))
             ? Math.max(0, Math.min(100, Math.round(Number(item.confidenceScore))))
@@ -728,7 +742,8 @@ async function insertParsedItemsForOrder(db, orderId, customerId, parsedRows, fa
             await h.prepare(`INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, sub_customer, confidence_score, src_line_message_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(p.itemId, orderId, p.productId, p.rawName, p.qty, p.unit, p.needReviewFlag, p.itemRemark, p.subC, p.confidence, srcMid);
             if (p.needAddEdit) {
-                await recordOrderItemEdit(h, { orderId, action: "add", rawName: p.rawName, quantity: p.qty, unit: p.unit, editedBy: "system:reorder_after_delete" });
+                // rethrow：交易內吞錯會毒化 PG 交易（見 recordOrderItemEdit 註解），失敗就整批 ROLLBACK 上拋
+                await recordOrderItemEdit(h, { orderId, action: "add", rawName: p.rawName, quantity: p.qty, unit: p.unit, editedBy: "system:reorder_after_delete" }, { rethrow: true });
             }
         }
         return { inserted: prepared.length, skipped: false };
@@ -813,8 +828,10 @@ async function appendRawLineToOrders(db, orderIds, lineText, nowSql, opts) {
  * rebuild 端（lib/rebuild-order-from-sources.js）於重建後同交易內依 created_at 升冪重放本表。
  * match_key＝「當下該位置品項的 raw_name 快照」正規化（去空白＋小寫，與重放端共用同一實作）；
  * 「改第N項」是位置指令，但位置會因 rebuild 漂移，品名才穩，故存品名快照而非項次。
- * 寫入失敗僅告警不阻斷回覆：此時修改本身已生效，只是結單 rebuild 可能還原（降級而非斷單）。 */
-async function recordOrderItemEdit(db, { orderId, action, rawName, quantity, unit, editedBy }) {
+ * 寫入失敗僅告警不阻斷回覆：此時修改本身已生效，只是結單 rebuild 可能還原（降級而非斷單）。
+ * ⚠ 交易內呼叫必須帶 opts.rethrow：PG 交易內任一句失敗即毒化（25P02），吞掉例外會讓
+ * 後續語句靜默失敗、COMMIT 實為 ROLLBACK 卻回報成功（整批品項沒寫入但回 inserted:n）。 */
+async function recordOrderItemEdit(db, { orderId, action, rawName, quantity, unit, editedBy }, opts) {
     try {
         const editId = (0, id_js_1.newId)("oie");
         const matchKey = (0, rebuild_order_from_sources_js_1.normalizeOrderItemMatchKey)(rawName);
@@ -826,6 +843,7 @@ async function recordOrderItemEdit(db, { orderId, action, rawName, quantity, uni
               editedBy != null && String(editedBy).trim() !== "" ? String(editedBy).trim() : null,
               new Date().toISOString());
     } catch (e) {
+        if (opts && opts.rethrow) throw e;
         console.warn("[LINE] 改單軌跡寫入失敗（結單 rebuild 可能還原此人工修正）orderId=%s action=%s: %s", orderId, action, e?.message || e);
     }
 }
@@ -1243,8 +1261,20 @@ function createLineWebhook() {
                             const deletedIds = new Set(matched.map((m) => m.id));
                             // [fix 2026-07-14] 刪單包交易：舊版逐句刪，中途失敗留「空殼訂單」，
                             // 且同日後續訊息會重用這張殼繼續累加＝客戶已收回的單復活。
+                            const nowSqlUnsend = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
                             const doUnsendDel = async (h) => {
                                 for (const oid of deletedIds) {
+                                    // 稽核軌跡：硬刪前留訂單＋品項快照（出貨爭議時可查「客戶曾叫過又收回」）。
+                                    // 同交易寫入：快照失敗＝整批 ROLLBACK，不會有「單刪了、稽核沒留」的狀態。
+                                    const ordSnap = await h.prepare("SELECT order_no, customer_id, order_date, status, raw_message FROM orders WHERE id = ?").get(oid);
+                                    const itemSnap = await h.prepare("SELECT raw_name, quantity, unit, sub_customer FROM order_items WHERE order_id = ?").all(oid);
+                                    await h.prepare(
+                                        "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSqlUnsend + ")"
+                                    ).run("dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36),
+                                          "order", oid, "unsend_delete",
+                                          "客戶收回 LINE 訊息 → 自動刪除訂單" + (ordSnap?.order_no ? "（單號 " + ordSnap.order_no + "）" : ""),
+                                          JSON.stringify({ line_message_id: mid, before: ordSnap || null, items: (itemSnap || []).slice(0, 100) }),
+                                          "system:line_unsend");
                                     await h.prepare("DELETE FROM order_items WHERE order_id = ?").run(oid);
                                     await h.prepare("DELETE FROM order_attachments WHERE order_id = ?").run(oid);
                                     try {
@@ -2229,21 +2259,22 @@ function createLineWebhook() {
                             // [fix 2026-07-08] 語義不同於「累加品項」：此處要找「有效訂單」來標記客訴，
                             // 故只排除 'deleted'（不可對作廢單標客訴），但**不排除** 'complaint'——
                             // 否則同一客戶第二則客訴訊息會找不到已標客訴的單而誤跑 fallback。
-                            let target = await db.prepare("SELECT id FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' ORDER BY order_no").get(customerId, todayDate);
+                            let target = await db.prepare("SELECT id, status FROM orders WHERE customer_id = ? AND order_date = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' ORDER BY order_no").get(customerId, todayDate);
                             if (!target) {
                                 // 沒今天訂單就找該客戶最後一張訂單作為投訴對象（不限日期，避免方言差異）；同樣只排除作廢單。
                                 target = await db.prepare(
-                                    "SELECT id FROM orders WHERE customer_id = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' ORDER BY order_date DESC, updated_at DESC LIMIT 1"
+                                    "SELECT id, status FROM orders WHERE customer_id = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' ORDER BY order_date DESC, updated_at DESC LIMIT 1"
                                 ).get(customerId);
                             }
                             const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
                             if (target?.id) {
                                 await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("complaint", target.id);
+                                // 稽核記舊值（守則：誰/何時/改了什麼/舊值新值）：客訴覆寫任意狀態，沒 old_status 事後無法還原。
                                 await db.prepare(
                                     "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
                                 ).run(dclId, "order", target.id, "auto_create_complaint",
                                       `自動偵測「${earlyIntent.intent === "return_request" ? "退貨" : "客訴"}」關鍵詞 [${earlyIntent.keywords.join(",")}]（附加到既有訂單，非新建）`,
-                                      JSON.stringify({ intent: earlyIntent.intent, matched_keywords: earlyIntent.keywords, raw_text: text.slice(0, 500), source: "auto_intent_early" }),
+                                      JSON.stringify({ intent: earlyIntent.intent, matched_keywords: earlyIntent.keywords, raw_text: text.slice(0, 500), source: "auto_intent_early", old_status: String(target.status || ""), new_status: "complaint" }),
                                       "system:intent_detector");
                                 console.log("[LINE] 早期客訴偵測：附加到既有訂單 " + target.id);
                                 const ordInfo = await db.prepare("SELECT order_no FROM orders WHERE id = ?").get(target.id);
@@ -2413,6 +2444,7 @@ function createLineWebhook() {
                 if (intentHit.intent === "complaint" || intentHit.intent === "return_request") {
                     // 客訴 / 退貨：標為 complaint，跳過 AI 解析
                     try {
+                        const oldStRow = await db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId);
                         await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("complaint", orderId);
                         console.log("[LINE] 偵測到「" + intentHit.intent + "」意圖 [" + intentHit.keywords.join(",") + "] → 訂單 " + orderId + " 標為 complaint");
                         try {
@@ -2421,7 +2453,7 @@ function createLineWebhook() {
                                 "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
                             ).run(dclId, "order", orderId, "auto_create_complaint",
                                   `自動偵測「${intentHit.intent === "return_request" ? "退貨" : "客訴"}」關鍵詞 [${intentHit.keywords.join(",")}]`,
-                                  JSON.stringify({ intent: intentHit.intent, matched_keywords: intentHit.keywords, raw_text: text.slice(0, 500), source: "auto_intent" }),
+                                  JSON.stringify({ intent: intentHit.intent, matched_keywords: intentHit.keywords, raw_text: text.slice(0, 500), source: "auto_intent", old_status: String(oldStRow?.status || ""), new_status: "complaint" }),
                                   "system:intent_detector");
                         } catch (_) {}
                         const ordInfo = await db.prepare("SELECT order_no FROM orders WHERE id = ?").get(orderId);
@@ -2509,7 +2541,7 @@ function createLineWebhook() {
                         });
                         // 本則文字稍早已 append 進 session 既有訂單（idsForRaw）；重用「session 外」的既有單才需補寫
                         if (!created && !idsForRaw.includes(oid))
-                            await appendRawLineToOrders(db, [oid], text, nowSql);
+                            await appendRawLineToOrders(db, [oid], text, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         touchedOrderIds.push(oid);
                         await insertParsedItemsForOrder(db, oid, cid, items, fallbackUnit, curLineMessageId);
                     }
@@ -2534,7 +2566,7 @@ function createLineWebhook() {
                         });
                         targetOrderId = t.orderId;
                         if (!t.created && !idsForRaw.includes(targetOrderId))
-                            await appendRawLineToOrders(db, [targetOrderId], text, nowSql);
+                            await appendRawLineToOrders(db, [targetOrderId], text, nowSql, lineMessageIsRetry ? { skipIfPresent: true } : undefined);
                         mergeSessionOrderIds(session, [targetOrderId]);
                     }
                     await insertParsedItemsForOrder(db, targetOrderId, cid, parsed, fallbackUnit, curLineMessageId);

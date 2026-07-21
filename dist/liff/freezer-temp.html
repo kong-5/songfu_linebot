@@ -98,7 +98,14 @@
   let _dT = null;
   function draftKeyFT(){ return "ft_draft_" + (dateInput.value || todayTaipei()); }
   function flushDraftFT(){ try { localStorage.setItem(draftKeyFT(), JSON.stringify({entries, filler: fillerInput.value})); } catch(_){} }
-  function saveDraftFT(){ clearTimeout(_dT); _dT = setTimeout(flushDraftFT, 250); }
+  // 排程當下就把 key 抓死（closure）：否則打完溫度立刻切日期，250ms 後 pending flush 會
+  // 讀「切換後」的 dateInput，把舊日期的溫度寫進新日期的草稿 key，下次載入被草稿優先蓋回錯資料
+  function saveDraftFT(){
+    clearTimeout(_dT);
+    const key = draftKeyFT();
+    const snap = JSON.stringify({entries, filler: fillerInput.value});
+    _dT = setTimeout(() => { try { localStorage.setItem(key, snap); } catch(_){} }, 250);
+  }
   async function api(path, opts){
     const init = Object.assign({headers:{}}, opts || {});
     init.headers["Authorization"] = "Bearer " + (liff.getIDToken() || "");
@@ -128,6 +135,7 @@
   }
 
   if (!LIFF_ID){ setStatus("err", "尚未設定 LIFF_ID_FREEZER_TEMP"); return; }
+  if (typeof liff === "undefined"){ setStatus("err", "網路不穩定，LINE 元件沒載入。請關閉此頁再點一次連結。"); return; }
   liff.init({liffId:LIFF_ID}).then(async ()=>{
     if (!liff.isLoggedIn()){ liff.login({redirectUri:location.href}); return; }
     const p = await liff.getProfile();
@@ -146,8 +154,17 @@
   async function load(){
     setStatus("","載入中…");
     saveBtn.disabled = true;
+    clearTimeout(_dT); // 切日期時取消 pending 草稿寫入（防舊日期資料寫進新 key）
     const date = dateInput.value || todayTaipei();
-    const r = await api("/liff/api/freezer-temp/load?date="+encodeURIComponent(date));
+    let r;
+    try {
+      r = await api("/liff/api/freezer-temp/load?date="+encodeURIComponent(date));
+    } catch (e) {
+      // fetch 網路錯誤會 throw（doSave 已接了、這裡漏了）：不接的話切日期斷網＝儲存鈕永久 disabled
+      setStatus("err", "網路異常，載入失敗。請切換日期或按「今天」重試");
+      saveBtn.disabled = warehouses.length === 0;
+      return;
+    }
     if (r.status !== 200 || !r.body.ok){
       setStatus("err", r.body.error || ("HTTP "+r.status));
       // [fix 2026-07-14] 載入失敗不再讓儲存鈕卡死：已載過倉別（切日期失敗）仍可操作

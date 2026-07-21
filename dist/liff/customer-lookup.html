@@ -85,6 +85,7 @@
   }
 
   if (!LIFF_ID){ setStatus("尚未設定 LIFF_ID_CUSTOMER_LOOKUP"); return; }
+  if (typeof liff === "undefined"){ setStatus("網路不穩定，LINE 元件沒載入。請關閉此頁再點一次連結。"); return; }
   liff.init({liffId:LIFF_ID}).then(async ()=>{
     if (!liff.isLoggedIn()){ liff.login({redirectUri:location.href}); return; }
     const p = await liff.getProfile();

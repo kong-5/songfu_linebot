@@ -233,11 +233,18 @@
   // ---------- 本機暫存（同倉同日續掃） ----------
   function draftKey(){return 'scan_draft_'+S.icpno+'_'+(S.wh?S.wh.code:'')+'_'+S.date;}
   var _saveT=null;
+  function flushDraftNow(){
+    if(_saveT){clearTimeout(_saveT);_saveT=null;}
+    if(!S.wh)return;
+    try{localStorage.setItem(draftKey(),JSON.stringify({counts:S.counts,order:S.order,extra:S.extra}));}catch(_){}
+  }
   function saveDraft(){
     if(!S.wh)return;
     if(_saveT)clearTimeout(_saveT);
-    _saveT=setTimeout(function(){try{localStorage.setItem(draftKey(),JSON.stringify({counts:S.counts,order:S.order,extra:S.extra}));}catch(_){}},250);
+    _saveT=setTimeout(flushDraftNow,250);
   }
+  // 滑掉 App／鎖屏的瞬間把 250ms debounce 內的最後一筆立刻落地（比照 stocktake.html）
+  window.addEventListener('pagehide',flushDraftNow);
   function loadDraft(){try{var s=localStorage.getItem(draftKey());return s?JSON.parse(s):null;}catch(_){return null;}}
   function clearDraft(){try{localStorage.removeItem(draftKey());}catch(_){}}
 
@@ -254,6 +261,12 @@
     if(WEB){ // 後台網頁版：不需要 LINE 登入，身分由後台 cookie session 決定
       S.name=window.__SCAN_NAME__||'';
       showPicker();
+      return;
+    }
+    if(typeof liff==='undefined'){
+      // CDN SDK 沒載進來（倉庫網路不穩）：不給防呆會停在初始 spinner 永不更新
+      showCenter('<div>⚠ 網路不穩定，LINE 元件沒載入</div><div style="font-size:13px;color:var(--txt-3)">請關閉此頁，回群組再點一次連結</div>'
+        +'<button class="btn-primary" style="margin-top:8px" onclick="location.reload()">重試</button>');
       return;
     }
     if(!LIFF_ID){showCenter('<div>⚠ 尚未設定 LIFF ID（LIFF_ID_SCAN）</div>');return;}
@@ -300,7 +313,10 @@
         });
       });
       Array.prototype.forEach.call(app.querySelectorAll('.pk'),function(b){b.addEventListener('click',function(){openWarehouse(b.getAttribute('data-w'));});});
-    }).catch(function(){showCenter('<div>⚠ 載入倉庫失敗，請稍後再試</div>');});
+    }).catch(function(){
+      showCenter('<div>⚠ 載入倉庫失敗（網路不穩）</div><button class="btn-primary" style="margin-top:8px" id="scPkRetry">重試</button>');
+      var r=document.getElementById('scPkRetry');if(r)r.addEventListener('click',showPicker);
+    });
   }
 
   // ---------- 載入倉庫品項＋條碼對照 ----------
@@ -311,7 +327,15 @@
       api(apiUrl('barcodes')+'?icpno='+encodeURIComponent(S.icpno))
     ]).then(function(rs){
       var res=rs[0],bc=rs[1];
-      if(res.error){showCenter('<div>⚠ '+esc(res.error)+'</div>');return;}
+      if(res.error){showCenter('<div>⚠ '+esc(res.error)+'</div><button class="btn-primary" style="margin-top:8px" id="scRetry">重試</button>');var r1=document.getElementById('scRetry');if(r1)r1.addEventListener('click',function(){openWarehouse(code);});return;}
+      // ⚠ 條碼對照載入失敗絕不能靜默當空表：空表會讓每個「已綁過」的條碼都跳綁定面板，
+      //   員工整倉重綁一次白工、還可能手滑綁錯品項污染 product_barcode（之後所有人掃都帶錯料號）。
+      if(bc&&bc.error){
+        showCenter('<div>⚠ 條碼對照載入失敗：'+esc(bc.error)+'</div><div style="font-size:13px;color:var(--txt-3)">網路不穩時會發生，重試即可；不要在此狀態下綁定條碼</div>'
+          +'<button class="btn-primary" style="margin-top:8px" id="scRetry">重試</button>');
+        var r2=document.getElementById('scRetry');if(r2)r2.addEventListener('click',function(){openWarehouse(code);});
+        return;
+      }
       S.wh=res.warehouse;S.date=res.date;S.items=res.items||[];
       S.baseSubmittedAt=(res.submittedAt!=null?res.submittedAt:null); // 樂觀鎖基準（配合後端 submit）
       S.itemIdx={};S.items.forEach(function(it){S.itemIdx[it.c]=it;});
@@ -340,7 +364,10 @@
       }
       renderScan();
       startScan();
-    }).catch(function(){showCenter('<div>⚠ 載入失敗，請稍後再試</div>');});
+    }).catch(function(){
+      showCenter('<div>⚠ 載入失敗（網路不穩）</div><button class="btn-primary" style="margin-top:8px" id="scRetry">重試</button>');
+      var r=document.getElementById('scRetry');if(r)r.addEventListener('click',function(){openWarehouse(code);});
+    });
   }
 
   function itemOf(code){return S.itemIdx[code]||S.extra[code]||null;}
@@ -357,7 +384,7 @@
         +'<div class="cam" id="scCam"><video id="scVideo" playsinline muted autoplay></video><div class="cam-line"></div>'
           +'<div class="cam-tools"><button class="cam-btn" id="scTorch" style="display:none;">手電筒</button><button class="cam-btn" id="scPause">暫停</button></div>'
           +'<div class="cam-hint" id="scHint">對準條碼即可（自動連續掃描）</div></div>'
-        +'<div class="manual"><input id="scManual" inputmode="numeric" placeholder="掃不到？手動輸入條碼或料號" autocomplete="off"><button id="scManualGo">帶入</button></div>'
+        +'<div class="manual"><input id="scManual" placeholder="掃不到？手動輸入條碼或料號" autocomplete="off"><button id="scManualGo">帶入</button></div>'
         +'<div id="scCur"></div>'
         +'<div class="sec-t" id="scListT"></div><div id="scList"></div>'
       +'</div>'
@@ -394,6 +421,7 @@
   // 切到背景（切 App、鎖屏）就整個關掉相機與解碼，回前景再自動重啟——長時間盤點時最省電、避免手機一直發燙
   document.addEventListener('visibilitychange',function(){
     if(document.visibilityState==='hidden'){
+      flushDraftNow();
       if(S.scanning&&(S.engine==='native'||S.engine==='zxing')){ S._resumeOnShow=true; stopScan(); }
     } else if(S._resumeOnShow){
       S._resumeOnShow=false; startScan();
@@ -430,7 +458,7 @@
         }catch(_){}
       });
     })
-    .catch(function(){startScanV2OrManual('無法開啟相機（可能未授權）。');});
+    .catch(function(){startScanV2OrManual('無法開啟相機（可能未授權）。請到 手機設定 → LINE → 允許相機，再重開此頁。');});
   }
   function nativeLoop(){
     if(!S.scanning||S.engine!=='native')return;
@@ -466,7 +494,7 @@
           var raw=String(result.getText()||'').trim();
           if(raw)hitBarcode(raw);
         }
-      }).catch(function(){startScanV2OrManual('無法開啟相機（可能未授權）。');});
+      }).catch(function(){startScanV2OrManual('無法開啟相機（可能未授權）。請到 手機設定 → LINE → 允許相機，再重開此頁。');});
     }catch(_){startScanV2OrManual();}
   }
   function startScanV2OrManual(prefix){
@@ -702,6 +730,16 @@
       var good=v;
       if(mid!=null){if(v>=mid){good=Math.round((v-mid)*100)/100;}else{mid=v;good=0;}}
       counts.push({code:it.c,name:it.n,spec:it.s,unit:it.u,sys:it.sys,counted:good,mid:mid,expiry:(meta&&meta.expiry)||[]});
+    });
+    // 保留「只填效期批號、沒填盤點數」的品項（盤點頁允許這種列）：
+    // 後端是整場 DELETE+INSERT，不帶回去就會把該品項的效期批號洗掉。
+    Object.keys(S.savedMeta).forEach(function(c){
+      if(S.counts[c]!=null&&S.counts[c]!=='')return; // 已在上面帶過
+      var meta=S.savedMeta[c];
+      if(!meta||!meta.expiry||!meta.expiry.length)return;
+      var it=itemOf(c);if(!it)return;
+      var mid=(meta.mid!=null&&isFinite(Number(meta.mid)))?Number(meta.mid):null;
+      counts.push({code:it.c,name:it.n,spec:it.s,unit:it.u,sys:it.sys,counted:null,mid:mid,expiry:meta.expiry});
     });
     post(apiUrl('submit'),{warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:S.baseSubmittedAt}).then(function(res){
       if(res.error){

@@ -138,6 +138,10 @@
     setStatus("err", "尚未設定 LIFF_ID_ORDER_REVIEW。");
     return;
   }
+  if (typeof liff === "undefined") {
+    setStatus("err", "網路不穩定，LINE 元件沒載入。請關閉此頁再點一次連結。");
+    return;
+  }
 
   liff.init({ liffId: LIFF_ID }).then(async () => {
     if (!liff.isLoggedIn()) {
@@ -169,7 +173,16 @@
     setStatus("", "載入中…");
     listEl.innerHTML = "";
     const onlyPending = $("#only-pending").checked ? "1" : "0";
-    const { status, body } = await api("/liff/api/order-review/list?date=" + encodeURIComponent(currentDate) + "&only_pending=" + onlyPending);
+    // api() 網路錯誤會 throw（doAction/doSaveDate 已於 2026-07-08 接了、這裡漏了）：
+    // 不接的話斷網點「重整」＝清單被清空、狀態列永遠「載入中…」
+    let status, body;
+    try {
+      ({ status, body } = await api("/liff/api/order-review/list?date=" + encodeURIComponent(currentDate) + "&only_pending=" + onlyPending));
+    } catch (e) {
+      setStatus("err", "網路異常，請再按一次「重整」重試");
+      listEl.innerHTML = '<div class="empty">網路異常，清單載入失敗</div>';
+      return;
+    }
     if (status !== 200 || !body.ok) {
       setStatus("err", body.error || ("HTTP " + status));
       return;
@@ -221,7 +234,14 @@
     $("#btn-unapprove").disabled = true;
     $("#modal-bg").classList.add("show");
     $("#modal").classList.add("show");
-    const { status, body } = await api("/liff/api/order-review/detail?id=" + encodeURIComponent(orderId));
+    let status, body;
+    try {
+      ({ status, body } = await api("/liff/api/order-review/detail?id=" + encodeURIComponent(orderId)));
+    } catch (e) {
+      if (activeOrder === orderId)
+        $("#modal-body").innerHTML = '<div class="empty" style="color:var(--bad);">網路異常，請關閉後再點一次</div>';
+      return;
+    }
     // 防 race：回應回來時若使用者已切到別張單（或關掉 modal），丟棄這筆舊回應
     if (activeOrder !== orderId) return;
     if (status !== 200 || !body.ok) {

@@ -185,7 +185,17 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
         console.warn("[rebuild-order] 讀取人工改單軌跡失敗（略過重放）orderId=%s: %s", orderId, e?.message || e);
         editsForReplay = [];
     }
+    let blockedStatus = null;
     const doWrite = async (h) => {
+        // 安全網（交易內覆檢，與 insertParsedItemsForOrder 同一道防線）：作廢/客訴單不重建品項。
+        // 沒這道檢查時，收單中被標客訴/作廢的單會在結單 rebuild 依 raw 把品項灌回去（幽靈品項→重複出貨）。
+        const stRow = await h.prepare("SELECT status FROM orders WHERE id = ?").get(orderId);
+        const stv = String(stRow?.status || "");
+        if (stv === "deleted" || stv === "complaint") {
+            blockedStatus = stv;
+            console.warn("[rebuild-order] 訂單狀態=%s，略過品項重建（orderId=%s）", stv, orderId);
+            return;
+        }
         await h.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
         for (const r of rows) {
             await h.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, remark, include_export, sub_customer, confidence_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)").run(...r);
@@ -202,6 +212,7 @@ async function replaceOrderItemsFromParsedRows(db, orderId, customerId, parsed) 
     else {
         await doWrite(db);
     }
+    return { ok: !blockedStatus, blockedStatus };
 }
 /**
  * 文字（略過「[圖片]」行）+ 附件圖逐張解析，合併為一個 parsed 陣列（不寫庫）。
@@ -302,6 +313,13 @@ function filterParsedRowsForOrderSplit(parsed, orderSubSplitKey) {
 }
 /** 有解析到至少一筆才覆寫明細；否則保留既有品項 */
 async function rebuildOrderItemsFromOrderSources(db, orderId, customerId, rawMessage, attachmentRows, imageExtraOpts) {
+    // 作廢/客訴單直接不重建（早退，省下整輪 Gemini/Vision 解析）；交易內另有覆檢。
+    {
+        const st = await db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId);
+        const stv = String(st?.status || "");
+        if (stv === "deleted" || stv === "complaint")
+            return { ok: false, error: "status_" + stv };
+    }
     const { parsed, error } = await collectParsedFromOrderSources(db, customerId, rawMessage, attachmentRows, imageExtraOpts);
     if (!parsed.length)
         return { ok: false, error };
@@ -310,6 +328,8 @@ async function rebuildOrderItemsFromOrderSources(db, orderId, customerId, rawMes
     const filtered = filterParsedRowsForOrderSplit(parsed, splitKey);
     if (!filtered.length)
         return { ok: false, error: splitKey != null ? "split_no_match" : error };
-    await replaceOrderItemsFromParsedRows(db, orderId, customerId, filtered);
+    const wr = await replaceOrderItemsFromParsedRows(db, orderId, customerId, filtered);
+    if (wr && wr.blockedStatus)
+        return { ok: false, error: "status_" + wr.blockedStatus };
     return { ok: true };
 }
