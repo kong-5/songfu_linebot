@@ -29,7 +29,8 @@ ly_edi_qty_check.py — 抓幾張「寺岡 EDI 回轉銷貨單」的明細數量
   python ly_edi_qty_check.py --doc A202607070085      # 指定單號（可重複帶多張）
   python ly_edi_qty_check.py --code 10200010          # 只列含某料號的行（可逗號分隔多個）
   python ly_edi_qty_check.py --no-orders              # 不比對訂貨單（最省查詢）
-  python ly_edi_qty_check.py --suspects               # 當日「被重傳過」嫌疑單清單（只查主表一次）
+  python ly_edi_qty_check.py --cjsum                  # 【可靠】掃當日 A 單、標出 SD_CJSUM 取整扣錯的行
+  python ly_edi_qty_check.py --cjsum --limit 91       # 掃更多張（逐張撈明細，會慢一點）
   python ly_edi_qty_check.py --json                   # JSON 輸出（好貼回去核對）
 
 環境變數：LY_ICPNO 公司代碼，預設 "00"（松富）。
@@ -146,11 +147,18 @@ def build_doc_report(main: dict, details: list, ordered_by_skno: dict | None) ->
     for d in details:
         skno = str(d.get("SD_SKNO", "")).strip()
         qty = to_num(d.get("SD_QTY"))
+        cjsum = to_num(d.get("SD_CJSUM"))
+        # 庫存過帳認 SD_CJSUM（非0時）：EDI 回寫把它填成 round(SD_QTY) → 庫存被取整。
+        # 人工單 SD_CJSUM=0 → 照 SD_QTY 精確扣。cj_bad＝這行被取整扣錯。
+        cj_bad = cjsum != 0 and abs(cjsum - qty) > 1e-9
         line = {
             "skno": skno,
             "name": str(d.get("SD_NAME", "")).strip(),
             "unit": str(d.get("SD_UNIT", "")).strip(),
             "qty": qty,
+            "cjsum": cjsum,
+            "cj_bad": cj_bad,
+            "cj_diff": round(qty - cjsum, 4) if cj_bad else 0,  # 正＝庫存少扣(虛高)
             "whno": str(d.get("SD_WHNO2") or d.get("SD_WHNO") or "").strip(),
         }
         if ordered_by_skno is not None:
@@ -286,6 +294,46 @@ def run(args) -> int:
             print("  抽驗單頭全欄位（含審核狀態/建立時間，確認欄名）：--doc <單號>。")
         return 0
 
+    # --cjsum：可靠偵測（2026-07-21 定案）。逐張撈明細，標出 SD_CJSUM≠0 且 ≠SD_QTY 的行
+    # ＝EDI 回寫把出貨量取整、庫存被扣成整數。這是「單一次寫入」的欄位級 bug，與異動時間無關。
+    if args.cjsum:
+        ds = (lystk.resolve_date(args.date or "today")).isoformat()
+        print(f"▶ 掃 {ds} A 開頭銷貨單的 SD_CJSUM 取整問題  ICPNO={icpno}（{company}）…", flush=True)
+        rows = lystk.query(icpno=icpno, idakd=IDAKD_SALES, date=ds) or []
+        a_rows = sorted((r for r in rows if is_a_series(r.get("SP_NO"))),
+                        key=lambda r: str(r.get("SP_NO", "")))
+        scan = a_rows[: args.limit]
+        print(f"  A 開頭共 {len(a_rows)} 張，本次掃 {len(scan)} 張（--limit 調整；逐張撈明細）", flush=True)
+        tot_bad = 0
+        tot_pos = 0.0   # 庫存少扣（虛高）
+        tot_neg = 0.0   # 庫存多扣（虛低）
+        for m in scan:
+            no = str(m.get("SP_NO", "")).strip()
+            try:
+                dets = fetch_doc_details(icpno, IDAKD_SALES, "SP", no)
+            except Exception as e:
+                print(f"  ⚠ {no} 撈明細失敗，略過：{e}", flush=True)
+                continue
+            rep = build_doc_report(m, dets, None)
+            bad = [ln for ln in rep["lines"] if ln["cj_bad"]]
+            if not bad:
+                continue
+            print(f"\n━━ {no}  {rep['ctno']} {rep['ctname']}")
+            print(f"   {'料號':<12}{'品名':<14}{'SD_QTY':>8}{'CJSUM':>7}{'庫存差':>8}")
+            for ln in bad:
+                tot_bad += 1
+                if ln["cj_diff"] > 0:
+                    tot_pos += ln["cj_diff"]
+                else:
+                    tot_neg += ln["cj_diff"]
+                print(f"   {ln['skno']:<12}{ln['name']:<14}{ln['qty']:>8g}{ln['cjsum']:>7g}"
+                      f"{ln['cj_diff']:>+8g}")
+        print(f"\n── 小結：掃 {len(scan)} 張，取整錯 {tot_bad} 行 "
+              f"｜庫存少扣(虛高) +{tot_pos:g}｜庫存多扣(虛低) {tot_neg:g}"
+              f"｜淨 {tot_pos + tot_neg:+g} ──")
+        print("  修正：178go 回寫時 SD_CJSUM 應＝SD_QTY（實秤小數）或留 0，別填 round。")
+        return 0
+
     # 1) 決定要看哪幾張單（主表：指定單號逐張查；否則抓當天 A 開頭前 N 張）
     ds = None
     if args.doc:
@@ -373,7 +421,9 @@ def build_parser():
     p.add_argument("--no-orders", action="store_true",
                    help="不回查訂貨單比對訂購量（查詢量最省）")
     p.add_argument("--suspects", action="store_true",
-                   help="只列「寫入後被重傳過」的 A 開頭單清單（帳可能凍結在第一版；只查主表一次）")
+                   help="（弱訊號，已被 --cjsum 取代）列「寫入後被重傳過」的 A 開頭單，只查主表一次")
+    p.add_argument("--cjsum", action="store_true",
+                   help="【可靠】掃 A 開頭單，標出 SD_CJSUM 被取整（≠SD_QTY）的行＝庫存扣錯的實錘")
     p.add_argument("--json", action="store_true", help="輸出 JSON（供貼回核對/程式串接）")
     p.add_argument("--timeout", type=int, default=60, help="連線/操作逾時秒數（預設 60）")
     return p

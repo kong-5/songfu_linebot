@@ -97,6 +97,18 @@ check("量有改：6.3−6.0=+0.3", line["ordered_qty"] == 6.0 and abs(line["del
 check("量沒改：delta=0", rep["lines"][1]["delta"] == 0)
 check("倉別取 SD_WHNO2 優先", line["whno"] == "FN001")
 
+# SD_CJSUM 取整偵測（2026-07-21 root cause）
+rc = mod.build_doc_report(
+    {"SP_NO": "A1"},
+    [{"SD_SKNO": "X", "SD_QTY": "6.3", "SD_CJSUM": "6"},    # EDI 取整 → 錯
+     {"SD_SKNO": "Y", "SD_QTY": "3.1", "SD_CJSUM": "0"},    # 人工 CJSUM=0 → 對
+     {"SD_SKNO": "Z", "SD_QTY": "8", "SD_CJSUM": "8"}],     # 整數本來就相等 → 對
+    None)
+check("CJSUM=6≠QTY6.3 → cj_bad, 差+0.3",
+      rc["lines"][0]["cj_bad"] and abs(rc["lines"][0]["cj_diff"] - 0.3) < 1e-9)
+check("CJSUM=0 → 不算錯（照QTY扣）", not rc["lines"][1]["cj_bad"])
+check("CJSUM=QTY 整數相等 → 不算錯", not rc["lines"][2]["cj_bad"])
+
 # 訂貨單查不到料號 → delta=None（不臆造）
 rep2 = mod.build_doc_report({"SP_NO": "A1"},
                             [{"SD_SKNO": "X1", "SD_NAME": "n", "SD_UNIT": "KG", "SD_QTY": "2"}],
