@@ -255,6 +255,69 @@ function parseCsvText(text) {
   return { sessions: [...sessions.values()], counts };
 }
 function numOrNull(v) { const s = String(v == null ? '' : v).trim(); if (s === '') return null; const n = Number(s); return Number.isFinite(n) ? n : null; }
+
+// ---- 每日彙總 CSV（在 SQL 先 group by 好，一天一列，不會被列數上限截）----
+// 表頭需含：count_date, icpno, items, items_diff, items_severe, sum_abs_diff, sum_base, sum_abs_pct
+function isAggregateCsv(text) {
+  const first = csvRows(text.slice(0, 4000))[0];
+  if (!first) return false;
+  const h = first.map((x) => x.trim().toLowerCase());
+  return h.includes('items') && h.includes('sum_base') && h.includes('sum_abs_diff');
+}
+function parseAggregateCsv(text) {
+  const rows = csvRows(text);
+  const h = rows[0].map((x) => x.trim().toLowerCase());
+  const ix = (name) => h.indexOf(name);
+  const c = {
+    date: ix('count_date'), icp: ix('icpno'), items: ix('items'), diff: ix('items_diff'),
+    sev: ix('items_severe'), sabs: ix('sum_abs_diff'), sbase: ix('sum_base'), spct: ix('sum_abs_pct'),
+  };
+  const out = [];
+  for (let r = 1; r < rows.length; r++) {
+    const f = rows[r];
+    if (!f || f.length <= c.items) continue;
+    const date = String(f[c.date] || '').trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    out.push({
+      date, icpno: normIcpno(c.icp >= 0 ? f[c.icp] : '00'),
+      items: Number(f[c.items] || 0), itemsDiff: Number(f[c.diff] || 0), itemsSevere: Number(f[c.sev] || 0),
+      sumAbsDiff: Number(f[c.sabs] || 0), sumBase: Number(f[c.sbase] || 0), sumAbsPct: Number(f[c.spct] || 0),
+    });
+  }
+  return out;
+}
+// 由每日彙總列組出 daily（與 computeDaily 同結構，欄位可跨公司相加）
+function computeDailyFromAgg(aggRows, opt) {
+  const filtered = opt.icpno === 'all' ? aggRows : aggRows.filter((r) => r.icpno === normIcpno(opt.icpno));
+  let since = opt.since, until = opt.until;
+  const allDates = [...new Set(filtered.map((r) => r.date))].sort();
+  if ((!since || !until) && allDates.length) {
+    const maxD = allDates[allDates.length - 1];
+    until = until || maxD;
+    const d = new Date(maxD + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - (opt.days - 1));
+    since = since || d.toISOString().slice(0, 10);
+  }
+  const byDate = new Map();
+  for (const r of filtered) {
+    if (since && r.date < since) continue;
+    if (until && r.date > until) continue;
+    let a = byDate.get(r.date);
+    if (!a) { a = { items: 0, itemsDiff: 0, itemsSevere: 0, sumAbsDiff: 0, sumBase: 0, sumAbsPct: 0 }; byDate.set(r.date, a); }
+    a.items += r.items; a.itemsDiff += r.itemsDiff; a.itemsSevere += r.itemsSevere;
+    a.sumAbsDiff += r.sumAbsDiff; a.sumBase += r.sumBase; a.sumAbsPct += r.sumAbsPct;
+  }
+  const daily = [...byDate.keys()].sort().map((date) => {
+    const a = byDate.get(date); const n = a.items;
+    return {
+      date, items: n, itemsDiff: a.itemsDiff, itemsSevere: a.itemsSevere,
+      accuracy: n ? Math.round((1 - a.itemsDiff / n) * 1000) / 10 : 0,
+      meanAbsPct: n ? Math.round((a.sumAbsPct / n) * 10) / 10 : 0,
+      medianAbsPct: 0,
+      weightedAbsPct: a.sumBase ? Math.round((a.sumAbsDiff / a.sumBase) * 1000) / 10 : 0,
+    };
+  });
+  return { since, until, daily, icpno: opt.icpno };
+}
 // 解析 CSV（支援雙引號包欄、"" 轉義、\r\n）→ 二維陣列
 function csvRows(text) {
   text = text.replace(/^﻿/, '');
@@ -289,15 +352,21 @@ async function loadData(opt) {
   if (!srcs.length) throw new Error('未提供資料來源：請給後台每日盤點匯出的 CSV（可多份）、一份 pg_dump .sql、一個 .db/.sqlite 檔，或設 DATABASE_URL 環境變數。');
   for (const s of srcs) { const a = path.resolve(s); if (!fs.existsSync(a)) throw new Error('找不到檔案：' + a); }
 
-  // 多份或副檔名為 .csv → 當成後台盤點 CSV 合併
+  // 多份或副檔名為 .csv → CSV 路徑
   const allCsv = srcs.every((s) => /\.csv$/i.test(s));
   if (allCsv || srcs.length > 1) {
+    // 每日彙總 CSV（單檔即可）
+    const firstText = fs.readFileSync(path.resolve(srcs[0]), 'utf8');
+    if (srcs.length === 1 && isAggregateCsv(firstText)) {
+      return { aggregate: parseAggregateCsv(firstText), srcLabel: '每日彙總 CSV ' + path.basename(srcs[0]) };
+    }
+    // 逐品項盤點 CSV（可多份合併）
     const sessions = []; const counts = [];
     for (const s of srcs) {
       const parsed = parseCsvText(fs.readFileSync(path.resolve(s), 'utf8'));
       sessions.push(...parsed.sessions); counts.push(...parsed.counts);
     }
-    return { data: { sessions, counts, adjustments: {} }, srcLabel: `後台盤點 CSV × ${srcs.length} 份` };
+    return { data: { sessions, counts, adjustments: {} }, srcLabel: `盤點明細 CSV × ${srcs.length} 份` };
   }
 
   const abs = path.resolve(srcs[0]);
@@ -669,12 +738,20 @@ async function main() {
     console.log('用法：node scripts/variance-report.js <每日盤點.csv... | dump.sql | *.db | (DATABASE_URL)> [--days N] [--icpno all|00|01|02|03] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--out path]');
     return;
   }
-  const { data, srcLabel } = await loadData(opt);
-  if (!data.sessions.length) {
-    console.error('讀不到 stocktake_session 資料。若吃 dump 檔，請確認匯出有含盤點表（stocktake_session / stocktake_count）。');
-    process.exit(2);
+  const loaded = await loadData(opt);
+  const { srcLabel } = loaded;
+  let res;
+  if (loaded.aggregate) {
+    if (!loaded.aggregate.length) { console.error('每日彙總 CSV 讀不到資料列。'); process.exit(2); }
+    res = computeDailyFromAgg(loaded.aggregate, opt);
+  } else {
+    const data = loaded.data;
+    if (!data.sessions.length) {
+      console.error('讀不到 stocktake_session 資料。若吃 dump 檔，請確認匯出有含盤點表（stocktake_session / stocktake_count）。');
+      process.exit(2);
+    }
+    res = computeDaily(data, opt);
   }
-  const res = computeDaily(data, opt);
   printSummary(res, srcLabel);
   const generatedAt = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
   const html = buildHtml(res, srcLabel, { generatedAt });
