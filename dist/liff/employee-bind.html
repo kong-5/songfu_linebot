@@ -85,6 +85,10 @@
     setStatus("err", "尚未設定 LIFF_ID_EMPLOYEE_BIND。請至後台確認環境變數。");
     return;
   }
+  if (typeof liff === "undefined") {
+    setStatus("err", "網路不穩定，LINE 元件沒載入。請關閉此頁再點一次連結。");
+    return;
+  }
   liff.init({ liffId: LIFF_ID }).then(async () => {
     // init 完成後 SDK 會把原始 query 還原（?t=…），如果沒有再自行解 liff.state
     const BIND_TOKEN = readBindToken();

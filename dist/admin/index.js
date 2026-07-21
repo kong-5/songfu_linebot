@@ -5771,7 +5771,8 @@ function createAdminRouter() {
             const customerId = String(req.body.customer_id || "").trim();
             const logDate = String(req.body.log_date || "").trim();
             if (!customerId || !logDate || !/^\d{4}-\d{2}-\d{2}$/.test(logDate)) {
-                return res.status(400).send("參數不正確");
+                const backYm0 = /^\d{4}-\d{2}$/.test(ym) ? ym : currentTwYM();
+                return res.status(400).send(`參數不正確：缺少客戶或日期（日期需為 YYYY-MM-DD）。請回上一頁重新點「刪除整天」。<p><a href="/admin/baskets?ym=${backYm0}">← 回空籃記帳</a></p>`);
             }
             // 找到主 log 並刪除其分項；保留 basket_logs 主紀錄但歸零，並寫 history
             const row = await db.prepare("SELECT id FROM basket_logs WHERE customer_id = ? AND log_date = ?").get(customerId, logDate);
@@ -6740,15 +6741,15 @@ function createAdminRouter() {
         const pendingWh = includedWh.filter((w) => !countedWh.has(whKeyOf(w.icpno, w.code)));
         const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
         const fmtN = (n) => (n == null ? "—" : String(n));
+        // 分母一律 max(|sys|,1)（與統計端 statsVarPct 同口徑）：負庫存不會正負號反轉、
+        // sys=0 有盤差時不再顯示「—」把異常藏起來。
         const diffPct = (it) => {
             if (it.diff == null) return "—";
-            if (it.sys === 0) return it.diff === 0 ? "0%" : "—";
-            return ((it.diff / it.sys) * 100).toFixed(1) + "%";
+            return ((it.diff / Math.max(Math.abs(Number(it.sys) || 0), 1)) * 100).toFixed(1) + "%";
         };
         const latestPct = (it) => {
             if (it.diffLatest == null || it.latest == null) return "—";
-            if (it.latest === 0) return it.diffLatest === 0 ? "0%" : "—";
-            return ((it.diffLatest / it.latest) * 100).toFixed(1) + "%";
+            return ((it.diffLatest / Math.max(Math.abs(Number(it.latest) || 0), 1)) * 100).toFixed(1) + "%";
         };
         const diffCls = (it) => (it.diff == null ? "" : it.diff === 0 ? "stk-z" : it.diff > 0 ? "stk-p" : "stk-n");
         const expiryTxt = (arr) => (arr || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"} × ${b.qty || "?"}`).join("、");
@@ -7165,7 +7166,16 @@ function createAdminRouter() {
               }
               if(ev.key==='Escape'){ cancel(); }
             });
-            inp.addEventListener('blur',function(){ setTimeout(cancel,150); });
+            // blur 不再靜默丟輸入：值有改動時比照 Enter 流程確認送出（打完數字順手點旁邊／手機收鍵盤都算 blur）
+            inp.addEventListener('blur',function(){ setTimeout(function(){
+              if(!sp.getAttribute('data-editing')) return;
+              var v=inp.value.trim();
+              if(v===''||v===old||!isFinite(Number(v))){ cancel(); return; }
+              if(confirm('複盤修正 '+sp.getAttribute('data-code')+'：實盤改為 '+v+'？（會留下修改軌跡；取消＝放棄修改）')){
+                sp.removeAttribute('data-editing');
+                postForm('/admin/inventory/count-edit',{session_id:CTX.sid,erp_code:sp.getAttribute('data-code'),counted:v,back:CTX.back});
+              } else { cancel(); }
+            },150); });
           }
           sp.addEventListener('click',startEdit);
           sp.addEventListener('keydown',function(ev){ if(ev.key==='Enter'||ev.key===' '){ ev.preventDefault(); startEdit(); } });
@@ -7311,11 +7321,11 @@ function createAdminRouter() {
         </td>
       </tr>`;
         }).join("");
-        const emptyRow = `<tr><td colspan="7" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此公司尚無庫存調整。到「每日盤點」的盤差表，對有誤差的品項按「建立調整」即可。</td></tr>`;
+        const emptyRow = `<tr><td colspan="7" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此公司尚無庫存調整。到「每日盤點」的盤差表，對有誤差的品項點「調整」標籤，在浮動面板按「套用實盤」即可。</td></tr>`;
         const body = `
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 庫存管理 / 庫存調整</div>
       <h1 class="notion-page-title">庫存調整</h1>
-      <p class="notion-hint" style="margin:-2px 0 14px;">彌補凌越系統誤差用（免重整）。<b>顯示庫存＝凌越快照 ＋ 調整值</b>；每日盤點的「最新系統／對最新盤差」也會加上調整值（校正後盤差歸零）。<b>只影響我們內部顯示與盤差，不會寫回凌越</b>。建立方式：到<a href="/admin/inventory">每日盤點</a>盤差表按「建立調整」；日後凌越重整/校正好了，記得回這裡<b>刪除</b>對應調整，避免雙重補償。</p>
+      <p class="notion-hint" style="margin:-2px 0 14px;">彌補凌越系統誤差用（免重整）。<b>顯示庫存＝凌越快照 ＋ 調整值</b>；每日盤點的「最新系統／對最新盤差」也會加上調整值（校正後盤差歸零）。<b>只影響我們內部顯示與盤差，不會寫回凌越</b>。建立方式：到<a href="/admin/inventory">每日盤點</a>盤差表點「調整」標籤，在浮動面板按「套用實盤」；日後凌越重整/校正好了，記得回這裡<b>刪除</b>對應調整，避免雙重補償。</p>
       ${coSeg}
       ${banner}
       <div class="notion-card" style="padding:0;overflow:auto;">
@@ -7338,7 +7348,7 @@ function createAdminRouter() {
             const nv = Number(req.body?.counted);
             if (!Number.isFinite(nv) || nv < 0) { done("cerr=" + encodeURIComponent("實盤數無效（要 0 或正數）")); return; }
             const newCounted = Math.round(nv * 100) / 100;
-            const row = await db.prepare("SELECT c.counted_qty, c.name, s.icpno, s.wh_code, s.count_date FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE c.session_id = ? AND c.erp_code = ?").get(sessionId, erpCode);
+            const row = await db.prepare("SELECT c.counted_qty, c.mid_qty, c.name, s.icpno, s.wh_code, s.count_date FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE c.session_id = ? AND c.erp_code = ?").get(sessionId, erpCode);
             if (!row) { done("cerr=" + encodeURIComponent("查無此盤點列")); return; }
             const oldCounted = (row.counted_qty == null || row.counted_qty === "") ? null : Number(row.counted_qty);
             if (oldCounted != null && Math.abs(oldCounted - newCounted) < 1e-9) { done("cok=1"); return; } // 沒變就不寫軌跡
@@ -7346,7 +7356,11 @@ function createAdminRouter() {
             const who = String(res.locals.adminUser || req.adminUsername || "");
             const actor = "admin:" + String(req.adminUsername || "");
             const { newId } = require("../lib/id.js");
-            await db.prepare("UPDATE stocktake_count SET counted_qty = ?, edited_at = ?, edited_by = ?, edited_by_name = ? WHERE session_id = ? AND erp_code = ?").run(newCounted, now, actor, who, sessionId, erpCode);
+            // counted_qty 語意＝上＋中合計：新合計小於既有中貨時把 mid 壓到新合計（比照掃碼頁），
+            // 否則續盤頁還原 good=合計−mid 會變負數，被送出驗證擋下、整倉卡住無法重送。
+            const oldMid = Number(row.mid_qty || 0);
+            const newMid = oldMid > newCounted ? newCounted : oldMid;
+            await db.prepare("UPDATE stocktake_count SET counted_qty = ?, mid_qty = ?, edited_at = ?, edited_by = ?, edited_by_name = ? WHERE session_id = ? AND erp_code = ?").run(newCounted, newMid > 0 ? newMid : (row.mid_qty == null ? null : newMid), now, actor, who, sessionId, erpCode);
             await db.prepare("INSERT INTO stocktake_count_audit (id, session_id, icpno, wh_code, count_date, erp_code, name, old_counted, new_counted, actor, actor_name, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 .run(newId("stca"), sessionId, (0, erp_companies_js_1.normIcpno)(row.icpno), String(row.wh_code || ""), String(row.count_date || ""), erpCode, String(row.name || ""), oldCounted, newCounted, actor, who, "複盤修正", now);
             done("cok=1");
@@ -7369,7 +7383,7 @@ function createAdminRouter() {
         for (const { session: s, items, latestSource } of day) {
             const baseTxt = latestSource === "warehouse" ? "分倉" : "總量";
             for (const it of items) {
-                const dp = it.diff == null ? "" : (it.sys === 0 ? "" : ((it.diff / it.sys) * 100).toFixed(1) + "%");
+                const dp = it.diff == null ? "" : ((it.diff / Math.max(Math.abs(Number(it.sys) || 0), 1)) * 100).toFixed(1) + "%";
                 const exp = (it.expiry || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"}x${b.qty || "?"}`).join(" / ");
                 lines.push([date, s.wh_code, s.wh_name, it.code, it.name, it.spec, it.unit, it.sys, it.counted == null ? "" : it.counted, it.mid == null ? "" : it.mid, it.diff == null ? "" : it.diff, dp, it.latestRaw == null ? "" : it.latestRaw, it.adj || "", it.latest == null ? "" : it.latest, baseTxt, it.diffLatest == null ? "" : it.diffLatest, exp, s.created_by_name || "", stkAdminTwTime(s.submitted_at)].map(q).join(","));
             }
@@ -7637,7 +7651,8 @@ function createAdminRouter() {
             const since = statsTaipeiDateAgo(90);
             let vrows = [];
             try {
-                const sql = "SELECT s.count_date AS d, c.sys_qty, c.counted_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND c.erp_code = ? AND s.count_date >= ?" + (wh ? " AND s.wh_code = ?" : "");
+                // counted_qty IS NOT NULL：效期-only 列（有批號沒盤數）不算「實盤 0」假盤差（口徑同 improvement）
+                const sql = "SELECT s.count_date AS d, c.sys_qty, c.counted_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND c.erp_code = ? AND s.count_date >= ? AND c.counted_qty IS NOT NULL" + (wh ? " AND s.wh_code = ?" : "");
                 vrows = (wh ? await db.prepare(sql).all(icpno, code, since, wh) : await db.prepare(sql).all(icpno, code, since)) || [];
             } catch (_) { vrows = []; }
             const byDate = new Map(); // 全公司檢視＝同日各倉加總後算盤差
@@ -7705,7 +7720,8 @@ function createAdminRouter() {
             }
             let vrows = [];
             try {
-                const sql = "SELECT s.count_date AS d, c.erp_code, c.sys_qty, c.counted_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND s.count_date >= ?" + (wh ? " AND s.wh_code = ?" : "");
+                // counted_qty IS NOT NULL：同 kline，效期-only 列不算假盤差
+                const sql = "SELECT s.count_date AS d, c.erp_code, c.sys_qty, c.counted_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND s.count_date >= ? AND c.counted_qty IS NOT NULL" + (wh ? " AND s.wh_code = ?" : "");
                 vrows = (wh ? await db.prepare(sql).all(icpno, since, wh) : await db.prepare(sql).all(icpno, since)) || [];
             } catch (_) { vrows = []; }
             const vagg = new Map();
@@ -7744,7 +7760,8 @@ function createAdminRouter() {
             const since = statsTaipeiDateAgo(days - 1);
             let rows = [];
             try {
-                const sql = "SELECT s.count_date AS d, c.erp_code, c.name, c.spec, c.sys_qty, c.counted_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND s.count_date >= ?" + (wh ? " AND s.wh_code = ?" : "");
+                // counted_qty IS NOT NULL：同 kline/series，效期-only 列不算假盤差
+                const sql = "SELECT s.count_date AS d, c.erp_code, c.name, c.spec, c.sys_qty, c.counted_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND s.count_date >= ? AND c.counted_qty IS NOT NULL" + (wh ? " AND s.wh_code = ?" : "");
                 rows = (wh ? await db.prepare(sql).all(icpno, since, wh) : await db.prepare(sql).all(icpno, since)) || [];
             } catch (_) { rows = []; }
             const items = new Map(); // code -> {code,name,spec,days:{date:{sys,counted}}}
@@ -10659,7 +10676,7 @@ function createAdminRouter() {
     const exportCat = (req) => { const c = (req.query.cat || "all").toString(); return ["veg", "fruit", "all"].includes(c) ? c : "all"; };
     router.get("/logistics/market/export.csv", async (req, res) => {
         const dateStr = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).send("date 格式錯誤"); return; }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).send("date 格式錯誤：需為 YYYY-MM-DD（例 2026-07-21）。請回上一頁修改日期後再匯出。"); return; }
         const list = await getWholesaleForExport(dateStr, exportCat(req));
         const lines = ["日期,品號,品名,市場,上價,中價,下價,平均價,交易量(kg)"];
         for (const p of list) {
@@ -10676,7 +10693,7 @@ function createAdminRouter() {
 
     router.get("/logistics/market/export.xlsx", async (req, res) => {
         const dateStr = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).send("date 格式錯誤"); return; }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { res.status(400).send("date 格式錯誤：需為 YYYY-MM-DD（例 2026-07-21）。請回上一頁修改日期後再匯出。"); return; }
         const list = await getWholesaleForExport(dateStr, exportCat(req));
         const data = [["日期", "品號", "品名", "市場", "上價", "中價", "下價", "平均價", "交易量(kg)"]];
         for (const p of list) {
@@ -11921,7 +11938,10 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
     });
     // 待確認品名：列出 need_review=1 的明細，可選擇對應品項並加入俗名
     router.get("/review", async (req, res) => {
-        const msg = req.query.ok === "1" ? "<p style='color:green'>已加入對照。</p>" : req.query.err === "dup" ? "<p style='color:red'>此俗名已存在，請勿重複新增。</p>" : "";
+        const msg = req.query.ok === "1" ? "<p style='color:green'>已加入對照。</p>"
+            : req.query.err === "dup" ? "<p style='color:red'>此俗名已存在，請勿重複新增。</p>"
+            : req.query.err === "missing" ? "<p style='color:red'>尚未選擇對應品項：請先在搜尋框輸入品名或料號，並「點選」下拉清單中的品項，再按「加入對照」。</p>"
+            : "";
         const rows = await db.prepare(`
       SELECT oi.id AS item_id, oi.raw_name, oi.quantity, oi.unit, oi.order_id, o.customer_id, c.name AS customer_name
       FROM order_items oi
@@ -11940,7 +11960,7 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
           <td>${escapeHtml(r.unit ?? "")}</td>
           <td>${escapeHtml(r.customer_name)}</td>
           <td>
-            <form action="/admin/alias" method="post" class="review-alias-form" style="display:inline;">
+            <form action="/admin/alias" method="post" class="review-alias-form" style="display:inline;" onsubmit="if(!this.querySelector('.review-product-id').value){alert('請先從下拉清單點選一個品項，再按「加入對照」');return false;}return true;">
               <input type="hidden" name="alias" value="${escapeAttr(r.raw_name)}">
               <input type="hidden" name="customer_id" value="${escapeAttr(r.customer_id)}">
               <div class="review-product-picker" style="position:relative;display:inline-block;vertical-align:middle;">
@@ -13973,6 +13993,13 @@ ${okMsg ? `<p class="notion-msg" style="background:#ecfdf5;color:#047857;padding
                 return;
             }
             const icpno = String(body.icpno || "00").trim() || "00";
+            // 守門：只收兩位數公司代碼。內網 GUI 的 first_icpno() 理應擋掉 "all"/"00,02"，
+            // 但伺服器端也要有防線——一旦以 icpno='all' 落庫，按公司查詢全看不到、
+            // 不帶過濾的讀取又會與 '00' 真資料互相污染。
+            if (!/^\d{2}$/.test(icpno)) {
+                res.status(400).json({ error: `icpno 格式錯誤：收到 "${icpno}"，此端點只接受單一兩位數公司代碼（如 00/02）。請檢查內網代理 LY_ICPNO 設定——多公司請由代理逐家推送，不要把 "all" 或逗號清單傳進來。` });
+                return;
+            }
             const snapshotAt = (typeof body.snapshot_at === "string" && body.snapshot_at.trim())
                 ? body.snapshot_at.trim() : new Date().toISOString();
             const rows = [];
@@ -24862,6 +24889,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
         newId: id_js_1.newId,
         erp: erp_companies_js_1,
         loadAdminUsers,
+        logDataChange,
     });
 
     return router;

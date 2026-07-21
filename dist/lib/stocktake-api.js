@@ -159,6 +159,12 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
             if (!Number.isFinite(n)) { qtyErrors.push("「" + nm + "」" + label + "數量「" + raw + "」不是有效數字"); }
             else if (n < 0) { qtyErrors.push("「" + nm + "」" + label + "數量不可為負數（" + raw + "）"); }
         }
+        // sys（凍結系統量）也不得信任前端：NaN 會寫進 sys_qty（所有盤差/統計/必盤退回的基準）。
+        // 負數合法（凌越負庫存正常），只擋非數字。
+        const sysRaw = c ? c.sys : null;
+        if (sysRaw != null && sysRaw !== "" && !Number.isFinite(Number(sysRaw))) {
+            qtyErrors.push("「" + nm + "」系統量「" + sysRaw + "」不是有效數字（請重新載入頁面取得正確系統量）");
+        }
     }
     if (qtyErrors.length) {
         const shown = qtyErrors.slice(0, 3).join("；");
@@ -176,6 +182,19 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
     });
     try {
         const doWrite = async (tx) => {
+            // 多實例併發防護（PG only）：同(公司,倉,日)的送出完全串行化——advisory xact lock
+            // 讓下面的交易內樂觀鎖重查在 READ COMMITTED 下也不再有殘餘視窗（交易結束自動釋放）。
+            // SQLite 單連線天然序列化，毋須加鎖。
+            if (process.env.DATABASE_URL)
+                await tx.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").get("stk|" + icpno + "|" + whCode + "|" + date);
+            // 樂觀鎖在交易內重查一次（交易外的預檢只是快速失敗）：
+            // 否則 A 在「B 通過預檢之後、B 的 DELETE 之前」commit，B 會把 A 剛寫入的
+            // session 整場刪掉重插——唯一索引救不了（列已被 B 刪除），A 的盤點靜默遺失。
+            const curInTx = await tx.prepare(`SELECT submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).get(whCode, date, icpno);
+            const curAtInTx = (curInTx && curInTx.submitted_at != null && curInTx.submitted_at !== "") ? String(curInTx.submitted_at) : null;
+            if (curAtInTx !== baseSubmittedAt) {
+                throw StkApiError(409, "開頁後已有他人送出此倉盤點，請重載後續盤再送出", "conflict_stale");
+            }
             await tx.prepare(`DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?)`).run(whCode, date, icpno);
             await tx.prepare(`DELETE FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).run(whCode, date, icpno);
             await tx.prepare("INSERT INTO stocktake_session (id, wh_code, wh_name, count_date, status, group_id, created_by, created_by_name, item_count, counted_count, created_at, submitted_at, icpno) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")

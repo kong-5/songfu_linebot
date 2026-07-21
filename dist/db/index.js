@@ -889,8 +889,13 @@ async function initPg() {
     //   basket_logs.log_date 會渲染成 "Mon Jul 14 2026 …"、POST 回刪除端點 cast 失敗。改保持原字串。
     // - INT8(20)：COUNT(*)/SUM 回字串，新程式寫 row.n === 0 會在 PG 失效。改回 Number
     //   （計數/合計遠小於 2^53，安全）。
+    // - TIMESTAMPTZ(1184)/TIMESTAMP(1114)：node-pg 預設回 JS Date 物件，程式全把 *_at 欄位
+    //   當 ISO-ish 字串 slice/比較/回塞 SQL cast——例如客訴頁 String(created_at) 變成
+    //   "Mon Jul 21 2026 …" 再 cast timestamptz 必失敗（時間軸靜默空白）。改保持原字串。
     try {
         pg.types.setTypeParser(1082, (v) => v);
+        pg.types.setTypeParser(1114, (v) => v);
+        pg.types.setTypeParser(1184, (v) => v);
         pg.types.setTypeParser(20, (v) => (v == null ? v : Number(v)));
     } catch (_) { /* 型別解析設定失敗不擋啟動（維持 node-pg 預設行為） */ }
     pgPool = new pg.Pool(pgPoolOptions());
@@ -1119,15 +1124,19 @@ async function initPg() {
                 const pkRes = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'erp_stock_items'::regclass AND i.indisprimary");
                 const pkCols = (pkRes.rows || []).map((r) => String(r.attname));
                 if (pkCols.length === 1 && pkCols[0] === "erp_code") {
+                    // 整段包交易：半途失敗 ROLLBACK 後主鍵仍在，守門條件下次啟動仍成立可重試
+                    //（不包的話 DROP CONSTRAINT 後失敗＝表永久無主鍵且不再重試）。
+                    await client.query("BEGIN");
                     await client.query("UPDATE erp_stock_items SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
                     await client.query("ALTER TABLE erp_stock_items DROP CONSTRAINT erp_stock_items_pkey");
                     await client.query("ALTER TABLE erp_stock_items ALTER COLUMN icpno SET NOT NULL");
                     await client.query("ALTER TABLE erp_stock_items ALTER COLUMN icpno SET DEFAULT '00'");
                     await client.query("ALTER TABLE erp_stock_items ADD PRIMARY KEY (icpno, erp_code)");
+                    await client.query("COMMIT");
                     console.log("[migration] erp_stock_items 主鍵改為 (icpno, erp_code)");
                 }
             }
-            catch (e) { console.warn("[migration] erp_stock_items 多公司主鍵遷移失敗:", e?.message || e); }
+            catch (e) { try { await client.query("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_stock_items 多公司主鍵遷移失敗:", e?.message || e); }
             try {
                 // 凌越分倉庫存（資料種類 000009「目前庫存-廠內倉」）快照：每「品項×倉別」一筆。
                 // 由 inventory-push 的頂層 warehouse_qty 全表覆蓋（DELETE+INSERT；接收端下一階段實作）；
@@ -1181,15 +1190,18 @@ async function initPg() {
                 const whPkRes = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'erp_warehouse'::regclass AND i.indisprimary");
                 const whPk = (whPkRes.rows || []).map((r) => String(r.attname));
                 if (whPk.length === 1 && whPk[0] === "code") {
+                    // 同 erp_stock_items：包交易讓失敗可重試，避免 DROP 後半途失敗永久無主鍵。
+                    await client.query("BEGIN");
                     await client.query("UPDATE erp_warehouse SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
                     await client.query("ALTER TABLE erp_warehouse DROP CONSTRAINT erp_warehouse_pkey");
                     await client.query("ALTER TABLE erp_warehouse ALTER COLUMN icpno SET NOT NULL");
                     await client.query("ALTER TABLE erp_warehouse ALTER COLUMN icpno SET DEFAULT '00'");
                     await client.query("ALTER TABLE erp_warehouse ADD PRIMARY KEY (icpno, code)");
+                    await client.query("COMMIT");
                     console.log("[migration] erp_warehouse 主鍵改為 (icpno, code)");
                 }
             }
-            catch (e) { console.warn("[migration] erp_warehouse 多公司主鍵遷移失敗:", e?.message || e); }
+            catch (e) { try { await client.query("ROLLBACK"); } catch (_) { } console.warn("[migration] erp_warehouse 多公司主鍵遷移失敗:", e?.message || e); }
             try {
                 // 商品條碼對照（掃碼盤點/進貨用）：一個品項可多條碼；qty_per_scan=掃一下代表幾個單位（箱碼>1）。
                 await client.query("CREATE TABLE IF NOT EXISTS product_barcode (icpno TEXT NOT NULL DEFAULT '00', barcode TEXT NOT NULL, erp_code TEXT NOT NULL, qty_per_scan DOUBLE PRECISION NOT NULL DEFAULT 1, note TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (icpno, barcode))");

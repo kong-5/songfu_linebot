@@ -130,7 +130,29 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
                 res.status(400).type("text/plain").send("missing event");
                 return;
             }
-            await (0, line_js_1.processLineWebhookEvents)([ev]);
+            // [fix 2026-07-21] 失敗可重試閉環：processLineWebhookEvents 現在回報失敗數，
+            // 失敗回 500 → Cloud Tasks 依佇列設定重試（入口 dedup 已支援「半途失敗放行冪等重跑」）。
+            // 過去例外被逐則吞掉、這裡永遠回 200 =「Task Completed」→ Gemini 429/DB 瞬斷等於斷單。
+            // 重試次數上限（X-CloudTasks-TaskRetryCount）：超過即放棄回 200（避免永久壞訊息無限重試），
+            // 並發 ops 告警請人工補單。
+            const result = await (0, line_js_1.processLineWebhookEvents)([ev]);
+            const failedN = result && typeof result.failed === "number" ? result.failed : 0;
+            if (failedN > 0) {
+                const retryCount = parseInt(String(req.headers["x-cloudtasks-taskretrycount"] || "0"), 10) || 0;
+                const maxRetry = Math.max(0, parseInt(process.env.LINE_TASK_MAX_RETRY ?? "4", 10) || 4);
+                if (retryCount >= maxRetry) {
+                    console.error("[worker] LINE event 重試 %s 次仍失敗，放棄（請人工檢查是否漏單）messageId=%s", retryCount, ev?.message?.id || "?");
+                    try {
+                        const { getDb } = require("./db/index.js");
+                        const { notifyOps } = require("./lib/ops-notify.js");
+                        await notifyOps(getDb(), `⚠ LINE 訊息處理連續失敗 ${retryCount + 1} 次已放棄（messageId=${ev?.message?.id || "?"}）。請到訂單審核確認是否漏單，必要時請客戶重發。`);
+                    } catch (ne) { console.warn("[worker] ops 告警發送失敗:", ne?.message || ne); }
+                    res.status(200).type("text/plain").send("Gave up after retries");
+                    return;
+                }
+                res.status(500).type("text/plain").send("event failed, will retry");
+                return;
+            }
             res.status(200).type("text/plain").send("Task Completed");
         }
         catch (e) {

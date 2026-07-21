@@ -144,5 +144,7 @@ async function parseOrderMessage(text, fallbackUnit, options) {
             confidenceScore: p.confidenceScore != null ? p.confidenceScore : null,
         };
     });
-    return dedupeParsedOrderRows(mapped);
+    // keepDuplicateRows：rebuild 判定原文有重複行（同名同量分次加叫）時保留重複列，
+    // 否則此處去重會把合法的第二筆吃掉（上午 5 公斤、下午再 5 公斤只剩一筆）。
+    return options?.keepDuplicateRows ? mapped : dedupeParsedOrderRows(mapped);
 }

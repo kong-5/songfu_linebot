@@ -290,9 +290,11 @@
         var k=localStorage.key(i);
         if(!k||k.indexOf('stk_draft_')!==0||k.length<21) continue;
         if(k.slice(-10)!==today) continue;                     // 尾端 _YYYY-MM-DD（11 字）中的日期
-        var code=k.slice(10,k.length-11);                      // 去掉前綴 'stk_draft_'（10 字）與尾端 '_'+日期（11 字）
+        var rest=k.slice(10,k.length-11);                      // 去掉前綴 'stk_draft_'（10 字）與尾端 '_'+日期（11 字）
+        var icp='',code=rest;
+        if(/^\d{2}_/.test(rest)){ icp=rest.slice(0,2); code=rest.slice(3); } // 新格式含公司代碼；舊格式視為未知公司
         var d=null; try{ d=JSON.parse(localStorage.getItem(k)); }catch(_){ d=null; }
-        if(d) out.push({wh:code,date:today,d:d});
+        if(d) out.push({wh:(icp?icp+'/':'')+code,date:today,d:d});
       }
     }catch(_){}
     return out;
@@ -437,7 +439,9 @@
 
   // ---------- 自動暫存（防電話中斷 / LIFF 重載遺失盤點）----------
   // 一邊盤一邊把「上貨/中貨/效期/展開狀態」存進本機，重開同倉同日自動接回。
-  function draftKey(code,date){ return 'stk_draft_'+(code||'')+'_'+(date||''); }
+  // 草稿鍵必含公司代碼：四家公司同一套凌越、倉號可能重複（如兩家都有 FN005），
+  // 沒帶 icpno 時 A 公司盤到一半的草稿會被合併進 B 公司同倉號的盤點送出（錯公司數字入帳）。
+  function draftKey(code,date){ return 'stk_draft_'+(S.icpno||'00')+'_'+(code||'')+'_'+(date||''); }
   function draftKeyCur(){ return S.wh?draftKey(S.wh.code,S.date):''; }
   var _saveT=null;
   function writeDraftNow(){
@@ -468,11 +472,13 @@
   function loadDraft(code,date){ try{ var s=localStorage.getItem(draftKey(code,date)); return s?JSON.parse(s):null; }catch(_){ return null; } }
   function clearDraft(){ try{ localStorage.removeItem(draftKeyCur()); }catch(_){} }
   function hasDraft(code,date){ try{ return !!localStorage.getItem(draftKey(code,date)); }catch(_){ return false; } }
-  function cleanOldDrafts(){ // 開頁時清掉非今日的舊草稿，避免 localStorage 累積
+  function cleanOldDrafts(){ // 開頁時清掉舊草稿，避免 localStorage 累積
     try{
-      var today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
-      var del=[],i,k;
-      for(i=0;i<localStorage.length;i++){ k=localStorage.key(i); if(k&&k.indexOf('stk_draft_')===0&&k.slice(-10)!==today) del.push(k); }
+      // 保留今日＋昨日（跨午夜盤點：23:50 盤到一半、00:10 重開頁，昨天那份不能被清掉）
+      var fmt=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'});
+      var today=fmt.format(new Date()),yesterday=fmt.format(new Date(Date.now()-86400000));
+      var del=[],i,k,dt;
+      for(i=0;i<localStorage.length;i++){ k=localStorage.key(i); if(!k||k.indexOf('stk_draft_')!==0) continue; dt=k.slice(-10); if(dt!==today&&dt!==yesterday) del.push(k); }
       for(i=0;i<del.length;i++) localStorage.removeItem(del[i]);
     }catch(_){}
   }
@@ -491,6 +497,12 @@
       applyCoTheme();
       var whw=getParam('warehouse');
       if(whw){ openWarehouse(whw); } else { showPicker(); }
+      return;
+    }
+    if(typeof liff==='undefined'){
+      // CDN SDK 沒載進來（網路不穩）：不防呆會永遠停在初始 spinner
+      showCenter('<div>⚠ 網路不穩定，LINE 元件沒載入 / Mạng yếu, chưa tải được LINE</div>'
+        +'<button class="btn-primary" style="margin-top:10px" onclick="location.reload()">重試 / Thử lại</button>');
       return;
     }
     if(!LIFF_ID){ showCenter('<div>'+t('liffNotSet')+'</div>'); return; }
@@ -743,6 +755,16 @@
       if((g!=null&&(isNaN(g)||g<0))||(m!=null&&(isNaN(m)||m<0))||badBatch) bad.push(it.n);
     });
     if(bad.length){ alert(I18N.zh.invalidQty+'\n'+I18N.vi.invalidQty+'\n\n'+bad.join('\n')); return; }
+    // 效期批列「半填」防呆：有日期沒數量／有數量沒日期的殘缺批號寫進 DB 會讓效期呆料警示失真
+    var badHalf=[];
+    S.items.forEach(function(it){
+      var half=(S.batches[it.c]||[]).some(function(b){
+        var hd=(b.date&&b.date!==''), hq=(b.qty!=null&&b.qty!=='');
+        return (hd&&!hq)||(!hd&&hq);
+      });
+      if(half) badHalf.push(it.n);
+    });
+    if(badHalf.length){ alert('效期列請同時填「日期」與「數量」再送出\nHàng hạn dùng cần nhập đủ ngày và số lượng\n\n'+badHalf.join('\n')); return; }
     var done=S.items.filter(isCounted).length;
     if(!confirm(t('confirm')(S.wh.name||S.wh.code,done,S.items.length))) return;
     var btn=document.getElementById('stSubmit'); btn.disabled=true; btn.textContent=t('submitting');
@@ -756,6 +778,12 @@
       // counted 傳「上貨」，mid 傳「中貨」；後端合計存 counted_qty
       counts.push({ code:it.c, name:it.n, spec:it.s, unit:it.u, sys:it.sys, counted:(g==null?null:g), mid:(m==null?null:m), expiry:bx });
     });
+    if(!counts.length){
+      // 空場防呆：0 品項送出仍會建 session、倉庫清單標「今日已盤」，看起來盤了其實沒盤
+      btn.disabled=false; btn.textContent=t('submit');
+      alert('尚未輸入任何盤點數，請先盤點再送出\nChưa nhập số liệu kiểm kê nào');
+      return;
+    }
     fetch(STK+'/submit',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+freshToken()},
       body:JSON.stringify({warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:(S.baseSubmittedAt==null?null:S.baseSubmittedAt)})
     }).then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {status:r.status,res:j,redirected:r.redirected}; }); }).then(function(o){
