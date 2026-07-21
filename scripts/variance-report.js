@@ -206,36 +206,50 @@ async function loadFromDb(getRows) {
   return { sessions, counts, adjustments: adj };
 }
 
-// ---- 後台每日盤點 CSV（stocktake-YYYY-MM-DD.csv）解析 ----
-// 表頭：日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),...
+// ---- 盤點 CSV 解析 ----
+// 同時支援兩種表頭：
+//   (A) 後台每日盤點「匯出 CSV」（stocktake-YYYY-MM-DD.csv）：
+//       日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),...
+//   (B) 直接查 DB 匯出的欄位名（如 Supabase SQL Editor Download CSV）：
+//       count_date, icpno, wh_code, wh_name, erp_code, name, spec, unit, sys_qty, counted_qty
 function parseCsvText(text) {
   const rows = csvRows(text);
   if (!rows.length) return { sessions: [], counts: [] };
-  const header = rows[0].map((h) => h.trim());
-  const col = (name) => header.indexOf(name);
-  const iDate = col('日期'), iWh = col('倉別'), iWhN = col('倉名'), iCode = col('料號'),
-    iName = col('品名'), iSpec = col('規格'), iUnit = col('單位'),
-    iSys = col('系統量(盤點當下)'), iCounted = col('實盤量(含中)');
+  const header = rows[0].map((h) => h.trim().toLowerCase());
+  // 每個欄位給一組別名（大小寫不敏感），取第一個對到的
+  const find = (aliases) => { for (const a of aliases) { const i = header.indexOf(a.toLowerCase()); if (i >= 0) return i; } return -1; };
+  const iDate = find(['count_date', '日期', 'date']);
+  const iIcp = find(['icpno', '公司', '公司代碼']);
+  const iWh = find(['wh_code', '倉別', '倉號', '倉庫']);
+  const iWhN = find(['wh_name', '倉名', '倉庫名稱']);
+  const iCode = find(['erp_code', '料號', '品號']);
+  const iName = find(['name', '品名', '品項']);
+  const iSpec = find(['spec', '規格']);
+  const iUnit = find(['unit', '單位']);
+  const iSys = find(['sys_qty', '系統量(盤點當下)', '系統量', '帳面數量', '系統']);
+  const iCounted = find(['counted_qty', '實盤量(含中)', '實盤量', '盤點數量', '實盤']);
   if (iDate < 0 || iSys < 0 || iCounted < 0 || iCode < 0) return { sessions: [], counts: [] };
-  const sessions = new Map(); // date|wh -> session
+  const g = (f, i) => (i >= 0 && i < f.length ? f[i] : undefined);
+  const sessions = new Map(); // date|icpno|wh -> session
   const counts = [];
   for (let r = 1; r < rows.length; r++) {
     const f = rows[r];
-    if (!f || f.length <= iCounted) continue;
-    const date = String(f[iDate] || '').trim().slice(0, 10);
+    if (!f || Math.max(iSys, iCounted, iDate, iCode) >= f.length) continue;
+    const date = String(g(f, iDate) || '').trim().slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-    const wh = String(f[iWh] || '').trim();
-    const sid = date + '|' + wh;
-    if (!sessions.has(sid)) sessions.set(sid, { id: sid, icpno: '00', wh_code: wh, wh_name: String(f[iWhN] || '').trim(), count_date: date });
-    const countedRaw = String(f[iCounted] == null ? '' : f[iCounted]).trim();
+    const icp = normIcpno(g(f, iIcp));
+    const wh = String(g(f, iWh) || '').trim();
+    const sid = date + '|' + icp + '|' + wh;
+    if (!sessions.has(sid)) sessions.set(sid, { id: sid, icpno: icp, wh_code: wh, wh_name: String(g(f, iWhN) || '').trim(), count_date: date });
+    const countedRaw = String(g(f, iCounted) == null ? '' : g(f, iCounted)).trim();
     counts.push({
       session_id: sid,
-      erp_code: String(f[iCode] || '').trim(),
-      name: iName >= 0 ? String(f[iName] || '') : '',
-      spec: iSpec >= 0 ? String(f[iSpec] || '') : '',
-      unit: iUnit >= 0 ? String(f[iUnit] || '') : '',
-      sys_qty: numOrNull(f[iSys]),
-      counted_qty: countedRaw === '' ? null : numOrNull(f[iCounted]),
+      erp_code: String(g(f, iCode) || '').trim(),
+      name: iName >= 0 ? String(g(f, iName) || '') : '',
+      spec: iSpec >= 0 ? String(g(f, iSpec) || '') : '',
+      unit: iUnit >= 0 ? String(g(f, iUnit) || '') : '',
+      sys_qty: numOrNull(g(f, iSys)),
+      counted_qty: countedRaw === '' ? null : numOrNull(g(f, iCounted)),
     });
   }
   return { sessions: [...sessions.values()], counts };
