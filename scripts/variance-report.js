@@ -33,7 +33,7 @@ const path = require('path');
 
 // ── 參數 ──────────────────────────────────────────────────────────
 function parseArgs(argv) {
-  const o = { days: 14, icpno: 'all', out: null, since: null, until: null, src: null };
+  const o = { days: 14, icpno: 'all', out: null, since: null, until: null, srcs: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--days') o.days = parseInt(argv[++i], 10) || 14;
@@ -42,8 +42,9 @@ function parseArgs(argv) {
     else if (a === '--since') o.since = argv[++i];
     else if (a === '--until') o.until = argv[++i];
     else if (a === '--help' || a === '-h') o.help = true;
-    else if (!a.startsWith('--')) o.src = a;
+    else if (!a.startsWith('--')) o.srcs.push(a);
   }
+  o.src = o.srcs[0] || null;
   return o;
 }
 
@@ -205,8 +206,65 @@ async function loadFromDb(getRows) {
   return { sessions, counts, adjustments: adj };
 }
 
-async function loadData(src) {
-  if (!src && process.env.DATABASE_URL) {
+// ---- 後台每日盤點 CSV（stocktake-YYYY-MM-DD.csv）解析 ----
+// 表頭：日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),...
+function parseCsvText(text) {
+  const rows = csvRows(text);
+  if (!rows.length) return { sessions: [], counts: [] };
+  const header = rows[0].map((h) => h.trim());
+  const col = (name) => header.indexOf(name);
+  const iDate = col('日期'), iWh = col('倉別'), iWhN = col('倉名'), iCode = col('料號'),
+    iName = col('品名'), iSpec = col('規格'), iUnit = col('單位'),
+    iSys = col('系統量(盤點當下)'), iCounted = col('實盤量(含中)');
+  if (iDate < 0 || iSys < 0 || iCounted < 0 || iCode < 0) return { sessions: [], counts: [] };
+  const sessions = new Map(); // date|wh -> session
+  const counts = [];
+  for (let r = 1; r < rows.length; r++) {
+    const f = rows[r];
+    if (!f || f.length <= iCounted) continue;
+    const date = String(f[iDate] || '').trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const wh = String(f[iWh] || '').trim();
+    const sid = date + '|' + wh;
+    if (!sessions.has(sid)) sessions.set(sid, { id: sid, icpno: '00', wh_code: wh, wh_name: String(f[iWhN] || '').trim(), count_date: date });
+    const countedRaw = String(f[iCounted] == null ? '' : f[iCounted]).trim();
+    counts.push({
+      session_id: sid,
+      erp_code: String(f[iCode] || '').trim(),
+      name: iName >= 0 ? String(f[iName] || '') : '',
+      spec: iSpec >= 0 ? String(f[iSpec] || '') : '',
+      unit: iUnit >= 0 ? String(f[iUnit] || '') : '',
+      sys_qty: numOrNull(f[iSys]),
+      counted_qty: countedRaw === '' ? null : numOrNull(f[iCounted]),
+    });
+  }
+  return { sessions: [...sessions.values()], counts };
+}
+function numOrNull(v) { const s = String(v == null ? '' : v).trim(); if (s === '') return null; const n = Number(s); return Number.isFinite(n) ? n : null; }
+// 解析 CSV（支援雙引號包欄、"" 轉義、\r\n）→ 二維陣列
+function csvRows(text) {
+  text = text.replace(/^﻿/, '');
+  const out = []; let row = []; let cur = ''; let inq = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inq) {
+      if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else inq = false; }
+      else cur += c;
+    } else {
+      if (c === '"') inq = true;
+      else if (c === ',') { row.push(cur); cur = ''; }
+      else if (c === '\n') { row.push(cur); out.push(row); row = []; cur = ''; }
+      else if (c === '\r') { /* skip */ }
+      else cur += c;
+    }
+  }
+  if (cur !== '' || row.length) { row.push(cur); out.push(row); }
+  return out;
+}
+
+async function loadData(opt) {
+  const srcs = opt.srcs || [];
+  if (!srcs.length && process.env.DATABASE_URL) {
     const { Pool } = require(path.join(__dirname, '..', 'node_modules', 'pg'));
     const pool = new Pool({ connectionString: process.env.DATABASE_URL });
     const getRows = async (sql) => (await pool.query(sql)).rows;
@@ -214,9 +272,21 @@ async function loadData(src) {
     await pool.end();
     return { data, srcLabel: 'Postgres (DATABASE_URL)' };
   }
-  if (!src) throw new Error('未提供資料來源：請給一份 pg_dump .sql、一個 .db/.sqlite 檔，或設 DATABASE_URL 環境變數。');
-  const abs = path.resolve(src);
-  if (!fs.existsSync(abs)) throw new Error('找不到檔案：' + abs);
+  if (!srcs.length) throw new Error('未提供資料來源：請給後台每日盤點匯出的 CSV（可多份）、一份 pg_dump .sql、一個 .db/.sqlite 檔，或設 DATABASE_URL 環境變數。');
+  for (const s of srcs) { const a = path.resolve(s); if (!fs.existsSync(a)) throw new Error('找不到檔案：' + a); }
+
+  // 多份或副檔名為 .csv → 當成後台盤點 CSV 合併
+  const allCsv = srcs.every((s) => /\.csv$/i.test(s));
+  if (allCsv || srcs.length > 1) {
+    const sessions = []; const counts = [];
+    for (const s of srcs) {
+      const parsed = parseCsvText(fs.readFileSync(path.resolve(s), 'utf8'));
+      sessions.push(...parsed.sessions); counts.push(...parsed.counts);
+    }
+    return { data: { sessions, counts, adjustments: {} }, srcLabel: `後台盤點 CSV × ${srcs.length} 份` };
+  }
+
+  const abs = path.resolve(srcs[0]);
   if (/\.sql$/i.test(abs) || isSqlText(abs)) {
     const text = fs.readFileSync(abs, 'utf8');
     return { data: parseSqlDump(text), srcLabel: 'pg_dump 匯出檔 ' + path.basename(abs) };
@@ -582,10 +652,10 @@ function buildHtml(res, srcLabel, meta) {
 async function main() {
   const opt = parseArgs(process.argv.slice(2));
   if (opt.help) {
-    console.log('用法：node scripts/variance-report.js <dump.sql | *.db | (DATABASE_URL)> [--days N] [--icpno all|00|01|02|03] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--out path]');
+    console.log('用法：node scripts/variance-report.js <每日盤點.csv... | dump.sql | *.db | (DATABASE_URL)> [--days N] [--icpno all|00|01|02|03] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--out path]');
     return;
   }
-  const { data, srcLabel } = await loadData(opt.src);
+  const { data, srcLabel } = await loadData(opt);
   if (!data.sessions.length) {
     console.error('讀不到 stocktake_session 資料。若吃 dump 檔，請確認匯出有含盤點表（stocktake_session / stocktake_count）。');
     process.exit(2);
