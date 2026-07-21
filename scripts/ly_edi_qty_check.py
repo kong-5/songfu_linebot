@@ -29,7 +29,7 @@ ly_edi_qty_check.py — 抓幾張「寺岡 EDI 回轉銷貨單」的明細數量
   python ly_edi_qty_check.py --doc A202607070085      # 指定單號（可重複帶多張）
   python ly_edi_qty_check.py --code 10200010          # 只列含某料號的行（可逗號分隔多個）
   python ly_edi_qty_check.py --no-orders              # 不比對訂貨單（最省查詢）
-  python ly_edi_qty_check.py --cjsum                  # 【可靠】掃當日 A 單、標出 SD_CJSUM 取整扣錯的行
+  python ly_edi_qty_check.py --cjsum                  # 掃當日 A 單、標出 SD_CJSUM 取整的行（強相關；待凌越確認）
   python ly_edi_qty_check.py --cjsum --limit 91       # 掃更多張（逐張撈明細，會慢一點）
   python ly_edi_qty_check.py --json                   # JSON 輸出（好貼回去核對）
 
@@ -148,8 +148,9 @@ def build_doc_report(main: dict, details: list, ordered_by_skno: dict | None) ->
         skno = str(d.get("SD_SKNO", "")).strip()
         qty = to_num(d.get("SD_QTY"))
         cjsum = to_num(d.get("SD_CJSUM"))
-        # 庫存過帳認 SD_CJSUM（非0時）：EDI 回寫把它填成 round(SD_QTY) → 庫存被取整。
-        # 人工單 SD_CJSUM=0 → 照 SD_QTY 精確扣。cj_bad＝這行被取整扣錯。
+        # 【假設，待凌越確認】觀察：EDI 單 SD_CJSUM=round(SD_QTY)、人工單=0；且 EDI 單帳
+        # 減少量＝該整數。推測庫存過帳可能認 SD_CJSUM，但無 API 文件佐證、也未證 減少量==CJSUM
+        # （只證 ==round(QTY)）。cj_bad＝此行 SD_CJSUM 被取整，與庫存扣錯「強相關」（非已證因果）。
         cj_bad = cjsum != 0 and abs(cjsum - qty) > 1e-9
         line = {
             "skno": skno,
@@ -294,8 +295,9 @@ def run(args) -> int:
             print("  抽驗單頭全欄位（含審核狀態/建立時間，確認欄名）：--doc <單號>。")
         return 0
 
-    # --cjsum：可靠偵測（2026-07-21 定案）。逐張撈明細，標出 SD_CJSUM≠0 且 ≠SD_QTY 的行
-    # ＝EDI 回寫把出貨量取整、庫存被扣成整數。這是「單一次寫入」的欄位級 bug，與異動時間無關。
+    # --cjsum：逐張撈明細，標出 SD_CJSUM≠0 且 ≠SD_QTY 的行（EDI 把出貨量取整）。
+    # 【假設待確認】此欄與帳的取整誤差強相關（見 build_doc_report 註解），但「庫存過帳認 CJSUM」
+    # 尚無 API 文件佐證。用途：快速圈出「可能扣錯」的行供人工對帳，非已證因果。
     if args.cjsum:
         ds = (lystk.resolve_date(args.date or "today")).isoformat()
         print(f"▶ 掃 {ds} A 開頭銷貨單的 SD_CJSUM 取整問題  ICPNO={icpno}（{company}）…", flush=True)
@@ -328,10 +330,11 @@ def run(args) -> int:
                     tot_neg += ln["cj_diff"]
                 print(f"   {ln['skno']:<12}{ln['name']:<14}{ln['qty']:>8g}{ln['cjsum']:>7g}"
                       f"{ln['cj_diff']:>+8g}")
-        print(f"\n── 小結：掃 {len(scan)} 張，取整錯 {tot_bad} 行 "
-              f"｜庫存少扣(虛高) +{tot_pos:g}｜庫存多扣(虛低) {tot_neg:g}"
+        print(f"\n── 小結：掃 {len(scan)} 張，SD_CJSUM 被取整 {tot_bad} 行 "
+              f"｜與帳『少扣(虛高)』相關 +{tot_pos:g}｜『多扣(虛低)』相關 {tot_neg:g}"
               f"｜淨 {tot_pos + tot_neg:+g} ──")
-        print("  修正：178go 回寫時 SD_CJSUM 應＝SD_QTY（實秤小數）或留 0，別填 round。")
+        print("  ⚠ 這是強相關訊號，非已證因果。請先向凌越確認『銷貨單過帳用哪個數量欄』，")
+        print("    並抽幾行對『貨品存貨異動明細表』的減少數量是否＝SD_CJSUM，再據以要求 178go 修。")
         return 0
 
     # 1) 決定要看哪幾張單（主表：指定單號逐張查；否則抓當天 A 開頭前 N 張）
@@ -423,7 +426,7 @@ def build_parser():
     p.add_argument("--suspects", action="store_true",
                    help="（弱訊號，已被 --cjsum 取代）列「寫入後被重傳過」的 A 開頭單，只查主表一次")
     p.add_argument("--cjsum", action="store_true",
-                   help="【可靠】掃 A 開頭單，標出 SD_CJSUM 被取整（≠SD_QTY）的行＝庫存扣錯的實錘")
+                   help="掃 A 開頭單，標出 SD_CJSUM 被取整（≠SD_QTY）的行（與庫存扣錯強相關；因果待凌越確認）")
     p.add_argument("--json", action="store_true", help="輸出 JSON（供貼回核對/程式串接）")
     p.add_argument("--timeout", type=int, default=60, help="連線/操作逾時秒數（預設 60）")
     return p
