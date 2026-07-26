@@ -18,33 +18,103 @@ function registerInventoryRoutes(router, ctx) {
         try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, hour: "2-digit", minute: "2-digit" }); }
         catch (_) { return String(iso); }
     }
-    async function loadStocktakeDay(date, latestMap, adjMap) {
-        // latestMap 以「icpno|料號」為鍵（多公司料號可能撞號，不能只用料號）
-        const lm = latestMap || {};
+    // ── 「最新系統／對最新盤差」欄的庫存基準（單一權威：每日盤點頁／CSV／異常排查表／「套用實盤」共用）──
+    // 今天：即時快照（erp_stock_wh_qty / erp_stock_items）——當天要看的就是「凌越現在怎麼記」。
+    // 過去日期：**該日的收盤快照**（erp_stock_wh_daily / erp_stock_daily），凍結不再飄。
+    //   [fix 2026-07-26] 舊版不分日期一律讀即時快照 → 昨天以前的「最新系統／對最新盤差」每天跟著今天的
+    //   庫存跑，歷史盤差永遠不定案（回報：「每天都變成現在的庫存，盤差都亂掉」）。
+    //   該日沒推送過（假日／代理沒開）→ 退回「該日以前最近一次」快照，畫面標出實際快照日期；
+    //   連歷史快照都沒有（超過 90 天保留期／功能上線前）→ 才退回即時快照並標「無當日快照」。
+    // 注意：「盤點當下」欄的 sys_qty 與統計圖表/熱力圖的盤差基準本來就是送出當下凍結的，不受此影響。
+    const BASIS_ICP = "COALESCE(NULLIF(TRIM(icpno),''),'00')";
+    function makeStockBasisResolver(date) {
+        const d = String(date || "");
+        const wantFrozen = /^\d{4}-\d{2}-\d{2}$/.test(d) && d < stkAdminTaipeiDate();
+        const cache = {};      // icpno|倉號 → basis（一倉一次查，不逐品項查）
+        const totalCache = {}; // icpno → 公司總量基準（分倉無資料時的後備）
+        const rowsToMap = (rows) => { const m = {}; for (const r of rows || []) m[String(r.erp_code || "")] = Number(r.qty || 0); return m; };
+        const liveTotal = async (icp) => {
+            try { return { map: rowsToMap(await db.prepare(`SELECT erp_code, qty FROM erp_stock_items WHERE ${BASIS_ICP} = ?`).all(icp)), asOf: null, frozen: false }; }
+            catch (_) { return { map: {}, asOf: null, frozen: false }; }
+        };
+        const frozenTotal = async (icp) => {
+            try {
+                const hit = await db.prepare(`SELECT MAX(snap_date) AS d FROM erp_stock_daily WHERE ${BASIS_ICP} = ? AND snap_date <= ?`).get(icp, d);
+                const snap = hit && hit.d ? String(hit.d) : "";
+                if (!snap) return null;
+                const rows = (await db.prepare(`SELECT erp_code, qty FROM erp_stock_daily WHERE ${BASIS_ICP} = ? AND snap_date = ?`).all(icp, snap)) || [];
+                return rows.length ? { map: rowsToMap(rows), asOf: snap, frozen: true } : null;
+            }
+            catch (_) { return null; /* 舊庫無每日快照表 → 退回即時 */ }
+        };
+        const liveWh = async (icp, wh) => {
+            if (!wh) return null;
+            try {
+                const rows = (await db.prepare(`SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ? AND ${BASIS_ICP} = ?`).all(wh, icp)) || [];
+                return rows.length ? { map: rowsToMap(rows), asOf: null, frozen: false } : null;
+            }
+            catch (_) { return null; /* 查詢失敗 → 沿用總量基準 */ }
+        };
+        const frozenWh = async (icp, wh) => {
+            if (!wh) return null;
+            try {
+                const hit = await db.prepare(`SELECT MAX(snap_date) AS d FROM erp_stock_wh_daily WHERE ${BASIS_ICP} = ? AND wh_code = ? AND snap_date <= ?`).get(icp, wh, d);
+                const snap = hit && hit.d ? String(hit.d) : "";
+                if (!snap) return null;
+                const rows = (await db.prepare(`SELECT erp_code, qty FROM erp_stock_wh_daily WHERE ${BASIS_ICP} = ? AND wh_code = ? AND snap_date = ?`).all(icp, wh, snap)) || [];
+                return rows.length ? { map: rowsToMap(rows), asOf: snap, frozen: true } : null;
+            }
+            catch (_) { return null; }
+        };
+        // [fix 2026-07-14] 快取鍵含 icpno：倉號可跨公司重複（分倉表已按公司分列）。
+        return async function basisFor(icpRaw, whRaw) {
+            const icp = (0, erp_companies_js_1.normIcpno)(icpRaw);
+            const wh = String(whRaw || "");
+            const ck = icp + "|" + wh;
+            if (cache[ck]) return cache[ck];
+            let picked = null, source = "total", stale = false;
+            if (wantFrozen) {
+                picked = await frozenWh(icp, wh);
+                if (picked) source = "warehouse";
+                else {
+                    if (!Object.prototype.hasOwnProperty.call(totalCache, icp)) totalCache[icp] = await frozenTotal(icp);
+                    picked = totalCache[icp];
+                }
+                if (!picked) stale = true; // 想凍結卻查無任何歷史快照 → 只能退回即時量，畫面要標出來
+            }
+            if (!picked) {
+                picked = await liveWh(icp, wh);
+                if (picked) source = "warehouse";
+                else {
+                    const lk = "live|" + icp;
+                    if (!Object.prototype.hasOwnProperty.call(totalCache, lk)) totalCache[lk] = await liveTotal(icp);
+                    picked = totalCache[lk];
+                }
+            }
+            const map = picked.map || {};
+            const basis = {
+                source, asOf: picked.asOf || null, frozen: !!picked.frozen, stale,
+                // 分倉基準：該品項無分倉列＝0（貨不在這倉）；總量基準：快照查無此料號＝null（顯示「—」）
+                get: (code) => (source === "warehouse"
+                    ? Number(map[String(code)] || 0)
+                    : (Object.prototype.hasOwnProperty.call(map, String(code)) ? Number(map[String(code)]) : null)),
+            };
+            cache[ck] = basis;
+            return basis;
+        };
+    }
+    async function loadStocktakeDay(date, adjMap) {
         const am = adjMap || {}; // 人工調整值（icpno|料號→delta）：最新系統＝凌越 + delta，讓盤差扣掉系統誤差
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
-        // [分倉庫存 2026-07-10] 「最新系統／對最新盤差」的基準：該倉在 erp_stock_wh_qty 有任何分倉列
-        // → 用該倉分倉量（品項無列＝0）；整倉無分倉資料 → fallback 總量（erp_stock_items，latestMap）。
-        // 一倉一次查（快取），不逐品項查。latestSource 供卡片顯示「分倉／總量」基準標記。
+        // [分倉庫存 2026-07-10] 基準：該倉在分倉快照有任何列 → 用該倉分倉量（品項無列＝0）；
+        // 整倉無分倉資料 → fallback 公司總量。latestSource/latestAsOf/latestFrozen 供卡片顯示基準標記。
         // 注意：sys_qty（盤差「對當下」）是盤點送出當下寫進 stocktake_count 的凍結快照，這裡原樣讀出、
         // 不回溯改動——只有「最新系統」欄與新建立的 session 用新基準。
-        const whLatestCache = {};
-        // [fix 2026-07-14] 快取鍵含 icpno：erp_stock_wh_qty 已按公司分列，倉號可跨公司重複。
-        const getWhLatest = async (icp, whCode) => {
-            const ck = icp + "|" + whCode;
-            if (Object.prototype.hasOwnProperty.call(whLatestCache, ck)) return whLatestCache[ck];
-            let m = null;
-            try {
-                const rows = await db.prepare("SELECT erp_code, qty FROM erp_stock_wh_qty WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(whCode, icp);
-                if ((rows || []).length) { m = {}; for (const r of rows) m[String(r.erp_code || "")] = Number(r.qty || 0); }
-            } catch (_) { m = null; /* 查詢失敗 → 沿用總量基準 */ }
-            whLatestCache[ck] = m;
-            return m;
-        };
+        const basisFor = makeStockBasisResolver(date);
         for (const s of sessions || []) {
             const sIcp = (0, erp_companies_js_1.normIcpno)(s.icpno);
-            const whm = await getWhLatest(sIcp, String(s.wh_code || ""));
+            const basis = await basisFor(sIcp, String(s.wh_code || ""));
             const rows = await db.prepare("SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, edited_at, edited_by_name FROM stocktake_count WHERE session_id = ? ORDER BY erp_code").all(s.id);
             const items = (rows || []).map((r) => {
                 const sys = Number(r.sys_qty || 0);
@@ -53,15 +123,9 @@ function registerInventoryRoutes(router, ctx) {
                 const diff = counted == null ? null : Math.round((counted - sys) * 100) / 100;
                 const code = String(r.erp_code || "");
                 const adj = Number(am[sIcp + "|" + code] || 0); // 人工調整值
-                // 分倉庫存優先（該倉有 000009 資料）；否則 fallback 到公司總量快照（鍵含 icpno）
-                let latestRaw;
-                if (whm) {
-                    latestRaw = Number(whm[code] || 0); // 分倉基準：該品項無分倉列＝0
-                } else {
-                    const lmKey = sIcp + "|" + code;
-                    const hasLatest = Object.prototype.hasOwnProperty.call(lm, lmKey);
-                    latestRaw = hasLatest ? Number(lm[lmKey]) : null;
-                }
+                // 分倉庫存優先（該倉有 000009 資料）；否則 fallback 到公司總量快照。
+                // 過去日期＝該日收盤快照（凍結），今天＝即時快照 —— 見 makeStockBasisResolver。
+                const latestRaw = basis.get(code);
                 // 最新系統＝凌越 + 人工調整；對最新盤差＝實盤−最新系統（建立調整後歸零）
                 const latest = latestRaw == null ? null : Math.round((latestRaw + adj) * 100) / 100;
                 const diffLatest = (counted == null || latest == null) ? null : Math.round((counted - latest) * 100) / 100;
@@ -70,20 +134,16 @@ function registerInventoryRoutes(router, ctx) {
                 return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, counted, mid, diff, latest, latestRaw, adj, diffLatest, expiry, editedAt: r.edited_at || null, editedBy: r.edited_by_name || null };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
-            out.push({ session: s, items, diffCount, latestSource: whm ? "warehouse" : "total" });
+            out.push({ session: s, items, diffCount, latestSource: basis.source, latestAsOf: basis.asOf, latestFrozen: basis.frozen, latestStale: basis.stale });
         }
         return out;
     }
     router.get("/inventory", async (req, res) => {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
-        // 最新庫存快照（供「對最新盤差」對照）
-        const latestMap = {};
+        // 庫存快照資料時間（今天＝即時快照時間；過去日期用該日收盤快照，時間標記改用 latestAsOf）
         let stockMeta = {};
-        try {
-            (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); });
-            stockMeta = await readStockMeta();
-        } catch (_) { /* 無庫存快照時照樣顯示 */ }
+        try { stockMeta = await readStockMeta(); } catch (_) { /* 無庫存快照時照樣顯示 */ }
         // 人工調整值（彌補系統誤差）：最新系統/對最新盤差都會加上它
         const adjMap = {};
         try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
@@ -93,7 +153,7 @@ function registerInventoryRoutes(router, ctx) {
         try { (await db.prepare("SELECT erp_code, qty, icpno FROM erp_future_sales").all() || []).forEach((r) => { futMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) { }
         let futOn = false;
         try { const fr = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("stock_future_reversal_enabled"); futOn = !!(fr && String(fr.value) === "1"); } catch (_) { }
-        const day = await loadStocktakeDay(date, latestMap, adjMap);
+        const day = await loadStocktakeDay(date, adjMap);
         let includedWh = [];
         try { includedWh = (await db.prepare("SELECT code, name, icpno FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY icpno, sort_order, code").all()) || []; } catch (_) { includedWh = []; }
         let recentDates = [];
@@ -169,6 +229,16 @@ function registerInventoryRoutes(router, ctx) {
             const s = sel.session;
             const done = Number(s.counted_count || 0), all = Number(s.item_count || 0);
             const dLatestCls = (d) => (d == null ? "" : d === 0 ? "stk-z" : d > 0 ? "stk-p" : "stk-n");
+            // [fix 2026-07-26] 右側「系統／盤差」的基準：今天＝即時快照；過去日期＝該日收盤快照（凍結，不再每天跟著跑）。
+            const frozenBasis = !!sel.latestFrozen;
+            const basisAsOf = sel.latestAsOf ? String(sel.latestAsOf) : "";
+            const basisFallbackDay = frozenBasis && basisAsOf && basisAsOf !== date; // 該日沒推送 → 取更早一天的收盤
+            const liveSnapAt = stkAdminTwTime(sel.latestSource === "warehouse" ? stockMeta.wh_snapshot_at : stockMeta.snapshot_at) || "—";
+            const latestGrpTitle = frozenBasis ? "當日系統（凍結）" : "最新庫存";
+            const latestGrpSub = frozenBasis
+                ? `${basisAsOf} 收盤${basisFallbackDay ? "（該日無推送，取前一次）" : ""}・已含調整`
+                : `快照 ${liveSnapAt}・已含調整`;
+            const latestDiffName = frozenBasis ? "對當日盤差" : "對最新盤差";
             // [UI 2026-07-17] 調整欄收斂成單一標籤：點標籤開浮動面板（套用實盤／手動存值／刪除），
             // 表單改由前端動態組出送 POST /inventory/adjustments（欄位與舊 inline form 相同）。
             const icpForm = (0, erp_companies_js_1.normIcpno)(s.icpno);
@@ -182,7 +252,8 @@ function registerInventoryRoutes(router, ctx) {
                 return `<button type="button" class="stk-adjchip2"${attrs} title="點開調整面板：把最新系統校正成實盤，或手動填調整值">調整</button>`;
             };
             // 未來銷貨加回（藍標）：開關開才顯示；純提示解釋盤差來源，刻意不進最新系統/盤差計算（盤差是與凌越帳的對帳）。
-            const futOf = (it) => Number(futMap[icpForm + "|" + String(it.code)] || 0);
+            // 過去日期（凍結基準）不標：erp_future_sales 是「現在」的未來銷貨，貼在歷史列上只會誤導。
+            const futOf = (it) => (frozenBasis ? 0 : Number(futMap[icpForm + "|" + String(it.code)] || 0));
             const latestCell = (it) => {
                 if (it.latest == null)
                     return "—";
@@ -215,7 +286,7 @@ function registerInventoryRoutes(router, ctx) {
               </tr>`;
             }).join("");
             rightHtml = `
-          <div class="stk-card" id="stkCard" data-icp="${escapeAttr(icpForm)}" data-wh="${escapeAttr(String(s.wh_code || ""))}" data-sid="${escapeAttr(String(s.id))}" data-back="${escapeAttr(backQ)}">
+          <div class="stk-card" id="stkCard" data-icp="${escapeAttr(icpForm)}" data-wh="${escapeAttr(String(s.wh_code || ""))}" data-sid="${escapeAttr(String(s.id))}" data-back="${escapeAttr(backQ)}" data-date="${escapeAttr(date)}" data-frozen="${frozenBasis ? "1" : ""}" data-asof="${escapeAttr(basisAsOf)}">
             <div class="stk-card-h">
               <div class="stk-card-t"><b>${escapeHtml(s.wh_name || s.wh_code)}</b>${coTag(s.icpno) ? `<span class="wh-co">${escapeHtml(coTag(s.icpno))}</span>` : ""}<span class="stk-code2">${escapeHtml(s.wh_code)}</span></div>
               <div class="stk-card-m">
@@ -223,12 +294,17 @@ function registerInventoryRoutes(router, ctx) {
                 <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
                 <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
                 <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
-                <span class="stk-badge" title="「最新系統」欄的資料基準：分倉＝該倉在凌越的分倉庫存量；總量＝全公司總庫存量（該倉無分倉資料時的後備）">最新基準：${sel.latestSource === "warehouse" ? "分倉" : "總量"}</span>
+                <span class="stk-badge" title="右側「系統」欄的資料基準：分倉＝該倉在凌越的分倉庫存量；總量＝全公司總庫存量（該倉無分倉資料時的後備）">${frozenBasis ? "當日基準" : "最新基準"}：${sel.latestSource === "warehouse" ? "分倉" : "總量"}</span>
+                ${frozenBasis
+                    ? `<span class="stk-badge ok" title="此日期已過，右側「系統／${latestDiffName}」用 ${basisAsOf} 的收盤庫存快照（凍結），不會再跟著今天的庫存變動">已凍結 ${escapeHtml(basisAsOf)} 收盤${basisFallbackDay ? "（該日無推送）" : ""}</span>`
+                    : (sel.latestStale ? `<span class="stk-badge warn" title="查無此日期（含之前）的每日庫存快照——可能超過 90 天保留期或當時尚未啟用推送，只好退回顯示即時庫存，此欄會隨庫存變動">無當日快照・顯示即時量</span>` : "")}
                 <label class="sf-switch-label" style="font-size:11.5px;"><input type="checkbox" id="stkOnlyDiff"><span class="sf-switch"></span>只看盤差</label>
                 <button type="button" class="stk-ibtn" id="stkInfo2" aria-expanded="false" aria-label="盤差計算說明" title="盤差計算說明">${SF_ICONS.info}</button>
               </div>
             </div>
-            <div class="stk-note" id="stkInfo2Box" hidden>紅底＝盤差(對當下)超過 <b>±5%</b> 的品項。「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。<b>最新系統</b>取自${sel.latestSource === "warehouse" ? `<b>此倉的分倉庫存</b>快照(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.wh_snapshot_at) || "—")})` : `目前庫存快照的<b>全公司總量</b>(資料時間 ${escapeHtml(stkAdminTwTime(stockMeta.snapshot_at) || "—")}；此倉尚無分倉資料)`}，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。</div>
+            <div class="stk-note" id="stkInfo2Box" hidden>紅底＝盤差(對當下)超過 <b>±5%</b> 的品項。「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。右側<b>${escapeHtml(latestGrpTitle)}</b>取自${sel.latestSource === "warehouse" ? "<b>此倉的分倉庫存</b>" : "<b>全公司總量</b>（此倉尚無分倉資料）"}${frozenBasis
+                ? `的 <b>${escapeHtml(basisAsOf)} 收盤快照</b>${basisFallbackDay ? "（該日沒有推送紀錄，取此日之前最近一次）" : ""}——<b>已凍結</b>，不會再跟著今天的庫存跑，<b>${escapeHtml(latestDiffName)}＝實盤−當日系統</b>是當天的定案值。`
+                : `的即時快照(資料時間 ${escapeHtml(liveSnapAt)})，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。`}</div>
             <div class="stk-tblwrap">
             <table class="stk-tbl">
               <thead>
@@ -236,7 +312,7 @@ function registerInventoryRoutes(router, ctx) {
                   <th rowspan="2">料號</th>
                   <th rowspan="2">品名</th>
                   <th colspan="3" class="stk-grp">盤點當下 <span class="stk-th2">凍結・送出 ${escapeHtml(stkAdminTwTime(s.submitted_at) || "—")}</span></th>
-                  <th colspan="2" class="stk-grp">最新庫存 <span class="stk-th2">快照 ${escapeHtml(stkAdminTwTime(sel.latestSource === "warehouse" ? stockMeta.wh_snapshot_at : stockMeta.snapshot_at) || "—")}・已含調整</span></th>
+                  <th colspan="2" class="stk-grp">${escapeHtml(latestGrpTitle)} <span class="stk-th2">${escapeHtml(latestGrpSub)}</span></th>
                   <th rowspan="2" class="stk-sep">調整<br><span class="stk-th2">誤差補償</span></th>
                   <th rowspan="2">效期</th>
                 </tr>
@@ -386,7 +462,7 @@ function registerInventoryRoutes(router, ctx) {
           ${selWh ? `<input type="hidden" name="wh" value="${escapeAttr(selWh)}">` : ""}
         </form>
         <select id="stkRefreshIcp" class="sf-input" style="width:auto;padding:4px 8px;font-size:12.5px;" title="要更新哪家公司的庫存（免動整合代理設定）"><option value="">全公司</option>${Object.entries(erp_companies_js_1.ERP_COMPANY_NAMES).map(([c, n]) => `<option value="${c}">${escapeHtml(n)}</option>`).join("")}</select>
-        <button type="button" class="stk-togbtn" id="stkRefreshInv">↻ 更新最新庫存</button>
+        <button type="button" class="stk-togbtn" id="stkRefreshInv" title="${date < stkAdminTaipeiDate() ? "拉一次凌越最新庫存（更新的是「今天」的庫存；此日期已過，右側系統欄用當日收盤快照，不會跟著變）" : "拉一次凌越最新庫存，右側「最新系統／對最新盤差」隨即更新"}">↻ 更新最新庫存</button>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/anomalies?date=${encodeURIComponent(date)}" title="當日盤差品項＋可能原因，可推送 LINE 群組請大家複查">異常排查表</a>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
         <label class="sf-switch-label" style="font-size:12.5px;" title="開＝『最新系統』欄標出有未來日期銷貨的品項（藍標「未來+N」，解釋盤差來源）；與目前庫存頁共用同一開關。純提示，不改變盤差計算。"><input type="checkbox" id="stkFutRev"${futOn ? " checked" : ""}><span class="sf-switch"></span>未來銷貨加回</label>
@@ -470,7 +546,7 @@ function registerInventoryRoutes(router, ctx) {
         }); }
         // 卡片常數（調整面板/複盤共用）＋動態表單送出（欄位與舊 inline form 相同）
         var card=document.getElementById('stkCard');
-        var CTX=card?{icp:card.getAttribute('data-icp')||'00',wh:card.getAttribute('data-wh')||'',sid:card.getAttribute('data-sid')||'',back:card.getAttribute('data-back')||''}:null;
+        var CTX=card?{icp:card.getAttribute('data-icp')||'00',wh:card.getAttribute('data-wh')||'',sid:card.getAttribute('data-sid')||'',back:card.getAttribute('data-back')||'',date:card.getAttribute('data-date')||'',frozen:card.getAttribute('data-frozen')==='1',asof:card.getAttribute('data-asof')||''}:null;
         function postForm(action,fields){
           var f=document.createElement('form'); f.method='post'; f.action=action; f.style.display='none';
           Object.keys(fields).forEach(function(k){ var i=document.createElement('input'); i.type='hidden'; i.name=k; i.value=fields[k]==null?'':String(fields[k]); f.appendChild(i); });
@@ -485,8 +561,9 @@ function registerInventoryRoutes(router, ctx) {
           var d=btn.dataset; var counted=d.counted===''?null:Number(d.counted); var adj=Number(d.adj||0); var base=d.base===''?null:Number(d.base);
           var applyV=(counted!=null&&base!=null)?Math.round((counted-base)*100)/100:null;
           pop=document.createElement('div'); pop.className='stk-pop';
+          // 基準與畫面同一套：今天＝凌越即時量；過去日期＝該日收盤量（凍結）。伺服器端也用 count_date 重算同一個基準。
           pop.innerHTML='<div class="stk-pop-t">'+escH(d.code)+' '+escH(d.name)+'</div>'
-            +'<div class="stk-pop-s">凌越 '+(base==null?'—':base)+'｜實盤 '+(counted==null?'—':counted)+(adj?('｜現調 '+(adj>0?'+':'')+adj):'')+'</div>'
+            +'<div class="stk-pop-s">'+(CTX.frozen?('帳('+escH(CTX.asof)+'收盤) '):'凌越 ')+(base==null?'—':base)+'｜實盤 '+(counted==null?'—':counted)+(adj?('｜現調 '+(adj>0?'+':'')+adj):'')+'</div>'
             +'<div class="stk-pop-row"><span>調整值</span><input type="number" step="any" id="stkPopD" value="'+(adj||(applyV==null?'':applyV))+'"></div>'
             +'<div class="stk-pop-b">'
             +(counted!=null?'<button type="button" class="pri" id="stkPopApply" title="讓最新系統＝此次實盤">套用實盤'+(applyV!=null?('（'+(applyV>0?'+':'')+applyV+'）'):'')+'</button>':'')
@@ -497,7 +574,7 @@ function registerInventoryRoutes(router, ctx) {
           var r=btn.getBoundingClientRect();
           var left=Math.min(window.scrollX+r.left, window.scrollX+document.documentElement.clientWidth-278);
           pop.style.top=(window.scrollY+r.bottom+6)+'px'; pop.style.left=Math.max(8,left)+'px';
-          var common={icpno:CTX.icp,erp_code:d.code,wh_code:CTX.wh,back:CTX.back,name:d.name,spec:d.spec,unit:d.unit};
+          var common={icpno:CTX.icp,erp_code:d.code,wh_code:CTX.wh,count_date:CTX.date,back:CTX.back,name:d.name,spec:d.spec,unit:d.unit};
           var ap=pop.querySelector('#stkPopApply');
           if(ap) ap.addEventListener('click',function(){ postForm('/admin/inventory/adjustments',Object.assign({action:'set_from_count',counted:counted},common)); });
           pop.querySelector('#stkPopSave').addEventListener('click',function(){
@@ -589,21 +666,17 @@ function registerInventoryRoutes(router, ctx) {
             if (action === "set_from_count") {
                 const counted = Number(req.body?.counted);
                 if (!Number.isFinite(counted)) { done("adjerr=" + encodeURIComponent("實盤數無效")); return; }
-                // [fix 2026-07-17] delta 基準改與盤差表「最新系統」同一套：該倉有分倉列→用分倉量
+                // [fix 2026-07-17] delta 基準與盤差表右側「系統」欄同一套：該倉有分倉列→用分倉量
                 // （品項無列＝0），整倉無分倉資料才退回公司總量。舊版一律用公司總量，品項跨倉
                 // （尤其他倉有負庫存）時會算錯：分倉 13.7、總量 -1.2、實盤 16.8 → 誤存 +18（正確 +3.1）。
-                baseQty = stock ? Number(stock.qty || 0) : 0; // 後備：公司總量
+                // [fix 2026-07-26] 也吃 count_date：從過去日期的盤差表按「套用實盤」，基準＝該日收盤快照
+                // （畫面顯示什麼就用什麼），否則畫面凍結、後端用即時量會存出對不起來的 delta。
                 const whCodeAdj = String(req.body?.wh_code || "").trim();
-                if (whCodeAdj) {
-                    try {
-                        const whAny = await db.prepare("SELECT 1 AS x FROM erp_stock_wh_qty WHERE wh_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? LIMIT 1").get(whCodeAdj, icpno);
-                        if (whAny) {
-                            const hit = await db.prepare("SELECT qty FROM erp_stock_wh_qty WHERE wh_code = ? AND erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(whCodeAdj, erpCode, icpno);
-                            baseQty = hit ? Number(hit.qty || 0) : 0;
-                        }
-                    } catch (_) { /* 分倉查詢失敗→沿用總量基準（與顯示端 fallback 規則一致） */ }
-                }
-                delta = Math.round((counted - baseQty) * 100) / 100; // 讓「最新系統」＝實盤
+                const dateAdj = String(req.body?.count_date || "").trim();
+                const basisAdj = await makeStockBasisResolver(dateAdj)(icpno, whCodeAdj);
+                const basedQty = basisAdj.get(erpCode);
+                baseQty = basedQty == null ? (stock ? Number(stock.qty || 0) : 0) : basedQty; // 後備：公司總量即時值
+                delta = Math.round((counted - baseQty) * 100) / 100; // 讓右側「系統」欄＝實盤
                 countedQty = counted;
                 name = String(req.body?.name || (stock && stock.name) || (cur && cur.name) || "");
                 spec = String(req.body?.spec || (stock && stock.spec) || (cur && cur.spec) || "");
@@ -738,15 +811,14 @@ function registerInventoryRoutes(router, ctx) {
     router.get("/inventory/stocktake.csv", async (req, res) => {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
-        const latestMapCsv = {};
-        try { (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMapCsv[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) {}
         const adjMapCsv = {};
         try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMapCsv[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) {}
-        const day = await loadStocktakeDay(date, latestMapCsv, adjMapCsv);
+        const day = await loadStocktakeDay(date, adjMapCsv);
         const q = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
+        // 「最新系統量」欄：今天＝即時凌越量；過去日期＝該日收盤快照（凍結）。基準欄會標明是哪一種。
         const lines = ["日期,倉別,倉名,料號,品名,規格,單位,系統量(盤點當下),實盤量(含中),其中中貨,盤差(對當下),盤差%,最新系統量(凌越),調整值,最新系統量(加總),最新系統基準,對最新盤差,效期明細,盤點人,送出時間"];
-        for (const { session: s, items, latestSource } of day) {
-            const baseTxt = latestSource === "warehouse" ? "分倉" : "總量";
+        for (const { session: s, items, latestSource, latestFrozen, latestAsOf, latestStale } of day) {
+            const baseTxt = (latestSource === "warehouse" ? "分倉" : "總量") + (latestFrozen ? `(${latestAsOf}收盤・凍結)` : (latestStale ? "(即時・無當日快照)" : "(即時)"));
             for (const it of items) {
                 const dp = it.diff == null ? "" : ((it.diff / Math.max(Math.abs(Number(it.sys) || 0), 1)) * 100).toFixed(1) + "%";
                 const exp = (it.expiry || []).filter((b) => b && (b.date || b.qty)).map((b) => `${b.date || "?"}x${b.qty || "?"}`).join(" / ");
@@ -782,11 +854,10 @@ function registerInventoryRoutes(router, ctx) {
     const anomWhTag = (a) => `【${a.icp === "00" ? "" : a.co + "｜"}${a.whName || a.wh} ${a.wh}】`;
     // 當日異常清單（GET 頁與 POST 送出共用同一權威，避免送出內容與畫面分岔）
     async function loadStocktakeAnomalies(date) {
-        const latestMap = {};
-        try { (await db.prepare("SELECT erp_code, qty, icpno FROM erp_stock_items").all() || []).forEach((r) => { latestMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.qty || 0); }); } catch (_) { }
         const adjMap = {};
         try { (await db.prepare("SELECT erp_code, delta, icpno FROM stock_adjustment").all() || []).forEach((r) => { adjMap[(0, erp_companies_js_1.normIcpno)(r.icpno) + "|" + String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
-        const day = await loadStocktakeDay(date, latestMap, adjMap);
+        // 基準同每日盤點頁：今天＝即時凌越量，過去日期＝該日收盤快照（凍結）——排查表不會每天換一批數字。
+        const day = await loadStocktakeDay(date, adjMap);
         const xwhCache = {};
         const getXwh = async (icp) => {
             if (xwhCache[icp]) return xwhCache[icp];
@@ -841,7 +912,7 @@ function registerInventoryRoutes(router, ctx) {
       </style>
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點</a> / 異常排查表</div>
       <h1 class="notion-page-title">異常排查表</h1>
-      <p class="notion-hint" style="margin:-2px 0 14px;">列出當日<b>對最新盤差 ≠ 0</b>（實盤 vs 最新系統＋調整）的品項，依盤差方向與跨倉/調整訊號自動列<b>可能原因</b>。勾選後可推送到 LINE 群組請大家複查——只是提示排查方向，<b>不會動任何帳</b>。</p>
+      <p class="notion-hint" style="margin:-2px 0 14px;">列出當日<b>盤差 ≠ 0</b>（實盤 vs 系統帳＋調整）的品項，依盤差方向與跨倉/調整訊號自動列<b>可能原因</b>。勾選後可推送到 LINE 群組請大家複查——只是提示排查方向，<b>不會動任何帳</b>。${date < stkAdminTaipeiDate() ? "此日期已過，系統帳用<b>該日收盤庫存快照（凍結）</b>，清單不會再隨今天的庫存變動。" : "今天的系統帳用<b>即時庫存快照</b>。"}</p>
       ${banner}
       <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;">
         <form method="get" action="/admin/inventory/anomalies" style="display:inline-flex;margin:0;">
