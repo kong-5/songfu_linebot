@@ -23,22 +23,29 @@ steps:
         npm test
   # [smoke 2026-07-14] PG 冒煙：對臨時 postgres 容器跑 initPg 全套遷移＋核心查詢，
   # 攔「本機 SQLite 全綠、雲端 PG 才壞」的整類回歸（歷史案例：42804 型別錯誤）。
-  # ⚠ 目前 report-only（|| 警告不擋 build）——首次跑綠後把「|| echo …」整段拿掉轉硬閘門。
+  # [gate 2026-07-27] 已轉硬閘門：本機對 postgres:16 連跑三次皆 6/6 綠且完全冪等後拿掉 report-only，
+  # 冒煙紅＝整個 build 失敗、不部署。若哪天因 postgres image 拉不到之類的環境問題卡住，
+  # 是改「起容器」那一步（下方已加 pg_isready 等待），不要把這裡的閘門改回 || echo。
   - name: "gcr.io/cloud-builders/docker"
     entrypoint: "bash"
     args:
       - "-c"
       - |
         docker run -d --name pgsmoke --network cloudbuild \
-          -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=smoke postgres:16-alpine || true
+          -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=smoke postgres:16-alpine
+        # 等 PG 就緒（最多 60 秒）；起不來就讓這一步失敗，而不是留給冒煙步驟報「連不上」的模糊錯誤
+        for i in $(seq 1 30); do
+          docker exec pgsmoke pg_isready -U postgres -d smoke >/dev/null 2>&1 && echo "PG 就緒" && exit 0
+          sleep 2
+        done
+        echo "❌ postgres 容器 60 秒內未就緒"; docker logs pgsmoke | tail -20; exit 1
   - name: "node:20-slim"
     entrypoint: "bash"
     args:
       - "-c"
       - |
         npm ci --no-audit --no-fund
-        DATABASE_URL="postgres://postgres:smoke@pgsmoke:5432/smoke" npm run smoke:pg \
-          || echo "⚠ PG 冒煙未過（目前 report-only 不擋部署）——請查上方 log，穩定後轉硬閘門"
+        DATABASE_URL="postgres://postgres:smoke@pgsmoke:5432/smoke" npm run smoke:pg
   # 先把上次 build 的映像當 layer 快取拉下來；首次或拉不到都不阻擋（|| true）
   # [trace 2026-07-14] 同時打 $SHORT_SHA 標籤：latest 之外留每個版本的映像，回滾/追溯有據。
   - name: "gcr.io/cloud-builders/docker"
