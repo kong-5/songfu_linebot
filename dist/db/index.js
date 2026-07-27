@@ -259,6 +259,22 @@ function initSqlite(dbPath) {
         }
     }
     catch (e) { console.warn("[migration] orders 拆單鍵 UNIQUE 檢查/建立失敗:", e?.message || e); }
+    // [fix 2026-07-27 體檢] 一個 LINE 群組只能綁一個客戶，下沉到 DB：
+    // /customers/new、/customers/:id/edit、/customers/pending-bind、/import-customers 都有應用層
+    // 「已綁其他客戶就擋」的守衛，但那是先查後寫——表單雙擊或併發請求會兩邊都通過檢查，
+    // 結果同一群組綁到兩個客戶＝該群組叫貨歸屬錯亂（正是 2026-07-08 那條 fix 要防的事故）。
+    // 部分唯一索引只約束「有值」的 line_group_id（NULL／空字串是未綁定，允許多筆）。
+    // 既有資料已重複時比照 order_no：先警告不建，人工在後台清完後重啟自動建立（絕不自動改資料）。
+    try {
+        const dupGrp = sqlite.prepare("SELECT line_group_id, COUNT(*) AS n FROM customers WHERE line_group_id IS NOT NULL AND TRIM(line_group_id) <> '' GROUP BY line_group_id HAVING COUNT(*) > 1").all();
+        if (dupGrp.length) {
+            console.warn("[migration] customers.line_group_id 發現 %d 組重複，UNIQUE index 暫不建立。請至後台「客戶管理」把多餘的綁定清掉：", dupGrp.length);
+            for (const d of dupGrp.slice(0, 10)) console.warn("  group=%s 綁在 %d 個客戶", d.line_group_id, d.n);
+        } else {
+            sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_customers_line_group ON customers(line_group_id) WHERE line_group_id IS NOT NULL AND TRIM(line_group_id) <> ''");
+        }
+    }
+    catch (e) { console.warn("[migration] customers.line_group_id UNIQUE 檢查/建立失敗:", e?.message || e); }
     // [perf 2026-07-14] 熱路徑補索引：orders(customer_id, order_date) 被每則 LINE 訊息的
     // 同日訂單查詢/拆單 find 打（全 codebase 17 處）；order_items(order_id) 是訂單明細/rebuild
     // 的基本查法，兩者過去都靠全表掃描。附件表同理。
@@ -1075,6 +1091,18 @@ async function initPg() {
                 }
             }
             catch (e) { console.warn("[migration] orders 拆單鍵 UNIQUE 檢查/建立失敗:", e?.message || e); }
+            // [fix 2026-07-27 體檢] 一個 LINE 群組只能綁一個客戶（與 initSqlite 對應，理由見該處註解）。
+            try {
+                const dupGrpRes = await client.query("SELECT line_group_id, COUNT(*) AS n FROM customers WHERE line_group_id IS NOT NULL AND TRIM(line_group_id) <> '' GROUP BY line_group_id HAVING COUNT(*) > 1");
+                const dupGrp = dupGrpRes.rows || [];
+                if (dupGrp.length) {
+                    console.warn("[migration] customers.line_group_id 發現 %d 組重複，UNIQUE index 暫不建立。請至後台「客戶管理」把多餘的綁定清掉：", dupGrp.length);
+                    for (const d of dupGrp.slice(0, 10)) console.warn("  group=%s 綁在 %s 個客戶", d.line_group_id, d.n);
+                } else {
+                    await client.query("CREATE UNIQUE INDEX IF NOT EXISTS ux_customers_line_group ON customers(line_group_id) WHERE line_group_id IS NOT NULL AND TRIM(line_group_id) <> ''");
+                }
+            }
+            catch (e) { console.warn("[migration] customers.line_group_id UNIQUE 檢查/建立失敗:", e?.message || e); }
             // [perf 2026-07-14] 熱路徑補索引（與 initSqlite 對應）
             try {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_orders_customer_date ON orders(customer_id, order_date)");

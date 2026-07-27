@@ -184,8 +184,20 @@ YY小吃, C5678...,</pre>
                 }
             }
         };
-        if (typeof db.transaction === "function") await db.transaction(doImportCust);
-        else await doImportCust(db);
+        try {
+            if (typeof db.transaction === "function") await db.transaction(doImportCust);
+            else await doImportCust(db);
+        }
+        catch (e) {
+            // [fix 2026-07-27 體檢] 迴圈內的群組守衛是先查後寫；與其他人同時操作時仍可能撞
+            // ux_customers_line_group。整批已回滾，回可行動訊息而非原始 500。
+            const m = String(e?.message || e);
+            if (/ux_customers_line_group/i.test(m) || (/UNIQUE constraint failed/i.test(m) && /customers\.line_group_id/i.test(m)) || (/duplicate key value/i.test(m) && /line_group/i.test(m))) {
+                res.redirect("/admin/import-customers?err=" + encodeURIComponent("匯入中止：CSV 內的某個 LINE 群組剛被綁到其他客戶（可能同時有人在操作）。整批已回滾，請重新整理客戶列表確認後再匯入一次"));
+                return;
+            }
+            throw e;
+        }
         // [fix 2026-07-27 體檢] 批次寫入客戶主檔補稽核軌跡（守則 #3）
         try {
             await logDataChange(req, {

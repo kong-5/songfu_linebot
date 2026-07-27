@@ -14,6 +14,14 @@ const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./
 
 function registerCustomersRoutes(router, ctx) {
     const { db, notionPage, logDataChange, getTaipeiCalendarDateYYYYMMDD, fmtTaipeiYMDHM, setGroupFeaturesAudited, ORDER_LINE_UNITS } = ctx;
+    // [fix 2026-07-27 體檢] 判斷是不是撞到「一群組只能綁一客戶」的唯一索引 ux_customers_line_group
+    // （SQLite 與 PG 的錯誤訊息不同）。三個綁定入口都先查後寫，這是 race window 的最後一道。
+    const isLineGroupUniqueViolation = (e) => {
+        const m = String(e?.message || e);
+        return /ux_customers_line_group/i.test(m)
+            || (/UNIQUE constraint failed/i.test(m) && /customers\.line_group_id/i.test(m))
+            || (/duplicate key value/i.test(m) && /line_group/i.test(m));
+    };
     router.get("/customers/new", async (req, res) => {
         // POST /customers/new 失敗會重導 ?err=（含「群組已綁定其他客戶」完整訊息）；沒渲染會讓使用者以為建立成功。
         const errRaw = typeof req.query.err === "string" ? req.query.err : "";
@@ -62,7 +70,18 @@ function registerCustomersRoutes(router, ctx) {
             }
         }
         const id = (0, id_js_1.newId)("cust");
-        await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, known_sub_customers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, knownSubCustomers);
+        try {
+            await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_name, line_group_id, contact, route_line, known_sub_customers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, name, teraokaCode, hqCustCode, lineGroupName, lineGroupId, contact, routeLine, knownSubCustomers);
+        }
+        catch (e) {
+            // [fix 2026-07-27 體檢] 上面的先查後寫有 race window（表單雙擊／併發），
+            // DB 的 ux_customers_line_group 是最後一道；撞到時回可行動訊息而非原始 500。
+            if (isLineGroupUniqueViolation(e)) {
+                res.redirect("/admin/customers/new?err=" + encodeURIComponent("此 LINE 群組剛被綁到其他客戶（可能同時有人在操作），請重新整理客戶列表確認後再試"));
+                return;
+            }
+            throw e;
+        }
         if (lineGroupId) {
             try {
                 await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(lineGroupId);
@@ -548,6 +567,14 @@ function registerCustomersRoutes(router, ctx) {
             }
         }
         catch (e) {
+            // [fix 2026-07-27 體檢] 撞到 ux_customers_line_group＝上面的先查後寫被併發插隊，
+            // 回可行動訊息（守則 #4）而不是「儲存失敗」四個字。
+            if (isLineGroupUniqueViolation(e)) {
+                const msg = "此 LINE 群組剛被綁到其他客戶（可能同時有人在操作），請重新整理本頁確認後再存";
+                if (wantsJson) { res.status(409).json({ ok: false, error: msg }); return; }
+                res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=" + encodeURIComponent(msg));
+                return;
+            }
             console.error("[admin] 客戶儲存失敗:", e?.message || e);
             if (wantsJson) { res.status(500).json({ ok: false, error: "儲存失敗：" + (e?.message || String(e)).slice(0, 120) }); return; }
             res.redirect("/admin/customers/" + encodeURIComponent(id) + "/edit?err=" + encodeURIComponent("儲存失敗"));
@@ -1157,7 +1184,17 @@ function registerCustomersRoutes(router, ctx) {
                 }
                 const keepName = target.line_group_name && String(target.line_group_name).trim() !== "" ? target.line_group_name : groupName;
                 const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-                await db.prepare("UPDATE customers SET line_group_id = ?, line_group_name = ?, updated_at = " + nowSql + " WHERE id = ?").run(groupId, keepName, customerId);
+                try {
+                    await db.prepare("UPDATE customers SET line_group_id = ?, line_group_name = ?, updated_at = " + nowSql + " WHERE id = ?").run(groupId, keepName, customerId);
+                }
+                catch (e) {
+                    // [fix 2026-07-27 體檢] 同上：撞唯一索引＝這個群組剛被別人綁走
+                    if (isLineGroupUniqueViolation(e)) {
+                        res.redirect("/admin/customers?err=" + encodeURIComponent("此 LINE 群組剛被綁到其他客戶（可能同時有人在操作），請重新整理待綁定清單再試"));
+                        return;
+                    }
+                    throw e;
+                }
                 await db.prepare("DELETE FROM pending_line_groups WHERE group_id = ?").run(groupId);
                 await logDataChange(req, {
                     entityType: "customer",
