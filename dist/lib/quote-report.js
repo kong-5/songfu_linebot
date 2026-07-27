@@ -7,6 +7,7 @@
  *  - 新增月報時，會把「上個月」的品項＋單價整份帶入當底稿，使用者只需改動有變動的價格。
  *  - 品項可能新增／刪除，也可能某些品項「不報價」（單價留白，但品項仍列出）。
  *  - 顯示順序要照「品項分類」分群，不可冷凍／青菜／雜貨交錯，才顯得專業。
+ *    分類內的先後＝quote_item.sort_order，可在後台「管理品項」頁拖曳／↑↓ 調整（planItemOrder/applyItemOrder）。
  *  - 最後要能輸出 PDF（走列印頁）或 JPG 圖（伺服器 SVG→sharp）。
  *
  * 資料表：quote_report（月報表頭）、quote_item（品項明細）。
@@ -297,6 +298,44 @@ async function deleteItem(db, itemId) {
     await db.prepare("DELETE FROM quote_item WHERE id = ?").run(itemId);
 }
 exports.deleteItem = deleteItem;
+
+/**
+ * 依「管理品項」頁送來的品項 id 順序，算出最終要寫入的順序（純函式，不碰 DB）。
+ *  - items：該報價目前的全部品項（getItems 的結果，已排序）。
+ *  - orderedIds：表單送來的 id 陣列（前端拖曳／↑↓ 後的畫面順序）。
+ * 規則：只認 items 內存在的 id、重複的略過；表單沒送到的品項（例如另一個瀏覽器分頁剛新增的）
+ * 維持原相對順序接在最後——不會因為順序表單過期就把它們洗掉或排到奇怪的位置。
+ */
+function planItemOrder(items, orderedIds) {
+    const valid = new Map((items || []).map((it) => [String(it.id), it]));
+    const seen = new Set();
+    const out = [];
+    for (const raw of orderedIds || []) {
+        const id = String(raw || "").trim();
+        if (!id || seen.has(id) || !valid.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+    }
+    for (const it of items || []) {
+        const id = String(it.id);
+        if (!seen.has(id)) { seen.add(id); out.push(id); }
+    }
+    return out;
+}
+exports.planItemOrder = planItemOrder;
+
+/**
+ * 純寫入：把 ids 依陣列位置寫成 sort_order（0,1,2…）。呼叫端請包在交易內
+ * （寫到一半中斷會留下「一半新一半舊」的重複序號，畫面順序就亂了）。
+ * 冪等：同一組 ids 重跑結果完全相同。report_id 一併比對，避免誤改別份報價的品項。
+ */
+async function applyItemOrder(h, reportId, ids) {
+    for (let i = 0; i < ids.length; i++) {
+        await h.prepare("UPDATE quote_item SET sort_order = ? WHERE id = ? AND report_id = ?").run(i, ids[i], reportId);
+    }
+    return ids.length;
+}
+exports.applyItemOrder = applyItemOrder;
 
 // 報價單 LOGO 一律用公司網站標誌（dist/admin/assets/logo.svg），
 // 光柵化為 PNG data URI 快取。用 PNG 而非 SVG，因為 sharp 產 JPG 時以 <image> 內嵌，PNG 相容性最穩。
