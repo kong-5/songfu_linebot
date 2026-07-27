@@ -14579,6 +14579,10 @@ document.addEventListener('keydown',function(e){
         back: _fi('<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>'),
         pdf: _fi('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8.5 13.5h1a1 1 0 0 1 0 2h-1zM8.5 15.5V18"/><path d="M12.5 13.5V18h1a1.2 1.2 0 0 0 1.2-1.2v-2.1a1.2 1.2 0 0 0-1.2-1.2z"/>'),
         dl: _fi('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'),
+        // 管理品項頁的排序 UI：拖曳握把（四條橫線）＋ 上下移一格
+        grip: _fi('<line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="16" y2="10"/><line x1="8" y1="14" x2="16" y2="14"/><line x1="8" y1="18" x2="16" y2="18"/>'),
+        up: _fi('<polyline points="18 15 12 9 6 15"/>'),
+        down: _fi('<polyline points="6 9 12 15 18 9"/>'),
     };
 
     /**
@@ -14767,7 +14771,19 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
       .qe-thead .qe-th-noq{ text-align:center; }
       .qe-price-mode .qe-name{ flex-direction:row; align-items:baseline; gap:8px; }
       .qe-price-mode .qe-in{ padding:3px 8px; }
-      .qe-manage-mode .qe-row{ grid-template-columns:34px 1.5fr 1.2fr 1fr 88px 76px 40px; }
+      /* 管理品項模式：握把｜序｜品名｜規格｜分類｜價格｜不報價｜上下移｜刪 */
+      .qe-manage-mode .qe-row{ grid-template-columns:20px 28px 1.5fr 1.2fr 1fr 88px 76px 46px 38px; }
+      /* 排序 UI（僅管理品項模式）：拖曳握把＋↑↓ 一格一格移；分類群組是拖放容器 */
+      .qe-grp{ display:block; min-height:4px; }
+      .qe-grp.qe-grp-empty{ min-height:28px; margin:4px 10px; border:1px dashed var(--line); border-radius:6px; }
+      .qe-drag{ display:flex; align-items:center; justify-content:center; line-height:0; color:var(--txt-3); cursor:grab; }
+      .qe-drag svg{ width:14px; height:14px; }
+      .qe-row.qe-dragging{ opacity:.4; }
+      .qe-row.qe-drop-hint{ box-shadow:inset 0 2px 0 0 var(--notion-accent,#1a6fb5); }
+      .qe-move{ display:flex; gap:2px; }
+      .qe-mv{ font:inherit; padding:2px 3px; line-height:0; border:1px solid var(--line); border-radius:4px; background:transparent; color:var(--txt-3); cursor:pointer; }
+      .qe-mv:hover{ color:var(--txt-1); background:var(--bg-1); }
+      .qe-mv svg{ width:12px; height:12px; display:block; }
       .qe-seq{ color:var(--txt-3); font-size:12px; text-align:center; }
       .qe-name{ display:flex; flex-direction:column; min-width:0; }
       .qe-nm{ font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -14792,7 +14808,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
         .sf-qlist-head{ display:none; }
         .sf-qrow{ grid-template-columns:1fr auto; row-gap:10px; }
         .sf-qrow-actions{ grid-column:1 / -1; justify-content:flex-start; }
-        .qe-manage-mode .qe-row{ grid-template-columns:34px 1fr 1fr; }
+        .qe-manage-mode .qe-row{ grid-template-columns:20px 28px 1fr 1fr; }
       }
     </style>`;
 
@@ -14886,18 +14902,29 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                     const noqCls = quoted ? "" : " qe-noq-on";
                     const priceVal = escapeAttr(quoted ? (it.price == null ? "" : it.price) : "");
                     const hidden = `<input type="hidden" name="row__${escapeAttr(it.id)}" value="1">`;
-                    rows += `<div class="qe-row${noqCls}">
+                    rows += `<div class="qe-row${noqCls}" data-id="${escapeAttr(it.id)}">
+                        <span class="qe-drag" title="拖曳調整順序">${QI.grip}</span>
                         <span class="qe-seq">${seq}</span>
                         <input class="qe-in" name="name__${escapeAttr(it.id)}" value="${escapeAttr(it.name)}">
                         <input class="qe-in" name="spec__${escapeAttr(it.id)}" value="${escapeAttr(it.spec || "")}">
-                        <select class="qe-in" name="cat__${escapeAttr(it.id)}">${catOptions(it.category)}</select>
+                        <select class="qe-in qe-cat-sel" name="cat__${escapeAttr(it.id)}">${catOptions(it.category)}</select>
                         <input class="qe-in qe-price" name="price__${escapeAttr(it.id)}" value="${priceVal}" inputmode="decimal" placeholder="${quoted ? "價格" : "—"}">
                         <label class="qe-noq"><input type="checkbox" name="noq__${escapeAttr(it.id)}" onchange="this.closest('.qe-row').classList.toggle('qe-noq-on',this.checked);"${quoted ? "" : " checked"}> 不報價</label>
+                        <span class="qe-move">
+                          <button type="button" class="qe-mv" data-mv="-1" title="上移一格">${QI.up}</button>
+                          <button type="button" class="qe-mv" data-mv="1" title="下移一格">${QI.down}</button>
+                        </span>
                         <button type="submit" formaction="/admin/quotes/${enc}/item/${encodeURIComponent(it.id)}/delete" formnovalidate class="sf-btn sm qe-del" onclick="return confirm('刪除此品項？')">刪</button>
                         ${hidden}
                       </div>`;
                 }
-                groupsHtml += `${catHead(g, false)}${rows}`;
+                // 每個分類的品項包一層 .qe-grp 當拖放容器（分類間可互拖，落點分類會同步寫進該列的分類下拉）
+                groupsHtml += `${catHead(g, false)}<div class="qe-grp" data-cat="${escapeAttr(g.category)}">${rows}</div>`;
+            }
+            // 順序以單一隱藏欄位帶回（逗號串接品項 id），不佔用每列一個欄位；JS 停用時＝維持現況順序。
+            if (items.length) {
+                groupsHtml = `<div id="qeManage">${groupsHtml}</div>
+              <input type="hidden" id="qeOrder" name="item_order" value="${escapeAttr(items.map(it => it.id).join(","))}">`;
             }
         } else if (items.length) {
             // 價格模式：依累計品項數平均切成左右兩欄；類別標頭跟著品項，跨欄切割時右欄補「（續）」標頭。
@@ -14945,6 +14972,116 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
 })();
 </script>`;
 
+        // 管理品項模式：調整品項順序（桌機拖曳握把、手機／鍵盤用 ↑↓ 一格一格移）。
+        // 畫面順序寫進隱藏欄位 item_order，按「儲存」時一起送出 → 後端寫回 sort_order。
+        // 拖到別的分類群組＝連同分類一起改（同步該列的分類下拉），與手動改分類等價。
+        const orderScript = (manage && items.length) ? `<script>
+(function(){
+  var wrap = document.getElementById('qeManage');
+  var field = document.getElementById('qeOrder');
+  if(!wrap || !field) return;
+  var dragRow = null;
+
+  function closestEl(t, sel){ return (t && t.closest) ? t.closest(sel) : null; }
+
+  // 重算：序號、順序欄位、各分類「N 項」，以及空分類的虛線落點框。
+  function sync(){
+    var rows = wrap.querySelectorAll('.qe-row'), ids = [];
+    for(var i=0;i<rows.length;i++){
+      var s = rows[i].querySelector('.qe-seq');
+      if(s) s.textContent = String(i+1);
+      ids.push(rows[i].getAttribute('data-id'));
+    }
+    field.value = ids.join(',');
+    var grps = wrap.querySelectorAll('.qe-grp');
+    for(var g=0; g<grps.length; g++){
+      var n = grps[g].querySelectorAll('.qe-row').length;
+      grps[g].classList.toggle('qe-grp-empty', n === 0);
+      var head = grps[g].previousElementSibling;
+      if(head && head.classList.contains('qe-cat')){
+        var cnt = head.querySelector('.n');
+        if(cnt) cnt.textContent = n + ' 項';
+      }
+    }
+  }
+
+  // 跨分類移動後，把該列的分類下拉改成落點分類（沒有對應選項就不動，避免送出無效分類）。
+  function applyCat(row){
+    var grp = row.parentNode;
+    if(!grp || !grp.classList || !grp.classList.contains('qe-grp')) return;
+    var cat = grp.getAttribute('data-cat');
+    var sel = row.querySelector('.qe-cat-sel');
+    if(!sel) return;
+    for(var i=0;i<sel.options.length;i++){
+      if(sel.options[i].value === cat){ sel.value = cat; return; }
+    }
+  }
+
+  // ↑↓：在同一分類內上下移一格（已在頭／尾就不動）。
+  wrap.addEventListener('click', function(e){
+    var btn = closestEl(e.target, '.qe-mv');
+    if(!btn) return;
+    e.preventDefault();
+    var row = closestEl(btn, '.qe-row'); if(!row) return;
+    var grp = row.parentNode;
+    var dir = Number(btn.getAttribute('data-mv')) < 0 ? -1 : 1;
+    var sib = dir < 0 ? row.previousElementSibling : row.nextElementSibling;
+    if(!sib) return;
+    if(dir < 0) grp.insertBefore(row, sib); else grp.insertBefore(sib, row);
+    sync();
+  });
+
+  // 拖曳：只有按住握把才讓整列變成可拖，避免影響欄位內選字。
+  function clearDraggable(){
+    var ds = wrap.querySelectorAll('.qe-row[draggable="true"]');
+    for(var i=0;i<ds.length;i++) ds[i].removeAttribute('draggable');
+  }
+  wrap.addEventListener('mousedown', function(e){
+    var h = closestEl(e.target, '.qe-drag'); if(!h) return;
+    var row = closestEl(h, '.qe-row'); if(row) row.setAttribute('draggable', 'true');
+  });
+  wrap.addEventListener('mouseup', clearDraggable);
+
+  wrap.addEventListener('dragstart', function(e){
+    var row = closestEl(e.target, '.qe-row'); if(!row) return;
+    dragRow = row;
+    row.classList.add('qe-dragging');
+    if(e.dataTransfer){
+      e.dataTransfer.effectAllowed = 'move';
+      try{ e.dataTransfer.setData('text/plain', row.getAttribute('data-id') || ''); }catch(_){}
+    }
+  });
+  wrap.addEventListener('dragend', function(){
+    if(dragRow) dragRow.classList.remove('qe-dragging');
+    dragRow = null;
+    clearDraggable();
+    sync();
+  });
+  wrap.addEventListener('dragover', function(e){
+    if(!dragRow) return;
+    e.preventDefault();
+    if(e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    var over = closestEl(e.target, '.qe-row');
+    if(over && over !== dragRow && over.parentNode){
+      var r = over.getBoundingClientRect();
+      var after = (e.clientY - r.top) > r.height / 2;
+      over.parentNode.insertBefore(dragRow, after ? over.nextSibling : over);
+      applyCat(dragRow);
+      return;
+    }
+    // 拖進空分類（虛線框）＝移到該分類
+    var grp = closestEl(e.target, '.qe-grp');
+    if(grp && grp !== dragRow.parentNode && grp.querySelectorAll('.qe-row').length === 0){
+      grp.appendChild(dragRow);
+      applyCat(dragRow);
+    }
+  });
+  wrap.addEventListener('drop', function(e){ if(dragRow) e.preventDefault(); });
+
+  sync();
+})();
+</script>` : "";
+
         const headerFields = isHotel
             ? [["customer_name", "飯店名稱", row.customer_name], ["title", "標題", row.title], ["subtitle", "副標", row.subtitle], ["company", "公司", row.company], ["address", "地址", row.address], ["tel", "電話", row.tel], ["fax", "傳真", row.fax]]
             : [["title", "標題", row.title], ["subtitle", "副標", row.subtitle], ["company", "公司", row.company], ["address", "地址", row.address], ["tel", "電話", row.tel], ["fax", "傳真", row.fax]];
@@ -14970,7 +15107,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                 <a href="/admin/quotes/${enc}" class="${manage ? "" : "on"}">${QI.price}<span>價格</span></a>
                 <a href="/admin/quotes/${enc}?manage=1" class="${manage ? "on" : ""}">${QI.manage}<span>管理品項</span></a>
               </div>
-              <span style="font-size:12px;color:var(--txt-3);">${manage ? "可改品名／規格／分類、刪除或新增品項。" : "只編輯單價；勾「不報價」則留白仍列出。要改品名或增減品項請切到「管理品項」。"}</span>
+              <span style="font-size:12px;color:var(--txt-3);">${manage ? "可改品名／規格／分類、拖曳握把或按 ↑↓ 調整順序、刪除或新增品項。順序與內容都要按「儲存」才生效。" : "只編輯單價；勾「不報價」則留白仍列出。要改品名、順序或增減品項請切到「管理品項」。"}</span>
             </div>
 
             <details class="sf-card" style="padding:0;">
@@ -14984,7 +15121,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
             <form method="post" action="/admin/quotes/${enc}/save${manage ? "?manage=1" : ""}">
               <div class="sf-card ${manage ? "qe-manage-mode" : "qe-price-mode"}" style="overflow-x:auto;padding:12px 6px;">
                 <div style="padding:0 6px 8px;font-size:12px;color:var(--txt-3);display:flex;justify-content:space-between;">
-                  <span>共 ${items.length} 項${manage ? "" : "　·　依分類排序"}</span>
+                  <span>共 ${items.length} 項${manage ? "　·　同分類內可自行排序" : "　·　依分類排序"}</span>
                 </div>
                 ${groupsHtml || `<div style="text-align:center;color:var(--txt-3);padding:24px;">尚無品項，請切到「管理品項」新增。</div>`}
               </div>
@@ -15009,7 +15146,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                 <button class="sf-btn" type="submit">新增</button>
               </form>
             </div>` : ""}
-            ${priceScript}
+            ${priceScript}${orderScript}
           </div>`;
     }
 
@@ -15174,13 +15311,20 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
         }
     });
 
-    // 儲存品項（月報／飯店共用）。價格模式只送價格；管理模式送品名/規格/分類。
-    router.post("/quotes/:id/save", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+    // 儲存品項（月報／飯店共用）。價格模式只送價格；管理模式送品名/規格/分類＋品項順序。
+    // parameterLimit 放大：一份報價常有上百項 × 每項 5~6 個欄位，預設 1000 會擋下整份儲存。
+    router.post("/quotes/:id/save", express_1.default.urlencoded({ extended: true, parameterLimit: 20000 }), async (req, res) => {
         try {
             const { row } = await resolveQuoteRow(req.params.id);
             if (!row) { res.redirect("/admin/quotes"); return; }
             const manage = String(req.query.manage || "") === "1";
             const items = await quote_report_js_1.getItems(db, row.id);
+            // 管理品項模式會帶回畫面順序（item_order＝逗號串接的品項 id）。先在交易外算好最終順序，
+            // 沒送 item_order（價格模式／JS 停用）就不動 sort_order。
+            const orderRaw = String(req.body.item_order || "").trim();
+            const orderIds = orderRaw ? orderRaw.split(",") : [];
+            const planned = orderIds.length ? quote_report_js_1.planItemOrder(items, orderIds) : null;
+            const orderChanged = !!planned && planned.some((id, i) => items[i] && items[i].id !== id);
             for (const it of items) {
                 // 只更新「這次表單有送出的列」（每列都有 hidden row__id），避免部分送出誤清空其他品項。
                 if (!(`row__${it.id}` in req.body)) continue;
@@ -15191,6 +15335,22 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                 if (req.body[`noq__${it.id}`] != null) { patch.is_quoted = 0; }
                 else if (`price__${it.id}` in req.body) { patch.price = req.body[`price__${it.id}`]; }
                 await quote_report_js_1.updateItem(db, it.id, patch);
+            }
+            if (planned) {
+                // 整份順序一次寫入包同一交易：中斷會留下重複／跳號的 sort_order，畫面順序就亂了。
+                const doOrder = (h) => quote_report_js_1.applyItemOrder(h, row.id, planned);
+                if (typeof db.transaction === "function") await db.transaction(doOrder);
+                else await doOrder(db);
+            }
+            if (orderChanged) {
+                const nameOf = new Map(items.map(it => [it.id, it.name]));
+                await logDataChange(req, {
+                    entityType: "quote_item_order",
+                    entityId: row.id,
+                    action: "reorder",
+                    summary: `調整報價品項順序（${row.roc_label || row.customer_name || row.ym || row.id}）共 ${planned.length} 項`,
+                    meta: { before: items.map(it => it.name), after: planned.map(id => nameOf.get(id) || id) },
+                });
             }
             res.redirect(`/admin/quotes/${encodeURIComponent(row.id)}${manage ? "?manage=1&" : "?"}ok=saved`);
         } catch (e) {
