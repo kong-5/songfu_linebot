@@ -15,12 +15,12 @@
 2. **任何寫入資料的操作必須具備：交易原子性、冪等性**（重複執行不會產生重複資料）。
 3. **所有資料異動要寫入稽核軌跡**（誰、何時、改了什麼、舊值新值）。
 4. **錯誤訊息必須告訴使用者「怎麼修正」**，不能只說格式錯誤。
-5. **單一檔案超過 1000 行要提出拆分建議**。admin 後台已拆七批（training/cash/inventory/
-   logistics/customers/products/broadcast/orders/order-detail/complaints/users/announcements/
-   calendar/quotes/dashboard/analytics/baskets/analysis/freezer-fridge 皆為
+5. **單一檔案超過 1000 行要提出拆分建議**。admin 後台已拆八批（26 個域檔皆為
    `registerXxxRoutes(router, ctx)` move-only 模式，詳見 `docs/體質健檢-2026-07-27.md` §一）；
-   index.js 20,461 → 6,335 行。三組共用 ctx：**訂單三域 `ORDERS_CTX`**、
-   **人員/公告/行事曆/報價 `ADMIN_MISC_CTX`**、**儀表板/分析/空籃/環境衛生 `ADMIN_VIEW_CTX`**。
+   index.js 20,461 → 4,712 行（剩登入/權限/版型/設計 token/共用 helper/各域註冊）。
+   四組共用 ctx：**訂單三域 `ORDERS_CTX`**、**人員/公告/行事曆/報價 `ADMIN_MISC_CTX`**、
+   **儀表板/分析/空籃/環境衛生 `ADMIN_VIEW_CTX`**、**機器端點/AI設定/匯入/匯出/待確認 `ADMIN_OPS_CTX`**。
+   ⚠ `cash.js` 的註冊呼叫夾在凌越機器端點區間中間，**位置不可移動**（批次 2 定案）。
    ⚠ ctx 內若含 `const` 宣告的值，**註冊呼叫必須放在該宣告之後**，否則 createAdminRouter
    一執行就 TDZ 爆掉（批次 6 踩過；批次 7 已把肇事的報價 icon `QI` 提到 module 層根治）。
    `function` 宣告會提升不受影響。
