@@ -152,15 +152,8 @@ async function createReport(db, opts) {
 
     const id = newId("qr");
     const header = { ...DEFAULT_HEADER, ...(opts.header || {}) };
-    await db.prepare(
-        `INSERT INTO quote_report (id, ym, roc_label, title, subtitle, company, address, tel, fax, status, note, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`
-    ).run(
-        id, ym, rocLabelFromYm(ym), header.title, header.subtitle, header.company,
-        header.address, header.tel, header.fax, opts.note || null, nowIso(), nowIso()
-    );
 
-    // 找底稿來源：優先指定的，否則抓 ym 小於本月的最新一份
+    // 找底稿來源：優先指定的，否則抓 ym 小於本月的最新一份（讀取先在交易外算完）
     let sourceId = opts.copyFromReportId || null;
     if (!sourceId) {
         const prev = await db.prepare(
@@ -168,28 +161,42 @@ async function createReport(db, opts) {
         ).get(ym);
         if (prev) sourceId = prev.id;
     }
-    if (sourceId) {
-        // 有上一份 → 整份帶入品項與價格當底稿
-        const src = await getItems(db, sourceId);
-        let i = 0;
-        for (const it of src) {
-            await addItem(db, id, {
-                category: it.category,
-                name: it.name,
-                spec: it.spec,
-                price: it.is_quoted ? it.price : null,
-                is_quoted: it.is_quoted,
-                sort_order: i,
-            });
-            i++;
+    const srcItems = sourceId ? await getItems(db, sourceId) : null;
+
+    // [fix 2026-07-27 體檢] 月報主檔＋整份品項包同一交易：舊版逐筆裸奔，品項插到一半失敗會留下
+    // 「只有前 N 項」的月報，且開頭的 existing 早退讓重按也補不回來（缺項的報價單就這樣寄給客戶）。
+    const doCreate = async (h) => {
+        await h.prepare(
+            `INSERT INTO quote_report (id, ym, roc_label, title, subtitle, company, address, tel, fax, status, note, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`
+        ).run(
+            id, ym, rocLabelFromYm(ym), header.title, header.subtitle, header.company,
+            header.address, header.tel, header.fax, opts.note || null, nowIso(), nowIso()
+        );
+        if (srcItems) {
+            // 有上一份 → 整份帶入品項與價格當底稿
+            let i = 0;
+            for (const it of srcItems) {
+                await addItem(h, id, {
+                    category: it.category,
+                    name: it.name,
+                    spec: it.spec,
+                    price: it.is_quoted ? it.price : null,
+                    is_quoted: it.is_quoted,
+                    sort_order: i,
+                });
+                i++;
+            }
+        } else if (opts.seedWhenEmpty !== false) {
+            // 沒有上一份（第一份月報）→ 帶入標準品項清單當底稿，避免空白難用
+            let i = 0;
+            for (const [name, spec, price, category] of SEED_JULY_ITEMS) {
+                await addItem(h, id, { category, name, spec, price, sort_order: i++ });
+            }
         }
-    } else if (opts.seedWhenEmpty !== false) {
-        // 沒有上一份（第一份月報）→ 帶入標準品項清單當底稿，避免空白難用
-        let i = 0;
-        for (const [name, spec, price, category] of SEED_JULY_ITEMS) {
-            await addItem(db, id, { category, name, spec, price, sort_order: i++ });
-        }
-    }
+    };
+    if (typeof db.transaction === "function") await db.transaction(doCreate);
+    else await doCreate(db);
     return id;
 }
 exports.createReport = createReport;
@@ -212,8 +219,13 @@ async function setReportStatus(db, id, status) {
 exports.setReportStatus = setReportStatus;
 
 async function deleteReport(db, id) {
-    await db.prepare("DELETE FROM quote_item WHERE report_id = ?").run(id);
-    await db.prepare("DELETE FROM quote_report WHERE id = ?").run(id);
+    // [fix 2026-07-27 體檢] 兩表刪除包同一交易：中斷會留孤兒 quote_item 列。
+    const doDel = async (h) => {
+        await h.prepare("DELETE FROM quote_item WHERE report_id = ?").run(id);
+        await h.prepare("DELETE FROM quote_report WHERE id = ?").run(id);
+    };
+    if (typeof db.transaction === "function") await db.transaction(doDel);
+    else await doDel(db);
 }
 exports.deleteReport = deleteReport;
 

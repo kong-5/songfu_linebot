@@ -1,0 +1,19 @@
+{
+  "root": true,
+  "env": { "node": true, "es2022": true },
+  "parserOptions": { "ecmaVersion": 2022, "sourceType": "script" },
+  "ignorePatterns": ["node_modules/", "dist/liff/vendor/", "*.min.js"],
+  "rules": {
+    "no-undef": "error",
+    "no-dupe-keys": "error",
+    "no-dupe-args": "error",
+    "no-unreachable": "error",
+    "no-compare-neg-zero": "error",
+    "use-isnan": "error",
+    "valid-typeof": "error",
+    "no-cond-assign": "error",
+    "no-constant-condition": ["error", { "checkLoops": false }],
+    "no-self-assign": "error",
+    "no-async-promise-executor": "error"
+  }
+}

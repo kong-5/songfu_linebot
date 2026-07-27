@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getDb = getDb;
 exports.initDb = initDb;
 exports.closeDb = closeDb;
+exports.sqlForPg = sqlForPg; // 供 smoke test 直接驗證 fail-fast 護欄（test/health-check-20260727.test.js）
 const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
 const fs_1 = require("fs");
 const path_1 = require("path");
@@ -22,10 +23,28 @@ function sqlForPg(sql) {
     // [fix 2026-07-14] fail-fast：其餘 SQLite 專屬語法本轉換層「轉不動」，過去會原樣送進 PG
     // 直到雲端 500 才發現（本機 SQLite 全測不出）。改成一進來就丟明確錯誤，
     // 逼寫的人當場用 isPg 雙分支或可攜語法（ON CONFLICT / to_char …）。
-    const unsupported = s.match(/INSERT\s+OR\s+(REPLACE|IGNORE)\s|strftime\s*\(|GROUP_CONCAT\s*\(|\bdate\s*\(\s*['"]now['"]/i);
+    // [fix 2026-07-27 體檢] 黑名單補洞：datetime(x,'+8 hours') 兩參數形式、date(?,'-3 day')、
+    // IFNULL/julianday/printf 過去「既不轉換也不擋」，原樣送 PG 直到雲端 500（datetime('now') 已在
+    // 上面被轉掉，這裡剩下的 datetime( / date( 都是轉不動的形式）。
+    const unsupported = s.match(/INSERT\s+OR\s+(REPLACE|IGNORE|ABORT|FAIL|ROLLBACK)\s|strftime\s*\(|GROUP_CONCAT\s*\(|\bdatetime\s*\(|\bdate\s*\(|\bIFNULL\s*\(|\bjulianday\s*\(|\bprintf\s*\(/i);
     if (unsupported) {
         throw new Error("sqlForPg: SQL 含 SQLite 專屬語法「" + unsupported[0].trim() + "」，PG 無法執行。" +
             "請改用可攜寫法（ON CONFLICT…DO UPDATE / to_char）或依 DATABASE_URL 分支。SQL 開頭：" + s.slice(0, 120));
+    }
+    // [fix 2026-07-27 體檢] 引號內 ? 護欄：placeholder 轉換是純文字取代，字串常值裡的 ? 會被改成 $n
+    // 並把後面所有參數編號整個往後推（不報錯、只查錯資料）。逐字元判斷（'' 為跳脫），真的在字串內才擋。
+    if (s.includes("'") && s.includes("?")) {
+        let inStr = false;
+        for (let i = 0; i < s.length; i++) {
+            const ch = s[i];
+            if (ch === "'") {
+                if (inStr && s[i + 1] === "'") { i++; continue; } // '' 跳脫的單引號
+                inStr = !inStr;
+            }
+            else if (ch === "?" && inStr) {
+                throw new Error("sqlForPg: SQL 字串常值內含 ?，placeholder 轉換會錯位。請把該值改用 ? 參數傳入。SQL 開頭：" + s.slice(0, 120));
+            }
+        }
     }
     let n = 1;
     s = s.replace(/\?/g, () => "$" + n++);
@@ -1128,7 +1147,7 @@ async function initPg() {
                     //（不包的話 DROP CONSTRAINT 後失敗＝表永久無主鍵且不再重試）。
                     await client.query("BEGIN");
                     await client.query("UPDATE erp_stock_items SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
-                    await client.query("ALTER TABLE erp_stock_items DROP CONSTRAINT erp_stock_items_pkey");
+                    await client.query("ALTER TABLE erp_stock_items DROP CONSTRAINT IF EXISTS erp_stock_items_pkey");
                     await client.query("ALTER TABLE erp_stock_items ALTER COLUMN icpno SET NOT NULL");
                     await client.query("ALTER TABLE erp_stock_items ALTER COLUMN icpno SET DEFAULT '00'");
                     await client.query("ALTER TABLE erp_stock_items ADD PRIMARY KEY (icpno, erp_code)");
@@ -1193,7 +1212,7 @@ async function initPg() {
                     // 同 erp_stock_items：包交易讓失敗可重試，避免 DROP 後半途失敗永久無主鍵。
                     await client.query("BEGIN");
                     await client.query("UPDATE erp_warehouse SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
-                    await client.query("ALTER TABLE erp_warehouse DROP CONSTRAINT erp_warehouse_pkey");
+                    await client.query("ALTER TABLE erp_warehouse DROP CONSTRAINT IF EXISTS erp_warehouse_pkey");
                     await client.query("ALTER TABLE erp_warehouse ALTER COLUMN icpno SET NOT NULL");
                     await client.query("ALTER TABLE erp_warehouse ALTER COLUMN icpno SET DEFAULT '00'");
                     await client.query("ALTER TABLE erp_warehouse ADD PRIMARY KEY (icpno, code)");
@@ -1229,15 +1248,19 @@ async function initPg() {
                     await client.query("ALTER TABLE stocktake_expiry_item ADD COLUMN IF NOT EXISTS icpno TEXT");
                     const eiPk = await client.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'stocktake_expiry_item'::regclass AND i.indisprimary");
                     if (!eiPk.rows.some((r) => r.attname === "icpno")) {
+                        // [fix 2026-07-27 體檢] 整段包交易（比照 erp_stock_items/erp_stock_wh_qty/erp_warehouse）：
+                        // 不包的話 DROP CONSTRAINT 後失敗＝表停在無主鍵狀態，空窗期可插入重複列，之後 ADD PRIMARY KEY 永遠失敗。
+                        await client.query("BEGIN");
                         await client.query("UPDATE stocktake_expiry_item SET icpno = '00' WHERE icpno IS NULL OR TRIM(icpno) = ''");
                         await client.query("ALTER TABLE stocktake_expiry_item DROP CONSTRAINT IF EXISTS stocktake_expiry_item_pkey");
                         await client.query("ALTER TABLE stocktake_expiry_item ALTER COLUMN icpno SET NOT NULL");
                         await client.query("ALTER TABLE stocktake_expiry_item ALTER COLUMN icpno SET DEFAULT '00'");
                         await client.query("ALTER TABLE stocktake_expiry_item ADD PRIMARY KEY (icpno, erp_code)");
+                        await client.query("COMMIT");
                         console.log("[migration] stocktake_expiry_item 主鍵改為 (icpno, erp_code)");
                     }
                 }
-                catch (e) { console.warn("[migration] stocktake_expiry_item 多公司主鍵遷移失敗:", e?.message || e); }
+                catch (e) { try { await client.query("ROLLBACK"); } catch (_) { } console.warn("[migration] stocktake_expiry_item 多公司主鍵遷移失敗:", e?.message || e); }
                 // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
                 await client.query("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
                 // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。

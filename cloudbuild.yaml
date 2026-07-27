@@ -11,12 +11,15 @@
 steps:
   # [gate 2026-07-14] 建 image 前先跑核心不變式測試（test/*.test.js，零外部依賴、秒級）：
   # 測試紅＝整個 build 失敗、不部署，壞版本擋在上線前。
+  # [gate 2026-07-27] 加 npm run lint（eslint 正確性規則：no-undef/no-dupe-keys 等，~4 秒）：
+  # dist/ 直接手改 JS 沒有編譯期檢查，打錯變數名要到執行期才爆——lint 紅＝不部署。
   - name: "node:20-slim"
     entrypoint: "bash"
     args:
       - "-c"
       - |
         npm ci --no-audit --no-fund
+        npm run lint
         npm test
   # [smoke 2026-07-14] PG 冒煙：對臨時 postgres 容器跑 initPg 全套遷移＋核心查詢，
   # 攔「本機 SQLite 全綠、雲端 PG 才壞」的整類回歸（歷史案例：42804 型別錯誤）。

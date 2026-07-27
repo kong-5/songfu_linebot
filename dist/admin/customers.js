@@ -1267,6 +1267,8 @@ function registerCustomersRoutes(router, ctx) {
             }
             // [fix 2026-07-08] 過去只擋訂單，客戶若有別名/筆跡提示/籃子紀錄/Gemini用量/範例圖等會撞 FK。
             // 交易內先清掉這些「隨客戶消滅」的中繼/衍生資料再刪客戶；basket_logs 的分項/歷史在 PG 為 ON DELETE CASCADE。
+            // [fix 2026-07-27 體檢] 硬刪 7 張表補稽核軌跡（守則 #3）：先快照主檔再刪。
+            const beforeSnap = await db.prepare("SELECT * FROM customers WHERE id = ?").get(id);
             const doDel = async (h) => {
                 await h.prepare("DELETE FROM customer_product_aliases WHERE customer_id = ?").run(id);
                 await h.prepare("DELETE FROM customer_handwriting_hints WHERE customer_id = ?").run(id);
@@ -1278,6 +1280,17 @@ function registerCustomersRoutes(router, ctx) {
             };
             if (typeof db.transaction === "function") await db.transaction(doDel);
             else await doDel(db);
+            if (beforeSnap) {
+                try {
+                    await logDataChange(req, {
+                        entityType: "customer",
+                        entityId: id,
+                        action: "delete",
+                        summary: `刪除客戶「${beforeSnap.name || id}」（含別名/筆跡/範例圖/用量/節奏/空籃衍生資料）`,
+                        meta: { before: beforeSnap },
+                    });
+                } catch (_) { /* 稽核失敗不擋刪除結果 */ }
+            }
         }
         catch (e) {
             console.error("[admin] 客戶刪除失敗:", e?.message || e);

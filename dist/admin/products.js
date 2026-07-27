@@ -1299,6 +1299,8 @@ function registerProductsRoutes(router, ctx) {
         // DELETE 會撞 FK 錯誤。改為在交易內先清掉這些「沒有此品項就沒意義」的中繼資料再刪品項；
         // 若仍被其他營運資料（庫存/盤差等）引用而失敗，整批回滾並回友善訊息（不再是原始 PG 錯誤）。
         try {
+            // [fix 2026-07-27 體檢] 硬刪 6 張表補稽核軌跡（守則 #3）：先快照主檔再刪。
+            const beforeSnap = await db.prepare("SELECT * FROM products WHERE id = ?").get(id);
             const doDel = async (h) => {
                 await h.prepare("DELETE FROM product_unit_specs WHERE product_id = ?").run(id);
                 await h.prepare("DELETE FROM product_packaging_ratios WHERE product_id = ?").run(id);
@@ -1309,6 +1311,17 @@ function registerProductsRoutes(router, ctx) {
             };
             if (typeof db.transaction === "function") await db.transaction(doDel);
             else await doDel(db);
+            if (beforeSnap) {
+                try {
+                    await logDataChange(req, {
+                        entityType: "product",
+                        entityId: id,
+                        action: "delete",
+                        summary: `刪除品項「${beforeSnap.name || id}」（含規格/箱入數/客戶俗名/筆跡/節奏衍生資料）`,
+                        meta: { before: beforeSnap },
+                    });
+                } catch (_) { /* 稽核失敗不擋刪除結果 */ }
+            }
             res.redirect("/admin/products?ok=del");
         }
         catch (e) {

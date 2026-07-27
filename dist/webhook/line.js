@@ -2123,16 +2123,23 @@ function createLineWebhook() {
                         const num = parseInt(delMatch[1], 10);
                         if (num >= 1 && num <= flatItems.length) {
                             const t = flatItems[num - 1];
-                            await db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(t.id, t.orderId);
                             // [fix 2026-07-10] 記錄刪項軌跡供結單 rebuild 重放；match_key 存被刪品項的 raw_name 快照（品名穩、位置會漂移）
-                            await recordOrderItemEdit(db, {
-                                orderId: t.orderId,
-                                action: "delete",
-                                rawName: t.raw_name || t.product_name || "",
-                                quantity: null,
-                                unit: null,
-                                editedBy: senderUserId,
-                            });
+                            // [fix 2026-07-27 體檢] DELETE＋軌跡包同一交易（軌跡 rethrow）：舊版兩句分開且軌跡吞錯，
+                            // DELETE 成功、軌跡失敗＝結單 rebuild 查不到刪項軌跡而把品項重建回來→客戶取消的品項照樣出貨。
+                            // 整體失敗會丟給 Cloud Tasks 重試閉環全冪等重跑，不會斷單。
+                            const doDelItem = async (h) => {
+                                await h.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").run(t.id, t.orderId);
+                                await recordOrderItemEdit(h, {
+                                    orderId: t.orderId,
+                                    action: "delete",
+                                    rawName: t.raw_name || t.product_name || "",
+                                    quantity: null,
+                                    unit: null,
+                                    editedBy: senderUserId,
+                                }, { rethrow: true });
+                            };
+                            if (typeof db.transaction === "function") await db.transaction(doDelItem);
+                            else await doDelItem(db);
                             const nm = t.product_name || t.raw_name || "品項";
                             await reply(lineClient, event.replyToken, `已刪除第${num}項：${nm}`, db);
                         }
@@ -2149,16 +2156,21 @@ function createLineWebhook() {
                         if (num >= 1 && num <= flatItems.length && Number.isFinite(qtyNew) && qtyNew >= 0) {
                             const t = flatItems[num - 1];
                             const unitNew = normalizeOrderUnit(unitTail || null, fallbackUnitEdit);
-                            await db.prepare("UPDATE order_items SET quantity = ?, unit = ? WHERE id = ? AND order_id = ?").run(qtyNew, unitNew, t.id, t.orderId);
                             // [fix 2026-07-10] 記錄改量軌跡供結單 rebuild 重放；match_key 存該位置品項的 raw_name 快照（品名穩、位置會漂移）
-                            await recordOrderItemEdit(db, {
-                                orderId: t.orderId,
-                                action: "set",
-                                rawName: t.raw_name || t.product_name || "",
-                                quantity: qtyNew,
-                                unit: unitNew,
-                                editedBy: senderUserId,
-                            });
+                            // [fix 2026-07-27 體檢] UPDATE＋軌跡包同一交易（同刪項，防「改了量卻無軌跡→rebuild 還原成舊量」）。
+                            const doSetItem = async (h) => {
+                                await h.prepare("UPDATE order_items SET quantity = ?, unit = ? WHERE id = ? AND order_id = ?").run(qtyNew, unitNew, t.id, t.orderId);
+                                await recordOrderItemEdit(h, {
+                                    orderId: t.orderId,
+                                    action: "set",
+                                    rawName: t.raw_name || t.product_name || "",
+                                    quantity: qtyNew,
+                                    unit: unitNew,
+                                    editedBy: senderUserId,
+                                }, { rethrow: true });
+                            };
+                            if (typeof db.transaction === "function") await db.transaction(doSetItem);
+                            else await doSetItem(db);
                             const nm = t.product_name || t.raw_name || "品項";
                             await reply(lineClient, event.replyToken, `已更新第${num}項 ${nm}：${formatOrderQty(qtyNew)}${unitNew}`, db);
                         }

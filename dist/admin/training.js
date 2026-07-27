@@ -14,8 +14,12 @@ function registerTrainingRoutes(router, ctx) {
     const { db, notionPage, escapeHtml, escapeAttr, newId, erp, loadAdminUsers, logDataChange } = ctx;
     const urlenc = express.urlencoded({ extended: true, limit: "256kb" });
     // 刪除一律走 POST（GET 刪除會被瀏覽器預載/連結預覽誤觸）＋刪前寫稽核軌跡（守則 #3）
-    const delBtn = (action, confirmMsg) =>
-        `<form method="post" action="${action}" style="display:inline;margin:0;" onsubmit="return confirm('${confirmMsg}')"><button type="submit" class="sf-btn sm danger">刪除</button></form>`;
+    // [fix 2026-07-27 體檢] confirmMsg 先做 JS 字串跳脫再 escapeAttr（比照 escapeAttr(escJsStr(...)) 慣例）：
+    // 目前呼叫點都是靜態字串，但這個 API 一旦有人帶動態資料就會跳出 confirm('') 字串，先把地雷拆掉。
+    const delBtn = (action, confirmMsg) => {
+        const safeMsg = escapeAttr(String(confirmMsg == null ? "" : confirmMsg).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/</g, "\\u003c").replace(/\r?\n/g, "\\n"));
+        return `<form method="post" action="${action}" style="display:inline;margin:0;" onsubmit="return confirm('${safeMsg}')"><button type="submit" class="sf-btn sm danger">刪除</button></form>`;
+    };
     const auditDelete = async (req, entityType, entityId, summary, before) => {
         try {
             if (typeof logDataChange === "function")
@@ -24,6 +28,13 @@ function registerTrainingRoutes(router, ctx) {
     };
 
     // ---- 小工具 ----
+    // [fix 2026-07-27 體檢] 月份排序改在 JS 端：month 是自由文字欄（可填「3月」「Q1」「2-3」），
+    // 舊版 ORDER BY CAST(month AS INTEGER) 在 SQLite 寬鬆照排、在 PG 直接
+    // invalid input syntax for type integer 500（詳情頁/列印頁/CSV 三個端點一起死）。
+    const monthNum = (m) => { const n = parseInt(String(m == null ? "" : m).replace(/[^\d]/g, " ").trim(), 10); return Number.isFinite(n) ? n : 99; };
+    const sortPlanItems = (items) => (items || []).sort((a, b) => ((Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
+        || (monthNum(a.month) - monthNum(b.month))
+        || String(a.month || "").localeCompare(String(b.month || "")));
     const nowIso = () => new Date().toISOString();
     const icpOf = (req) => erp.normIcpno(req.query.c || req.body?.c || "00");
     const actorOf = (req) => (req.adminUsername || req.adminProfile?.name || "").trim();
@@ -427,7 +438,7 @@ function registerTrainingRoutes(router, ctx) {
         const plan = await db.prepare("SELECT * FROM training_plan WHERE id = ?").get(req.params.id);
         if (!plan) { res.redirect(`/admin/training/plans?c=${icp}&err=${encodeURIComponent("找不到計畫")}`); return; }
         const editItemId = (req.query.item || "").trim();
-        const items = await db.prepare("SELECT * FROM training_plan_item WHERE plan_id = ? ORDER BY sort_order, CAST(month AS INTEGER), month").all(plan.id);
+        const items = sortPlanItems(await db.prepare("SELECT * FROM training_plan_item WHERE plan_id = ?").all(plan.id));
         const ed = editItemId ? items.find((i) => i.id === editItemId) : null;
         const catOpt = (v) => CATS.map((c) => `<option value="${c}" ${v === c ? "selected" : ""}>${c}</option>`).join("");
         const srcOpt = (v) => `<option value="">—</option>` + SRC.map((c) => `<option value="${c}" ${v === c ? "selected" : ""}>${c}</option>`).join("");
@@ -892,7 +903,7 @@ function registerTrainingRoutes(router, ctx) {
         const icp = icpOf(req);
         const plan = await db.prepare("SELECT * FROM training_plan WHERE id = ?").get(req.params.id);
         if (!plan) { res.status(404).send("找不到計畫"); return; }
-        const items = await db.prepare("SELECT * FROM training_plan_item WHERE plan_id = ? ORDER BY sort_order, CAST(month AS INTEGER), month").all(plan.id);
+        const items = sortPlanItems(await db.prepare("SELECT * FROM training_plan_item WHERE plan_id = ?").all(plan.id));
         const rowsHtml = items.length ? items.map((i) => `
           <tr>
             <td style="text-align:center;white-space:nowrap;">${esc(i.month || "")}</td>
@@ -918,7 +929,7 @@ function registerTrainingRoutes(router, ctx) {
     router.get("/training/plans/:id/export.csv", async (req, res) => {
         const plan = await db.prepare("SELECT * FROM training_plan WHERE id = ?").get(req.params.id);
         if (!plan) { res.status(404).send("找不到計畫"); return; }
-        const items = await db.prepare("SELECT * FROM training_plan_item WHERE plan_id = ? ORDER BY sort_order, CAST(month AS INTEGER), month").all(plan.id);
+        const items = sortPlanItems(await db.prepare("SELECT * FROM training_plan_item WHERE plan_id = ?").all(plan.id));
         const statusZh = (s) => s === "done" ? "已辦" : s === "canceled" ? "取消" : "未辦";
         const rows = [["月份", "主題", "類別", "講師", "內外部", "地點", "預計時數", "狀態", "備註"]];
         for (const i of items) rows.push([i.month, i.theme, i.category, i.instructor, i.instructor_type, i.location, i.planned_hours, statusZh(i.status), i.note]);

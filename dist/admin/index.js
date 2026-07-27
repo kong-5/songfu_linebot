@@ -5774,12 +5774,15 @@ function createAdminRouter() {
             const row = await db.prepare("SELECT id FROM basket_logs WHERE customer_id = ? AND log_date = ?").get(customerId, logDate);
             if (row) {
                 const prevLines = await db.prepare("SELECT basket_kind, basket_no, taken_to, picked_up FROM basket_log_lines WHERE basket_log_id = ?").all(row.id);
-                await db.prepare("DELETE FROM basket_log_lines WHERE basket_log_id = ?").run(row.id);
                 const nowSql2 = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-                await db.prepare("UPDATE basket_logs SET taken_to = 0, picked_up = 0, updated_at = " + nowSql2 + " WHERE id = ?").run(row.id);
-                try {
+                // [fix 2026-07-27 體檢] 三步寫入（刪分項/歸零總計/寫 history）包進同一交易：
+                // 舊版裸奔且 history 吞錯——中途失敗會留下「分項已刪、總計還是舊數字」的不一致列，
+                // 或資料已改卻無軌跡。lib/basket-log.js 的寫入路徑已包交易，這條是漏網的雙胞胎。
+                const doDeleteDay = async (h) => {
+                    await h.prepare("DELETE FROM basket_log_lines WHERE basket_log_id = ?").run(row.id);
+                    await h.prepare("UPDATE basket_logs SET taken_to = 0, picked_up = 0, updated_at = " + nowSql2 + " WHERE id = ?").run(row.id);
                     const hid = (0, id_js_1.newId)("bskh");
-                    await db.prepare(
+                    await h.prepare(
                         "INSERT INTO basket_log_history (id, basket_log_id, customer_id, log_date, prev_taken_to, prev_picked_up, new_taken_to, new_picked_up, prev_lines_json, new_lines_json, actor, raw_message, created_at) " +
                         "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, " + nowSql2 + ")"
                     ).run(hid, row.id, customerId, logDate,
@@ -5787,9 +5790,9 @@ function createAdminRouter() {
                         prevLines.reduce((s, l) => s + Number(l.picked_up || 0), 0),
                         JSON.stringify(prevLines), "[]",
                         "admin:" + (res.locals.adminUser || "?"), "[admin delete-day]");
-                } catch (e) {
-                    console.warn("[admin] basket history insert failed", e?.message || e);
-                }
+                };
+                if (typeof db.transaction === "function") await db.transaction(doDeleteDay);
+                else await doDeleteDay(db);
             }
             const backYm = /^\d{4}-\d{2}$/.test(ym) ? ym : currentTwYM();
             res.redirect(`/admin/baskets?ym=${backYm}&customer=${encodeURIComponent(customerId)}`);
@@ -7239,7 +7242,9 @@ function createAdminRouter() {
               function showList(arr){
                 dropdown.innerHTML = (arr && arr.length) ? arr.map(function(p){
                   var text = (p.name || '') + (p.erp_code ? ' (' + p.erp_code + ')' : '') + (p.teraoka_barcode ? ' ' + p.teraoka_barcode : '');
-                  return '<div class="review-product-opt" data-id="' + (p.id || '') + '" data-name="' + (p.name || '').replace(/"/g, '&quot;') + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--notion-border);font-size:13px;">' + (p.name || '') + (p.erp_code ? ' \uFF08' + p.erp_code + '\uFF09' : '') + '</div>';
+                  var nmEsc = (p.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                  var ecEsc = (p.erp_code || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                  return '<div class="review-product-opt" data-id="' + (p.id || '') + '" data-name="' + nmEsc + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--notion-border);font-size:13px;">' + nmEsc + (ecEsc ? ' \uFF08' + ecEsc + '\uFF09' : '') + '</div>';
                 }).join('') : '<div class="notion-hint" style="padding:8px 12px;margin:0;">無符合品項</div>';
                 dropdown.style.display = 'block';
               }
@@ -7279,20 +7284,38 @@ function createAdminRouter() {
         const isGlobal = scope !== "customer";
         try {
             if (isGlobal) {
-                const id = (0, id_js_1.newId)("pa");
-                await db.prepare("INSERT INTO product_aliases (id, product_id, alias) VALUES (?, ?, ?)").run(id, product_id, aliasTrim);
-                await logDataChange(req, {
-                    entityType: "product_alias",
-                    entityId: id,
-                    productId: product_id,
-                    action: "create",
-                    summary: `新增俗名「${aliasTrim}」（POST /alias）`,
-                    meta: { alias: aliasTrim, via: "alias_form" },
-                });
+                // [fix 2026-07-27 體檢] 冪等：product_aliases 無唯一鍵，重按/重整表單會長出同 alias 多列，
+                // resolve 時同名多列取值不定（同一句俗名有時對到 A 有時對到 B）。已有同 (product_id, alias) 就跳過。
+                const dup = await db.prepare("SELECT id FROM product_aliases WHERE product_id = ? AND alias = ?").get(product_id, aliasTrim);
+                if (!dup) {
+                    const id = (0, id_js_1.newId)("pa");
+                    await db.prepare("INSERT INTO product_aliases (id, product_id, alias) VALUES (?, ?, ?)").run(id, product_id, aliasTrim);
+                    await logDataChange(req, {
+                        entityType: "product_alias",
+                        entityId: id,
+                        productId: product_id,
+                        action: "create",
+                        summary: `新增俗名「${aliasTrim}」（POST /alias）`,
+                        meta: { alias: aliasTrim, via: "alias_form" },
+                    });
+                }
             }
             else if (customer_id) {
-                const id = (0, id_js_1.newId)("cpa");
-                await db.prepare("INSERT INTO customer_product_aliases (id, customer_id, product_id, alias) VALUES (?, ?, ?, ?)").run(id, customer_id, product_id, aliasTrim);
+                // [fix 2026-07-27 體檢] 同上冪等防重；並補稽核軌跡（舊版只有全域分支有 logDataChange，
+                // 客戶專用別名 resolve 優先級最高、建立卻完全無軌跡）。
+                const dupC = await db.prepare("SELECT id FROM customer_product_aliases WHERE customer_id = ? AND product_id = ? AND alias = ?").get(customer_id, product_id, aliasTrim);
+                if (!dupC) {
+                    const id = (0, id_js_1.newId)("cpa");
+                    await db.prepare("INSERT INTO customer_product_aliases (id, customer_id, product_id, alias) VALUES (?, ?, ?, ?)").run(id, customer_id, product_id, aliasTrim);
+                    await logDataChange(req, {
+                        entityType: "customer_product_alias",
+                        entityId: id,
+                        productId: product_id,
+                        action: "create",
+                        summary: `新增客戶專用俗名「${aliasTrim}」（POST /alias）`,
+                        meta: { alias: aliasTrim, customer_id, via: "alias_form" },
+                    });
+                }
             }
             // 將同名稱的待確認明細改為已對應（若為客戶專用則只更新該客戶的訂單明細）
             if (isGlobal) {
@@ -10886,8 +10909,9 @@ function createAdminRouter() {
               }
               function show(arr){
                 dropdown.innerHTML = (arr && arr.length) ? arr.map(function(p){
-                  return '<div class="review-product-opt" data-id="' + (p.id || "") + '" data-name="' + String(p.name || "").replace(/"/g,"&quot;") + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px;">' +
-                    (p.name || "") + (p.erp_code ? " （" + p.erp_code + "）" : "") + (p.teraoka_barcode ? " " + p.teraoka_barcode : "") + "</div>";
+                  var esc = function(s){ return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); };
+                  return '<div class="review-product-opt" data-id="' + (p.id || "") + '" data-name="' + esc(p.name) + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px;">' +
+                    esc(p.name) + (p.erp_code ? " （" + esc(p.erp_code) + "）" : "") + (p.teraoka_barcode ? " " + esc(p.teraoka_barcode) : "") + "</div>";
                 }).join("") : '<div style="padding:8px 12px;color:var(--txt-3);font-size:13px;">無符合品項，請換關鍵字</div>';
                 positionDropdown();
                 dropdown.style.display = "block";
@@ -11320,8 +11344,9 @@ function createAdminRouter() {
           function searchProducts(q){
             fetch('/admin/api/products-search?q=' + encodeURIComponent(q)).then(function(r){ return r.json(); }).then(function(arr){
               listEl.innerHTML = arr.map(function(p){
-                var nm = (p.name || '').replace(/"/g, '&quot;');
-                return '<div data-product-id="' + (p.id || '') + '" data-product-name="' + nm + '" class="product-option">' + (p.name || '') + ' ' + (p.erp_code || '') + ' ' + (p.teraoka_barcode || '') + '</div>';
+                var esc = function(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
+                var nm = esc(p.name);
+                return '<div data-product-id="' + (p.id || '') + '" data-product-name="' + nm + '" class="product-option">' + nm + ' ' + esc(p.erp_code) + ' ' + esc(p.teraoka_barcode) + '</div>';
               }).join('') || '<div>無符合品項</div>';
             });
           }
@@ -13067,14 +13092,10 @@ function createAdminRouter() {
             const isPg = Boolean(process.env.DATABASE_URL);
             const nowSql = isPg ? "CURRENT_TIMESTAMP" : "datetime('now')";
             // 訂單編號用日期+序號（與一般訂單同邏輯，但 status='complaint'）
-            const datePart = dateOk.replace(/-/g, "");
-            const lastNo = await db.prepare("SELECT order_no FROM orders WHERE order_no LIKE ? ORDER BY order_no DESC LIMIT 1").get(datePart + "%");
-            let seq = 1;
-            if (lastNo?.order_no) {
-                const m = String(lastNo.order_no).match(/^\d{8}(\d{3})$/);
-                if (m) seq = parseInt(m[1], 10) + 1;
-            }
-            const orderNo = datePart + String(seq).padStart(3, "0");
+            // [fix 2026-07-27 體檢] 改走 getNextOrderNoAdmin 原子取號：舊版自刻「讀最大值+1」
+            // 繞過了 2026-07-08 修好的先讀後寫撞號（兩人同時建客訴／與 LINE 收單併發會拿到同號，
+            // 撞 ux_orders_order_no 回 500；唯一索引沒建起來的庫則直接寫出兩張同號單）。
+            const orderNo = await getNextOrderNoAdmin(db, dateOk);
             await db.prepare(
                 "INSERT INTO orders (id, order_no, customer_id, order_date, status, raw_message, remark, line_group_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
             ).run(orderId, orderNo, customerId, dateOk, "complaint", rawMessage, memo || null, customer.line_group_id || null);
@@ -13183,20 +13204,22 @@ function createAdminRouter() {
                     console.warn("[admin] /complaints/:id timeline query failed:", e?.message || e);
                 }
             }
-            const otherCustOrders = await db.prepare(
-                "SELECT id, order_no, order_date, status, raw_message, updated_at FROM orders " +
-                "WHERE customer_id = ? AND id <> ? AND order_date >= date(?, '-3 day') AND order_date <= date(?, '+7 day') " +
-                "ORDER BY order_date DESC, id DESC LIMIT 50"
-            ).all(order.customer_id, orderId, order.order_date, order.order_date).catch(async () => {
-                if (process.env.DATABASE_URL) {
-                    return db.prepare(
-                        "SELECT id, order_no, order_date, status, raw_message, updated_at FROM orders " +
-                        "WHERE customer_id = $1 AND id <> $2 AND order_date::date >= ($3::date - INTERVAL '3 day') AND order_date::date <= ($3::date + INTERVAL '7 day') " +
-                        "ORDER BY order_date DESC, id DESC LIMIT 50"
-                    ).all(order.customer_id, orderId, order.order_date);
-                }
-                return [];
-            });
+            // [fix 2026-07-27 體檢] isPg 前置分支（比照本 handler 上方寫法）：舊版先打 sqlite 的
+            // date(?, '-3 day') 讓 PG 報錯再走 .catch 補救——雲端每開一次客訴頁就記一筆 PG 錯誤，
+            // 且該句一旦被搬進交易會毒化整個交易（25P02）連 fallback 一起死。
+            const isPgCplDates = !!process.env.DATABASE_URL;
+            const otherCustOrders = await (isPgCplDates
+                ? db.prepare(
+                    "SELECT id, order_no, order_date, status, raw_message, updated_at FROM orders " +
+                    "WHERE customer_id = $1 AND id <> $2 AND order_date::date >= ($3::date - INTERVAL '3 day') AND order_date::date <= ($3::date + INTERVAL '7 day') " +
+                    "ORDER BY order_date DESC, id DESC LIMIT 50"
+                ).all(order.customer_id, orderId, order.order_date)
+                : db.prepare(
+                    "SELECT id, order_no, order_date, status, raw_message, updated_at FROM orders " +
+                    "WHERE customer_id = ? AND id <> ? AND order_date >= date(?, '-3 day') AND order_date <= date(?, '+7 day') " +
+                    "ORDER BY order_date DESC, id DESC LIMIT 50"
+                ).all(order.customer_id, orderId, order.order_date, order.order_date)
+            ).catch(() => []);
             const formatTs = (ts) => {
                 const s = String(ts || "");
                 if (!s) return "";
@@ -13382,8 +13405,9 @@ function createAdminRouter() {
           var form = document.getElementById("addItemForm");
           function showList(arr){
             dropdown.innerHTML = (arr && arr.length) ? arr.map(function(p){
-              return '<div class="review-product-opt" data-id="' + (p.id || "") + '" data-name="' + String(p.name || "").replace(/"/g, "&quot;") + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--notion-border);font-size:13px;">' +
-                (p.name || "") + (p.erp_code ? " \uFF08" + p.erp_code + "\uFF09" : "") + (p.teraoka_barcode ? " " + p.teraoka_barcode : "") + "</div>";
+              var esc = function(s){ return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); };
+              return '<div class="review-product-opt" data-id="' + (p.id || "") + '" data-name="' + esc(p.name) + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--notion-border);font-size:13px;">' +
+                esc(p.name) + (p.erp_code ? " \uFF08" + esc(p.erp_code) + "\uFF09" : "") + (p.teraoka_barcode ? " " + esc(p.teraoka_barcode) : "") + "</div>";
             }).join("") : '<div class="notion-hint" style="padding:8px 12px;margin:0;">無符合品項，請換關鍵字或簡稱</div>';
             dropdown.style.display = "block";
           }
@@ -13590,7 +13614,7 @@ function createAdminRouter() {
         db, notionPage, logDataChange, requireManager, safeAdminReturnPath, appendQueryToAdminPath, productEditEmbedQuery, computeDerivedKgByUnit, notionEmbedPage, autoConvertOrderItemsToKg, normalizeLineUnitRules, loadLineUnitRulesObject, saveLineUnitRulesObject, ORDER_LINE_UNITS,
     });
     router.get("/import", async (req, res) => {
-        const msg = req.query.ok ? `<p style='color:green'>已匯入 ${req.query.ok} 筆品項。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
+        const msg = req.query.ok ? `<p style='color:green'>已匯入 ${escapeHtml(String(req.query.ok))} 筆品項。</p>` : req.query.err ? `<p style='color:red'>${escapeHtml(String(req.query.err))}</p>` : "";
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 匯入品項</div>
         <h1 class="notion-page-title">匯入品項</h1>
@@ -13725,33 +13749,59 @@ YY小吃, C5678...,</pre>
         }
         let imported = 0;
         let updated = 0;
-        for (let i = 0; i < rows.length; i++) {
-            const cols = rows[i];
-            const name = (cols[nameIdx] ?? "").trim();
-            if (!name)
-                continue;
-            const teraokaCode = custCodeIdx >= 0 ? (cols[custCodeIdx] ?? "").trim() || null : null;
-            const hqCustCode = hqCustCodeIdx >= 0 ? (cols[hqCustCodeIdx] ?? "").trim() || null : null;
-            const lineGroupId = lineGroupIdIdx >= 0 ? (cols[lineGroupIdIdx] ?? "").trim() || null : null;
-            const contactParts = [custTelIdx, faxIdx, contactIdx, emailIdx]
-                .filter((idx) => idx >= 0)
-                .map((idx) => (cols[idx] ?? "").trim())
-                .filter(Boolean);
-            const contact = contactParts.length > 0 ? contactParts.join(" / ") : null;
-            const existing = await db.prepare("SELECT id FROM customers WHERE name = ?").get(name);
-            if (existing) {
-                await db.prepare("UPDATE customers SET teraoka_code = COALESCE(?, teraoka_code), hq_cust_code = COALESCE(?, hq_cust_code), contact = COALESCE(?, contact), line_group_id = COALESCE(?, line_group_id), updated_at = datetime('now') WHERE id = ?").run(teraokaCode ?? null, hqCustCode ?? null, contact ?? null, lineGroupId || null, existing.id);
-                if (lineGroupId)
-                    updated++;
+        const skippedGroups = [];
+        // [fix 2026-07-27 體檢] (1) 整份匯入包交易：舊版逐列裸奔，中途失敗前半已寫入、畫面只回一句失敗。
+        // (2) LINE 群組唯一性：/customers/new 有「同一群組不可綁兩個客戶」守衛（叫貨會歸錯客戶），
+        //     這條 CSV 路徑過去零檢查、可直接蓋 → 同群組已綁其他客戶時跳過該綁定並在結果列出。
+        const doImportCust = async (h) => {
+            for (let i = 0; i < rows.length; i++) {
+                const cols = rows[i];
+                const name = (cols[nameIdx] ?? "").trim();
+                if (!name)
+                    continue;
+                const teraokaCode = custCodeIdx >= 0 ? (cols[custCodeIdx] ?? "").trim() || null : null;
+                const hqCustCode = hqCustCodeIdx >= 0 ? (cols[hqCustCodeIdx] ?? "").trim() || null : null;
+                let lineGroupId = lineGroupIdIdx >= 0 ? (cols[lineGroupIdIdx] ?? "").trim() || null : null;
+                const contactParts = [custTelIdx, faxIdx, contactIdx, emailIdx]
+                    .filter((idx) => idx >= 0)
+                    .map((idx) => (cols[idx] ?? "").trim())
+                    .filter(Boolean);
+                const contact = contactParts.length > 0 ? contactParts.join(" / ") : null;
+                const existing = await h.prepare("SELECT id FROM customers WHERE name = ?").get(name);
+                if (lineGroupId) {
+                    const bound = await h.prepare("SELECT id, name FROM customers WHERE line_group_id = ?").get(lineGroupId);
+                    if (bound && (!existing || String(bound.id) !== String(existing.id))) {
+                        skippedGroups.push(`${name}（群組已綁「${bound.name}」）`);
+                        lineGroupId = null;
+                    }
+                }
+                if (existing) {
+                    await h.prepare("UPDATE customers SET teraoka_code = COALESCE(?, teraoka_code), hq_cust_code = COALESCE(?, hq_cust_code), contact = COALESCE(?, contact), line_group_id = COALESCE(?, line_group_id), updated_at = datetime('now') WHERE id = ?").run(teraokaCode ?? null, hqCustCode ?? null, contact ?? null, lineGroupId || null, existing.id);
+                    if (lineGroupId)
+                        updated++;
+                }
+                else {
+                    await h.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_id, contact) VALUES (?, ?, ?, ?, ?, ?)").run((0, id_js_1.newId)("cust"), name, teraokaCode, hqCustCode, lineGroupId, contact);
+                    imported++;
+                }
             }
-            else {
-                await db.prepare("INSERT INTO customers (id, name, teraoka_code, hq_cust_code, line_group_id, contact) VALUES (?, ?, ?, ?, ?, ?)").run((0, id_js_1.newId)("cust"), name, teraokaCode, hqCustCode, lineGroupId, contact);
-                imported++;
-            }
-        }
+        };
+        if (typeof db.transaction === "function") await db.transaction(doImportCust);
+        else await doImportCust(db);
+        // [fix 2026-07-27 體檢] 批次寫入客戶主檔補稽核軌跡（守則 #3）
+        try {
+            await logDataChange(req, {
+                entityType: "customer",
+                entityId: "import-" + new Date().toISOString(),
+                action: "import_customers",
+                summary: `CSV 匯入客戶：新增 ${imported} 筆、更新群組綁定 ${updated} 筆${skippedGroups.length ? `、跳過已綁定群組 ${skippedGroups.length} 筆` : ""}`,
+                meta: { imported, updated, skipped_groups: skippedGroups },
+            });
+        } catch (_) { /* 稽核失敗不擋匯入結果 */ }
         const resultMsg = imported > 0 ? `新增 ${imported} 筆` : "";
         const resultMsg2 = updated > 0 ? (resultMsg ? "；" : "") + `更新 ${updated} 筆 LINE 群組綁定` : "";
-        res.redirect("/admin/import-customers?ok=" + encodeURIComponent(resultMsg + resultMsg2 || "0"));
+        const resultMsg3 = skippedGroups.length ? ((resultMsg + resultMsg2) ? "；" : "") + `跳過 ${skippedGroups.length} 筆群組綁定（已綁其他客戶）：${skippedGroups.slice(0, 5).join("、")}${skippedGroups.length > 5 ? "…" : ""}` : "";
+        res.redirect("/admin/import-customers?ok=" + encodeURIComponent(resultMsg + resultMsg2 + resultMsg3 || "0"));
     });
     router.get("/import-teraoka", async (req, res) => {
         const ok = req.query.ok;

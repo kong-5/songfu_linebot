@@ -656,7 +656,7 @@ function registerCashRoutes(router, ctx) {
       </div>
       <canvas id="ccCanvas" style="display:none;"></canvas>
       <script>(function(){
-        var ICPNO=${JSON.stringify(icpno)}, PAYDATE=${JSON.stringify(date)}, ME=${JSON.stringify(me)}, ROUTE=${JSON.stringify(route === "all" ? "全部路線" : routeLabel(route))}, COMPANY=${JSON.stringify(CASH_COMPANIES[icpno] || icpno)};
+        var ICPNO=${JSON.stringify(icpno)}, PAYDATE=${JSON.stringify(date)}, ME=${JSON.stringify(me).replace(/</g, "\\u003c")}, ROUTE=${JSON.stringify(route === "all" ? "全部路線" : routeLabel(route)).replace(/</g, "\\u003c")}, COMPANY=${JSON.stringify(CASH_COMPANIES[icpno] || icpno)};
         function money(n){ return Number(n||0).toLocaleString(); }
         // 篩選：只看收現金（預設）＋搜尋單號/客戶（搜尋時連非現金也顯示，供例外收現）
         function applyFilter(){
@@ -855,6 +855,17 @@ function registerCashRoutes(router, ctx) {
                 await db.transaction(doIns);
             else
                 await doIns(db);
+            // [fix 2026-07-27 體檢] 收款登記補稽核軌跡（守則 #3）：取消收款（下方 undo）早有完整稽核，
+            // 登記卻一行都沒有——「誰取消查得到、誰收了多少錢查不到」的不對稱補齊。
+            try {
+                await logDataChange(req, {
+                    entityType: "cash_payment",
+                    entityId: payId,
+                    action: "create",
+                    summary: `收款登記 ${ctName || ctNo || ""}：現金 ${cashAmount}＋轉帳 ${transferAmount}＋支票 ${checkAmount}＝${totalAmount}（應收 ${dueTotal}${diff ? `，差額 ${diff}` : ""}）`,
+                    meta: { icpno, pay_date: payDate, ct_no: ctNo, ct_name: ctName, collected_by: collectedBy, route_line: routeLine, cash_amount: cashAmount, transfer_amount: transferAmount, check_amount: checkAmount, total_amount: totalAmount, due_total: dueTotal, diff, sp_nos: spNos, checks: checkRows },
+                });
+            } catch (_) { /* 稽核失敗不擋收款結果 */ }
             res.json({ ok: true, payment_id: payId, diff });
         }
         catch (e) {
@@ -922,8 +933,10 @@ function registerCashRoutes(router, ctx) {
             let rows;
             if (qs) {
                 const like = "%" + qs.toLowerCase() + "%";
-                const sql = `SELECT ${cols} FROM cash_customer WHERE icpno = ? AND (LOWER(name) LIKE ? OR LOWER(ct_no) LIKE ? OR COALESCE(route_line,'') LIKE ?)` + activeCond + " ORDER BY COALESCE(route_line,''), name";
-                const params = showAll ? [icpno, like, like, "%" + qs + "%"] : [icpno, like, like, "%" + qs + "%", cutoff];
+                // [fix 2026-07-27 體檢] 路線欄同樣走 LOWER＋小寫參數：舊版沒 LOWER 且刻意用原大小寫，
+                // 同一個搜尋框三個欄位在 SQLite 不分大小寫、在 PG 分大小寫，行為不一致。
+                const sql = `SELECT ${cols} FROM cash_customer WHERE icpno = ? AND (LOWER(name) LIKE ? OR LOWER(ct_no) LIKE ? OR LOWER(COALESCE(route_line,'')) LIKE ?)` + activeCond + " ORDER BY COALESCE(route_line,''), name";
+                const params = showAll ? [icpno, like, like, like] : [icpno, like, like, like, cutoff];
                 rows = await db.prepare(sql).all(...params) || [];
             }
             else {
@@ -1225,8 +1238,19 @@ function registerCashRoutes(router, ctx) {
                     return;
                 }
             } catch (_) { /* 查重失敗照常入帳 */ }
+            const ceiId = (0, id_js_1.newId)("cei");
             await db.prepare("INSERT INTO cash_extra_income (id, icpno, income_date, item, amount, method, collected_by, note, recorded_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
-                .run((0, id_js_1.newId)("cei"), icpno, date, item, amount, method, String(b.collected_by ?? "").trim(), String(b.note ?? "").trim(), (res.locals && res.locals.adminUser) || "", new Date().toISOString());
+                .run(ceiId, icpno, date, item, amount, method, String(b.collected_by ?? "").trim(), String(b.note ?? "").trim(), (res.locals && res.locals.adminUser) || "", new Date().toISOString());
+            // [fix 2026-07-27 體檢] 手動入帳補稽核軌跡（守則 #3，金錢操作）
+            try {
+                await logDataChange(req, {
+                    entityType: "cash_extra_income",
+                    entityId: ceiId,
+                    action: "create",
+                    summary: `手動入帳 ${item}：${amount}（${method}）`,
+                    meta: { icpno, income_date: date, item, amount, method, collected_by: String(b.collected_by ?? "").trim(), note: String(b.note ?? "").trim() },
+                });
+            } catch (_) { /* 稽核失敗不擋入帳 */ }
             res.json({ ok: true });
         }
         catch (e) {
@@ -1241,7 +1265,20 @@ function registerCashRoutes(router, ctx) {
                 res.status(400).json({ error: "缺 id" });
                 return;
             }
+            // [fix 2026-07-27 體檢] 刪帳先快照寫稽核再刪（守則 #3，金錢操作；比照收款 undo）
+            const snap = await db.prepare("SELECT * FROM cash_extra_income WHERE id = ?").get(id);
             await db.prepare("DELETE FROM cash_extra_income WHERE id = ?").run(id);
+            if (snap) {
+                try {
+                    await logDataChange(req, {
+                        entityType: "cash_extra_income",
+                        entityId: id,
+                        action: "delete",
+                        summary: `刪除手動入帳 ${snap.item || ""}：${snap.amount || 0}（${snap.income_date || ""}）`,
+                        meta: { before: snap },
+                    });
+                } catch (_) { /* 稽核失敗不擋刪除 */ }
+            }
             res.json({ ok: true });
         }
         catch (e) {

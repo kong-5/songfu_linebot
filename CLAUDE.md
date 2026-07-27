@@ -1,7 +1,7 @@
 # CLAUDE.md — 松富物流 LINE Bot / 後台（給每個新對話先讀）
 
 這份是「架構定案 + 不要再重複踩」的權威清單。**動到相關功能前先讀這份**；細節看 `docs/`。
-最後更新：2026-07-21
+最後更新：2026-07-27
 
 ---
 
@@ -15,8 +15,15 @@
 2. **任何寫入資料的操作必須具備：交易原子性、冪等性**（重複執行不會產生重複資料）。
 3. **所有資料異動要寫入稽核軌跡**（誰、何時、改了什麼、舊值新值）。
 4. **錯誤訊息必須告訴使用者「怎麼修正」**，不能只說格式錯誤。
-5. **單一檔案超過 1000 行要提出拆分建議**。
+5. **單一檔案超過 1000 行要提出拆分建議**。admin 後台已拆四批（training/cash/inventory/
+   logistics/customers/products/broadcast 皆為 `registerXxxRoutes(router, ctx)` move-only 模式，
+   詳見 `docs/體質健檢-2026-07-27.md` §一）；index.js 剩訂單域（批次 5 候選）。
 6. **每次改動要附帶對應的 smoke test**。
+7. **改完跑 `npm run lint`＋`npm test`**——lint（eslint 正確性規則，~4 秒）已是 cloudbuild
+   部署前硬閘門，dist 手改 JS 沒有編譯期檢查，打錯變數名 lint 才會當場抓到。
+8. **SQL 一律可攜或 isPg 雙分支**：sqlForPg 對 SQLite 專屬語法（INSERT OR REPLACE/IGNORE、
+   strftime、GROUP_CONCAT、datetime/date 任意形式、IFNULL、julianday、printf）與「字串常值內
+   含 ?」一律 fail-fast 丟錯（不再默默送 PG 到雲端才 500）。datetime('now') 會自動轉換可放心用。
 
 ## 部署（重要）
 - **推 `main` 就自動部署**：`cloudbuild.yaml` 由 `deploy-on-push` 觸發，建 image → 部署
