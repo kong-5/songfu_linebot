@@ -21,6 +21,9 @@
    四組共用 ctx：**訂單三域 `ORDERS_CTX`**、**人員/公告/行事曆/報價 `ADMIN_MISC_CTX`**、
    **儀表板/分析/空籃/環境衛生 `ADMIN_VIEW_CTX`**、**機器端點/AI設定/匯入/匯出/待確認 `ADMIN_OPS_CTX`**。
    ⚠ `cash.js` 的註冊呼叫夾在凌越機器端點區間中間，**位置不可移動**（批次 2 定案）。
+   `webhook/line.js` 已拆批次 9（2,796 → 1,998 行）：訂單寫入／Flex 組訊／意圖偵測／子客戶拆單
+   四組 helper 抽到 `lib/line-*.js`，line.js 以原名解構回來所以呼叫處與 `_testables` 未改。
+   ⚠ 收單狀態機（`collectingByGroup` 記憶體 session）**刻意未抽**，要動屬重構非搬移，請另案評估。
    ⚠ ctx 內若含 `const` 宣告的值，**註冊呼叫必須放在該宣告之後**，否則 createAdminRouter
    一執行就 TDZ 爆掉（批次 6 踩過；批次 7 已把肇事的報價 icon `QI` 提到 module 層根治）。
    `function` 宣告會提升不受影響。
