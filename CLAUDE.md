@@ -15,9 +15,13 @@
 2. **任何寫入資料的操作必須具備：交易原子性、冪等性**（重複執行不會產生重複資料）。
 3. **所有資料異動要寫入稽核軌跡**（誰、何時、改了什麼、舊值新值）。
 4. **錯誤訊息必須告訴使用者「怎麼修正」**，不能只說格式錯誤。
-5. **單一檔案超過 1000 行要提出拆分建議**。admin 後台已拆四批（training/cash/inventory/
-   logistics/customers/products/broadcast 皆為 `registerXxxRoutes(router, ctx)` move-only 模式，
-   詳見 `docs/體質健檢-2026-07-27.md` §一）；index.js 剩訂單域（批次 5 候選）。
+5. **單一檔案超過 1000 行要提出拆分建議**。admin 後台已拆五批（training/cash/inventory/
+   logistics/customers/products/broadcast/orders/order-detail/complaints 皆為
+   `registerXxxRoutes(router, ctx)` move-only 模式，詳見 `docs/體質健檢-2026-07-27.md` §一）；
+   index.js 20,461 → 10,840 行。**訂單三域共用 `ORDERS_CTX`**（在 index.js 第一個註冊呼叫前定義）。
+   ⚠ 訂單路由在原檔不連續、批次 5 一次註冊改變了 router 順序——**已證明安全**（581 對翻轉、
+   零對 pattern 可撞同一 URL）。日後在 orders.js 加新路由若含字面路徑（如 `/orders/batch-xxx`），
+   要確認不會被 `/orders/:orderId` 系列吃掉；驗證工具見該文件 §四。
 6. **每次改動要附帶對應的 smoke test**。
 7. **改完跑 `npm run lint`＋`npm test`**——lint（eslint 正確性規則，~4 秒）已是 cloudbuild
    部署前硬閘門，dist 手改 JS 沒有編譯期檢查，打錯變數名 lint 才會當場抓到。
