@@ -13,12 +13,18 @@ async function saveWholesaleMarketSnapshot(db, recordDate, prices) {
     if (!recordDate || !prices || prices.length === 0)
         return;
     const now = new Date().toISOString();
-    await db.prepare("DELETE FROM wholesale_market_snapshots WHERE record_date = ?").run(recordDate);
-    for (const p of prices) {
-        const id = (0, id_js_1.newId)("wms");
-        await db.prepare(`INSERT INTO wholesale_market_snapshots (id, record_date, market_name, crop_name, category, crop_code, category_code, high_price, mid_price, low_price, avg_price, volume, created_at)
+    // [fix 2026-07-27 體檢] 先刪後插包同一交易：舊版逐筆裸奔，任一筆 INSERT 失敗（或程序被回收）
+    // 會把當日行情「已刪未補」留成空/半套資料，報價與優惠推播讀到殘缺行情且無旗標可察覺。
+    const doReplace = async (h) => {
+        await h.prepare("DELETE FROM wholesale_market_snapshots WHERE record_date = ?").run(recordDate);
+        for (const p of prices) {
+            const id = (0, id_js_1.newId)("wms");
+            await h.prepare(`INSERT INTO wholesale_market_snapshots (id, record_date, market_name, crop_name, category, crop_code, category_code, high_price, mid_price, low_price, avg_price, volume, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, recordDate, (p.marketName || "").trim(), (p.cropName || "").trim(), (p.category || "").trim() || null, (p.cropCode || "").trim() || null, (p.categoryCode || "").trim() || null, p.highPrice != null ? Number(p.highPrice) : null, p.midPrice != null ? Number(p.midPrice) : null, p.lowPrice != null ? Number(p.lowPrice) : null, p.avgPrice != null ? Number(p.avgPrice) : null, p.volume != null ? Number(p.volume) : null, now);
-    }
+        }
+    };
+    if (typeof db.transaction === "function") await db.transaction(doReplace);
+    else await doReplace(db);
 }
 async function loadWholesaleMarketSnapshot(db, recordDate) {
     const rows = await db.prepare(`SELECT market_name, crop_name, category, crop_code, category_code, high_price, mid_price, low_price, avg_price, volume

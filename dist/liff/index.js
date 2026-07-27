@@ -204,10 +204,16 @@ function createLiffRouter() {
             const item = await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(erpCode, icpno);
             if (!item) { res.status(404).json({ error: "查無此品項（料號 " + erpCode + "）" }); return; }
             const now = new Date().toISOString();
-            // 可攜 upsert（sqlite/pg 通用）：先刪後插
-            await db.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
-            await db.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                .run(icpno, barcode, erpCode, qps, v.sub || "", String(v.name || "").trim(), now, now);
+            // 可攜 upsert（sqlite/pg 通用）：先刪後插。
+            // [fix 2026-07-27 體檢] 包交易：兩句之間失敗會把既有綁定刪掉卻沒補回（該條碼從此掃不到），
+            // admin 端雙胞胎（inventory.js 條碼對照）已包，這裡是漏網的第三份。
+            const doBind = async (h) => {
+                await h.prepare("DELETE FROM product_barcode WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND barcode = ?").run(icpno, barcode);
+                await h.prepare("INSERT INTO product_barcode (icpno, barcode, erp_code, qty_per_scan, created_by, created_by_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                    .run(icpno, barcode, erpCode, qps, v.sub || "", String(v.name || "").trim(), now, now);
+            };
+            if (typeof db.transaction === "function") await db.transaction(doBind);
+            else await doBind(db);
             res.json({ ok: true, item: { c: String(item.erp_code), n: String(item.name || ""), s: String(item.spec || ""), u: String(item.unit || ""), sys: Number(item.qty || 0), q: qps } });
         } catch (e) { console.error("[liff scan bind]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
@@ -570,7 +576,9 @@ function createLiffRouter() {
             if (!auth.ok) { res.status(auth.status || 401).json({ ok: false, error: auth.error }); return; }
             const q = String(req.query?.q || "").trim();
             if (!q) { res.json({ ok: true, customers: [] }); return; }
-            const like = "%" + q.replace(/[%_]/g, "\\$&") + "%";
+            // [fix 2026-07-27 體檢] 萬用字元改「刪除」不用反斜線跳脫（與 scan 搜尋、admin 條碼搜尋同一寫法）：
+            // SQLite 的 LIKE 沒有預設 ESCAPE，"\_" 會被當「反斜線＋任意一字元」→ 含 _/% 的代號本機查不到。
+            const like = "%" + q.replace(/[%_]/g, "") + "%";
             const rows = await db.prepare(
                 "SELECT id, name FROM customers WHERE (active = 1 OR active IS NULL) AND (name LIKE ? OR teraoka_code LIKE ? OR hq_cust_code LIKE ?) ORDER BY name LIMIT 30"
             ).all(like, like, like);

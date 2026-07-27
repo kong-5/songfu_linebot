@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "test": "node --test test/*.test.js",
     "smoke:pg": "node scripts/pg-smoke.js",
+    "lint": "eslint \"dist/**/*.js\" \"test/*.js\" \"scripts/*.js\"",
     "deploy": "node scripts/deploy-cloud-run.mjs"
   },
   "engines": {

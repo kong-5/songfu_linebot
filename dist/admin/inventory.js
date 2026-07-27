@@ -798,9 +798,15 @@ function registerInventoryRoutes(router, ctx) {
             // 否則續盤頁還原 good=合計−mid 會變負數，被送出驗證擋下、整倉卡住無法重送。
             const oldMid = Number(row.mid_qty || 0);
             const newMid = oldMid > newCounted ? newCounted : oldMid;
-            await db.prepare("UPDATE stocktake_count SET counted_qty = ?, mid_qty = ?, edited_at = ?, edited_by = ?, edited_by_name = ? WHERE session_id = ? AND erp_code = ?").run(newCounted, newMid > 0 ? newMid : (row.mid_qty == null ? null : newMid), now, actor, who, sessionId, erpCode);
-            await db.prepare("INSERT INTO stocktake_count_audit (id, session_id, icpno, wh_code, count_date, erp_code, name, old_counted, new_counted, actor, actor_name, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                .run(newId("stca"), sessionId, (0, erp_companies_js_1.normIcpno)(row.icpno), String(row.wh_code || ""), String(row.count_date || ""), erpCode, String(row.name || ""), oldCounted, newCounted, actor, who, "複盤修正", now);
+            // [fix 2026-07-27 體檢] 主 UPDATE ＋ 軌跡 INSERT 包同一交易：舊版兩句分開，
+            // UPDATE 成功、audit 失敗會留下「實盤數被改卻無舊值紀錄」——盤差對不起來也查不到誰改的。
+            const doCountEdit = async (h) => {
+                await h.prepare("UPDATE stocktake_count SET counted_qty = ?, mid_qty = ?, edited_at = ?, edited_by = ?, edited_by_name = ? WHERE session_id = ? AND erp_code = ?").run(newCounted, newMid > 0 ? newMid : (row.mid_qty == null ? null : newMid), now, actor, who, sessionId, erpCode);
+                await h.prepare("INSERT INTO stocktake_count_audit (id, session_id, icpno, wh_code, count_date, erp_code, name, old_counted, new_counted, actor, actor_name, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    .run(newId("stca"), sessionId, (0, erp_companies_js_1.normIcpno)(row.icpno), String(row.wh_code || ""), String(row.count_date || ""), erpCode, String(row.name || ""), oldCounted, newCounted, actor, who, "複盤修正", now);
+            };
+            if (typeof db.transaction === "function") await db.transaction(doCountEdit);
+            else await doCountEdit(db);
             done("cok=1");
         }
         catch (e) {
@@ -1331,7 +1337,7 @@ function registerInventoryRoutes(router, ctx) {
         let whs = [];
         try { whs = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY sort_order, code").all(icpno)) || []; } catch (_) { whs = []; }
         const coSeg = Object.entries(erp_companies_js_1.ERP_COMPANY_NAMES).map(([c, n]) => `<a class="sf-seg-btn ${c === icpno ? "on" : ""}" href="/admin/inventory/stats?icpno=${c}">${escapeHtml(n)}</a>`).join("");
-        const whJson = JSON.stringify(whs.map((w) => ({ code: String(w.code), name: String(w.name || "") })));
+        const whJson = JSON.stringify(whs.map((w) => ({ code: String(w.code), name: String(w.name || "") }))).replace(/</g, "\\u003c");
         const body = `
       <style>
         .ivs-root{--ivs-up:#e34948;--ivs-up-soft:rgba(227,73,72,.12);--ivs-down:#008300;--ivs-line:#2a78d6;
