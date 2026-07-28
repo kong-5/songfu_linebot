@@ -155,12 +155,36 @@ function registerReviewRoutes(router, ctx) {
                 }
             }
             // 將同名稱的待確認明細改為已對應（若為客戶專用則只更新該客戶的訂單明細）
+            // [fix 2026-07-28 §二B3] 舊版無條件改「所有」符合 raw_name 且 need_review=1 的品項，
+            // 含已作廢/客訴單、以及已回寫凌越的單（改了 product_id 但凌越那張單不會變＝後台與 ERP 脫節）。
+            // 收斂範圍：排除 deleted/complaint 與「已回寫凌越」（lingyue_written_at 非空）的單。
+            // 保留 approved 但尚未回寫的單可套用——那是審核者刻意留白的待對應品項，教俗名後自動補上是預期行為。
+            // 另回報實際影響筆數，讓使用者知道這條俗名動到幾筆歷史品項。
+            let bulkAffected = 0;
+            const notFinalizedSql = "COALESCE(LOWER(TRIM(status)), '') NOT IN ('deleted', 'complaint') AND lingyue_written_at IS NULL";
             if (isGlobal) {
-                await db.prepare("UPDATE order_items SET need_review = 0, product_id = ? WHERE raw_name = ? AND need_review = 1").run(product_id, aliasTrim);
+                const where = `raw_name = ? AND need_review = 1 AND order_id IN (SELECT id FROM orders WHERE ${notFinalizedSql})`;
+                const cnt = await db.prepare("SELECT COUNT(*) AS n FROM order_items WHERE " + where).get(aliasTrim);
+                bulkAffected = cnt ? Number(cnt.n) || 0 : 0;
+                await db.prepare("UPDATE order_items SET need_review = 0, product_id = ? WHERE " + where).run(product_id, aliasTrim);
             }
             else if (customer_id) {
-                await db.prepare(`UPDATE order_items SET need_review = 0, product_id = ?
-           WHERE raw_name = ? AND need_review = 1 AND order_id IN (SELECT id FROM orders WHERE customer_id = ?)`).run(product_id, aliasTrim, customer_id);
+                const whereC = `raw_name = ? AND need_review = 1 AND order_id IN (SELECT id FROM orders WHERE customer_id = ? AND ${notFinalizedSql})`;
+                const cntC = await db.prepare("SELECT COUNT(*) AS n FROM order_items WHERE " + whereC).get(aliasTrim, customer_id);
+                bulkAffected = cntC ? Number(cntC.n) || 0 : 0;
+                await db.prepare("UPDATE order_items SET need_review = 0, product_id = ? WHERE " + whereC).run(product_id, aliasTrim, customer_id);
+            }
+            if (bulkAffected > 0) {
+                try {
+                    await logDataChange(req, {
+                        entityType: "order_items",
+                        entityId: aliasTrim,
+                        productId: product_id,
+                        action: "alias_bulk_apply",
+                        summary: `俗名「${aliasTrim}」套用到 ${bulkAffected} 筆待對應品項（僅未作廢/未客訴/未回寫凌越）`,
+                        meta: { alias: aliasTrim, product_id, scope: isGlobal ? "global" : "customer", customer_id: customer_id || null, affected: bulkAffected },
+                    });
+                } catch (_) { /* 稽核失敗不影響主流程 */ }
             }
         }
         catch (e) {
