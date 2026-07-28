@@ -30,7 +30,7 @@ function signSession(username) {
     const sig = crypto.createHmac("sha256", SECRET).update(payload).digest("base64url");
     return payload + "." + sig;
 }
-let server, baseUrl, db;
+let server, baseUrl, db, todayOrderNo;
 
 test.before(async () => {
     await initDb(process.env.DB_PATH);
@@ -38,8 +38,12 @@ test.before(async () => {
     await db.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?)")
         .run("admin_users", JSON.stringify([{ username: "ops", name: "測試經理", passwordHash: "x:y", title: "經理", status: "active" }]));
     await db.prepare("INSERT INTO customers (id, name, active) VALUES (?, ?, 1)").run("cust-s5", "批次五客戶");
+    // ⚠ 用「台北今天」而非寫死日期：/orders 列表預設只顯示當日，寫死日期會在換日後突然變紅
+    // （本測試在 2026-07-28 就這樣紅過一次，且 lint/test 是部署硬閘門 → 會擋住所有部署）。
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date());
+    todayOrderNo = today.replace(/-/g, "") + "001";
     await db.prepare("INSERT INTO orders (id, order_no, customer_id, order_date, status, raw_message) VALUES (?, ?, ?, ?, ?, ?)")
-        .run("ord-s5", "20260727001", "cust-s5", "2026-07-27", "pending", "測試訂單原文");
+        .run("ord-s5", today.replace(/-/g, "") + "001", "cust-s5", today, "pending", "測試訂單原文");
     const app = express();
     app.use("/admin", createAdminRouter());
     await new Promise((resolve) => { server = app.listen(0, "127.0.0.1", resolve); });
@@ -64,7 +68,7 @@ test("訂單域：/orders 列表帶出訂單、/orders/:orderId 明細可開", a
     assert.ok(list.text.includes("批次五客戶"), "訂單列表應帶出測試訂單的客戶");
     const detail = await get("/admin/orders/ord-s5");
     assert.equal(detail.status, 200);
-    assert.ok(detail.text.includes("20260727001"), "明細頁應帶出訂單編號");
+    assert.ok(detail.text.includes(todayOrderNo), "明細頁應帶出訂單編號");
 });
 
 test("順序敏感：/orders/batch-* 不可被 /orders/:orderId 吃掉（hoist 後仍成立）", async () => {
@@ -100,6 +104,6 @@ test("留在 index.js 的鄰接路由不受影響（/export、/backup、/gemini-
     // /barcode 不帶 code 本來就回 400（參數驗證），帶了才產條碼圖
     const noCode = await get("/admin/barcode");
     assert.equal(noCode.status, 400);
-    const withCode = await get("/admin/barcode?code=20260727001");
+    const withCode = await get("/admin/barcode?code=" + todayOrderNo);
     assert.equal(withCode.status, 200, "/admin/barcode?code= 應產出條碼");
 });
