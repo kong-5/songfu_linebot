@@ -59,7 +59,9 @@ test("三個拆出模組都有匯出 registerXxxRoutes", () => {
 });
 
 test("訂單域：/orders 列表帶出訂單、/orders/:orderId 明細可開", async () => {
-    const list = await get("/admin/orders");
+    // [fix 2026-07-28] 明確帶測試訂單的日期區間，避免依賴 /orders 預設「今天」——
+    // 過了 2026-07-27 後預設區間就撈不到 seed 的單，會讓這條測試隨日期變紅（部署硬閘門會被卡）。
+    const list = await get("/admin/orders?date_from=2026-07-27&date_to=2026-07-27");
     assert.equal(list.status, 200);
     assert.ok(list.text.includes("批次五客戶"), "訂單列表應帶出測試訂單的客戶");
     const detail = await get("/admin/orders/ord-s5");

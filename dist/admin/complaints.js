@@ -27,7 +27,10 @@ function registerComplaintsRoutes(router, ctx) {
             return;
         }
         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-        await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("complaint", orderId);
+        // [fix 2026-07-28 §二B5] 轉客訴同時清掉凌越回寫佇列欄位：否則已按過「轉入凌越」在排隊的單
+        // 轉客訴後，內網代理下一次 /wait 仍會撿走並在凌越開一張銷貨單（客訴單進 ERP＝錯帳）。
+        // 只清 queued/claimed（未寫入的排隊狀態）；不動 lingyue_written_at/doc_no（已寫入的既成事實）。
+        await db.prepare("UPDATE orders SET status = ?, lingyue_queued_at = NULL, lingyue_claimed_at = NULL, updated_at = " + nowSql + " WHERE id = ?").run("complaint", orderId);
         const existing = await db.prepare("SELECT order_id FROM complaint_handling WHERE order_id = ?").get(orderId);
         if (!existing) {
             await db.prepare("INSERT INTO complaint_handling (order_id, handle_status, created_at, updated_at) VALUES (?, ?, " + nowSql + ", " + nowSql + ")").run(orderId, "pending");

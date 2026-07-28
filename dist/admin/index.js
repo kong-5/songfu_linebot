@@ -3392,6 +3392,17 @@ function createAdminRouter() {
             const n = r2?.value ? parseInt(String(r2.value), 10) : NaN;
             if (Number.isFinite(n) && n >= 0 && n <= 23) dailySummaryHour = n;
         } catch (_) { /* ignore */ }
+        // [fix 2026-07-28 §五C1] 系統告警群組（ops_alert_group_id）：未設定＝notifyOps 全靜默 no-op，
+        // 回寫三振／單號衝突／庫存推送失敗／LINE 漏單等告警都不會發出。這裡提供設定入口＋未設定紅字提示。
+        let opsAlertGroupId = "";
+        try {
+            const r = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("ops_alert_group_id");
+            opsAlertGroupId = r && r.value ? String(r.value).trim() : "";
+        } catch (_) { /* ignore */ }
+        let opsGroups = [];
+        try {
+            opsGroups = (await db.prepare("SELECT group_id, group_name FROM stocktake_group ORDER BY group_name").all()) || [];
+        } catch (_) { opsGroups = []; }
         let logs = [];
         try {
             logs = await db.prepare("SELECT event_type, detail, created_at FROM line_bot_state_log ORDER BY created_at DESC LIMIT 80").all();
@@ -3499,6 +3510,32 @@ function createAdminRouter() {
               </div>
             </div>
 
+            <div class="sf-card">
+              <div class="sf-card-head">
+                <div class="sf-card-title">${SF_ICONS.bell} 系統告警群組（ops）</div>
+              </div>
+              <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px;">
+                ${opsAlertGroupId ? "" : `<div class="sf-pill" style="align-self:flex-start;background:#fde8e8;color:#c0392b;border-color:#f5c6c6;">⚠ 尚未設定：回寫重複開單／庫存推送失敗／LINE 漏單等系統告警目前只記 log、不會推播</div>`}
+                <p style="margin:0;font-size:12px;color:var(--txt-3);line-height:1.5;">選一個內部 LINE 群組接收系統告警（回寫三振、單號衝突、庫存推送失敗、LINE 訊息重試放棄漏單等）。群組需先與機器人互動過才會出現在清單（來源同盤點群組）。</p>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <select class="sf-select" name="ops_alert_group_id" style="min-width:280px;height:32px;">
+                    <option value="">（未設定 — 不推播告警）</option>
+                    ${(() => {
+                        const seen = new Set();
+                        const opts = opsGroups.map((g) => { seen.add(String(g.group_id)); return `<option value="${escapeAttr(g.group_id)}" ${String(g.group_id) === opsAlertGroupId ? "selected" : ""}>${escapeHtml(g.group_name || g.group_id)}</option>`; });
+                        if (opsAlertGroupId && !seen.has(opsAlertGroupId)) opts.unshift(`<option value="${escapeAttr(opsAlertGroupId)}" selected>目前設定：${escapeHtml(opsAlertGroupId)}</option>`);
+                        return opts.join("");
+                    })()}
+                  </select>
+                  <a href="/admin/line-bot/ops-alert-test" class="sf-btn sm ghost">發測試告警</a>
+                  ${_req.query.opstest === "sent" ? `<span class="sf-pill ok">已送出測試告警</span>` : ""}
+                  ${_req.query.opstest === "nogroup" ? `<span class="sf-pill" style="background:#fde8e8;color:#c0392b;">尚未設定告警群組</span>` : ""}
+                  ${_req.query.opstest === "notoken" ? `<span class="sf-pill" style="background:#fde8e8;color:#c0392b;">缺 LINE token，無法推播</span>` : ""}
+                  ${_req.query.opstest === "fail" ? `<span class="sf-pill" style="background:#fde8e8;color:#c0392b;">推播失敗，請看紀錄</span>` : ""}
+                </div>
+              </div>
+            </div>
+
             <div style="display:flex;gap:10px;align-items:center;">
               <button type="submit" class="sf-btn primary">${SF_ICONS.check}<span>儲存所有設定</span></button>
               <span style="font-size:12px;color:var(--txt-3);">測試階段建議選「一律開啟」，確認無誤後再改「依時段」。AI 過濾建議先關閉，避免誤擋。</span>
@@ -3543,8 +3580,36 @@ function createAdminRouter() {
         const dailyHour = Number.isFinite(dailyHourRaw) && dailyHourRaw >= 0 && dailyHourRaw <= 23 ? dailyHourRaw : 22;
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("daily_summary_push_enabled", dailyEnabled);
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("daily_summary_push_hour", String(dailyHour));
+        // [fix 2026-07-28 §五C1] 系統告警群組：改動會影響所有 notifyOps 是否發得出去，留稽核。
+        const opsGroupNew = String(req.body.ops_alert_group_id || "").trim();
+        let opsGroupOld = "";
+        try { const or = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("ops_alert_group_id"); opsGroupOld = or && or.value ? String(or.value).trim() : ""; } catch (_) { /* ignore */ }
+        await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ops_alert_group_id", opsGroupNew);
+        if (opsGroupNew !== opsGroupOld) {
+            try {
+                await logDataChange(req, {
+                    entityType: "app_settings",
+                    entityId: "ops_alert_group_id",
+                    action: "set",
+                    summary: `系統告警群組：${opsGroupOld || "（未設定）"} → ${opsGroupNew || "（未設定）"}`,
+                    meta: { before: opsGroupOld, after: opsGroupNew },
+                });
+            } catch (_) { /* ignore */ }
+        }
         await (0, line_bot_control_js_1.appendLineBotLog)(db, "settings_saved", { mode: m, windowStart: wStart, windowEnd: wEnd, aiGate: aiGate === "1", suppressCustomerReply: suppressReply === "1", orderConfirmReplyEnabled: confirmEnabled === "1", orderConfirmReplyDelaySec: confirmDelay, dailySummaryPushEnabled: dailyEnabled === "1", dailySummaryPushHour: dailyHour });
         res.redirect("/admin/line-bot?ok=1");
+    });
+    // [fix 2026-07-28 §五C1] 發一則測試告警，確認 ops_alert_group_id 設定正確、機器人推得到。
+    router.get("/line-bot/ops-alert-test", requireManager, async (req, res) => {
+        try {
+            const stamp = await getTaipeiCalendarDateYYYYMMDD();
+            const r = await (0, ops_notify_js_1.notifyOps)(db, `🔔 系統告警測試（${stamp}）：這是一則由後台手動觸發的測試告警，收到代表告警群組設定正確。#${Date.now()}`);
+            const flag = r && r.ok ? "sent" : (r && r.skipped === "no_group" ? "nogroup" : (r && r.skipped === "no_token" ? "notoken" : "fail"));
+            res.redirect("/admin/line-bot?opstest=" + flag);
+        } catch (e) {
+            console.error("[ops-alert-test] 失敗:", e?.message || e);
+            res.redirect("/admin/line-bot?opstest=fail");
+        }
     });
     router.get("/daily-summary-test", requireManager, async (req, res) => {
         const dry = req.query.dry === "1";
@@ -4123,7 +4188,7 @@ function createAdminRouter() {
     // 拆檔批次 8：待確認品項/匯出備份/凌越機器端點/AI 設定/匯入五域共用 ctx。
     // buildLingyuePreview 等為 function 宣告（會提升），放這裡引用安全。
     const ADMIN_OPS_CTX = {
-        db, notionPage, logDataChange, getWorkingDate, getTaipeiCalendarDateYYYYMMDD,
+        db, notionPage, logDataChange, requireManager, getWorkingDate, getTaipeiCalendarDateYYYYMMDD,
         fmtTaipeiYMDHM, upload, parseRequestToSheet,
         buildLingyuePreview, formatOrderDateForLingyue, stkAdminTaipeiDate,
     };

@@ -27,7 +27,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
         SELECT o.id, o.order_no, o.order_date, o.remark, c.name AS customer_name, c.hq_cust_code, c.teraoka_code
         FROM orders o JOIN customers c ON c.id = o.customer_id
         WHERE o.order_date = ?
-          AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
+          AND COALESCE(LOWER(TRIM(o.status)), '') NOT IN ('deleted', 'complaint')
           AND o.lingyue_written_at IS NULL
           ${scopeAll ? "" : "AND o.lingyue_queued_at IS NOT NULL"}
         ORDER BY o.order_date ASC, o.order_no ASC, o.id ASC
@@ -107,7 +107,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
           FROM orders o JOIN customers c ON c.id = o.customer_id
           WHERE o.lingyue_queued_at IS NOT NULL
             AND o.lingyue_written_at IS NULL
-            AND COALESCE(LOWER(TRIM(o.status)), '') <> 'deleted'
+            AND COALESCE(LOWER(TRIM(o.status)), '') NOT IN ('deleted', 'complaint')
             AND (o.lingyue_claimed_at IS NULL OR o.lingyue_claimed_at < ?)
           ORDER BY o.lingyue_queued_at ASC, o.id ASC
           LIMIT 5

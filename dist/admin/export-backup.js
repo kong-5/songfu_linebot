@@ -10,8 +10,10 @@ const XLSX = require("xlsx");
 const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./_shared.js");
 
 function registerExportBackupRoutes(router, ctx) {
-    const { db, notionPage, getWorkingDate } = ctx;
-    router.get("/export", async (req, res) => {
+    const { db, notionPage, getWorkingDate, requireManager, logDataChange } = ctx;
+    // [security 2026-07-28] 匯出/備份含客戶、訂單、密碼雜湊等營業與敏感資料，一律限經理。
+    // 舊版四支端點皆無角色閘門，任何登入者（含移工）可一鍵拖走整庫 JSON。
+    router.get("/export", requireManager, async (req, res) => {
         const workingDate = await getWorkingDate(db);
         const date = (req.query.date || workingDate).toString().trim();
         const customerId = req.query.customer_id?.trim() || "";
@@ -50,7 +52,7 @@ function registerExportBackupRoutes(router, ctx) {
       `;
         res.type("text/html").send(notionPage("資料匯出", body, "export", res));
     });
-    router.get("/export/download", async (req, res) => {
+    router.get("/export/download", requireManager, async (req, res) => {
         const date = req.query.date?.trim();
         const customerId = req.query.customer_id?.trim() || "";
         if (!date) {
@@ -94,7 +96,7 @@ function registerExportBackupRoutes(router, ctx) {
             o[k] = jsonSafeBackupValue(row[k]);
         return o;
     }
-    router.get("/backup", async (_req, res) => {
+    router.get("/backup", requireManager, async (_req, res) => {
         const isPg = Boolean(process.env.DATABASE_URL);
         const body = `
         <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 資料備份</div>
@@ -113,7 +115,15 @@ function registerExportBackupRoutes(router, ctx) {
       `;
         res.type("text/html").send(notionPage("資料備份", body, "backup", res));
     });
-    router.get("/backup/download-json", async (_req, res) => {
+    // [security 2026-07-28] 備份不得帶出憑證類 app_settings：admin_users（pbkdf2 密碼雜湊＋鹽）、
+    // liff_bind_token_*（一次性綁定連結）、line_bind_code_*（員工綁定碼）。其餘營運設定照常備份。
+    function isSensitiveSettingKey(k) {
+        const key = String(k || "");
+        return key === "admin_users"
+            || key.startsWith("liff_bind_token_")
+            || key.startsWith("line_bind_code_");
+    }
+    router.get("/backup/download-json", requireManager, async (req, res) => {
         const exportedAt = new Date().toISOString();
         const payload = {
             exportedAt,
@@ -121,15 +131,35 @@ function registerExportBackupRoutes(router, ctx) {
             databaseKind: process.env.DATABASE_URL ? "postgresql" : "sqlite",
             tables: {},
         };
+        let redactedSettings = 0;
         for (const name of BACKUP_TABLE_NAMES) {
             try {
                 const rows = await db.prepare("SELECT * FROM " + name).all();
-                payload.tables[name] = (rows || []).map((r) => jsonSafeBackupRow(r));
+                let safeRows = (rows || []).map((r) => jsonSafeBackupRow(r));
+                if (name === "app_settings") {
+                    const before = safeRows.length;
+                    safeRows = safeRows.filter((r) => !isSensitiveSettingKey(r && r.key));
+                    redactedSettings = before - safeRows.length;
+                }
+                payload.tables[name] = safeRows;
             }
             catch (e) {
                 payload.tables[name] = { _error: String(e?.message || e) };
             }
         }
+        payload.redactedSensitiveSettings = redactedSettings;
+        try {
+            if (typeof logDataChange === "function") {
+                await logDataChange(req, {
+                    entityType: "backup",
+                    entityId: exportedAt.slice(0, 10),
+                    action: "download_json",
+                    summary: `下載整庫 JSON 備份（${BACKUP_TABLE_NAMES.length} 表，遮蔽 ${redactedSettings} 筆敏感設定）`,
+                    meta: { tables: BACKUP_TABLE_NAMES.length, redactedSensitiveSettings: redactedSettings },
+                });
+            }
+        }
+        catch (e) { console.warn("[backup] 稽核寫入失敗:", e?.message || e); }
         const stamp = exportedAt.slice(0, 10);
         res.setHeader("Content-Disposition", "attachment; filename=\"songfu-backup-" + stamp + ".json\"");
         res.type("application/json; charset=utf-8").send(JSON.stringify(payload, null, 2));

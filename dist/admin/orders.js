@@ -991,7 +991,8 @@ function registerOrdersRoutes(router, ctx) {
                 const before = await db.prepare("SELECT id, order_no, customer_id, order_date, status, raw_message FROM orders WHERE id = ?").get(oid);
                 const itemsSnap = await db.prepare("SELECT id, raw_name, quantity, unit, product_id, remark, sub_customer FROM order_items WHERE order_id = ?").all(oid);
                 const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-                await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + ", voided_at = " + nowSql + ", voided_by = ?, void_reason = ?, void_note = ? WHERE id = ?").run("deleted", actor, reason, note || null, oid);
+                // [fix 2026-07-28 §二B5] 批次作廢同樣清凌越回寫佇列（見單筆 void 說明）。
+                await db.prepare("UPDATE orders SET status = ?, lingyue_queued_at = NULL, lingyue_claimed_at = NULL, updated_at = " + nowSql + ", voided_at = " + nowSql + ", voided_by = ?, void_reason = ?, void_note = ? WHERE id = ?").run("deleted", actor, reason, note || null, oid);
                 await logDataChange(req, {
                     entityType: "order",
                     entityId: oid,
@@ -1024,7 +1025,8 @@ function registerOrdersRoutes(router, ctx) {
         }
         const itemsSnap = await db.prepare("SELECT id, raw_name, quantity, unit, product_id, remark, sub_customer FROM order_items WHERE order_id = ?").all(orderId);
         const nowSql = process.env.DATABASE_URL ? "CURRENT_TIMESTAMP" : "datetime('now')";
-        await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + ", voided_at = " + nowSql + ", voided_by = ?, void_reason = ?, void_note = ? WHERE id = ?").run("deleted", actor, reason, note || null, orderId);
+        // [fix 2026-07-28 §二B5] 作廢同時清凌越回寫佇列：排隊中的單被作廢後，代理不應再撿走寫入 ERP。
+        await db.prepare("UPDATE orders SET status = ?, lingyue_queued_at = NULL, lingyue_claimed_at = NULL, updated_at = " + nowSql + ", voided_at = " + nowSql + ", voided_by = ?, void_reason = ?, void_note = ? WHERE id = ?").run("deleted", actor, reason, note || null, orderId);
         await logDataChange(req, {
             entityType: "order",
             entityId: orderId,

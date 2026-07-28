@@ -27,6 +27,7 @@ const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const line_conversation_js_1 = require("../lib/line-conversation.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
+const ops_notify_js_1 = require("../lib/ops-notify.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
 const lineConfig = { channelAccessToken, channelSecret };
@@ -179,6 +180,21 @@ function createLineWebhook() {
     const router = express_1.default.Router();
     const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
     const db = (0, index_js_1.getDb)(dbPath);
+    // [fix 2026-07-28 §一A5/A6] 收單失敗告警閉環（notifyOps 內含 10 分鐘去重，發不出去不影響主流程）
+    function notifyOpsSafe(msg) {
+        try {
+            const p = (0, ops_notify_js_1.notifyOps)(db, msg);
+            if (p && typeof p.catch === "function") p.catch((e) => console.warn("[LINE] ops 告警發送失敗:", e?.message || e));
+        }
+        catch (e) { console.warn("[LINE] ops 告警發送例外:", e?.message || e); }
+    }
+    function notifyLineIntakeFailure(result, where) {
+        const failed = result && typeof result.failed === "number" ? result.failed : 0;
+        const total = result && typeof result.total === "number" ? result.total : 0;
+        if (failed > 0) {
+            notifyOpsSafe(`⚠ LINE 收單${where}有 ${failed}/${total} 則失敗（已回 200，LINE 不會重送）。請到訂單審核確認是否漏單，必要時請客戶重發。`);
+        }
+    }
     const lineClient = hasLineConfig ? new bot_sdk_1.Client(lineConfig) : null;
     const scheduleAutoFinalize = (groupId, session) => {
         if (!groupId)
@@ -1901,6 +1917,14 @@ function createLineWebhook() {
     </body></html>`);
     });
     router.post("/", (req, res) => {
+        // [security 2026-07-28] 未設定 channel secret/token 一律拒收（比照 worker 端點的 503 做法）：
+        // 缺 secret 時上方 bot_sdk 簽章中介層不會掛載，若這裡照收＝任何人可 POST 偽造 LINE event
+        // 繞過簽章直接建單/改單/觸發盤點。正式環境 hasLineConfig 必為 true，此判斷僅擋「未設定就對外開放」。
+        if (!hasLineConfig) {
+            console.error("[LINE] webhook 收到 POST 但 LINE_CHANNEL_SECRET/ACCESS_TOKEN 未設定，拒收（避免未驗簽偽造建單）");
+            res.status(503).type("text/plain").send("LINE webhook not configured");
+            return;
+        }
         if (typeof req.body === "string") {
             req.body = JSON.parse(req.body);
         }
@@ -1931,13 +1955,27 @@ function createLineWebhook() {
                 if (failedEvents.length) {
                     // 回退直接處理：dedup 三層防止重複下單——記憶體 Set（同實例）＋ orders.line_message_id
                     // （建單訊息）＋ processed_line_messages 租約式原子佔位（跨程序，與 worker 重疊也只有一方成功佔位）
-                    processLineWebhookEvents(failedEvents).catch((e2) => console.error("[LINE] Cloud Tasks fallback 直接處理失敗:", e2?.message || e2));
+                    // [fix 2026-07-28 §一A5] 閉環：因 res 已回 200，LINE 不會重送。fallback 處理仍失敗＝斷單，
+                    // 過去只 console.error → 無人知。改讀 {failed} 並 notifyOps 請人工到訂單審核補單。
+                    processLineWebhookEvents(failedEvents)
+                        .then((r) => notifyLineIntakeFailure(r, "Cloud Tasks 入列失敗後的 fallback 直接處理"))
+                        .catch((e2) => {
+                            console.error("[LINE] Cloud Tasks fallback 直接處理失敗:", e2?.message || e2);
+                            notifyOpsSafe(`⚠ LINE 收單 fallback 整批拋錯（${failedEvents.length} 則），可能漏單。請到訂單審核確認，必要時請客戶重發。錯誤：${String(e2?.message || e2).slice(0, 120)}`);
+                        });
                 }
             })();
             return;
         }
         res.status(200).send("OK");
-        processLineWebhookEvents(events).catch((e) => console.error("[LINE] 背景處理失敗", e));
+        // [fix 2026-07-28 §一A6] 非 Cloud Tasks 模式同樣閉環：processLineWebhookEvents 回 {failed,total}，
+        // 過去 .catch(console.error) 完全沒讀 failed（Gemini 429／DB 瞬斷＝斷單且無告警）。
+        processLineWebhookEvents(events)
+            .then((r) => notifyLineIntakeFailure(r, "背景直接處理"))
+            .catch((e) => {
+                console.error("[LINE] 背景處理失敗", e);
+                notifyOpsSafe(`⚠ LINE 收單背景處理整批拋錯（${events.length} 則），可能漏單。請到訂單審核確認，必要時請客戶重發。錯誤：${String(e?.message || e).slice(0, 120)}`);
+            });
     });
     exports.processLineWebhookEvents = processLineWebhookEvents;
     // G15：啟動時恢復未結單 session（讓 Cloud Run 重啟後客戶不用重發）
