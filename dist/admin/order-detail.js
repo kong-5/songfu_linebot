@@ -18,7 +18,10 @@ const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./_shared.js");
 
 function registerOrderDetailRoutes(router, ctx) {
-    const { db, notionPage, loadAdminUsers, getTaipeiCalendarDateYYYYMMDD, fmtTaipeiYMDHM, voidReasonModalHtml, buildLingyuePreview, runLingyueWrite, rebuildOrderItemsForReRecognize, parseKnownSubCustomerLabelsForSelect, resolveSplitTargetOrder, ORDER_LINE_UNITS } = ctx;
+    // [fix 2026-07-28 §二B1] logDataChange 早就在 ORDERS_CTX，但本域一直沒解構使用——
+    // 導致 re-recognize（整單品項 DELETE+INSERT）、旋轉重辨識、轉入凌越（在 ERP 產生真實單據）
+    // 三個破壞性/對外操作全無稽核軌跡。補上。
+    const { db, notionPage, loadAdminUsers, logDataChange, getTaipeiCalendarDateYYYYMMDD, fmtTaipeiYMDHM, voidReasonModalHtml, buildLingyuePreview, runLingyueWrite, rebuildOrderItemsForReRecognize, parseKnownSubCustomerLabelsForSelect, resolveSplitTargetOrder, ORDER_LINE_UNITS } = ctx;
     router.post("/orders/:orderId/lingyue-preview", async (req, res) => {
         try {
             const order = await db.prepare(`
@@ -94,6 +97,16 @@ function registerOrderDetailRoutes(router, ctx) {
                 // 清掉舊單號／回寫時間（重轉時），讓 /wait 重新撿到；記錄是誰轉的。
                 const now = new Date().toISOString();
                 await db.prepare("UPDATE orders SET lingyue_queued_at = ?, lingyue_queued_by = ?, lingyue_doc_no = NULL, lingyue_written_at = NULL, lingyue_claimed_at = NULL, lingyue_write_attempts = 0, lingyue_last_error = NULL WHERE id = ?").run(now, actor, order.id);
+                // [fix 2026-07-28 §二B1] 排入凌越佇列留稽核（含是否重轉、被清掉的舊單號）
+                try {
+                    await logDataChange(req, {
+                        entityType: "order",
+                        entityId: order.id,
+                        action: "lingyue_queue",
+                        summary: `排入凌越回寫佇列 ${order.order_no || order.id}（${preview.items.length} 項）${order.lingyue_doc_no ? "，重轉前舊單號 " + order.lingyue_doc_no : ""}`,
+                        meta: { force, prev_doc_no: order.lingyue_doc_no || null, items: preview.items.length },
+                    });
+                } catch (_) { /* 稽核失敗不影響主流程 */ }
                 res.json({ ok: true, queued: true, message: "已排入凌越匯入佇列，內網小幫手會在數秒內寫入並回填單號。", ...preview });
                 return;
             }
@@ -107,6 +120,16 @@ function registerOrderDetailRoutes(router, ctx) {
             if (result && result.ok && result.doc_no) {
                 const now = new Date().toISOString();
                 await db.prepare("UPDATE orders SET lingyue_doc_no = ?, lingyue_written_at = ?, lingyue_queued_by = ? WHERE id = ?").run(String(result.doc_no), now, actor, order.id);
+                // [fix 2026-07-28 §二B1] 直寫凌越（在 ERP 產生真實單據）留稽核
+                try {
+                    await logDataChange(req, {
+                        entityType: "order",
+                        entityId: order.id,
+                        action: "lingyue_write",
+                        summary: `直接寫入凌越 ${order.order_no || order.id} → 單號 ${result.doc_no}（${preview.items.length} 項）${order.lingyue_doc_no ? "，重轉前舊單號 " + order.lingyue_doc_no : ""}`,
+                        meta: { force, doc_no: String(result.doc_no), prev_doc_no: order.lingyue_doc_no || null, items: preview.items.length },
+                    });
+                } catch (_) { /* 稽核失敗不影響主流程 */ }
                 res.json({ ok: true, doc_no: result.doc_no });
             }
             else {
@@ -631,12 +654,13 @@ function registerOrderDetailRoutes(router, ctx) {
           ${req.query.err === "rerecog_split" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：子客戶拆單解析結果無對應品項</div>" : ""}
           ${req.query.err === "rerecog_line" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：訂單有圖片附件，但未設定 LINE_CHANNEL_ACCESS_TOKEN</div>" : ""}
           ${req.query.err === "rerecog_vision" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">重新辨識失敗：有圖片附件但無法辨識（請設定 Vision 或 Gemini 金鑰）</div>" : ""}
+          ${req.query.err === "rerecog_written" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">此單已轉入凌越，重新辨識會讓後台明細與凌越不一致。請先到凌越刪除舊單、再用「重新轉入凌越」；若確定要重辨識，請用畫面上的『強制重新辨識』。</div>" : ""}
           ${req.query.err === "apply_raw_empty" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">請貼上內容後再送出</div>" : ""}
           ${req.query.err === "apply_raw_parse" ? "<div class=\"sf-pill bad\" style=\"margin-bottom:8px;\">無法解析，請檢查內容或 Gemini 金鑰</div>" : ""}
           ${(() => {
             // 通用 err 顯示：approve 守衛（作廢/客訴單）與 set-date 等 POST 端把完整中文訊息放在 ?err=，
             // 這裡沒有對應代碼分支就會被吞掉（伺服器有擋、使用者無感）。未知代碼一律原文顯示。
-            const knownErr = ["product", "rerecog", "rerecog_empty", "rerecog_gemini", "rerecog_gemini_empty", "rerecog_split", "rerecog_line", "rerecog_vision", "apply_raw_empty", "apply_raw_parse"];
+            const knownErr = ["product", "rerecog", "rerecog_empty", "rerecog_gemini", "rerecog_gemini_empty", "rerecog_split", "rerecog_line", "rerecog_vision", "rerecog_written", "apply_raw_empty", "apply_raw_parse"];
             const e = typeof req.query.err === "string" ? req.query.err : "";
             return e && !knownErr.includes(e) ? `<div class="sf-pill bad" style="margin-bottom:8px;">${escapeHtml(e)}</div>` : "";
           })()}
@@ -647,6 +671,9 @@ function registerOrderDetailRoutes(router, ctx) {
           <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/re-recognize?back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;">
             <button type="submit" class="sf-btn" title="依原始文字與 LINE 圖片附件重建明細（覆寫現有品項）" onclick="return confirm('依原始訂單重建明細？將覆寫現有品項。');">${SF_ICONS.refresh}<span>重新辨識</span></button>
           </form>
+          ${(order.lingyue_doc_no || order.lingyue_written_at) ? `<form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/re-recognize?force=1&back=${encodeURIComponent(backTo)}" style="display:inline;margin:0;">
+            <button type="submit" class="sf-btn" style="color:#c0392b;" title="強制重新辨識（此單已轉入凌越，重辨識會讓後台與 ERP 不一致）" onclick="return confirm('⚠ 此單已轉入凌越${order.lingyue_doc_no ? "（單號 " + String(order.lingyue_doc_no).replace(/'/g, "") + "）" : ""}。\\n強制重新辨識會覆寫後台明細，但凌越那張單不會變，兩邊將不一致。\\n\\n確定要強制重辨識嗎？");">${SF_ICONS.refresh}<span>強制重新辨識</span></button>
+          </form>` : ""}
           <div class="sf-more-dropdown" id="orderMoreDropdown" style="position:relative;display:inline-block;">
             <button type="button" class="sf-btn" id="btnOrderMoreToggle" aria-haspopup="true" aria-expanded="false" title="更多動作">更多 ▾</button>
             <div class="sf-more-menu" id="orderMoreMenu" role="menu" style="position:absolute;top:calc(100% + 4px);left:0;min-width:220px;background:var(--bg-0);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.12);padding:6px;z-index:50;flex-direction:column;gap:2px;display:none;">
@@ -2073,11 +2100,19 @@ function registerOrderDetailRoutes(router, ctx) {
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent(code) + "&back=" + encodeURIComponent(backTo) + "#items");
         };
         try {
-            const order = await db.prepare("SELECT id, customer_id, raw_message FROM orders WHERE id = ?").get(orderId);
+            const order = await db.prepare("SELECT id, customer_id, raw_message, lingyue_doc_no, lingyue_written_at FROM orders WHERE id = ?").get(orderId);
             if (!order) {
                 res.status(404).send("訂單不存在");
                 return;
             }
+            // [fix 2026-07-28 §二B2] 守衛：已回寫凌越的單重新辨識＝整單品項 DELETE+INSERT，
+            // 但凌越那張單不會跟著變 → 後台與 ERP 靜默分歧。未帶 force 一律擋，給可行動訊息。
+            const force = req.query.force === "1" || req.query.force === "true";
+            if ((order.lingyue_doc_no || order.lingyue_written_at) && !force) {
+                redirErr("rerecog_written");
+                return;
+            }
+            const beforeItems = await db.prepare("SELECT raw_name, quantity, unit, product_id FROM order_items WHERE order_id = ? AND voided_at IS NULL").all(orderId);
             const attachments = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(orderId);
             const result = await rebuildOrderItemsForReRecognize(orderId, order.customer_id, order.raw_message, attachments);
             if (!result.ok) {
@@ -2098,6 +2133,16 @@ function registerOrderDetailRoutes(router, ctx) {
                 redirErr(code);
                 return;
             }
+            try {
+                const afterItems = await db.prepare("SELECT raw_name, quantity, unit, product_id FROM order_items WHERE order_id = ? AND voided_at IS NULL").all(orderId);
+                await logDataChange(req, {
+                    entityType: "order",
+                    entityId: orderId,
+                    action: "re_recognize",
+                    summary: `重新辨識訂單明細（${beforeItems.length} 項 → ${afterItems.length} 項）${force ? "（force：已略過凌越守衛）" : ""}`,
+                    meta: { force, forcedOverWritten: !!(order.lingyue_doc_no || order.lingyue_written_at), before: beforeItems, after: afterItems },
+                });
+            } catch (_) { /* 稽核失敗不影響主流程 */ }
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=rerecog&back=" + encodeURIComponent(backTo) + "#items");
         }
         catch (e) {
@@ -2111,8 +2156,14 @@ function registerOrderDetailRoutes(router, ctx) {
         try {
             const degRaw = parseInt(String(req.body.degrees || "0"), 10);
             const deg = ((Number.isFinite(degRaw) ? degRaw : 0) % 360 + 360) % 360;
-            const order = await db.prepare("SELECT id, customer_id, raw_message FROM orders WHERE id = ?").get(orderId);
+            const order = await db.prepare("SELECT id, customer_id, raw_message, lingyue_doc_no, lingyue_written_at FROM orders WHERE id = ?").get(orderId);
             if (!order) { res.status(404).json({ ok: false, error: "訂單不存在" }); return; }
+            // [fix 2026-07-28 §二B2] 旋轉重辨識同樣是整單覆寫；已轉入凌越的單擋下，避免後台與 ERP 分歧。
+            if (order.lingyue_doc_no || order.lingyue_written_at) {
+                res.status(409).json({ ok: false, error: "此單已轉入凌越，不能重新辨識（會與凌越不一致）。請先刪除凌越舊單再處理。" });
+                return;
+            }
+            const beforeItems = await db.prepare("SELECT raw_name, quantity, unit, product_id FROM order_items WHERE order_id = ? AND voided_at IS NULL").all(orderId);
             const attachments = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(orderId);
             if (!attachments.length) { res.status(400).json({ ok: false, error: "此訂單沒有圖片附件，無法旋轉重新辨識。" }); return; }
             const result = await rebuildOrderItemsForReRecognize(orderId, order.customer_id, order.raw_message, attachments, { forceRotateDeg: deg, skipAutoOrient: true });
@@ -2120,6 +2171,16 @@ function registerOrderDetailRoutes(router, ctx) {
                 res.json({ ok: false, error: "旋轉 " + deg + "° 後仍無法辨識出品項（error=" + (result.error || "parse") + "）。可換個角度再試。" });
                 return;
             }
+            try {
+                const afterItems = await db.prepare("SELECT raw_name, quantity, unit, product_id FROM order_items WHERE order_id = ? AND voided_at IS NULL").all(orderId);
+                await logDataChange(req, {
+                    entityType: "order",
+                    entityId: orderId,
+                    action: "re_recognize_rotated",
+                    summary: `旋轉 ${deg}° 後重新辨識明細（${beforeItems.length} 項 → ${afterItems.length} 項）`,
+                    meta: { degrees: deg, before: beforeItems, after: afterItems },
+                });
+            } catch (_) { /* 稽核失敗不影響主流程 */ }
             res.json({ ok: true, degrees: deg });
         }
         catch (e) {
