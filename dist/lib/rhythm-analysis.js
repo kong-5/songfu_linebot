@@ -176,7 +176,10 @@ async function runRhythmDailyJob(db) {
     const windowStart = addCalendarDaysIso(today, -WINDOW_DAYS);
     const isPg = Boolean(process.env.DATABASE_URL);
     const tsSql = isPg ? "CURRENT_TIMESTAMP" : "datetime('now')";
-    await db.prepare("DELETE FROM rhythm_daily_signals WHERE signal_date = ?").run(today);
+    // [fix 2026-07-27 體檢] 舊版是「先 DELETE 當日訊號 → 迴圈逐筆 INSERT」且全程無交易：
+    // 中途失敗（或程序被回收）會留下殘缺的當日清單——業務看到的「應叫未叫／流失風險」少一半
+    // 卻毫無跡象。改成「先把訊號全部算完（讀取都在交易外，交易越短越好，CLAUDE.md 慣例），
+    // 再用單一短交易 DELETE＋批次 INSERT」：要嘛整份換新、要嘛完全不動。
     const rollup = await fetchRhythmRollupRows(db, windowStart, windowEnd);
     const byPair = new Map();
     for (const r of rollup) {
@@ -186,6 +189,7 @@ async function runRhythmDailyJob(db) {
         byPair.get(k).push(r);
     }
     let inserted = 0;
+    const pending = [];   // 先蒐集，最後一次交易寫入
     const todayWd = weekdayIndexFromIso(today);
     for (const [, rows] of byPair) {
         const st = buildPairStats(rows);
@@ -214,28 +218,32 @@ async function runRhythmDailyJob(db) {
         const cid = rows[0].customer_id;
         const pid = rows[0].product_id;
         if (isUsualDay && isOverdue && !hasToday) {
-            const id = (0, id_js_1.newId)("rhy");
-            await db
-                .prepare(`INSERT INTO rhythm_daily_signals (id, signal_date, customer_id, product_id, signal_type, meta_json, created_at)
-         VALUES (?, ?, ?, ?, 'expected_missing', ?, ${tsSql})`)
-                .run(id, today, cid, pid, JSON.stringify({ ...metaBase, reason: "常叫星期且已超過平均週期，今日尚未叫此品項" }));
-            inserted++;
+            pending.push({
+                id: (0, id_js_1.newId)("rhy"), cid, pid, type: "expected_missing",
+                meta: JSON.stringify({ ...metaBase, reason: "常叫星期且已超過平均週期，今日尚未叫此品項" }),
+            });
         }
         if (st.nDistinctDays >= 5 &&
             st.avgCycleDays <= CHURN_AVG_CYCLE_MAX &&
             daysSinceLast >= CHURN_GAP_MULTIPLIER * st.avgCycleDays &&
             daysSinceLast >= 14) {
-            const id2 = (0, id_js_1.newId)("rhy");
-            await db
-                .prepare(`INSERT INTO rhythm_daily_signals (id, signal_date, customer_id, product_id, signal_type, meta_json, created_at)
-         VALUES (?, ?, ?, ?, 'churn_risk', ?, ${tsSql})`)
-                .run(id2, today, cid, pid, JSON.stringify({
-                ...metaBase,
-                reason: "過往叫貨頻繁，本次間隔已顯著拉長（流失風險）",
-            }));
-            inserted++;
+            pending.push({
+                id: (0, id_js_1.newId)("rhy"), cid, pid, type: "churn_risk",
+                meta: JSON.stringify({ ...metaBase, reason: "過往叫貨頻繁，本次間隔已顯著拉長（流失風險）" }),
+            });
         }
     }
+    // 算完才寫：單一短交易內「清當日 → 批次插入」，中途失敗整份回滾（維持前一份完整清單）
+    const doReplaceSignals = async (h) => {
+        await h.prepare("DELETE FROM rhythm_daily_signals WHERE signal_date = ?").run(today);
+        for (const p of pending) {
+            await h.prepare(`INSERT INTO rhythm_daily_signals (id, signal_date, customer_id, product_id, signal_type, meta_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ${tsSql})`).run(p.id, today, p.cid, p.pid, p.type, p.meta);
+        }
+    };
+    if (typeof db.transaction === "function") await db.transaction(doReplaceSignals);
+    else await doReplaceSignals(db);
+    inserted = pending.length;
     try {
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("rhythm_last_job_at", today + "T" + new Date().toISOString().slice(11, 19));
         await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("rhythm_last_job_count", String(inserted));

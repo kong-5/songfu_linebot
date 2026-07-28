@@ -253,9 +253,20 @@ async function addItem(db, reportId, item) {
         else price = (price === null || price === undefined || String(price).trim() === "") ? null : String(price).trim();
     }
     let sort = item.sort_order;
+    // [fix 2026-07-27 體檢] 舊版是「SELECT MAX(sort_order)+1 → INSERT」的先讀後寫：兩個併發的
+    // 「新增品項」會拿到同一個 sort_order，管理品項頁與列印頁的順序就此不穩定（每次查詢可能不同序）。
+    // 改成在同一句 INSERT 內用子查詢取號，讓 DB 端決定，讀寫不再有窗口。
+    // sort_order 沒有唯一約束（分類間可重號屬合法），所以這裡求的是「不再自己製造重號」而非強制唯一。
     if (sort === undefined || sort === null) {
-        const row = await db.prepare("SELECT MAX(sort_order) AS m FROM quote_item WHERE report_id = ?").get(reportId);
-        sort = ((row && row.m) || 0) + 1;
+        await db.prepare(
+            `INSERT INTO quote_item (id, report_id, category, name, spec, price, is_quoted, sort_order, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM quote_item WHERE report_id = ?), ?)`
+        ).run(
+            id, reportId, String(item.category || "未分類").trim() || "未分類",
+            String(item.name || "").trim(), item.spec == null ? null : String(item.spec).trim(),
+            price, is_quoted, reportId, nowIso(),
+        );
+        return id;
     }
     await db.prepare(
         `INSERT INTO quote_item (id, report_id, category, name, spec, price, is_quoted, sort_order, created_at)
