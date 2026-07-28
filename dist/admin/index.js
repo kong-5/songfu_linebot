@@ -4123,7 +4123,7 @@ function createAdminRouter() {
     // 拆檔批次 8：待確認品項/匯出備份/凌越機器端點/AI 設定/匯入五域共用 ctx。
     // buildLingyuePreview 等為 function 宣告（會提升），放這裡引用安全。
     const ADMIN_OPS_CTX = {
-        db, notionPage, logDataChange, getWorkingDate, getTaipeiCalendarDateYYYYMMDD,
+        db, notionPage, logDataChange, requireManager, getWorkingDate, getTaipeiCalendarDateYYYYMMDD,
         fmtTaipeiYMDHM, upload, parseRequestToSheet,
         buildLingyuePreview, formatOrderDateForLingyue, stkAdminTaipeiDate,
     };

@@ -1901,6 +1901,14 @@ function createLineWebhook() {
     </body></html>`);
     });
     router.post("/", (req, res) => {
+        // [security 2026-07-28] 未設定 channel secret/token 一律拒收（比照 worker 端點的 503 做法）：
+        // 缺 secret 時上方 bot_sdk 簽章中介層不會掛載，若這裡照收＝任何人可 POST 偽造 LINE event
+        // 繞過簽章直接建單/改單/觸發盤點。正式環境 hasLineConfig 必為 true，此判斷僅擋「未設定就對外開放」。
+        if (!hasLineConfig) {
+            console.error("[LINE] webhook 收到 POST 但 LINE_CHANNEL_SECRET/ACCESS_TOKEN 未設定，拒收（避免未驗簽偽造建單）");
+            res.status(503).type("text/plain").send("LINE webhook not configured");
+            return;
+        }
         if (typeof req.body === "string") {
             req.body = JSON.parse(req.body);
         }
