@@ -67,6 +67,22 @@ test("A2：手動結單區塊不再自己先刪持久化 session", () => {
     assert.match(between, /collectingByGroup\.delete\(groupId\)/, "仍應先從 collectingByGroup 移除以防重複結單");
 });
 
+test("全域「對客戶靜音」開關對結單摘要仍然有效（手動／自動都走這道閘門）", () => {
+    const start = SRC.indexOf("const finalizeCollectedOrders");
+    const end = SRC.indexOf("const scheduleAutoFinalize", start);
+    const body = SRC.slice(start, end);
+    const gateAt = body.indexOf("isLineSuppressCustomerReply");
+    const pushAt = body.indexOf("pushMessage");
+    assert.ok(gateAt > 0, "結單流程必須讀 isLineSuppressCustomerReply（全域靜音開關）");
+    assert.ok(pushAt > gateAt, "靜音判斷必須在任何 pushMessage 之前");
+    // 「以上X收單」提醒也不能繞過靜音
+    const doneAt = SRC.indexOf("if (isDone) {");
+    const remindAt = SRC.indexOf("以上 ${claimed} 收單", doneAt);
+    assert.ok(remindAt > 0, "找不到以上X收單提醒");
+    const remindBlock = SRC.slice(doneAt, remindAt);
+    assert.match(remindBlock, /isLineSuppressCustomerReply/, "以上X收單提醒同樣要先過靜音開關");
+});
+
 test("A1：不再叫客戶等「30 秒後的訂單明細」（該摘要在手動結單時根本不會來）", () => {
     assert.ok(!/請對照 30 秒後的訂單明細/.test(CODE_ONLY), "舊文案應已從實際推播訊息移除");
     assert.match(CODE_ONLY, /請對照上方的訂單明細確認/, "應改為指向剛推播的明細");
