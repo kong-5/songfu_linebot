@@ -196,6 +196,185 @@ function createLineWebhook() {
         }
     }
     const lineClient = hasLineConfig ? new bot_sdk_1.Client(lineConfig) : null;
+    /**
+     * [fix 2026-07-29 §一A1/A2] 結單流程單一實作（30 秒自動結單／手動「完成」「以上X收單」共用）。
+     *
+     * 過去兩條路徑各寫一份，手動那份缺了兩件事：
+     *  1) **不發訂單明細摘要**——客戶主動關單反而收不到核對憑據；更糟的是手動路徑會 clearTimeout 掉
+     *     自動結單 timer，所以「以上X收單」數量對不上時回覆的「請對照 30 秒後的訂單明細」永遠不會到。
+     *  2) **先刪 session 再 rebuild**——rebuild 期間程序當機＝session 已消失、重啟不會補跑結單
+     *     （自動路徑 2026-07-14 已修成「rebuild 完成才刪」，手動路徑漏改）。
+     * 兩路改為呼叫同一支，行為由建構上保證一致。
+     *
+     * 呼叫端負責：從 collectingByGroup 移除、清 autoFinalizeTimers（避免重複結單）。
+     * 本函式負責：整單重辨識 → 刪持久化 session → 清空白單 → 補空籃 → 組摘要 → 推播。
+     * @returns {Promise<{survivingOrderIds:string[], totalItems:number, summarySent:boolean}>}
+     */
+    const finalizeCollectedOrders = async (groupId, session, opts = {}) => {
+        const logTag = opts.logTag || "結單";
+        const orderIdsForSession = (session.allOrderIds && session.allOrderIds.length)
+            ? [...new Set(session.allOrderIds)]
+            : [session.orderId];
+        if (process.env.LINE_SKIP_FINALIZE_FULL_REBUILD !== "1") {
+            for (const oid of orderIdsForSession) {
+                try {
+                    const rawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
+                    const atts = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(oid);
+                    const fr = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, oid, session.customerId, rawRow?.raw_message, atts);
+                    if (fr.ok)
+                        console.log("[LINE] %s整單重辨識完成 orderId=%s", logTag, oid);
+                    else
+                        console.warn("[LINE] %s整單重辨識未覆寫（沿用逐則明細）orderId=%s err=%s", logTag, oid, fr.error);
+                }
+                catch (e) {
+                    console.error("[LINE] %s整單重辨識例外 orderId=%s:", logTag, oid, e?.message || e);
+                }
+            }
+        }
+        // [fix 2026-07-14] 持久化 session 移到 rebuild 完成後才刪：舊版一進 timer 就刪，
+        // rebuild 期間程序當機＝session 沒了、重啟不會補跑結單（空籃沒補、摘要沒發）。
+        // 現在當機在 rebuild 段會於重啟時 restoreCollectSessions 恢復並重新 finalize
+        // （rebuild 冪等、此時尚未推播）；過了這行才輪到推播類動作，重複風險窗已收斂到最小。
+        deleteCollectSession(db, groupId).catch(() => { });
+        // B1：結單前先清掉「完全空白」的訂單（0 品項、無 attachments、raw_message 空）
+        // 避免後台累積一堆空白訂單。若全部訂單都空則直接結束，不發推播。
+        const survivingOrderIds = [];
+        for (const oid of orderIdsForSession) {
+            try {
+                const cnt = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(oid);
+                const attCnt = await db.prepare("SELECT COUNT(*) AS c FROM order_attachments WHERE order_id = ?").get(oid);
+                const ordRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
+                const hasItems = Number(cnt?.c || 0) > 0;
+                const hasAttachments = Number(attCnt?.c || 0) > 0;
+                const hasRaw = ordRow?.raw_message && String(ordRow.raw_message).trim().length > 0;
+                if (!hasItems && !hasAttachments && !hasRaw) {
+                    await db.prepare("DELETE FROM orders WHERE id = ?").run(oid);
+                    console.log("[LINE] %s時清除完全空白訂單 orderId=%s", logTag, oid);
+                    continue;
+                }
+                survivingOrderIds.push(oid);
+            } catch (e) {
+                console.warn("[LINE] 空訂單清理檢查失敗 orderId=%s err=%s（保留訂單）", oid, e?.message || e);
+                survivingOrderIds.push(oid);
+            }
+        }
+        if (!survivingOrderIds.length) {
+            console.log("[LINE] %s時所有訂單皆為空白，已全部刪除，不發推播。", logTag);
+            return { survivingOrderIds: [], totalItems: 0, summarySent: false };
+        }
+        // [fix 2026-07-10] Flex 卡的多單連續編號必須與「線上改單」流程（ORDER BY order_no）對齊，
+        // 否則客戶在 Flex 卡看到的號碼 ≠ 改單指令作用的號碼＝又把「改到錯單」換個形式帶回來。
+        // survivingOrderIds 原為收集序（allOrderIds 插入序），這裡用同一句 SQL ORDER BY order_no 重排，
+        // 保證兩處排序完全相同（連 TEXT 排序的邊界行為都一致）。排序失敗維持原序、不阻斷推播。
+        try {
+            if (survivingOrderIds.length > 1) {
+                const ph = survivingOrderIds.map(() => "?").join(",");
+                const orderedRows = await db.prepare("SELECT id FROM orders WHERE id IN (" + ph + ") ORDER BY order_no").all(...survivingOrderIds);
+                const orderedIds = orderedRows.map((r) => r.id).filter((id) => survivingOrderIds.includes(id));
+                if (orderedIds.length === survivingOrderIds.length) {
+                    survivingOrderIds.length = 0;
+                    survivingOrderIds.push(...orderedIds);
+                }
+            }
+        } catch (e) {
+            console.warn("[LINE] 結單摘要依 order_no 排序失敗，維持收集序:", e?.message || e);
+        }
+        // 補空籃（自動／手動一致）；放在建摘要之前，讓推播明細就含空籃。
+        await insertEmptyBaskets(db, session.customerId, survivingOrderIds);
+        const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(survivingOrderIds[0]);
+        const dateStr = order?.order_date || getTaipeiOrderDate();
+        const orderBlocks = [];
+        // Flex 卡的結構化資料（與文字 orderBlocks 同時建）；文字版作 fallback（Flex 組裝失敗／泡數超限時用）。
+        const orderBlocksData = [];
+        let totalItems = 0;
+        for (const oid of survivingOrderIds) {
+            const ord = await db.prepare("SELECT order_no, remark FROM orders WHERE id = ?").get(oid);
+            const items = await db.prepare(`
+          SELECT oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.confidence_score, p.name AS product_name, p.erp_code
+          FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
+          WHERE oi.order_id = ? ORDER BY oi.id
+        `).all(oid);
+            const lines = [];
+            const flexItems = [];
+            let idx = 1;
+            for (const it of items) {
+                const unit = normalizeOrderUnit(it.unit, "公斤");
+                const name = it.product_name || it.raw_name || "待確認";
+                // remark 以「⚠」開頭＝AI 標記的警示（如照片辨識幾何校驗的「⚠ 字跡跨列（A/B），請確認」），
+                // 收單摘要要讓人看得到：品項行下方縮排帶出警示段（只取 ⚠ 那一段，後續換算備註不重複顯示）。
+                const remarkStr = it.remark != null ? String(it.remark).trim() : "";
+                const warnFromRemark = remarkStr.startsWith("⚠");
+                const remarkWarnText = warnFromRemark ? remarkStr.split(/[；;\n]/)[0].trim() : "";
+                // 低信心：confidence_score 有值且低於門檻（0-100 分制）→ Flex 卡與純文字皆標醒目「請確認」。
+                const conf = it.confidence_score;
+                const lowConf = conf != null && Number.isFinite(Number(conf)) && Number(conf) < ORDER_CONFIRM_CONFIDENCE_THRESHOLD;
+                // 客戶端警示文案：把內勤技術措辭（如「字跡跨列」）轉成客戶語言；低信心（且無 ⚠ remark）也補通用提示。
+                // [fix 2026-07-10] 純文字 fallback 過去只在 warnFromRemark 才補警示，低信心品項在純文字版完全無標記
+                // （Flex 被拒 fallback 時客戶反而看到更少警示）→ 現與 Flex 的 warn 判定（warnFromRemark || lowConf）對齊。
+                const custWarnText = toCustomerWarnText(remarkWarnText, lowConf);
+                const warnSuffix = custWarnText ? `\n　${custWarnText}` : "";
+                lines.push(`${idx}. ${name} ${formatOrderQty(it.quantity)}${unit || ""}${warnSuffix}`);
+                flexItems.push({
+                    name,
+                    qtyStr: formatOrderQty(it.quantity),
+                    unit: unit || "",
+                    warn: warnFromRemark || lowConf,
+                    // 警示文字：走同一套客戶端轉譯（技術措辭轉客戶語言；低信心給通用提示）。
+                    warnText: custWarnText,
+                });
+                if (Number(it.quantity) > 0)
+                    totalItems += 1;
+                idx += 1;
+            }
+            const hdr = ord?.remark ? `${ord.remark}\n` : "";
+            orderBlocks.push(`【${ord?.order_no ?? oid}】\n${hdr}${lines.length ? lines.join("\n") : "（目前尚無可辨識品項）"}`);
+            orderBlocksData.push({ orderNo: ord?.order_no ?? oid, remark: ord?.remark || "", items: flexItems });
+        }
+        const multi = survivingOrderIds.length > 1;
+        const summary = [
+            multi ? `收到，已收單喔（共 ${survivingOrderIds.length} 張訂單）。` : "收到，已收單喔。",
+            `送貨日期為：${dateStr}`,
+            multi ? "各張訂單明細如下：" : "訂購項目如下：",
+            ...orderBlocks,
+            "",
+            "※ 若內容有誤：可傳「線上改單」查看項次，並傳「改第1項 3 公斤」或「刪第1項」修改（數字請自換）；品名錯誤請洽業務或後台改品項。",
+        ].join("\n");
+        let summarySent = false;
+        if (lineClient) {
+            if (!(await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(db))) {
+                // 優先推 Flex 卡（closed-loop 確認）；組裝失敗／泡數超限回 null → fallback 純文字 summary。
+                // [fix 2026-07-10] Flex 即使結構合法，LINE 仍可能語意拒絕（如某 text 超過 2000 字上限、整則過大）
+                // 而回 400——此時 pushMessage 會拋錯。務必 try/catch 後 fallback 純文字，否則客戶「完全收不到」比舊版更糟。
+                const flex = buildOrderConfirmFlex(orderBlocksData, dateStr);
+                let flexSent = false;
+                if (flex) {
+                    try {
+                        await lineClient.pushMessage(groupId, { type: "flex", altText: flex.altText, contents: flex.contents });
+                        flexSent = true;
+                    }
+                    catch (fe) {
+                        console.warn("[LINE] Flex 收單卡被拒，fallback 純文字:", fe?.message || fe);
+                    }
+                }
+                if (!flexSent) {
+                    // [fix 2026-07-14] 摘要是客戶核對訂單的唯一憑據：純文字推播失敗再重試一次
+                    //（LINE push 瞬斷很常見；重試仍失敗才放棄並記 log）。
+                    try {
+                        await lineClient.pushMessage(groupId, { type: "text", text: summary });
+                    } catch (pe) {
+                        console.warn("[LINE] 結單摘要推播失敗，3 秒後重試一次:", pe?.message || pe);
+                        await new Promise((r) => setTimeout(r, 3000));
+                        await lineClient.pushMessage(groupId, { type: "text", text: summary });
+                    }
+                }
+                summarySent = true;
+            }
+            else {
+                console.log("[LINE] 已略過%s推播（對客戶靜音） orders=%s", logTag, survivingOrderIds.join(","));
+            }
+        }
+        return { survivingOrderIds, totalItems, summarySent };
+    };
     const scheduleAutoFinalize = (groupId, session) => {
         if (!groupId)
             return;
@@ -209,162 +388,8 @@ function createLineWebhook() {
                     return;
                 collectingByGroup.delete(groupId);
                 autoFinalizeTimers.delete(groupId);
-                const orderIdsForSession = (session.allOrderIds && session.allOrderIds.length)
-                    ? [...new Set(session.allOrderIds)]
-                    : [session.orderId];
-                if (process.env.LINE_SKIP_FINALIZE_FULL_REBUILD !== "1") {
-                    for (const oid of orderIdsForSession) {
-                        try {
-                            const rawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
-                            const atts = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(oid);
-                            const fr = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, oid, session.customerId, rawRow?.raw_message, atts);
-                            if (fr.ok)
-                                console.log("[LINE] 結單整單重辨識完成 orderId=%s", oid);
-                            else
-                                console.warn("[LINE] 結單整單重辨識未覆寫（沿用逐則明細）orderId=%s err=%s", oid, fr.error);
-                        }
-                        catch (e) {
-                            console.error("[LINE] 結單整單重辨識例外 orderId=%s:", oid, e?.message || e);
-                        }
-                    }
-                }
-                // [fix 2026-07-14] 持久化 session 移到 rebuild 完成後才刪：舊版一進 timer 就刪，
-                // rebuild 期間程序當機＝session 沒了、重啟不會補跑結單（空籃沒補、摘要沒發）。
-                // 現在當機在 rebuild 段會於重啟時 restoreCollectSessions 恢復並重新 finalize
-                // （rebuild 冪等、此時尚未推播）；過了這行才輪到推播類動作，重複風險窗已收斂到最小。
-                deleteCollectSession(db, groupId).catch(()=>{});
-                // B1：30 秒結單前先清掉「完全空白」的訂單（0 品項、無 attachments、raw_message 空）
-                // 避免後台累積一堆空白訂單。若全部訂單都空則直接結束，不發推播。
-                const survivingOrderIds = [];
-                for (const oid of orderIdsForSession) {
-                    try {
-                        const cnt = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?").get(oid);
-                        const attCnt = await db.prepare("SELECT COUNT(*) AS c FROM order_attachments WHERE order_id = ?").get(oid);
-                        const ordRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
-                        const hasItems = Number(cnt?.c || 0) > 0;
-                        const hasAttachments = Number(attCnt?.c || 0) > 0;
-                        const hasRaw = ordRow?.raw_message && String(ordRow.raw_message).trim().length > 0;
-                        if (!hasItems && !hasAttachments && !hasRaw) {
-                            await db.prepare("DELETE FROM orders WHERE id = ?").run(oid);
-                            console.log("[LINE] 結單時清除完全空白訂單 orderId=%s", oid);
-                            continue;
-                        }
-                        survivingOrderIds.push(oid);
-                    } catch (e) {
-                        console.warn("[LINE] 空訂單清理檢查失敗 orderId=%s err=%s（保留訂單）", oid, e?.message || e);
-                        survivingOrderIds.push(oid);
-                    }
-                }
-                if (!survivingOrderIds.length) {
-                    console.log("[LINE] 結單時所有訂單皆為空白，已全部刪除，不發推播。");
-                    return;
-                }
-                // [fix 2026-07-10] Flex 卡的多單連續編號必須與「線上改單」流程（ORDER BY order_no）對齊，
-                // 否則客戶在 Flex 卡看到的號碼 ≠ 改單指令作用的號碼＝又把「改到錯單」換個形式帶回來。
-                // survivingOrderIds 原為收集序（allOrderIds 插入序），這裡用同一句 SQL ORDER BY order_no 重排，
-                // 保證兩處排序完全相同（連 TEXT 排序的邊界行為都一致）。排序失敗維持原序、不阻斷推播。
-                try {
-                    if (survivingOrderIds.length > 1) {
-                        const ph = survivingOrderIds.map(() => "?").join(",");
-                        const orderedRows = await db.prepare("SELECT id FROM orders WHERE id IN (" + ph + ") ORDER BY order_no").all(...survivingOrderIds);
-                        const orderedIds = orderedRows.map((r) => r.id).filter((id) => survivingOrderIds.includes(id));
-                        if (orderedIds.length === survivingOrderIds.length) {
-                            survivingOrderIds.length = 0;
-                            survivingOrderIds.push(...orderedIds);
-                        }
-                    }
-                } catch (e) {
-                    console.warn("[LINE] 結單摘要依 order_no 排序失敗，維持收集序:", e?.message || e);
-                }
-                // 自動收單也要補空籃（與手動收單一致）；放在建摘要之前，讓推播明細就含空籃。
-                await insertEmptyBaskets(db, session.customerId, survivingOrderIds);
-                const order = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(survivingOrderIds[0]);
-                const dateStr = order?.order_date || getTaipeiOrderDate();
-                const orderBlocks = [];
-                // Flex 卡的結構化資料（與文字 orderBlocks 同時建）；文字版作 fallback（Flex 組裝失敗／泡數超限時用）。
-                const orderBlocksData = [];
-                for (const oid of survivingOrderIds) {
-                    const ord = await db.prepare("SELECT order_no, remark FROM orders WHERE id = ?").get(oid);
-                    const items = await db.prepare(`
-          SELECT oi.raw_name, oi.quantity, oi.unit, oi.remark, oi.confidence_score, p.name AS product_name, p.erp_code
-          FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-          WHERE oi.order_id = ? ORDER BY oi.id
-        `).all(oid);
-                    const lines = [];
-                    const flexItems = [];
-                    let idx = 1;
-                    for (const it of items) {
-                        const unit = normalizeOrderUnit(it.unit, "公斤");
-                        const name = it.product_name || it.raw_name || "待確認";
-                        // remark 以「⚠」開頭＝AI 標記的警示（如照片辨識幾何校驗的「⚠ 字跡跨列（A/B），請確認」），
-                        // 收單摘要要讓人看得到：品項行下方縮排帶出警示段（只取 ⚠ 那一段，後續換算備註不重複顯示）。
-                        const remarkStr = it.remark != null ? String(it.remark).trim() : "";
-                        const warnFromRemark = remarkStr.startsWith("⚠");
-                        const remarkWarnText = warnFromRemark ? remarkStr.split(/[；;\n]/)[0].trim() : "";
-                        // 低信心：confidence_score 有值且低於門檻（0-100 分制）→ Flex 卡與純文字皆標醒目「請確認」。
-                        const conf = it.confidence_score;
-                        const lowConf = conf != null && Number.isFinite(Number(conf)) && Number(conf) < ORDER_CONFIRM_CONFIDENCE_THRESHOLD;
-                        // 客戶端警示文案：把內勤技術措辭（如「字跡跨列」）轉成客戶語言；低信心（且無 ⚠ remark）也補通用提示。
-                        // [fix 2026-07-10] 純文字 fallback 過去只在 warnFromRemark 才補警示，低信心品項在純文字版完全無標記
-                        // （Flex 被拒 fallback 時客戶反而看到更少警示）→ 現與 Flex 的 warn 判定（warnFromRemark || lowConf）對齊。
-                        const custWarnText = toCustomerWarnText(remarkWarnText, lowConf);
-                        const warnSuffix = custWarnText ? `\n　${custWarnText}` : "";
-                        lines.push(`${idx}. ${name} ${formatOrderQty(it.quantity)}${unit || ""}${warnSuffix}`);
-                        flexItems.push({
-                            name,
-                            qtyStr: formatOrderQty(it.quantity),
-                            unit: unit || "",
-                            warn: warnFromRemark || lowConf,
-                            // 警示文字：走同一套客戶端轉譯（技術措辭轉客戶語言；低信心給通用提示）。
-                            warnText: custWarnText,
-                        });
-                        idx += 1;
-                    }
-                    const hdr = ord?.remark ? `${ord.remark}\n` : "";
-                    orderBlocks.push(`【${ord?.order_no ?? oid}】\n${hdr}${lines.length ? lines.join("\n") : "（目前尚無可辨識品項）"}`);
-                    orderBlocksData.push({ orderNo: ord?.order_no ?? oid, remark: ord?.remark || "", items: flexItems });
-                }
-                const multi = survivingOrderIds.length > 1;
-                const summary = [
-                    multi ? `收到，已收單喔（共 ${survivingOrderIds.length} 張訂單）。` : "收到，已收單喔。",
-                    `送貨日期為：${dateStr}`,
-                    multi ? "各張訂單明細如下：" : "訂購項目如下：",
-                    ...orderBlocks,
-                    "",
-                    "※ 若內容有誤：可傳「線上改單」查看項次，並傳「改第1項 3 公斤」或「刪第1項」修改（數字請自換）；品名錯誤請洽業務或後台改品項。",
-                ].join("\n");
-                if (lineClient) {
-                    if (!(await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(db))) {
-                        // 優先推 Flex 卡（closed-loop 確認）；組裝失敗／泡數超限回 null → fallback 純文字 summary。
-                        // [fix 2026-07-10] Flex 即使結構合法，LINE 仍可能語意拒絕（如某 text 超過 2000 字上限、整則過大）
-                        // 而回 400——此時 pushMessage 會拋錯。務必 try/catch 後 fallback 純文字，否則客戶「完全收不到」比舊版更糟。
-                        const flex = buildOrderConfirmFlex(orderBlocksData, dateStr);
-                        let flexSent = false;
-                        if (flex) {
-                            try {
-                                await lineClient.pushMessage(groupId, { type: "flex", altText: flex.altText, contents: flex.contents });
-                                flexSent = true;
-                            }
-                            catch (fe) {
-                                console.warn("[LINE] Flex 收單卡被拒，fallback 純文字:", fe?.message || fe);
-                            }
-                        }
-                        if (!flexSent) {
-                            // [fix 2026-07-14] 摘要是客戶核對訂單的唯一憑據：純文字推播失敗再重試一次
-                            //（LINE push 瞬斷很常見；重試仍失敗才放棄並記 log）。
-                            try {
-                                await lineClient.pushMessage(groupId, { type: "text", text: summary });
-                            } catch (pe) {
-                                console.warn("[LINE] 結單摘要推播失敗，3 秒後重試一次:", pe?.message || pe);
-                                await new Promise((r) => setTimeout(r, 3000));
-                                await lineClient.pushMessage(groupId, { type: "text", text: summary });
-                            }
-                        }
-                    }
-                    else {
-                        console.log("[LINE] 已略過 30 秒結單推播（對客戶靜音） orders=%s", survivingOrderIds.join(","));
-                    }
-                }
+                // [fix 2026-07-29 §一A1/A2] 結單流程已抽成 finalizeCollectedOrders（與手動結單共用同一支）
+                await finalizeCollectedOrders(groupId, session, { logTag: "30 秒自動結單" });
             }
             catch (e) {
                 console.error("[LINE] 30 秒自動結單失敗:", e?.message || e);
@@ -1444,39 +1469,22 @@ function createLineWebhook() {
                 if (isDone) {
                     if (groupId && collectingByGroup.has(groupId)) {
                         const session = collectingByGroup.get(groupId);
+                        // 先從記憶體移除＋清自動結單 timer＝防止同一批訂單被結兩次；
+                        // [fix 2026-07-29 §一A2] 但**持久化 session 不在這裡刪**（改由 finalizeCollectedOrders
+                        // 在 rebuild 完成後才刪）：舊版先刪，rebuild 期間當機＝session 沒了、重啟不補跑結單，
+                        // 空籃沒補、摘要沒發、客戶與後台都不知道漏了一單。自動結單 2026-07-14 已修，手動漏改。
                         collectingByGroup.delete(groupId);
-                        deleteCollectSession(db, groupId).catch(()=>{});
                         const oldTimer = autoFinalizeTimers.get(groupId);
                         if (oldTimer)
                             clearTimeout(oldTimer);
                         autoFinalizeTimers.delete(groupId);
                         // 「以上 X 收單」屬於主動結單，10 分鐘訂單編號回覆仍要照常排程，
                         // 因為使用者結束輸入後 10 分鐘確認回覆才有意義；不在此清除 orderConfirmReplyTimers。
-                        const doneOrderIds = (session.allOrderIds && session.allOrderIds.length) ? [...new Set(session.allOrderIds)] : [session.orderId];
-                        if (process.env.LINE_SKIP_FINALIZE_FULL_REBUILD !== "1") {
-                            for (const oid of doneOrderIds) {
-                                try {
-                                    const rawRow = await db.prepare("SELECT raw_message FROM orders WHERE id = ?").get(oid);
-                                    const atts = await db.prepare("SELECT line_message_id FROM order_attachments WHERE order_id = ? ORDER BY created_at ASC").all(oid);
-                                    const fr = await (0, rebuild_order_from_sources_js_1.rebuildOrderItemsFromOrderSources)(db, oid, session.customerId, rawRow?.raw_message, atts);
-                                    if (fr.ok)
-                                        console.log("[LINE] 手動完成：整單重辨識完成 orderId=%s", oid);
-                                    else
-                                        console.warn("[LINE] 手動完成：整單重辨識未覆寫 orderId=%s err=%s", oid, fr.error);
-                                }
-                                catch (e) {
-                                    console.error("[LINE] 手動完成：整單重辨識例外 orderId=%s:", oid, e?.message || e);
-                                }
-                            }
-                        }
-                        await insertEmptyBaskets(db, session.customerId, doneOrderIds);
-                        const orderInfo = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(session.orderId);
-                        // 計算所有 doneOrderIds 的品項總數（含空籃；空籃 quantity=0 也計入筆數）
-                        let totalItems = 0;
-                        for (const oid of doneOrderIds) {
-                            const c = await db.prepare("SELECT COUNT(*) AS c FROM order_items WHERE order_id = ? AND quantity > 0").get(oid);
-                            totalItems += Number(c?.c || 0);
-                        }
+                        // [fix 2026-07-29 §一A1] 走與自動結單同一支：客戶主動關單同樣會收到訂單明細摘要。
+                        // （舊版手動結單完全不發摘要，又把 30 秒 timer 清掉，等於摘要永遠不會到。）
+                        const fin = await finalizeCollectedOrders(groupId, session, { logTag: "手動結單" });
+                        const totalItems = fin.totalItems;
+                        const orderInfo = await db.prepare("SELECT order_date FROM orders WHERE id = ?").get(fin.survivingOrderIds[0] || session.orderId);
                         const dateStr = orderInfo?.order_date || getTaipeiOrderDate();
                         const weekdays = "日一二三四五六";
                         const dayIdx = new Date(dateStr + "T12:00:00").getDay();
@@ -1490,8 +1498,9 @@ function createLineWebhook() {
                                 try {
                                     if (!(await (0, line_bot_control_js_1.isLineSuppressCustomerReply)(db))) {
                                         await lineClient.pushMessage(groupId, {
+                                            // [fix 2026-07-29 §一A1] 明細現在是「上方剛推的那則」，不再是不會來的「30 秒後」
                                             type: "text",
-                                            text: `提醒：您寫「以上 ${claimed} 收單」，但我們目前辨識到 ${totalItems} 項。請對照 30 秒後的訂單明細確認，有缺漏可傳「線上改單」修改。`,
+                                            text: `提醒：您寫「以上 ${claimed} 收單」，但我們目前辨識到 ${totalItems} 項。請對照上方的訂單明細確認，有缺漏可傳「線上改單」修改。`,
                                         });
                                     }
                                 } catch (e) {
