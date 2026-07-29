@@ -39,7 +39,14 @@
 
 ## 部署（重要）
 - **推 `main` 就自動部署**：`cloudbuild.yaml` 由 `deploy-on-push` 觸發，建 image → 部署
-  Cloud Run（`songfu-line-bot`, asia-east1）→ 100% 導流，**保留環境變數**。
+  Cloud Run（`songfu-line-bot`, asia-east1），**保留環境變數**。
+- **金絲雀兩段式（2026-07-29）**：deploy 帶 `--no-traffic --tag candidate` 先上線但**不導流** →
+  對 candidate 專屬網址打 `/health`（6 次 × 10 秒）→ **過了才 `update-traffic` 100%**。
+  健檢不過＝build 紅但**流量仍在舊版、線上不受影響**（舊版是先導流再健檢，壞版本已在服務客戶）。
+  build `timeout: 1800s`（金絲雀多兩步，預設 10 分鐘會半途被砍）。
+- ⚠ **`--max-instances=1` 已釘進 cloudbuild deploy 指令**：記憶體收單 session／告警去重／登入節流
+  都靠單實例，這是**不變式**。別為了「效能」拿掉；每次部署都會把 Console 上被誤改的值校正回 1。
+  執行期另有 `dist/lib/instance-guard.js`（心跳表 `app_instance_heartbeat`）偵測多實例並推 LINE 告警。
 - ⚠ **不要**用 `npm run deploy` 而沒帶 `--keep-env`——會清掉環境變數（踩過）。
 - 開發分支照 branch 指示；PR squash 合併到 `main` 即上線。
 

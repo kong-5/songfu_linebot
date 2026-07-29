@@ -434,6 +434,9 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_count_audit (id TEXT PRIMARY KEY, session_id TEXT, icpno TEXT, wh_code TEXT, count_date TEXT, erp_code TEXT, name TEXT, old_counted REAL, new_counted REAL, actor TEXT, actor_name TEXT, note TEXT, created_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_count_audit_session ON stocktake_count_audit(session_id)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
+        // [fix 2026-07-29 §五F2] 實例心跳：偵測「同時多個實例」用（本系統收單 session/告警去重/登入節流
+        // 都在記憶體，max-instances=1 是不變式）。詳見 dist/lib/instance-guard.js。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS app_instance_heartbeat (instance_id TEXT PRIMARY KEY, revision TEXT, first_seen TEXT, last_seen TEXT)");
         // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
         sqlite.exec("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
         // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。
@@ -1289,6 +1292,8 @@ async function initPg() {
                     }
                 }
                 catch (e) { try { await client.query("ROLLBACK"); } catch (_) { } console.warn("[migration] stocktake_expiry_item 多公司主鍵遷移失敗:", e?.message || e); }
+                // [fix 2026-07-29 §五F2] 實例心跳：偵測「同時多個實例」用（詳見 dist/lib/instance-guard.js）
+                await client.query("CREATE TABLE IF NOT EXISTS app_instance_heartbeat (instance_id TEXT PRIMARY KEY, revision TEXT, first_seen TEXT, last_seen TEXT)");
                 // 群組功能白名單：每個 LINE 群組可分別開關「辨識訂單／盤點／空藍」。無資料列＝三項全開（預設全勾）。
                 await client.query("CREATE TABLE IF NOT EXISTS group_features (group_id TEXT PRIMARY KEY, feat_order INTEGER NOT NULL DEFAULT 1, feat_stocktake INTEGER NOT NULL DEFAULT 1, feat_basket INTEGER NOT NULL DEFAULT 1, updated_at TEXT)");
                 // 一次性遷移：把舊「盤點群組」白名單帶進 group_features，冪等（僅在尚無對應列時填入）。

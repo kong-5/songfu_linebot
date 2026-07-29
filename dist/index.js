@@ -36,6 +36,7 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         }
     }
     const app = (0, express_1.default)();
+    const instanceGuard = require("./lib/instance-guard.js");
     let dbReady = false;
     let dbError = null;
     /** 輕量存活探測：供 Cloud Scheduler 保溫用，不查 DB、不呼叫外部服務（僅回 200 + OK） */
@@ -56,6 +57,10 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             ok: true,
             service: "songfu_linebot",
             dbReady: true,
+            // [fix 2026-07-29 §五F2] 附上實例指紋與 Cloud Run 修訂版本：金絲雀部署時可確認
+            // 打到的是新版候選（candidate tag URL）而不是舊版，多實例時也看得出來。
+            instanceId: instanceGuard.getInstanceId(),
+            ...(process.env.K_REVISION ? { revision: process.env.K_REVISION } : {}),
         });
     });
     console.log("[startup] 載入 db 模組…");
@@ -65,6 +70,15 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         await (0, index_js_1.initDb)(dbPath);
         dbReady = true;
         console.log("[startup] 資料庫就緒");
+        // [fix 2026-07-29 §五F2] 單實例守衛：開機檢查一次＋每 5 分鐘一次。
+        // max-instances 被誤改成 >1 時（收單 session 會被拆散、結單漏品項）會推 LINE 告警。
+        try {
+            instanceGuard.startInstanceGuard((0, index_js_1.getDb)(dbPath));
+            console.log("[startup] 單實例守衛已啟動 instance=%s", instanceGuard.getInstanceId());
+        }
+        catch (ge) {
+            console.error("[startup] 單實例守衛啟動失敗（不影響服務）:", ge?.message || ge);
+        }
         // 一次性：確保 2026-07 客戶報價存在，讓後台一登入就有底稿（旗標記住只做一次，不覆蓋既有資料）
         try {
             const quote = require("./lib/quote-report.js");
