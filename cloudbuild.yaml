@@ -67,6 +67,14 @@ steps:
       - |
         docker push ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest
         docker push ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${SHORT_SHA}
+  # [canary 2026-07-29 §五F1] 兩段式部署（第 1 段）：新修訂版本先「不導流」上線，只掛 candidate 標籤。
+  # 舊版本仍吃 100% 流量——這一步失敗或下一步健檢不過，線上完全沒受影響（過去是先導流再健檢，
+  # 壞版本已經在服務客戶了，註解自己也寫「需手動回滾」）。
+  #
+  # [invariant 2026-07-29 §五F2] --max-instances=1 明確寫進部署指令：
+  # 本系統 LINE 收單狀態機（collectingByGroup 記憶體 session）、告警去重、登入節流都在記憶體，
+  # 單實例是**不變式**。過去這個值只存在 Console，誰誤改都不會有徵兆。這裡釘住＝每次部署都會校正回 1。
+  # 執行期另有 dist/lib/instance-guard.js 偵測多實例並推 LINE 告警（雙保險）。
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
@@ -82,22 +90,60 @@ steps:
       - "--allow-unauthenticated"
       - "--add-cloudsql-instances"
       - "${_INSTANCE}"
-  # [gate 2026-07-14] 部署後健康檢查：/health 回 200（含 DB 就緒）才算部署成功。
-  # 失敗＝build 標紅（Cloud Run 已導流新版，需手動回滾 revision——但至少「壞了」會被看見，
-  # 不再是靜默上線）。重試 6 次 × 10 秒，涵蓋冷啟動。
+      - "--max-instances"
+      - "1"
+      - "--no-traffic"
+      - "--tag"
+      - "candidate"
+  # [canary 2026-07-29 §五F1] 第 2 段：對「candidate 專屬網址」健檢（不是服務主網址——那還是舊版）。
+  # /health 回 200 含 dbReady 才算過；重試 6 次 × 10 秒涵蓋冷啟動。
+  # 不過＝build 紅、**流量仍留在舊版**，線上不受影響，修好再推即可。
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: "bash"
     args:
       - "-c"
       - |
-        URL=$$(gcloud run services describe ${_SERVICE} --region ${_REGION} --format='value(status.url)')
-        echo "健康檢查：$$URL/health"
+        # 用 JSON + python3 取 candidate 標籤的專屬網址（比 --format 投影過濾器好讀也好除錯）
+        gcloud run services describe ${_SERVICE} --region ${_REGION} --format=json > /workspace/svc.json
+        CAND=$$(python3 -c "import json;d=json.load(open('/workspace/svc.json'));print(next((t.get('url','') for t in d.get('status',{}).get('traffic',[]) if t.get('tag')=='candidate'),''))")
+        if [ -z "$$CAND" ]; then
+          echo "❌ 取不到 candidate 標籤網址，無法健檢新版"; exit 1
+        fi
+        echo "金絲雀健康檢查（新版尚未導流）：$$CAND/health"
         for i in 1 2 3 4 5 6; do
-          if curl -fsS --max-time 10 "$$URL/health"; then echo; echo "✅ /health OK"; exit 0; fi
+          if curl -fsS --max-time 10 "$$CAND/health"; then echo; echo "✅ 新版 /health OK"; exit 0; fi
           echo "…第 $$i 次未過，10 秒後重試"; sleep 10
         done
-        echo "❌ /health 連續 6 次失敗——新版可能 DB 未就緒，請至 Cloud Run 檢查/回滾 revision"
+        echo "❌ 新版 /health 連續 6 次失敗——流量仍在舊版（線上未受影響）。"
+        echo "   請看 Cloud Run 該修訂版本的記錄檔（多半是 DB 未就緒／遷移失敗），修好再推。"
         exit 1
+  # [canary 2026-07-29 §五F1] 第 3 段：健檢過了才把流量導到新修訂版本（100%）。
+  # 導流後再對主網址確認一次，確保使用者實際打到的就是健康的新版。
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        # 取 candidate 標籤實際指到的修訂版本名（不自己拼名字：同一個 commit 重跑 build 時
+        # --revision-suffix 會撞名，交給 Cloud Run 自動命名再讀回來最穩）
+        gcloud run services describe ${_SERVICE} --region ${_REGION} --format=json > /workspace/svc2.json
+        REV=$$(python3 -c "import json;d=json.load(open('/workspace/svc2.json'));print(next((t.get('revisionName','') for t in d.get('status',{}).get('traffic',[]) if t.get('tag')=='candidate'),''))")
+        if [ -z "$$REV" ]; then
+          echo "❌ 取不到 candidate 修訂版本名，不導流（流量仍在舊版）"; exit 1
+        fi
+        echo "健檢通過，導流 100% 到 $$REV"
+        gcloud run services update-traffic ${_SERVICE} --region ${_REGION} --to-revisions "$$REV=100"
+        URL=$$(gcloud run services describe ${_SERVICE} --region ${_REGION} --format='value(status.url)')
+        for i in 1 2 3; do
+          if curl -fsS --max-time 10 "$$URL/health"; then echo; echo "✅ 導流後主網址 /health OK"; exit 0; fi
+          echo "…第 $$i 次未過，10 秒後重試"; sleep 10
+        done
+        echo "❌ 導流後主網址健檢失敗，請至 Cloud Run 回滾到前一個修訂版本"
+        exit 1
+# [fix 2026-07-29] 預設 build timeout 只有 10 分鐘，金絲雀多了「健檢＋導流」兩步（各含重試等待），
+# 撞到上限會在「已上線候選但還沒導流」的半途被砍掉。拉到 30 分鐘。
+timeout: 1800s
+
 options:
   logging: CLOUD_LOGGING_ONLY
 
