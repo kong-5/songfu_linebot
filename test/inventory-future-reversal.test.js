@@ -14,6 +14,8 @@
  *   6. 「套用實盤」的 delta 基準＝應有量（不把未來量寫成永久調整 → 免雙重補償）。
  *   7. 統計熱力圖盤差同口徑（含凍結的未來量）。
  *   8. 盤點端 API（LIFF/掃碼/網頁版）逐品項帶 f，讓盤點人看得到「應有」。
+ *   9. future_qty IS NULL（功能上線前送出）≠ 0：改用目前的未來銷貨推估並標「推估」，
+ *      否則左半邊「應有＝系統」右半邊卻標「未來+68」，畫面自相矛盾。
  *
  * 跑法：npm test（node --test test/）。實際 listen 隨機埠、偽造合法 session cookie 打真路由。
  */
@@ -168,6 +170,25 @@ test("5. 過去日期：最新應有用該日的未來銷貨收盤快照（9）�
     assert.ok(!row.includes("未來+26.8"), "不可把今天的未來單 26.8 貼到歷史列：" + row);
 });
 
+test("5b. 功能上線前送出的舊列（future_qty IS NULL）：不當 0，改用目前的未來銷貨推估並標示", async () => {
+    const now = new Date().toISOString();
+    const sid = "stk-legacy-1";
+    await db.prepare("INSERT INTO stocktake_session (id, icpno, wh_code, wh_name, count_date, status, item_count, counted_count, created_by_name, created_at, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(sid, ICP, WH2, "冷凍庫", TODAY, "submitted", 1, 1, "丁文順", now, now);
+    // future_qty 不給值＝NULL，模擬新版上線前送出的盤點
+    await db.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(sid + "-1", sid, "G001", "老薑", "30KG/箱", "KG", 30, 34, now);
+    const html = await getPage("date=" + TODAY + "&wh=" + ICP + ":" + WH2);
+    const row = rowOf(html, "G001");
+    assert.ok(row.includes(">35<"), "應有＝30＋目前未來 5＝35（NULL 不可當 0）：" + row);
+    assert.ok(row.includes("未來+5・推估"), "推估值要標示出來，不能看起來像凍結值：" + row);
+    assert.ok(html.includes("已計入盤差（部分推估）"), "卡片 badge 要標出此單有推估列");
+    // 對照：有凍結值 0 的列（新版送出、當下確實沒有未來單）不會被推估蓋掉
+    const fn013 = await getPage("date=" + TODAY + "&wh=" + ICP + ":" + WH);
+    const g = rowOf(fn013, "G001");
+    assert.ok(!g.includes("未來+"), "FN013 的 G001 凍結值是 0（非主倉），不該被推估補上：" + g);
+});
+
 test("6. 套用實盤：delta 基準＝應有量（不把未來量寫成永久調整）", async () => {
     const body = new URLSearchParams({ action: "set_from_count", icpno: ICP, erp_code: "B001", wh_code: WH, count_date: TODAY, counted: "92", back: "date=" + TODAY });
     const res = await fetch(baseUrl + "/admin/inventory/adjustments", {
@@ -191,5 +212,35 @@ test("7. 統計熱力圖：盤差同口徑（sys 含凍結的未來量）", asyn
     const cell = it.cells[TODAY];
     assert.ok(cell, "應有今天的格子");
     assert.equal(cell.sys, 91.2, "sys 應為應有量 91.2（含凍結未來 26.8）");
+    assert.equal(cell.fut, 26.8, "格子要帶未來量供 tooltip 拆算式");
+    assert.ok(!cell.fut_est, "有凍結值就不是推估");
     assert.ok(Math.abs(cell.v - 0.9) < 0.2, "盤差% 應接近 +0.9%，實得 " + cell.v);
+});
+
+test("8. 統計 ?fut=0：本頁開關關掉＝回到原始凌越量口徑（不動全域設定）", async () => {
+    const res = await fetch(baseUrl + "/admin/inventory/stats/heatmap?icpno=" + ICP + "&days=7&fut=0", { headers: cookie() });
+    const j = await res.json();
+    const cell = (j.items || []).find((x) => x.code === "B001").cells[TODAY];
+    assert.equal(cell.sys, 64.4, "關掉時 sys＝原始凌越量 64.4");
+    assert.ok(!cell.fut, "關掉時不帶未來量");
+    assert.ok(cell.v > 40, "關掉時盤差% 回到未修正的 +42.9% 量級，實得 " + cell.v);
+    // 全域設定沒被改動：不帶 fut 參數時仍是加回後的口徑
+    const back = await (await fetch(baseUrl + "/admin/inventory/stats/heatmap?icpno=" + ICP + "&days=7", { headers: cookie() })).json();
+    assert.equal((back.items || []).find((x) => x.code === "B001").cells[TODAY].sys, 91.2);
+});
+
+test("9. 統計對「上線前送出（future_qty NULL）」的列也會推估，熱力圖才不會跟盤點頁對不起來", async () => {
+    // 5b 建的 FN005 舊列（G001，sys 30、實盤 34、future_qty NULL）；未來量 5 → 應有 35、盤差 −1
+    const res = await fetch(baseUrl + "/admin/inventory/stats/heatmap?icpno=" + ICP + "&days=7", { headers: cookie() });
+    const j = await res.json();
+    const cell = (j.items || []).find((x) => x.code === "G001").cells[TODAY];
+    // 同日 FN013 也盤過 G001（凍結 0、sys 10、實盤 10）→ 跨倉加總 sys 40、實盤 44、
+    // 該組有凍結值（FN013 那列）故不推估，未來量以凍結的 0 計
+    assert.equal(cell.sys, 40, "同組有凍結值時以凍結值為準（不重複加回）");
+    // 只看 FN005 這一倉時，整組都是 NULL → 推估補 5
+    const wres = await fetch(baseUrl + "/admin/inventory/stats/heatmap?icpno=" + ICP + "&wh=" + WH2 + "&days=7", { headers: cookie() });
+    const wj = await wres.json();
+    const wcell = (wj.items || []).find((x) => x.code === "G001").cells[TODAY];
+    assert.equal(wcell.sys, 35, "整組沒有凍結值 → 用目前的未來銷貨推估：30＋5＝35");
+    assert.equal(wcell.fut_est, 1, "要標成推估，讓 tooltip 說得出來");
 });
