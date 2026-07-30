@@ -88,6 +88,15 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         catch (se) {
             console.error("[startup] 客戶報價範本 seed 略過:", se?.message || se);
         }
+        // 一次性：確保「本月」冷凍報價存在（帶入冷凍品項與售價底稿），同樣旗標記住只做一次、不覆蓋既有資料
+        try {
+            const quote = require("./lib/quote-report.js");
+            const r = await quote.ensureInitialFrozenQuoteSeed((0, index_js_1.getDb)(dbPath));
+            if (r && r.seeded) console.log("[startup] 已建立 %s 冷凍報價範本", r.ym);
+        }
+        catch (se) {
+            console.error("[startup] 冷凍報價範本 seed 略過:", se?.message || se);
+        }
     }
     catch (e) {
         dbError = e?.message || e;

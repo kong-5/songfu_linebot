@@ -32,10 +32,27 @@ const CATEGORY_ORDER = [
 ];
 exports.CATEGORY_ORDER = CATEGORY_ORDER;
 
+/**
+ * 冷凍報價的分類顯示順序（與青菜月報分開一組：冷凍單上不會出現生鮮蔬菜、青菜單上也不該出現包子饅頭，
+ * 「管理品項」的分類下拉依報價種類只給對應的一組）。
+ */
+const FROZEN_CATEGORY_ORDER = [
+    "包子饅頭",
+    "冷凍點心",
+    "龍港包子",
+    "冷凍雞肉",
+    "冷凍豬肉",
+];
+exports.FROZEN_CATEGORY_ORDER = FROZEN_CATEGORY_ORDER;
+
+// 排序權重查表＝兩組串接（青菜在前、冷凍在後）。同一份報價只會用到其中一組，
+// 串接後各組內部的先後仍然正確，getItems 就不必知道自己排的是哪一種報價。
+const ALL_CATEGORY_ORDER = [...CATEGORY_ORDER, ...FROZEN_CATEGORY_ORDER];
+
 /** 分類排序權重：已知分類用其索引；未知分類排在已知之後（維持相對穩定）。 */
 function categoryRank(category) {
-    const idx = CATEGORY_ORDER.indexOf(String(category || "").trim());
-    return idx >= 0 ? idx : CATEGORY_ORDER.length + 1;
+    const idx = ALL_CATEGORY_ORDER.indexOf(String(category || "").trim());
+    return idx >= 0 ? idx : ALL_CATEGORY_ORDER.length + 1;
 }
 exports.categoryRank = categoryRank;
 
@@ -142,23 +159,27 @@ async function getItemsGrouped(db, reportId) {
 exports.getItemsGrouped = getItemsGrouped;
 
 /**
- * 建立新月報。若 copyFromReportId 有值（或找得到上一份月報），把該份品項整份帶入當底稿。
- * 回傳新月報的 id。
+ * 建立「一月一份」的報價（青菜月報 quote_report／冷凍報價 frozen_quote 共用同一套流程）。
+ * cfg = { table, idPrefix, defaultHeader, seedItems }；table/idPrefix 皆為本檔內的字面常數，
+ * 不接受外部字串（避免把使用者輸入拼進 SQL）。
+ * 若 copyFromReportId 有值（或找得到上一份同種類報價），把該份品項整份帶入當底稿。回傳新報價 id。
  */
-async function createReport(db, opts) {
+async function createMonthlyQuoteIn(db, cfg, opts) {
     const ym = String(opts.ym || "").trim();
-    if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error("月份格式需為 YYYY-MM");
-    const existing = await getReportByYm(db, ym);
+    if (!/^\d{4}-\d{2}$/.test(ym)) {
+        throw new Error(`月份格式需為 YYYY-MM（例如 ${nextYm(ymFromDate(new Date())) || "2026-08"}）。請用月份選擇器挑一個月份再送出。`);
+    }
+    const existing = await db.prepare(`SELECT * FROM ${cfg.table} WHERE ym = ?`).get(ym);
     if (existing) return existing.id;
 
-    const id = newId("qr");
-    const header = { ...DEFAULT_HEADER, ...(opts.header || {}) };
+    const id = newId(cfg.idPrefix);
+    const header = { ...cfg.defaultHeader, ...(opts.header || {}) };
 
     // 找底稿來源：優先指定的，否則抓 ym 小於本月的最新一份（讀取先在交易外算完）
     let sourceId = opts.copyFromReportId || null;
     if (!sourceId) {
         const prev = await db.prepare(
-            "SELECT id FROM quote_report WHERE ym < ? ORDER BY ym DESC LIMIT 1"
+            `SELECT id FROM ${cfg.table} WHERE ym < ? ORDER BY ym DESC LIMIT 1`
         ).get(ym);
         if (prev) sourceId = prev.id;
     }
@@ -168,7 +189,7 @@ async function createReport(db, opts) {
     // 「只有前 N 項」的月報，且開頭的 existing 早退讓重按也補不回來（缺項的報價單就這樣寄給客戶）。
     const doCreate = async (h) => {
         await h.prepare(
-            `INSERT INTO quote_report (id, ym, roc_label, title, subtitle, company, address, tel, fax, status, note, created_at, updated_at)
+            `INSERT INTO ${cfg.table} (id, ym, roc_label, title, subtitle, company, address, tel, fax, status, note, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`
         ).run(
             id, ym, rocLabelFromYm(ym), header.title, header.subtitle, header.company,
@@ -189,9 +210,9 @@ async function createReport(db, opts) {
                 i++;
             }
         } else if (opts.seedWhenEmpty !== false) {
-            // 沒有上一份（第一份月報）→ 帶入標準品項清單當底稿，避免空白難用
+            // 沒有上一份（第一份）→ 帶入標準品項清單當底稿，避免空白難用
             let i = 0;
-            for (const [name, spec, price, category] of SEED_JULY_ITEMS) {
+            for (const [name, spec, price, category] of cfg.seedItems) {
                 await addItem(h, id, { category, name, spec, price, sort_order: i++ });
             }
         }
@@ -199,6 +220,14 @@ async function createReport(db, opts) {
     if (typeof db.transaction === "function") await db.transaction(doCreate);
     else await doCreate(db);
     return id;
+}
+
+/**
+ * 建立新月報。若 copyFromReportId 有值（或找得到上一份月報），把該份品項整份帶入當底稿。
+ * 回傳新月報的 id。
+ */
+async function createReport(db, opts) {
+    return await createMonthlyQuoteIn(db, MONTHLY_CFG, opts || {});
 }
 exports.createReport = createReport;
 
@@ -631,6 +660,147 @@ async function deleteHotelQuote(db, id) {
 }
 exports.deleteHotelQuote = deleteHotelQuote;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 冷凍報價（frozen_quote，id 前綴 fz_）
+// 作業方式與青菜月報「完全雷同」：一月一份、新月自動帶入上月品項與價格當底稿、
+// 價格模式只改單價、管理品項可增刪排序、輸出 PDF/JPG/列印頁。品項共用 quote_item，
+// 因此 getItems/addItem/updateItem/deleteItem 與所有輸出函式都不必再寫一份。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 冷凍報價表頭預設值（只有副標與青菜月報不同，讓客戶一眼分得出是哪一張）。 */
+const FROZEN_HEADER = { ...DEFAULT_HEADER, subtitle: "冷 凍 產 品 表" };
+exports.FROZEN_HEADER = FROZEN_HEADER;
+
+// 冷凍報價品項 seed（來自使用者提供的冷凍報價表照片，品名／規格／售價照抄）。
+// [品名, 規格, 單價, 分類]
+// 註：原表另有「單位」欄（包／盒），其內容已包含在規格字串的分母裡（如「30粒/包」「3KG/包」），
+// 版面沿用青菜報價的「序號｜品名｜規格｜單價」四欄，故不另存單位欄。
+const SEED_FROZEN_ITEMS = [
+    // 包子饅頭
+    ["喜兔包", "30粒/包", "200", "包子饅頭"],
+    ["奶皇包", "20粒/包", "160", "包子饅頭"],
+    ["鮮奶饅頭", "25粒/包", "150", "包子饅頭"],
+    ["巧克力牛奶雙色饅頭", "25粒/包", "135", "包子饅頭"],
+    ["黑糖饅頭", "25粒/包", "180", "包子饅頭"],
+    ["銀絲卷", "25粒/包", "150", "包子饅頭"],
+    ["刈包", "20粒/包", "100", "包子饅頭"],
+    ["鮮奶小饅頭", "40粒/包", "120", "包子饅頭"],
+    ["黑糖小饅頭", "40粒/包", "120", "包子饅頭"],
+    // 冷凍點心
+    ["鍋貼", "50粒/包", "145", "冷凍點心"],
+    ["蘿蔔糕", "60片/包", "220", "冷凍點心"],
+    ["珍珠丸", "30粒/包", "135", "冷凍點心"],
+    ["燒賣", "30粒/包", "130", "冷凍點心"],
+    ["鮮肉熟水餃", "200粒/包", "300", "冷凍點心"],
+    ["小籠湯包", "50粒/包", "200", "冷凍點心"],
+    ["蛋黃芋丸", "100顆/盒", "345", "冷凍點心"],
+    // 龍港包子
+    ["龍港鮮肉包CAS", "10粒/包", "120", "龍港包子"],
+    ["龍港芝麻包CAS", "10粒/包", "120", "龍港包子"],
+    ["龍港芋泥包CAS", "10粒/包", "120", "龍港包子"],
+    ["龍港豆沙包CAS", "10粒/包", "120", "龍港包子"],
+    // 冷凍雞肉
+    ["麥克雞塊CAS", "150顆/包", "420", "冷凍雞肉"],
+    ["卡拉雞腿排CAS", "20片/包", "510", "冷凍雞肉"],
+    ["雞腿CAS", "3KG/包/約23隻", "600", "冷凍雞肉"],
+    ["雞翅CAS", "3KG/包/約30隻", "400", "冷凍雞肉"],
+    ["雞排CAS", "3KG/包/約19隻", "450", "冷凍雞肉"],
+    ["雞胸丁CAS", "3KG/包", "450", "冷凍雞肉"],
+    ["棒腿丁CAS", "3KG/包", "550", "冷凍雞肉"],
+    ["清雞胸肉CAS", "3KG/包", "600", "冷凍雞肉"],
+    // 冷凍豬肉
+    ["肉丁CAS", "3KG/包", "670", "冷凍豬肉"],
+    ["肉片CAS", "3KG/包", "670", "冷凍豬肉"],
+    ["肉絲CAS", "3KG/包", "670", "冷凍豬肉"],
+    ["絞肉CAS", "3KG/包", "550", "冷凍豬肉"],
+    ["中排骨CAS", "3KG/包", "220", "冷凍豬肉"],
+    ["大骨CAS", "3KG/包", "180", "冷凍豬肉"],
+    ["帶骨內排CAS", "70片/箱", "1680", "冷凍豬肉"],
+];
+exports.SEED_FROZEN_ITEMS = SEED_FROZEN_ITEMS;
+
+// 兩種「一月一份」報價的設定（表名／id 前綴／預設表頭／第一份的 seed 清單）。
+// 放在兩份 seed 陣列之後宣告：只在函式執行時讀取，不會有 TDZ 問題。
+const MONTHLY_CFG = { table: "quote_report", idPrefix: "qr", defaultHeader: DEFAULT_HEADER, seedItems: SEED_JULY_ITEMS };
+const FROZEN_CFG = { table: "frozen_quote", idPrefix: "fz", defaultHeader: FROZEN_HEADER, seedItems: SEED_FROZEN_ITEMS };
+
+/** 列出所有冷凍報價（新到舊）。 */
+async function listFrozenQuotes(db) {
+    return await db.prepare(
+        "SELECT * FROM frozen_quote ORDER BY ym DESC, created_at DESC"
+    ).all();
+}
+exports.listFrozenQuotes = listFrozenQuotes;
+
+async function getFrozenQuote(db, id) {
+    return await db.prepare("SELECT * FROM frozen_quote WHERE id = ?").get(id);
+}
+exports.getFrozenQuote = getFrozenQuote;
+
+async function getFrozenQuoteByYm(db, ym) {
+    return await db.prepare("SELECT * FROM frozen_quote WHERE ym = ?").get(ym);
+}
+exports.getFrozenQuoteByYm = getFrozenQuoteByYm;
+
+/** 建立新冷凍報價（帶入上一份；沒有上一份就帶入冷凍品項 seed）。冪等：同月份重複呼叫回同一 id。 */
+async function createFrozenQuote(db, opts) {
+    return await createMonthlyQuoteIn(db, FROZEN_CFG, opts || {});
+}
+exports.createFrozenQuote = createFrozenQuote;
+
+async function updateFrozenHeader(db, id, header) {
+    await db.prepare(
+        `UPDATE frozen_quote SET title = ?, subtitle = ?, company = ?, address = ?, tel = ?, fax = ?, note = ?, updated_at = ? WHERE id = ?`
+    ).run(
+        header.title ?? FROZEN_HEADER.title, header.subtitle ?? FROZEN_HEADER.subtitle,
+        header.company ?? FROZEN_HEADER.company, header.address ?? FROZEN_HEADER.address,
+        header.tel ?? FROZEN_HEADER.tel, header.fax ?? FROZEN_HEADER.fax,
+        header.note ?? null, nowIso(), id
+    );
+}
+exports.updateFrozenHeader = updateFrozenHeader;
+
+async function setFrozenStatus(db, id, status) {
+    await db.prepare("UPDATE frozen_quote SET status = ?, updated_at = ? WHERE id = ?").run(status, nowIso(), id);
+}
+exports.setFrozenStatus = setFrozenStatus;
+
+async function deleteFrozenQuote(db, id) {
+    // 兩表刪除包同一交易：中斷會留孤兒 quote_item 列（同 deleteReport）。
+    const doDel = async (h) => {
+        await h.prepare("DELETE FROM quote_item WHERE report_id = ?").run(id);
+        await h.prepare("DELETE FROM frozen_quote WHERE id = ?").run(id);
+    };
+    if (typeof db.transaction === "function") await db.transaction(doDel);
+    else await doDel(db);
+}
+exports.deleteFrozenQuote = deleteFrozenQuote;
+
+/**
+ * 開機一次性 seed：確保「本月」冷凍報價存在（帶入照片上的品項與售價），讓使用者一登入就有底稿。
+ * 與月報 seed 同一套規則：旗標記住只做一次、絕不覆蓋既有資料、事後刪掉也不會又冒出來。
+ * 非致命：呼叫端請包 try/catch。
+ */
+async function ensureInitialFrozenQuoteSeed(db, ym) {
+    const FLAG = "frozen_quote_seeded";
+    let flag = null;
+    try {
+        const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(FLAG);
+        flag = row && row.value ? row.value : null;
+    } catch (_) { /* app_settings 理應存在；讀失敗當作未 seed */ }
+    if (flag) return { seeded: false, reason: "already-ran" };
+    const targetYm = /^\d{4}-\d{2}$/.test(String(ym || "")) ? String(ym) : ymFromDate(new Date());
+    const existing = await getFrozenQuoteByYm(db, targetYm);
+    let created = false;
+    if (!existing) {
+        await createFrozenQuote(db, { ym: targetYm });
+        created = true;
+    }
+    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(FLAG, "1");
+    return { seeded: created, ym: targetYm };
+}
+exports.ensureInitialFrozenQuoteSeed = ensureInitialFrozenQuoteSeed;
+
 /**
  * 開機一次性 seed：確保 2026-07 月報存在（帶入 7 月範本），讓使用者一登入就有底稿。
  * 用 app_settings 旗標 quote_seeded_2026_07 記住「已跑過」，之後每次部署都不會重跑；
@@ -810,9 +980,11 @@ function clip(s, n) {
  * 月底提醒：判斷「是否該做下個月的報價單」。
  * 規則：本月剩餘天數 <= remindWithinDays（預設 7）時，若「下個月」的月報尚未存在或仍是草稿，就提醒。
  * todayYmd：YYYY-MM-DD（台北）。回傳 { show, targetYm, rocLabel, report(or null), daysLeft }。
+ * getByYm 可傳 getFrozenQuoteByYm 讓冷凍報價共用同一套提醒（預設為青菜月報）。
  */
-async function monthEndReminder(db, todayYmd, remindWithinDays) {
+async function monthEndReminder(db, todayYmd, remindWithinDays, getByYm) {
     const within = remindWithinDays || 7;
+    const lookup = typeof getByYm === "function" ? getByYm : getReportByYm;
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(todayYmd || "").trim());
     if (!m) return { show: false };
     const year = parseInt(m[1], 10), month = parseInt(m[2], 10), day = parseInt(m[3], 10);
@@ -821,7 +993,7 @@ async function monthEndReminder(db, todayYmd, remindWithinDays) {
     const curYm = `${m[1]}-${m[2]}`;
     const targetYm = nextYm(curYm);
     const rocLabel = rocLabelFromYm(targetYm);
-    const report = await getReportByYm(db, targetYm);
+    const report = await lookup(db, targetYm);
     const done = report && report.status === "finalized";
     const show = daysLeft <= within && !done;
     return { show, targetYm, rocLabel, report: report || null, daysLeft };
@@ -881,12 +1053,13 @@ exports.normQuoteName = normQuoteName;
  * 建「品名 → 前月報價」map（供價格模式內部比較漲跌）。前月報價單不存在時回傳空 Map（呼叫端靜默省略）。
  * key 用正規化品名；同名後者覆蓋前者（品名多半唯一，足夠）。value = { price, is_quoted, spec }。
  */
-async function buildPrevPriceMap(db, curYm) {
+async function buildPrevPriceMap(db, curYm, getByYm) {
     const map = new Map();
     const pym = prevYm(curYm);
     if (!pym) return map;
+    const lookup = typeof getByYm === "function" ? getByYm : getReportByYm;
     let prevReport = null;
-    try { prevReport = await getReportByYm(db, pym); } catch (_) { return map; }
+    try { prevReport = await lookup(db, pym); } catch (_) { return map; }
     if (!prevReport) return map;
     let items = [];
     try { items = await getItems(db, prevReport.id); } catch (_) { return map; }

@@ -148,19 +148,28 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
 </body></html>`;
     }
 
-    // 報價分兩種：月報（quote_report，id 前綴 qr_）與飯店客戶報價（hotel_quote，id 前綴 hq_）。
-    // 品項都存在 quote_item（report_id = 各自表頭 id），因此編輯／存檔／輸出邏輯可共用。
-    function quoteKindOf(id) { return String(id || "").startsWith("hq_") ? "hotel" : "monthly"; }
+    // 報價分三種：青菜月報（quote_report，id 前綴 qr_）、飯店客戶報價（hotel_quote，hq_）、
+    // 冷凍報價（frozen_quote，fz_）。品項都存在 quote_item（report_id = 各自表頭 id），
+    // 因此編輯／存檔／輸出邏輯可共用；只有「列表／建立／表頭／狀態／刪除」依 id 前綴分流。
+    function quoteKindOf(id) {
+        const s = String(id || "");
+        if (s.startsWith("hq_")) return "hotel";
+        if (s.startsWith("fz_")) return "frozen";
+        return "monthly";
+    }
     async function resolveQuoteRow(id) {
-        if (quoteKindOf(id) === "hotel") return { kind: "hotel", row: await quote_report_js_1.getHotelQuote(db, id) };
-        return { kind: "monthly", row: await quote_report_js_1.getReport(db, id) };
+        const kind = quoteKindOf(id);
+        if (kind === "hotel") return { kind, row: await quote_report_js_1.getHotelQuote(db, id) };
+        if (kind === "frozen") return { kind, row: await quote_report_js_1.getFrozenQuote(db, id) };
+        return { kind, row: await quote_report_js_1.getReport(db, id) };
     }
 
-    // 分頁列（月報 / 飯店客戶報價）
+    // 分頁列（月報 / 冷凍報價 / 飯店客戶報價）
     function renderQuoteTabs(active) {
         const tab = (key, label, href) => `<a class="sf-qtab ${active === key ? "on" : ""}" href="${href}">${label}</a>`;
         return `<div class="sf-qtabs">
           ${tab("monthly", "月報", "/admin/quotes")}
+          ${tab("frozen", "冷凍報價", "/admin/quotes?tab=frozen")}
           ${tab("hotel", "飯店客戶報價", "/admin/quotes?tab=hotel")}
         </div>`;
     }
@@ -272,13 +281,17 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
         const okMsg = opts.okMsg || "";
         const id = row.id;
         const items = groups.flatMap(g => g.items);
-        const allCats = Array.from(new Set([...quote_report_js_1.CATEGORY_ORDER, ...groups.map(g => g.category)]));
+        // 分類下拉依報價種類給對應那組（冷凍單不該出現「生鮮蔬菜」，反之亦然）；
+        // 已存在於本份報價的分類一律保留，免得舊資料的分類在下拉裡消失、一存檔就被改掉。
+        const baseCats = kind === "frozen" ? quote_report_js_1.FROZEN_CATEGORY_ORDER : quote_report_js_1.CATEGORY_ORDER;
+        const allCats = Array.from(new Set([...baseCats, ...groups.map(g => g.category)]));
         const catOptions = (sel) => allCats.map(c => `<option value="${escapeAttr(c)}"${c === sel ? " selected" : ""}>${escapeHtml(c)}</option>`).join("");
         const enc = encodeURIComponent(id);
         const isHotel = kind === "hotel";
+        const isFrozen = kind === "frozen";
         const titleMain = isHotel ? escapeHtml(row.customer_name || "飯店") : escapeHtml(row.roc_label || row.ym || "");
-        const backHref = isHotel ? "/admin/quotes?tab=hotel" : "/admin/quotes";
-        const backLabel = isHotel ? "飯店客戶報價" : "月報";
+        const backHref = isHotel ? "/admin/quotes?tab=hotel" : isFrozen ? "/admin/quotes?tab=frozen" : "/admin/quotes";
+        const backLabel = isHotel ? "飯店客戶報價" : isFrozen ? "冷凍報價" : "月報";
         const statusPill = row.status === "finalized"
             ? `<span class="sf-pill ok" style="vertical-align:middle;">已完成</span>`
             : `<span class="sf-pill warn" style="vertical-align:middle;">草稿</span>`;
@@ -541,7 +554,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
             <div class="sf-qbar">
               <div class="sf-qhead">
                 <div class="sf-breadcrumb" style="margin-bottom:6px;">報價管理 / <a href="${backHref}" style="color:inherit;">${backLabel}</a> / ${titleMain}</div>
-                <h1>${titleMain} 報價單 ${statusPill}</h1>
+                <h1>${titleMain} ${isFrozen ? "冷凍" : ""}報價單 ${statusPill}</h1>
               </div>
               <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <a class="sf-btn primary" href="/admin/quotes/${enc}/pdf">${QI.pdf}<span>下載 PDF</span></a>
@@ -591,7 +604,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
               <form method="post" action="/admin/quotes/${enc}/item/add" style="display:grid;grid-template-columns:2fr 1.4fr 1.4fr 1fr auto;gap:8px;align-items:end;">
                 <label style="font-size:12px;color:var(--txt-3);">品名<input name="name" required style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;"></label>
                 <label style="font-size:12px;color:var(--txt-3);">規格<input name="spec" placeholder="KG / 盒…" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;"></label>
-                <label style="font-size:12px;color:var(--txt-3);">分類<select name="category" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;">${catOptions(quote_report_js_1.CATEGORY_ORDER[0])}</select></label>
+                <label style="font-size:12px;color:var(--txt-3);">分類<select name="category" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;">${catOptions(baseCats[0])}</select></label>
                 <label style="font-size:12px;color:var(--txt-3);">單價<input name="price" inputmode="decimal" placeholder="留白=不報價" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;text-align:right;"></label>
                 <button class="sf-btn" type="submit">新增</button>
               </form>
@@ -603,11 +616,58 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
     // 列表頁（分頁：月報 / 飯店客戶報價）
     router.get("/quotes", async (req, res) => {
         try {
-            const tab = String(req.query.tab || "") === "hotel" ? "hotel" : "monthly";
+            const tabRaw = String(req.query.tab || "");
+            const tab = tabRaw === "hotel" ? "hotel" : tabRaw === "frozen" ? "frozen" : "monthly";
             const okMsg = String(req.query.ok || "");
             let inner = "";
 
-            if (tab === "hotel") {
+            if (tab === "frozen") {
+                // 冷凍報價：作業方式與青菜月報完全相同（一月一份、帶入上月、月底提醒）。
+                const todayIso = getTaipeiCalendarDateYYYYMMDD();
+                const quotes = await quote_report_js_1.listFrozenQuotes(db);
+                const reminder = await quote_report_js_1.monthEndReminder(db, todayIso, 7, quote_report_js_1.getFrozenQuoteByYm);
+                const suggestYm = reminder.targetYm || quote_report_js_1.nextYm(todayIso.slice(0, 7));
+                const createForm = (label) => `<form method="post" action="/admin/quotes/frozen/create" class="sf-qnew">
+                    <label>月份<input type="month" name="ym" value="${escapeAttr(suggestYm)}" required></label>
+                    <button class="sf-btn primary" type="submit">${label}</button>
+                  </form>`;
+                const list = quotes.length
+                    ? `<div class="sf-card sf-qlist">
+                        <div class="sf-qlist-head"><span>月份</span><span>狀態</span><span style="text-align:right;">操作</span></div>
+                        ${quotes.map((r) => `<div class="sf-qrow">
+                          <a class="sf-qrow-name" href="/admin/quotes/${encodeURIComponent(r.id)}"><span class="sf-qrow-t1">${escapeHtml(r.roc_label || r.ym)}</span><span class="sf-qrow-t2">冷凍報價 · ${escapeHtml(r.ym)}</span></a>
+                          <div>${r.status === "finalized" ? `<span class="sf-pill ok">已完成</span>` : `<span class="sf-pill warn">草稿</span>`}</div>
+                          <div class="sf-qrow-actions">
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}">編輯</a>
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/pdf">PDF</a>
+                            <a class="sf-btn sm" href="/admin/quotes/${encodeURIComponent(r.id)}/image.jpg" download>JPG</a>
+                          </div></div>`).join("")}
+                      </div>`
+                    : `<div class="sf-card sf-qempty">
+                        <div class="sf-qempty-icon">${QI.doc}</div>
+                        <div class="sf-qempty-title">尚無冷凍報價</div>
+                        <p class="sf-qempty-desc">建立第一份冷凍報價時，系統會自動帶入冷凍品項清單（包子饅頭、冷凍點心、龍港包子、雞肉、豬肉）當底稿，你只要調整價格即可。之後每個月新增，會自動沿用上一份的品項與價格。</p>
+                        ${createForm("＋ 建立第一份冷凍報價")}
+                      </div>`;
+                const reminderBanner = reminder.show ? `
+                  <div class="sf-card sf-qremind">
+                    <span class="sf-qremind-ico">${QI.calendar}</span>
+                    <div style="flex:1;min-width:200px;">
+                      <div style="font-weight:600;">月底提醒：請準備 ${escapeHtml(reminder.rocLabel)} 冷凍報價</div>
+                      <div style="font-size:12px;color:var(--txt-3);margin-top:2px;">本月僅剩 ${reminder.daysLeft} 天。${reminder.report ? "已建立草稿，請確認價格後設為完成。" : "尚未建立，新增時會自動帶入上月價格當底稿。"}</div>
+                    </div>
+                    ${reminder.report
+                        ? `<a class="sf-btn primary" href="/admin/quotes/${encodeURIComponent(reminder.report.id)}">前往編輯 →</a>`
+                        : `<form method="post" action="/admin/quotes/frozen/create" style="margin:0;"><input type="hidden" name="ym" value="${escapeAttr(reminder.targetYm)}"><button class="sf-btn primary" type="submit">建立 ${escapeHtml(reminder.rocLabel)} →</button></form>`}
+                  </div>` : "";
+                inner = `<div class="sf-qbar">
+                    <p style="margin:0;color:var(--txt-3);font-size:13px;max-width:560px;">冷凍品項（包子饅頭、點心、雞肉、豬肉）的月報價，作業方式與青菜月報相同：新增會自動帶入上月價格當底稿，只需改動有變動的項目；輸出可存 PDF 或下載 JPG。</p>
+                    ${quotes.length ? createForm("＋ 新增冷凍報價") : ""}
+                  </div>
+                  ${okMsg === "created" ? `<div class="sf-card sf-qflash">${QI.checkc}<span>冷凍報價已建立。</span></div>` : ""}
+                  ${reminderBanner}
+                  ${list}`;
+            } else if (tab === "hotel") {
                 const hotels = await quote_report_js_1.listHotelQuotes(db);
                 let names = [];
                 try { names = (await db.prepare("SELECT DISTINCT name FROM customers WHERE active = 1 ORDER BY name").all()).map(r => r.name).filter(Boolean); } catch (_) {}
@@ -716,6 +776,18 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
         }
     });
 
+    // 建立冷凍報價（帶入上一份；第一份帶入冷凍品項 seed）
+    router.post("/quotes/frozen/create", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        try {
+            const ym = String(req.body.ym || "").trim();
+            const id = await quote_report_js_1.createFrozenQuote(db, { ym });
+            res.redirect(`/admin/quotes/${encodeURIComponent(id)}?ok=created`);
+        } catch (e) {
+            console.error("[admin] /quotes/frozen/create failed", e);
+            res.status(400).type("text/html").send(notionPage("報價管理", `<div style="padding:32px;">建立失敗：${escapeHtml(String(e && e.message || e))}<br><a href="/admin/quotes?tab=frozen">返回</a></div>`, "quotes", res));
+        }
+    });
+
     // 建立月報（帶入上月）
     router.post("/quotes/create", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
@@ -748,10 +820,12 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
             const groups = await quote_report_js_1.getItemsGrouped(db, row.id);
             const manage = String(req.query.manage || "") === "1";
             const okMsg = String(req.query.ok || "");
-            // 前月價格比較：只對「月報」且非管理模式建 map（飯店報價無月份概念）。前月不存在則靜默省略。
+            // 前月價格比較：只對「月報／冷凍報價」且非管理模式建 map（飯店報價無月份概念）。
+            // 冷凍要比的是上個月的「冷凍」報價，故傳 getFrozenQuoteByYm；前月不存在則靜默省略。
             let prevMap = null;
-            if (kind === "monthly" && !manage && row.ym) {
-                try { prevMap = await quote_report_js_1.buildPrevPriceMap(db, row.ym); } catch (_) { prevMap = null; }
+            if ((kind === "monthly" || kind === "frozen") && !manage && row.ym) {
+                const byYm = kind === "frozen" ? quote_report_js_1.getFrozenQuoteByYm : undefined;
+                try { prevMap = await quote_report_js_1.buildPrevPriceMap(db, row.ym, byYm); } catch (_) { prevMap = null; }
             }
             const body = renderQuoteEditor(row, groups, { kind, manage, okMsg, prevMap });
             res.type("text/html").send(notionPage("編輯報價單", body, "quotes", res));
@@ -816,9 +890,12 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                 title: req.body.title, subtitle: req.body.subtitle, company: req.body.company,
                 address: req.body.address, tel: req.body.tel, fax: req.body.fax,
             };
-            if (quoteKindOf(req.params.id) === "hotel") {
+            const kind = quoteKindOf(req.params.id);
+            if (kind === "hotel") {
                 header.customer_name = req.body.customer_name;
                 await quote_report_js_1.updateHotelHeader(db, req.params.id, header);
+            } else if (kind === "frozen") {
+                await quote_report_js_1.updateFrozenHeader(db, req.params.id, header);
             } else {
                 await quote_report_js_1.updateReportHeader(db, req.params.id, header);
             }
@@ -852,7 +929,9 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
     router.post("/quotes/:id/status", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
             const status = String(req.body.status || "draft") === "finalized" ? "finalized" : "draft";
-            if (quoteKindOf(req.params.id) === "hotel") await quote_report_js_1.setHotelStatus(db, req.params.id, status);
+            const kind = quoteKindOf(req.params.id);
+            if (kind === "hotel") await quote_report_js_1.setHotelStatus(db, req.params.id, status);
+            else if (kind === "frozen") await quote_report_js_1.setFrozenStatus(db, req.params.id, status);
             else await quote_report_js_1.setReportStatus(db, req.params.id, status);
         } catch (e) { console.error("[admin] set status failed", e); }
         res.redirect(`/admin/quotes/${encodeURIComponent(req.params.id)}`);
@@ -860,12 +939,13 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
 
     // 刪除整份報價
     router.post("/quotes/:id/delete", async (req, res) => {
-        const isHotel = quoteKindOf(req.params.id) === "hotel";
+        const kind = quoteKindOf(req.params.id);
         try {
-            if (isHotel) await quote_report_js_1.deleteHotelQuote(db, req.params.id);
+            if (kind === "hotel") await quote_report_js_1.deleteHotelQuote(db, req.params.id);
+            else if (kind === "frozen") await quote_report_js_1.deleteFrozenQuote(db, req.params.id);
             else await quote_report_js_1.deleteReport(db, req.params.id);
         } catch (e) { console.error("[admin] delete quote failed", e); }
-        res.redirect(isHotel ? "/admin/quotes?tab=hotel" : "/admin/quotes");
+        res.redirect(kind === "hotel" ? "/admin/quotes?tab=hotel" : kind === "frozen" ? "/admin/quotes?tab=frozen" : "/admin/quotes");
     });
 
     // 供輸出用：把飯店報價正規化成 render 用的表頭（飯店名稱放 roc_label 位置顯示）
