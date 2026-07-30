@@ -244,3 +244,66 @@ test("9. 統計對「上線前送出（future_qty NULL）」的列也會推估�
     assert.equal(wcell.sys, 35, "整組沒有凍結值 → 用目前的未來銷貨推估：30＋5＝35");
     assert.equal(wcell.fut_est, 1, "要標成推估，讓 tooltip 說得出來");
 });
+
+// ── 紅標規則（2026-07-30）：|盤差%| ≥ pct 且 |盤差量| ≥ qty，兩者都成立才標紅 ──
+// 修的問題：整頁 81 項全紅沒辦法 focus。門檻改成可調，並帶「只看紅標」篩選＋異常排查表只推紅標。
+const setHotRule = async (pct, qty) => {
+    const res = await fetch(baseUrl + "/admin/inventory/hot-rule", {
+        method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, cookie()),
+        body: JSON.stringify({ pct, qty }),
+    });
+    assert.equal(res.status, 200);
+    return await res.json();
+};
+
+test("10. 紅標規則：% 與量兩個門檻都要成立才標紅（小量品項不再整片紅）", async () => {
+    const now = new Date().toISOString();
+    const sid = "stk-hot-1";
+    await db.prepare("INSERT INTO stocktake_session (id, icpno, wh_code, wh_name, count_date, status, item_count, counted_count, created_by_name, created_at, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(sid, ICP, "FN099", "紅標測試倉", TODAY, "submitted", 2, 2, "測試員", now, now);
+    // TINY：帳 0.5 差 0.5 → 100%，但只差 0.5 個單位（雜訊）
+    // BIG ：帳 600 差 30 → 5%，量也大（要查）
+    await db.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, future_qty, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(sid + "-1", sid, "TINY", "小量品", "", "KG", 0.5, 1, 0, now);
+    await db.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, future_qty, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(sid + "-2", sid, "BIG", "大量品", "", "KG", 600, 630, 0, now);
+    // 異常排查表看的是「對最新盤差」→ 兩項也要在庫存主檔裡才有最新量可比
+    for (const [c, n, q] of [["TINY", "小量品", 0.5], ["BIG", "大量品", 600]])
+        await db.prepare("INSERT INTO erp_stock_items (icpno, erp_code, name, spec, unit, qty, wh_code, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(ICP, c, n, "", "KG", q, "FN099", now);
+
+    await setHotRule(5, 0); // 只有 % 門檻＝舊行為：兩項都紅
+    let html = await getPage("date=" + TODAY + "&wh=" + ICP + ":FN099");
+    assert.ok(rowOf(html, "TINY").includes("stk-hot"), "只設 % 時小量品也會標紅（就是原本太亂的原因）");
+    assert.ok(rowOf(html, "BIG").includes("stk-hot"), "大量品應標紅");
+
+    await setHotRule(5, 1); // 加上量門檻 → 小量品被濾掉
+    html = await getPage("date=" + TODAY + "&wh=" + ICP + ":FN099");
+    assert.ok(!rowOf(html, "TINY").includes("stk-hot"), "差 0.5 未達量門檻 1 → 不標紅");
+    assert.ok(rowOf(html, "BIG").includes("stk-hot"), "差 30 且 5% → 仍標紅");
+    assert.ok(html.includes("紅標規則 ≥5% 且 ≥1"), "工具列要顯示目前規則");
+    assert.ok(html.includes("紅標 1 項"), "卡片要顯示紅標數，實得：" + (html.match(/紅標 \d+ 項/g) || []).join("/"));
+    assert.ok(html.includes('data-hot="1"') && html.includes('data-hot="0"'), "列要帶 data-hot 供「只看紅標」篩選");
+});
+
+test("11. 異常排查表只列紅標品項，未達門檻的會說明略過幾項", async () => {
+    await setHotRule(5, 1);
+    const html = await (await fetch(baseUrl + "/admin/inventory/anomalies?date=" + TODAY, { headers: cookie() })).text();
+    assert.ok(html.includes(">BIG<"), "達門檻的要列出");
+    assert.ok(!html.includes(">TINY<"), "未達門檻的不推給大家複查");
+    assert.ok(/另有 <b>\d+<\/b> 項有盤差但未達門檻/.test(html), "要說明略過幾項，不能默默吃掉");
+});
+
+test("12. 紅標規則存進 app_settings 並留稽核軌跡", async () => {
+    await setHotRule(8, 2);
+    const pct = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("stocktake_hot_pct");
+    const qty = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("stocktake_hot_qty");
+    assert.equal(String(pct.value), "8");
+    assert.equal(String(qty.value), "2");
+    const bad = await fetch(baseUrl + "/admin/inventory/hot-rule", {
+        method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, cookie()),
+        body: JSON.stringify({ pct: -1, qty: 0 }),
+    });
+    assert.equal(bad.status, 400, "負數要擋下並說明怎麼修正");
+    assert.match((await bad.json()).error, /0 或正數/);
+    await setHotRule(5, 0); // 還原預設，不影響其他測試
+});

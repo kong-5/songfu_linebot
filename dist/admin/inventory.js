@@ -19,6 +19,32 @@ function registerInventoryRoutes(router, ctx) {
         try { return new Date(iso).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, hour: "2-digit", minute: "2-digit" }); }
         catch (_) { return String(iso); }
     }
+    // ── 紅標（重點盤差）規則：|盤差%| ≥ pct **且** |盤差量| ≥ qty，兩個條件都要成立才標紅 ──
+    // 兩段式的原因：只看 % → 小量品項（帳 0.5 差 0.5＝100%）整片紅；只看量 → 大量品項差 1 也紅。
+    // 兩者都設才篩得出「真的要去查」的那幾項（2026-07-30 回報：81 項全紅，沒辦法 focus）。
+    // 全域設定（每日盤點頁工具列「紅標規則」可改）：stocktake_hot_pct 預設 5、stocktake_hot_qty 預設 0（不限）。
+    const HOT_PCT_DEFAULT = 5, HOT_QTY_DEFAULT = 0;
+    async function loadHotRule() {
+        const num = async (key, dft) => {
+            try {
+                const r = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
+                const v = r && r.value != null && String(r.value).trim() !== "" ? Number(r.value) : NaN;
+                return (Number.isFinite(v) && v >= 0) ? v : dft;
+            }
+            catch (_) { return dft; }
+        };
+        return { pct: await num("stocktake_hot_pct", HOT_PCT_DEFAULT), qty: await num("stocktake_hot_qty", HOT_QTY_DEFAULT) };
+    }
+    // diff＝盤差量、base＝盤差的基準（應有量或凌越量）。base=0 時 % 無意義 → 只看量。
+    const isHotDiff = (rule, diff, base) => {
+        if (diff == null) return false;
+        const d = Math.abs(Number(diff) || 0);
+        if (d < Number(rule.qty || 0)) return false;
+        const b = Math.abs(Number(base) || 0);
+        if (!b) return d > 0 && Number(rule.qty || 0) > 0; // 基準 0：只有設了量門檻才判定得了
+        return (d / b) * 100 >= Number(rule.pct || 0);
+    };
+    const hotRuleText = (rule) => `≥${rule.pct}%` + (rule.qty ? ` 且 ≥${rule.qty}` : "");
     // ── 「最新系統／對最新盤差」欄的庫存基準（單一權威：每日盤點頁／CSV／異常排查表／「套用實盤」共用）──
     // 今天：即時快照（erp_stock_wh_qty / erp_stock_items）——當天要看的就是「凌越現在怎麼記」。
     // 過去日期：**該日的收盤快照**（erp_stock_wh_daily / erp_stock_daily），凍結不再飄。
@@ -108,9 +134,10 @@ function registerInventoryRoutes(router, ctx) {
     // 盤差一律對「應有」算（實盤 − 應有），否則先開單的品項天天假盤盈（2026-07-30 同事回報：
     // 豆薯 系統 64.4／實盤 92／假盤差 +27.6，其實就是未來單 26.8）。開關關掉＝完全回到舊行為。
     // 盤點當下側用**送出時凍結**的 future_qty；最新/當日側用 makeFutureResolver（今天即時、過去日期收盤快照）。
-    async function loadStocktakeDay(date, adjMap, futOnRaw) {
+    async function loadStocktakeDay(date, adjMap, futOnRaw, hotRuleRaw) {
         const am = adjMap || {}; // 人工調整值（icpno|料號→delta）：最新系統＝凌越 + delta，讓盤差扣掉系統誤差
         const futOn = futOnRaw == null ? await (0, stock_future_js_1.futureReversalEnabled)(db) : !!futOnRaw;
+        const hotRule = hotRuleRaw || await loadHotRule();
         const futureFor = (0, stock_future_js_1.makeFutureResolver)(db, date);
         const sessions = await db.prepare("SELECT * FROM stocktake_session WHERE count_date = ? ORDER BY wh_code").all(date);
         const out = [];
@@ -151,10 +178,14 @@ function registerInventoryRoutes(router, ctx) {
                 const diffLatest = (counted == null || latestShould == null) ? null : Math.round((counted - latestShould) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
-                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, fut, futEst, should, counted, mid, diff, latest, latestRaw, latestFut, latestShould, adj, diffLatest, expiry, editedAt: r.edited_at || null, editedBy: r.edited_by_name || null };
+                // 紅標＝值得去查的盤差（規則見 loadHotRule）。左側用「對當下」、右側用「對最新」各判一次。
+                const hot = isHotDiff(hotRule, diff, futOn ? should : sys);
+                const hotLatest = isHotDiff(hotRule, diffLatest, futOn ? latestShould : latest);
+                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, fut, futEst, should, counted, mid, diff, latest, latestRaw, latestFut, latestShould, adj, diffLatest, hot, hotLatest, expiry, editedAt: r.edited_at || null, editedBy: r.edited_by_name || null };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
-            out.push({ session: s, items, diffCount, latestSource: basis.source, latestAsOf: basis.asOf, latestFrozen: basis.frozen, latestStale: basis.stale,
+            const hotCount = items.filter((it) => it.hot).length;
+            out.push({ session: s, items, diffCount, hotCount, hotRule, latestSource: basis.source, latestAsOf: basis.asOf, latestFrozen: basis.frozen, latestStale: basis.stale,
                 futOn, futStale: !!(futOn && futBasis.stale), futAsOf: futBasis.asOf, futMode: futBasis.mode,
                 futEstAny: items.some((it) => it.futEst) });
         }
@@ -172,7 +203,8 @@ function registerInventoryRoutes(router, ctx) {
         // [未來銷貨加回 2026-07-30] 開關開＝多「應有」欄（系統＋未來），**盤差一律對應有算**；
         // 關＝完全回到舊行為（盤差＝實盤−凌越量，畫面不出現未來欄）。逐品項的未來量在 loadStocktakeDay 算好。
         const futOn = await (0, stock_future_js_1.futureReversalEnabled)(db);
-        const day = await loadStocktakeDay(date, adjMap, futOn);
+        const hotRule = await loadHotRule(); // 紅標門檻（工具列「紅標規則」可改）
+        const day = await loadStocktakeDay(date, adjMap, futOn, hotRule);
         let includedWh = [];
         try { includedWh = (await db.prepare("SELECT code, name, icpno FROM erp_warehouse WHERE include_stocktake = 1 ORDER BY icpno, sort_order, code").all()) || []; } catch (_) { includedWh = []; }
         let recentDates = [];
@@ -211,6 +243,7 @@ function registerInventoryRoutes(router, ctx) {
         if (selWh && selWh.indexOf(":") < 0) selWh = "00:" + selWh;
         const sel = byWh[selWh] || null;
         const totalDiff = day.reduce((s, x) => s + x.diffCount, 0);
+        const totalHot = day.reduce((s, x) => s + x.hotCount, 0);
         // 左側日期欄（近期盤點日；目前選的日期若不在清單內──手動挑的日子──插到最上面）
         const dateColHtml = (() => {
             const list = recentDates.map((r) => ({ d: String(r.d), n: Number(r.n || 0) }));
@@ -235,7 +268,7 @@ function registerInventoryRoutes(router, ctx) {
                 const done = Number(x.session.counted_count || 0), all = Number(x.session.item_count || 0);
                 return `<a class="wh-it ${on ? "on" : ""}" href="/admin/inventory?date=${encodeURIComponent(date)}&wh=${encodeURIComponent(w.key)}">
                   <div class="wh-n">${escapeHtml(w.name || w.code)}${coChip}<span class="wh-c">${escapeHtml(w.code)}</span></div>
-                  <div class="wh-m"><span>已盤 ${done}/${all}</span>${x.diffCount ? `<span class="wh-diff">盤差 ${x.diffCount}</span>` : `<span class="wh-ok">✓</span>`}</div>
+                  <div class="wh-m"><span>已盤 ${done}/${all}</span>${x.diffCount ? `<span class="wh-soft">盤差 ${x.diffCount}</span>` : `<span class="wh-ok">✓</span>`}${x.hotCount ? `<span class="wh-diff" title="符合紅標規則">紅 ${x.hotCount}</span>` : ""}</div>
                 </a>`;
             }
             return `<div class="wh-it idle">
@@ -297,11 +330,10 @@ function registerInventoryRoutes(router, ctx) {
                 return `<span class="stk-ct" role="button" tabindex="0" data-code="${escapeAttr(it.code)}" data-counted="${it.counted == null ? "" : escapeAttr(String(it.counted))}" title="點一下複盤修正實盤數">${fmtN(it.counted)}</span>${edited}${mid}`;
             };
             const rowsHtml = sel.items.map((it) => {
-                // 紅底＝盤差(對當下)超過 ±5% 才標（應有量=0 時 % 無意義，不標）；不再以正負號決定整列底色
-                const hotBase = futOn ? it.should : it.sys;
-                const hot = it.diff != null && hotBase !== 0 && Math.abs((it.diff / hotBase) * 100) > 5;
+                // 紅底＝符合「紅標規則」（|盤差%| ≥ pct 且 |盤差量| ≥ qty，工具列可改）；不以正負號決定底色
+                const hot = it.hot;
                 return `
-              <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" class="${diffCls(it)}${hot ? " stk-hot" : ""}">
+              <tr data-diff="${it.diff != null && it.diff !== 0 ? "1" : "0"}" data-hot="${hot ? "1" : "0"}" class="${diffCls(it)}${hot ? " stk-hot" : ""}">
                 <td class="stk-code">${escapeHtml(it.code)}</td>
                 <td class="stk-name" title="${escapeAttr(it.name + (it.spec ? " " + it.spec : ""))}">${escapeHtml(it.name)}${it.spec ? `<span class="stk-spec">${escapeHtml(it.spec)}</span>` : ""}</td>
                 <td class="stk-num stk-sep">${fmtN(it.sys)}</td>
@@ -324,12 +356,17 @@ function registerInventoryRoutes(router, ctx) {
                 <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
                 <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
                 <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
+                <span class="stk-badge ${sel.hotCount ? "warn" : "ok"}" title="符合紅標規則（${escapeAttr(hotRuleText(hotRule))}）的品項＝值得優先去查的">紅標 ${sel.hotCount} 項</span>
                 <span class="stk-badge" title="右側「系統」欄的資料基準：分倉＝該倉在凌越的分倉庫存量；總量＝全公司總庫存量（該倉無分倉資料時的後備）">${frozenBasis ? "當日基準" : "最新基準"}：${sel.latestSource === "warehouse" ? "分倉" : "總量"}</span>
                 ${frozenBasis
                     ? `<span class="stk-badge ok" title="此日期已過，右側「系統／${latestDiffName}」用 ${basisAsOf} 的收盤庫存快照（凍結），不會再跟著今天的庫存變動">已凍結 ${escapeHtml(basisAsOf)} 收盤${basisFallbackDay ? "（該日無推送）" : ""}</span>`
                     : (sel.latestStale ? `<span class="stk-badge warn" title="查無此日期（含之前）的每日庫存快照——可能超過 90 天保留期或當時尚未啟用推送，只好退回顯示即時庫存，此欄會隨庫存變動">無當日快照・顯示即時量</span>` : "")}
                 ${futOn ? `<span class="stk-badge fut" title="未來日期的銷貨單已扣凌越帳、貨還在架上 → 應有實體量＝系統＋未來銷貨，盤差對「應有」算。盤點當下側用送出時凍結的未來量${sel.futEstAny ? "；此單在功能上線前送出、當時沒凍結，標「推估」的列改用目前的未來銷貨回推" : ""}${sel.futStale ? "；此日期查無未來銷貨快照，未來量以 0 計" : ""}">未來加回：${sel.futStale ? "無當日快照" : (sel.futEstAny ? "已計入盤差（部分推估）" : "已計入盤差")}</span>` : ""}
-                <label class="sf-switch-label" style="font-size:11.5px;"><input type="checkbox" id="stkOnlyDiff"><span class="sf-switch"></span>只看盤差</label>
+                <div class="sf-seg" id="stkRowFilter" style="font-size:11.5px;">
+                  <button type="button" class="sf-seg-btn on" data-f="all">全部</button>
+                  <button type="button" class="sf-seg-btn" data-f="diff">有盤差</button>
+                  <button type="button" class="sf-seg-btn" data-f="hot" title="只看符合紅標規則（${escapeAttr(hotRuleText(hotRule))}）的品項">只看紅標</button>
+                </div>
                 <button type="button" class="stk-ibtn" id="stkInfo2" aria-expanded="false" aria-label="盤差計算說明" title="盤差計算說明">${SF_ICONS.info}</button>
               </div>
             </div>
@@ -402,6 +439,7 @@ function registerInventoryRoutes(router, ctx) {
         .wh-co{margin-left:6px;font-size:10px;font-weight:700;color:#2383e2;background:#e8f1fd;padding:1px 6px;border-radius:5px;vertical-align:1px;}
         .wh-m{display:flex;gap:8px;align-items:center;margin-top:3px;font-size:11.5px;color:#787774;font-variant-numeric:tabular-nums;}
         .wh-diff{color:#b3261e;font-weight:600;}
+        .wh-soft{color:#8a5a10;}
         .wh-ok{color:#1f7a46;font-weight:700;}
         .wh-pend{color:#8a5a10;background:#fcf3e2;padding:1px 7px;border-radius:5px;font-weight:600;}
         .stk-card{background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;overflow:hidden;}
@@ -491,6 +529,7 @@ function registerInventoryRoutes(router, ctx) {
         <h2 class="stk-sect-t">各倉盤點結果</h2>
         <span class="stk-pill">本日已盤 <b>${day.length}</b> / 納入盤點 <b>${includedWh.length}</b> 倉（${pct(day.length, includedWh.length)}%）</span>
         <span class="stk-pill ${totalDiff ? "warn" : "ok"}">盤差品項 <b>${totalDiff}</b> 項</span>
+        <span class="stk-pill ${totalHot ? "warn" : "ok"}" title="符合紅標規則（${escapeAttr(hotRuleText(hotRule))}）＝值得優先去查的品項">紅標 <b>${totalHot}</b> 項</span>
         ${pendingWh.length ? `<span class="stk-pill warn">未盤：${pendingWh.map((w) => escapeHtml(w.name || w.code)).join("、")}</span>` : (includedWh.length ? `<span class="stk-pill ok">全部倉庫已盤 ✓</span>` : "")}
         <span style="flex:1"></span>
         <input type="search" id="stkQ" class="stk-search" placeholder="搜尋品項（跨倉模糊）…" autocomplete="off">
@@ -502,6 +541,7 @@ function registerInventoryRoutes(router, ctx) {
         <button type="button" class="stk-togbtn" id="stkRefreshInv" title="${date < stkAdminTaipeiDate() ? "拉一次凌越最新庫存（更新的是「今天」的庫存；此日期已過，右側系統欄用當日收盤快照，不會跟著變）" : "拉一次凌越最新庫存，右側「最新系統／對最新盤差」隨即更新"}">↻ 更新最新庫存</button>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/anomalies?date=${encodeURIComponent(date)}" title="當日盤差品項＋可能原因，可推送 LINE 群組請大家複查">異常排查表</a>
         <a class="stk-togbtn" style="text-decoration:none;" href="/admin/inventory/stocktake.csv?date=${encodeURIComponent(date)}">匯出 CSV</a>
+        <button type="button" class="stk-togbtn" id="stkHotRule" data-pct="${escapeAttr(String(hotRule.pct))}" data-qty="${escapeAttr(String(hotRule.qty))}" title="哪些盤差要標紅（整列紅底＋「只看紅標」篩選）。點開可改門檻，全站共用。">紅標規則 ${escapeHtml(hotRuleText(hotRule))}</button>
         <label class="sf-switch-label" style="font-size:12.5px;" title="開＝多一欄「應有＝系統＋未來銷貨」，盤差改對應有算（未來日期的銷貨單已扣凌越帳但貨還在架上，不加回會天天假盤盈）；關＝回到原本的凌越量對帳。與目前庫存頁共用同一開關。"><input type="checkbox" id="stkFutRev"${futOn ? " checked" : ""}><span class="sf-switch"></span>未來銷貨加回</label>
         <span id="stkRefreshMsg" style="font-size:12px;color:#8a5a10;"></span>
       </div>
@@ -549,11 +589,41 @@ function registerInventoryRoutes(router, ctx) {
           h+='</tbody></table></div>'+(rows.length>80?'<div style="padding:6px 14px;font-size:12px;color:#9b9a97;">僅顯示前 80 筆，請縮小關鍵字。</div>':'');
           sc.innerHTML=h; sc.style.display=''; grid.style.display='none';
         }); }
-        var btn=document.getElementById('stkOnlyDiff');
-        if(btn){ btn.addEventListener('change',function(){
-          var on=btn.checked;
-          var rows=document.querySelectorAll('tr[data-diff]');
-          Array.prototype.forEach.call(rows,function(tr){ tr.style.display=(on&&tr.getAttribute('data-diff')==='0')?'none':''; });
+        var segF=document.getElementById('stkRowFilter');
+        if(segF){ segF.addEventListener('click',function(ev){
+          var b=ev.target.closest('button'); if(!b) return;
+          this.querySelectorAll('button').forEach(function(x){x.classList.remove('on');}); b.classList.add('on');
+          var f=b.dataset.f;
+          Array.prototype.forEach.call(document.querySelectorAll('tr[data-diff]'),function(tr){
+            var show = f==='all' || (f==='diff'&&tr.getAttribute('data-diff')==='1') || (f==='hot'&&tr.getAttribute('data-hot')==='1');
+            tr.style.display=show?'':'none';
+          });
+        }); }
+        /* ── 紅標規則：點工具列標籤開面板改門檻（全域設定，寫稽核軌跡）── */
+        var hotBtn=document.getElementById('stkHotRule');
+        if(hotBtn){ hotBtn.addEventListener('click',function(e){
+          e.stopPropagation();
+          var old=document.getElementById('stkHotPop'); if(old){ old.remove(); return; }
+          var pop=document.createElement('div'); pop.className='stk-pop'; pop.id='stkHotPop'; pop.style.width='268px';
+          pop.innerHTML='<div class="stk-pop-t">紅標規則</div>'
+            +'<div class="stk-pop-s">兩個條件<b>都</b>成立才標紅。只設 % 的話小量品項會整片紅；只設量的話大品項差一點也紅。</div>'
+            +'<div class="stk-pop-row"><span>盤差 % ≥</span><input type="number" step="any" min="0" id="stkHotPct" value="'+hotBtn.dataset.pct+'"></div>'
+            +'<div class="stk-pop-row"><span>盤差量 ≥</span><input type="number" step="any" min="0" id="stkHotQty" value="'+hotBtn.dataset.qty+'"></div>'
+            +'<div class="stk-pop-s">量填 0＝不限。例：<b>5% 且 1</b>＝差超過 5% 又至少差 1 個單位才標。</div>'
+            +'<div class="stk-pop-b"><button type="button" class="pri" id="stkHotSave">儲存</button><button type="button" id="stkHotX">關閉</button></div>';
+          document.body.appendChild(pop);
+          var r=hotBtn.getBoundingClientRect();
+          pop.style.top=(window.scrollY+r.bottom+6)+'px';
+          pop.style.left=Math.max(8,Math.min(window.scrollX+r.left, window.scrollX+document.documentElement.clientWidth-280))+'px';
+          pop.querySelector('#stkHotX').addEventListener('click',function(){ pop.remove(); });
+          pop.querySelector('#stkHotSave').addEventListener('click',function(){
+            var pv=Number(document.getElementById('stkHotPct').value), qv=Number(document.getElementById('stkHotQty').value);
+            if(!isFinite(pv)||pv<0||!isFinite(qv)||qv<0){ alert('門檻要填 0 或正數'); return; }
+            fetch('/admin/inventory/hot-rule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pct:pv,qty:qv})})
+              .then(function(x){return x.json();})
+              .then(function(j){ if(j&&j.ok) location.reload(); else alert('儲存失敗：'+((j&&j.error)||'未知錯誤')); })
+              .catch(function(){ alert('儲存失敗，請稍後再試'); });
+          });
         }); }
         // 更新最新庫存：觸發內網代理拉一次凌越，成功後重載頁面（對最新盤差就會更新）
         var rb=document.getElementById('stkRefreshInv'), msg=document.getElementById('stkRefreshMsg');
@@ -665,6 +735,35 @@ function registerInventoryRoutes(router, ctx) {
     });
     // ── 庫存調整（彌補凌越系統誤差，免重整）：每公司每料號一個總調整值 delta。
     //    顯示庫存＝凌越快照 + delta；盤差「最新系統」也加 delta（校正後對最新盤差歸零）。只影響內部顯示，不寫回凌越。──
+    // 紅標規則（全域設定）：哪些盤差要標紅／進「只看紅標」與異常排查表。異動寫稽核軌跡。
+    router.post("/inventory/hot-rule", express_1.default.json(), async (req, res) => {
+        try {
+            const pct = Number(req.body?.pct), qty = Number(req.body?.qty);
+            if (!Number.isFinite(pct) || pct < 0 || !Number.isFinite(qty) || qty < 0) {
+                res.status(400).json({ error: "門檻要填 0 或正數（盤差% 與盤差量各一個）" });
+                return;
+            }
+            const before = await loadHotRule();
+            const isPg = Boolean(process.env.DATABASE_URL);
+            for (const [k, v] of [["stocktake_hot_pct", String(pct)], ["stocktake_hot_qty", String(qty)]]) {
+                if (isPg) await db.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value").run(k, v);
+                else await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(k, v);
+            }
+            try {
+                await logDataChange(req, {
+                    entityType: "app_settings", entityId: "stocktake_hot_rule", action: "update",
+                    summary: `盤點紅標規則 ${hotRuleText(before)} → ${hotRuleText({ pct, qty })}`,
+                    meta: { before, after: { pct, qty } },
+                });
+            }
+            catch (e) { console.warn("[admin] 紅標規則稽核寫入失敗（不阻斷）:", e?.message || e); }
+            res.json({ ok: true, pct, qty });
+        }
+        catch (e) {
+            console.error("[admin] hot-rule", e?.message || e);
+            res.status(500).json({ error: String(e?.message || e).slice(0, 120) });
+        }
+    });
     router.post("/inventory/adjustments", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const icpno = (0, erp_companies_js_1.normIcpno)(req.body && req.body.icpno);
         const back = String(req.body?.back || "").replace(/[^\w=&%:.\-]/g, "");
@@ -933,11 +1032,13 @@ function registerInventoryRoutes(router, ctx) {
             return m;
         };
         const list = [];
+        let skipped = 0; // 有盤差但未達紅標門檻＝不推給大家複查（推 81 項等於沒推）
         for (const x of day) {
             const icp = (0, erp_companies_js_1.normIcpno)(x.session.icpno);
             const xm = await getXwh(icp);
             for (const it of x.items) {
                 if (it.diffLatest == null || it.diffLatest === 0) continue;
+                if (!it.hotLatest) { skipped++; continue; }
                 const others = (xm[it.code] || []).filter((w) => w.wh !== String(x.session.wh_code || "") && w.qty !== 0);
                 // 分母同盤差基準（未來加回開時＝應有量），% 才對得上數字
                 const pctBase = it.latestShould == null ? it.latest : it.latestShould;
@@ -946,12 +1047,16 @@ function registerInventoryRoutes(router, ctx) {
             }
         }
         list.sort((a, b) => Math.abs(b.pct || 0) - Math.abs(a.pct || 0));
+        list.skipped = skipped;
+        list.hotRule = day.length ? day[0].hotRule : await loadHotRule();
         return list;
     }
     router.get("/inventory/anomalies", async (req, res) => {
         const qd = String(req.query.date || "").trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
         const list = await loadStocktakeAnomalies(date);
+        const skipped = Number(list.skipped || 0);
+        const hotRuleTxt = hotRuleText(list.hotRule || { pct: HOT_PCT_DEFAULT, qty: HOT_QTY_DEFAULT });
         let groups = [];
         try { groups = (await db.prepare("SELECT group_id, group_name FROM stocktake_group ORDER BY group_name").all()) || []; } catch (_) { groups = []; }
         let defGroup = "";
@@ -977,7 +1082,7 @@ function registerInventoryRoutes(router, ctx) {
       </style>
       <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / <a href="/admin/inventory">盤點</a> / 異常排查表</div>
       <h1 class="notion-page-title">異常排查表</h1>
-      <p class="notion-hint" style="margin:-2px 0 14px;">列出當日<b>盤差 ≠ 0</b>（實盤 vs 系統帳＋調整＋未來銷貨加回）的品項，依盤差方向與跨倉/調整訊號自動列<b>可能原因</b>。勾選後可推送到 LINE 群組請大家複查——只是提示排查方向，<b>不會動任何帳</b>。${date < stkAdminTaipeiDate() ? "此日期已過，系統帳用<b>該日收盤庫存快照（凍結）</b>，清單不會再隨今天的庫存變動。" : "今天的系統帳用<b>即時庫存快照</b>。"}</p>
+      <p class="notion-hint" style="margin:-2px 0 14px;">列出當日<b>達到紅標門檻</b>（${escapeHtml(hotRuleTxt)}；盤差＝實盤 vs 系統帳＋調整＋未來銷貨加回）的品項${skipped ? `——另有 <b>${skipped}</b> 項有盤差但未達門檻，<b>不列入</b>（門檻在每日盤點頁工具列「紅標規則」可改）` : ""}，依盤差方向與跨倉/調整訊號自動列<b>可能原因</b>。勾選後可推送到 LINE 群組請大家複查——只是提示排查方向，<b>不會動任何帳</b>。${date < stkAdminTaipeiDate() ? "此日期已過，系統帳用<b>該日收盤庫存快照（凍結）</b>，清單不會再隨今天的庫存變動。" : "今天的系統帳用<b>即時庫存快照</b>。"}</p>
       ${banner}
       <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;">
         <form method="get" action="/admin/inventory/anomalies" style="display:inline-flex;margin:0;">
@@ -995,7 +1100,7 @@ function registerInventoryRoutes(router, ctx) {
       <div class="notion-card" style="padding:0;overflow:auto;">
         <table>
           <thead><tr><th style="text-align:center;">選</th><th>倉庫</th><th>料號</th><th>品名</th><th style="text-align:right;">最新應有<br><span style="font-weight:400;font-size:10px;">快照/調整/未來/加總</span></th><th style="text-align:right;">實盤</th><th style="text-align:right;">對最新盤差(%)</th><th>可能原因（排查方向）</th></tr></thead>
-          <tbody>${rowsHtml || `<tr><td colspan="8" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此日期沒有「對最新盤差 ≠ 0」的品項 ${sfInlineIcon("spark")}</td></tr>`}</tbody>
+          <tbody>${rowsHtml || `<tr><td colspan="8" style="text-align:center;color:var(--notion-text-muted,#9b9a97);padding:22px;">此日期沒有達到紅標門檻（${escapeHtml(hotRuleTxt)}）的盤差品項${skipped ? `——有 ${skipped} 項盤差未達門檻` : ""} ${sfInlineIcon("spark")}</td></tr>`}</tbody>
         </table>
       </div>
       ${list.length ? `
@@ -1385,6 +1490,7 @@ function registerInventoryRoutes(router, ctx) {
             } catch (_) { rows = []; }
             const adjMap = await statsAdjMap(icpno);
             const futOnImp = await statsFutFlag(req);
+            const hotPctImp = (await loadHotRule()).pct;
             // code → {code,name,spec,days:{date:{sys,counted}}}（同料號跨倉先加總）
             const items = new Map();
             for (const r of rows) {
@@ -1416,7 +1522,7 @@ function registerInventoryRoutes(router, ctx) {
                     if (!g) { g = { items: 0, itemsDiff: 0, itemsSevere: 0, sumAbsDiff: 0, sumBase: 0, sumAbsPct: 0 }; dayAgg.set(d, g); }
                     g.items++;
                     if (Math.round(diff * 100) / 100 !== 0) g.itemsDiff++;
-                    if (Math.abs(p) > 5) g.itemsSevere++;
+                    if (Math.abs(p) >= hotPctImp) g.itemsSevere++; // 「嚴重品項」門檻與盤點頁紅標規則同一個
                     g.sumAbsDiff += Math.abs(diff);
                     g.sumBase += Math.max(Math.abs(sysAdj), 1);
                     g.sumAbsPct += Math.abs(p);
