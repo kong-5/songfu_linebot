@@ -1111,11 +1111,58 @@ function registerInventoryRoutes(router, ctx) {
         try { (await db.prepare("SELECT erp_code, delta FROM stock_adjustment WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").all(icpno) || []).forEach((r) => { m[String(r.erp_code)] = Number(r.delta || 0); }); } catch (_) { }
         return m;
     };
-    // [未來銷貨加回 2026-07-30] 統計盤差同口徑：盤差＝實盤 −（凍結系統 ＋ 凍結未來銷貨 ＋ 目前 delta）。
+    // [未來銷貨加回 2026-07-30] 統計盤差同口徑：盤差＝實盤 −（凍結系統 ＋ 未來銷貨 ＋ 目前 delta）。
     // future_qty 是送出當下凍結、且已做分倉分攤（只掛在主倉），所以同料號跨倉加總不會雙倍。
-    // 開關關閉＝一律 0，統計完全回到舊行為。
-    const statsFutOn = () => (0, stock_future_js_1.futureReversalEnabled)(db);
-    const statsFutOf = (on, r) => (on ? Number(r.future_qty || 0) : 0);
+    // `?fut=0/1` 可覆寫（統計圖表頁上的開關）；沒帶＝跟隨全域設定。關＝一律 0，完全回到舊行為。
+    const statsFutFlag = async (req) => {
+        const q = String(req.query.fut == null ? "" : req.query.fut).trim();
+        if (q === "0") return false;
+        if (q === "1") return true;
+        return await (0, stock_future_js_1.futureReversalEnabled)(db);
+    };
+    // 凍結值優先；**整組（料號,日期）都沒有凍結值**＝功能上線前送出的盤點（欄位是 NULL，不是 0）→
+    // 退回與每日盤點頁同一套 resolver 推估（今天＝即時、過去＝該日收盤快照），查不到＝0。
+    // 不這樣做的話，盤點頁盤差已修正、熱力圖卻還是舊的假盤差，兩邊對不起來（2026-07-30 回報）。
+    // 逐「組」補一次而不是逐列補：未來量是公司層級的，同料號跨倉逐列加會雙倍。
+    const statsFutureFallback = async (icpno, wh, needs) => {
+        const out = {};
+        if (!needs || !needs.size) return out;
+        const today = stkAdminTaipeiDate();
+        let minSnap = null;
+        try {
+            const r = await db.prepare("SELECT MIN(snap_date) AS d FROM erp_future_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(icpno);
+            minSnap = r && r.d ? String(r.d) : null;
+        } catch (_) { minSnap = null; }
+        const byDate = new Map();
+        for (const k of needs) {
+            const i = k.lastIndexOf("|");
+            const code = k.slice(0, i), d = k.slice(i + 1);
+            // 該日（含之前）不可能有未來銷貨快照 → 一定是 0，免建 resolver（省掉整段歷史的查詢）
+            if (d !== today && (!minSnap || d < minSnap)) continue;
+            if (!byDate.has(d)) byDate.set(d, []);
+            byDate.get(d).push(code);
+        }
+        for (const [d, codes] of byDate) {
+            // wh 空字串＝公司總量口徑（統計是跨倉加總）；有指定倉才走分倉分攤
+            const basis = await (0, stock_future_js_1.makeFutureResolver)(db, d)(icpno, wh); // d＝今天時 resolver 自動走即時
+            if (basis.stale) continue;
+            for (const c of codes) {
+                const v = basis.get(c);
+                if (v) out[c + "|" + d] = Math.round(v * 100) / 100;
+            }
+        }
+        return out;
+    };
+    // 逐列累加用：回 {sys 原始加總, fut 凍結未來加總, anyFrozen 是否有任何一列帶凍結值}
+    const statsAccFut = (acc, r) => {
+        acc.fut += Number(r.future_qty || 0);
+        if (r.future_qty != null && r.future_qty !== "") acc.anyFrozen = true;
+    };
+    const statsSysEff = (acc, futOn, fallback, key) => {
+        if (!futOn) return acc.sys;
+        const f = acc.anyFrozen ? acc.fut : Number((fallback || {})[key] || 0);
+        return Math.round((acc.sys + f) * 100) / 100;
+    };
     router.get("/inventory/stats/items", async (req, res) => {
         try {
             const icpno = stickyIcpno(req, res);
@@ -1161,18 +1208,23 @@ function registerInventoryRoutes(router, ctx) {
                 const sql = "SELECT s.count_date AS d, c.sys_qty, c.counted_qty, c.future_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND c.erp_code = ? AND s.count_date >= ? AND c.counted_qty IS NOT NULL" + (wh ? " AND s.wh_code = ?" : "");
                 vrows = (wh ? await db.prepare(sql).all(icpno, code, since, wh) : await db.prepare(sql).all(icpno, code, since)) || [];
             } catch (_) { vrows = []; }
-            const futOnKl = await statsFutOn();
+            const futOnKl = await statsFutFlag(req);
             const byDate = new Map(); // 全公司檢視＝同日各倉加總後算盤差
             for (const v of vrows) {
                 const k = String(v.d);
-                const acc = byDate.get(k) || { sys: 0, counted: 0 };
-                acc.sys += Number(v.sys_qty || 0) + statsFutOf(futOnKl, v); // 應有實體量（含凍結的未來銷貨）
+                const acc = byDate.get(k) || { sys: 0, counted: 0, fut: 0, anyFrozen: false };
+                acc.sys += Number(v.sys_qty || 0);
+                statsAccFut(acc, v);
                 acc.counted += Number(v.counted_qty || 0);
                 byDate.set(k, acc);
             }
+            const needKl = new Set();
+            if (futOnKl) for (const [d0, a0] of byDate) if (!a0.anyFrozen) needKl.add(code + "|" + d0);
+            const fbKl = await statsFutureFallback(icpno, wh, needKl);
             const adjKl = Number((await statsAdjMap(icpno))[code] || 0); // 盤差含庫存調整（與熱力圖一致）
             const variance = Array.from(byDate.entries()).sort((a, b) => a[0].localeCompare(b[0]))
-                .map(([d, a]) => ({ d, sys: a.sys, counted: a.counted, var_pct: statsVarPct(a.sys + adjKl, a.counted) }));
+                .map(([d, a]) => { const sysEff = statsSysEff(a, futOnKl, fbKl, code + "|" + d);
+                    return { d, sys: sysEff, counted: a.counted, var_pct: statsVarPct(sysEff + adjKl, a.counted) }; });
             res.json({ scope, bars, variance });
         }
         catch (e) {
@@ -1231,21 +1283,25 @@ function registerInventoryRoutes(router, ctx) {
                 const sql = "SELECT s.count_date AS d, c.erp_code, c.sys_qty, c.counted_qty, c.future_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND s.count_date >= ? AND c.counted_qty IS NOT NULL" + (wh ? " AND s.wh_code = ?" : "");
                 vrows = (wh ? await db.prepare(sql).all(icpno, since, wh) : await db.prepare(sql).all(icpno, since)) || [];
             } catch (_) { vrows = []; }
-            const futOnSer = await statsFutOn();
+            const futOnSer = await statsFutFlag(req);
             const vagg = new Map();
             for (const v of vrows) {
                 const k = String(v.erp_code) + "|" + String(v.d);
-                const a = vagg.get(k) || { sys: 0, counted: 0 };
-                a.sys += Number(v.sys_qty || 0) + statsFutOf(futOnSer, v); // 應有實體量（含凍結的未來銷貨）
+                const a = vagg.get(k) || { sys: 0, counted: 0, fut: 0, anyFrozen: false };
+                a.sys += Number(v.sys_qty || 0);
+                statsAccFut(a, v);
                 a.counted += Number(v.counted_qty || 0);
                 vagg.set(k, a);
             }
+            const needSer = new Set();
+            if (futOnSer) for (const [k0, a0] of vagg) if (!a0.anyFrozen) needSer.add(k0);
+            const fbSer = await statsFutureFallback(icpno, wh, needSer);
             const adjSer = await statsAdjMap(icpno); // 盤差含庫存調整（與熱力圖一致）
             for (const [k, a] of vagg.entries()) {
                 const p = k.indexOf("|");
                 const code0 = k.slice(0, p);
                 const it = items.get(code0);
-                if (it) it.counts[k.slice(p + 1)] = { v: statsVarPct(a.sys + Number(adjSer[code0] || 0), a.counted), c: a.counted };
+                if (it) it.counts[k.slice(p + 1)] = { v: statsVarPct(statsSysEff(a, futOnSer, fbSer, k) + Number(adjSer[code0] || 0), a.counted), c: a.counted };
             }
             let list = Array.from(items.values());
             const whFiltered = !!(wh && scope === "company" && whCodes && whCodes.size);
@@ -1272,7 +1328,7 @@ function registerInventoryRoutes(router, ctx) {
                 const sql = "SELECT s.count_date AS d, c.erp_code, c.name, c.spec, c.sys_qty, c.counted_qty, c.future_qty FROM stocktake_count c JOIN stocktake_session s ON s.id = c.session_id WHERE COALESCE(NULLIF(TRIM(s.icpno),''),'00') = ? AND s.count_date >= ? AND c.counted_qty IS NOT NULL" + (wh ? " AND s.wh_code = ?" : "");
                 rows = (wh ? await db.prepare(sql).all(icpno, since, wh) : await db.prepare(sql).all(icpno, since)) || [];
             } catch (_) { rows = []; }
-            const futOnHm = await statsFutOn();
+            const futOnHm = await statsFutFlag(req);
             const items = new Map(); // code -> {code,name,spec,days:{date:{sys,counted}}}
             for (const r of rows) {
                 const code = String(r.erp_code || "").trim();
@@ -1280,11 +1336,15 @@ function registerInventoryRoutes(router, ctx) {
                 let it = items.get(code);
                 if (!it) { it = { code, name: String(r.name || ""), spec: String(r.spec || ""), days: {} }; items.set(code, it); }
                 const k = String(r.d);
-                const acc = it.days[k] || { sys: 0, counted: 0 };
-                acc.sys += Number(r.sys_qty || 0) + statsFutOf(futOnHm, r); // 應有實體量（含凍結的未來銷貨）
+                const acc = it.days[k] || { sys: 0, counted: 0, fut: 0, anyFrozen: false };
+                acc.sys += Number(r.sys_qty || 0);
+                statsAccFut(acc, r);
                 acc.counted += Number(r.counted_qty || 0);
                 it.days[k] = acc;
             }
+            const needHm = new Set();
+            if (futOnHm) for (const it of items.values()) for (const [d0, a0] of Object.entries(it.days)) if (!a0.anyFrozen) needHm.add(it.code + "|" + d0);
+            const fbHm = await statsFutureFallback(icpno, wh, needHm);
             const dates = [];
             for (let i = days - 1; i >= 0; i--) dates.push(statsTaipeiDateAgo(i));
             const adjMap = await statsAdjMap(icpno); // 盤差含庫存調整（誤差補償）
@@ -1293,9 +1353,12 @@ function registerInventoryRoutes(router, ctx) {
                 let maxAbs = 0;
                 const adj = Number(adjMap[it.code] || 0);
                 for (const [d, a] of Object.entries(it.days)) {
-                    const sysAdj = Math.round((a.sys + adj) * 100) / 100;
+                    const sysEff = statsSysEff(a, futOnHm, fbHm, it.code + "|" + d); // 應有實體量（凍結值優先，缺則推估）
+                    const sysAdj = Math.round((sysEff + adj) * 100) / 100;
                     const p = statsVarPct(sysAdj, a.counted);
-                    cells[d] = { v: p, sys: a.sys, counted: a.counted };
+                    cells[d] = { v: p, sys: sysEff, counted: a.counted };
+                    const futUsed = Math.round((sysEff - a.sys) * 100) / 100;
+                    if (futUsed) { cells[d].fut = futUsed; cells[d].sys_raw = Math.round(a.sys * 100) / 100; if (!a.anyFrozen) cells[d].fut_est = 1; }
                     if (adj) { cells[d].adj = adj; cells[d].sys_adj = sysAdj; }
                     if (Math.abs(p) > maxAbs) maxAbs = Math.abs(p);
                 }
@@ -1321,7 +1384,7 @@ function registerInventoryRoutes(router, ctx) {
                 rows = (await db.prepare(sql).all(icpno, since)) || [];
             } catch (_) { rows = []; }
             const adjMap = await statsAdjMap(icpno);
-            const futOnImp = await statsFutOn();
+            const futOnImp = await statsFutFlag(req);
             // code → {code,name,spec,days:{date:{sys,counted}}}（同料號跨倉先加總）
             const items = new Map();
             for (const r of rows) {
@@ -1330,17 +1393,23 @@ function registerInventoryRoutes(router, ctx) {
                 let it = items.get(code);
                 if (!it) { it = { code, name: String(r.name || ""), spec: String(r.spec || ""), days: {} }; items.set(code, it); }
                 const k = String(r.d);
-                const a = it.days[k] || { sys: 0, counted: 0 };
-                a.sys += Number(r.sys_qty || 0) + statsFutOf(futOnImp, r); // 應有實體量（含凍結的未來銷貨）
+                const a = it.days[k] || { sys: 0, counted: 0, fut: 0, anyFrozen: false };
+                a.sys += Number(r.sys_qty || 0);
+                statsAccFut(a, r);
                 a.counted += Number(r.counted_qty || 0);
                 it.days[k] = a;
             }
+            const needImp = new Set();
+            if (futOnImp) for (const it of items.values()) for (const [d0, a0] of Object.entries(it.days)) if (!a0.anyFrozen) needImp.add(it.code + "|" + d0);
+            const fbImp = await statsFutureFallback(icpno, "", needImp); // 改善檢視不分倉 → 公司層級
+            // 應有實體量（凍結值優先，缺則推估）；下面兩處統計都用這個，口徑才一致
+            const impSys = (it, d, a) => statsSysEff(a, futOnImp, fbImp, it.code + "|" + d);
             // 每日整體彙總
             const dayAgg = new Map(); // date → {items,itemsDiff,itemsSevere,sumAbsDiff,sumBase,sumAbsPct}
             for (const it of items.values()) {
                 const adj = Number(adjMap[it.code] || 0);
                 for (const [d, a] of Object.entries(it.days)) {
-                    const sysAdj = a.sys + adj;
+                    const sysAdj = impSys(it, d, a) + adj;
                     const diff = a.counted - sysAdj;
                     const p = statsVarPct(sysAdj, a.counted);
                     let g = dayAgg.get(d);
@@ -1382,7 +1451,7 @@ function registerInventoryRoutes(router, ctx) {
                 const adj = Number(adjMap[it.code] || 0);
                 const f = [], s = [];
                 for (const [d, a] of Object.entries(it.days)) {
-                    const p = Math.abs(statsVarPct(a.sys + adj, a.counted));
+                    const p = Math.abs(statsVarPct(impSys(it, d, a) + adj, a.counted));
                     (d < mid ? f : s).push(p);
                 }
                 const avg = (arr) => arr.length ? arr.reduce((x, y) => x + y, 0) / arr.length : null;
@@ -1402,6 +1471,9 @@ function registerInventoryRoutes(router, ctx) {
     });
     router.get("/inventory/stats", async (req, res) => {
         const icpno = stickyIcpno(req, res);
+        // 未來銷貨加回：本頁開關的預設值＝全域設定（app_settings.stock_future_reversal_enabled）。
+        // 這裡的開關**只影響本頁圖表**（打 API 時帶 ?fut=），不會改到全域設定與每日盤點頁。
+        const futDefault = await (0, stock_future_js_1.futureReversalEnabled)(db);
         let whs = [];
         try { whs = (await db.prepare("SELECT code, name FROM erp_warehouse WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY sort_order, code").all(icpno)) || []; } catch (_) { whs = []; }
         const coSeg = Object.entries(erp_companies_js_1.ERP_COMPANY_NAMES).map(([c, n]) => `<a class="sf-seg-btn ${c === icpno ? "on" : ""}" href="/admin/inventory/stats?icpno=${c}">${escapeHtml(n)}</a>`).join("");
@@ -1508,6 +1580,7 @@ function registerInventoryRoutes(router, ctx) {
           <button type="button" class="sf-seg-btn" data-v="heat">${sfInlineIcon("chartBar")} 盤差熱力圖</button>
           <button type="button" class="sf-seg-btn" data-v="improve">${sfInlineIcon("trendingUp")} 盤差改善</button>
         </div>
+        <label class="sf-switch-label" style="font-size:12px;" title="開＝盤差對「應有實體量」（系統＋未來銷貨）算，與每日盤點頁同口徑；關＝對原始凌越量算。只影響本頁圖表，不會改到全域設定。"><input type="checkbox" id="ivsFut"${futDefault ? " checked" : ""}><span class="sf-switch"></span>未來銷貨加回</label>
         <span style="flex:1"></span>
         <span class="ivs-note" id="ivsScopeNote"></span>
       </div>
@@ -1658,7 +1731,9 @@ function registerInventoryRoutes(router, ctx) {
         "use strict";
         var ICPNO=${JSON.stringify(icpno)};
         var WHS=${whJson};
-        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hideZero:false, hDays:14, hOnly:false, hShowV:false, hShowAll:true, hQ:"", hSel:null, hScale:100, iDays:28, imp:null};
+        var S={view:"charts", wh:"", gran:"d", period:30, item:null, hideZero:false, hDays:14, hOnly:false, hShowV:false, hShowAll:true, hQ:"", hSel:null, hScale:100, iDays:28, imp:null, fut:${futDefault ? "true" : "false"}};
+        // 盤差口徑參數：帶 fut=1/0 明確覆寫伺服器的全域設定（本頁開關只影響本頁）
+        function futQ(){ return "&fut="+(S.fut?"1":"0"); }
         var klineCache={}; // code|wh -> {scope,bars,variance}
         var heatCache={};  // wh|days -> {dates,items}
         var root=document.querySelector(".ivs-root");
@@ -1861,7 +1936,7 @@ function registerInventoryRoutes(router, ctx) {
           var key=S.item.code+"|"+S.wh;
           if(klineCache[key]){ drawCharts(); return; }
           document.getElementById("ivsK").innerHTML='<div class="ivs-empty">載入中…</div>';
-          fetchJson("/admin/inventory/stats/kline?icpno="+encodeURIComponent(ICPNO)+"&code="+encodeURIComponent(S.item.code)+"&wh="+encodeURIComponent(S.wh))
+          fetchJson("/admin/inventory/stats/kline?icpno="+encodeURIComponent(ICPNO)+"&code="+encodeURIComponent(S.item.code)+"&wh="+encodeURIComponent(S.wh)+futQ())
             .then(function(j){ klineCache[key]=j; drawCharts(); })
             .catch(function(e){ document.getElementById("ivsK").innerHTML='<div class="ivs-empty">載入失敗：'+esc(e.message)+'</div>'; });
         }
@@ -1892,7 +1967,7 @@ function registerInventoryRoutes(router, ctx) {
           var key=S.wh;
           if(seriesCache[key]){ drawList(); return; }
           document.getElementById("ivsList").innerHTML='<div class="ivs-empty" style="grid-column:1/-1;">載入中…</div>';
-          fetchJson("/admin/inventory/stats/series?icpno="+encodeURIComponent(ICPNO)+"&wh="+encodeURIComponent(S.wh)+"&days=30")
+          fetchJson("/admin/inventory/stats/series?icpno="+encodeURIComponent(ICPNO)+"&wh="+encodeURIComponent(S.wh)+"&days=30"+futQ())
             .then(function(j){ seriesCache[key]=j; drawList(); })
             .catch(function(e){ document.getElementById("ivsList").innerHTML='<div class="ivs-empty" style="grid-column:1/-1;">載入失敗：'+esc(e.message)+'</div>'; });
         }
@@ -1996,7 +2071,7 @@ function registerInventoryRoutes(router, ctx) {
           var key=S.wh+"|"+S.hDays;
           if(heatCache[key]){ drawHeat(); return; }
           document.getElementById("ivsHM").innerHTML='<div class="ivs-empty">載入中…</div>';
-          fetchJson("/admin/inventory/stats/heatmap?icpno="+encodeURIComponent(ICPNO)+"&wh="+encodeURIComponent(S.wh)+"&days="+S.hDays)
+          fetchJson("/admin/inventory/stats/heatmap?icpno="+encodeURIComponent(ICPNO)+"&wh="+encodeURIComponent(S.wh)+"&days="+S.hDays+futQ())
             .then(function(j){ heatCache[key]=j; drawHeat(); })
             .catch(function(e){ document.getElementById("ivsHM").innerHTML='<div class="ivs-empty">載入失敗：'+esc(e.message)+'</div>'; });
         }
@@ -2047,7 +2122,8 @@ function registerInventoryRoutes(router, ctx) {
               var it=j.items.filter(function(x){return x.code===td.dataset.code;})[0];
               var c=it&&it.cells[td.dataset.d];
               showTip('<div class="td">'+esc(it?it.name:"")+' · '+esc(td.dataset.d)+'</div>'+
-                (c?'<div class="tr"><span>系統（盤點當下）</span><b>'+fmtN(c.sys)+'</b></div>'+(c.adj?'<div class="tr"><span>庫存調整</span><b>'+(c.adj>0?"+":"")+c.adj+'</b></div><div class="tr"><span>系統＋調整</span><b>'+fmtN(c.sys_adj)+'</b></div>':'')+'<div class="tr"><span>實盤</span><b>'+fmtN(c.counted)+'</b></div><div class="tr"><span>盤差'+(c.adj?"（含調整）":"")+'</span><b>'+(c.v>0?"+":"")+c.v+'%</b></div>':'<div class="tr"><span>當日未盤點</span></div>')+
+                (c?(c.fut?('<div class="tr"><span>凌越帳（盤點當下）</span><b>'+fmtN(c.sys_raw)+'</b></div><div class="tr"><span>未來銷貨'+(c.fut_est?'（推估）':'')+'</span><b>'+(c.fut>0?"+":"")+c.fut+'</b></div><div class="tr"><span>應有實體量</span><b>'+fmtN(c.sys)+'</b></div>')
+                    :('<div class="tr"><span>系統（盤點當下）</span><b>'+fmtN(c.sys)+'</b></div>'))+(c.adj?'<div class="tr"><span>庫存調整</span><b>'+(c.adj>0?"+":"")+c.adj+'</b></div><div class="tr"><span>系統＋調整</span><b>'+fmtN(c.sys_adj)+'</b></div>':'')+'<div class="tr"><span>實盤</span><b>'+fmtN(c.counted)+'</b></div><div class="tr"><span>盤差'+(c.adj?"（含調整）":"")+'</span><b>'+(c.v>0?"+":"")+c.v+'%</b></div>':'<div class="tr"><span>當日未盤點</span></div>')+
                 '<div style="color:var(--ivs-mut);margin-top:2px;">點擊查看下方詳情</div>',ev.clientX,ev.clientY);
             });
             td.addEventListener("mouseleave",hideTip);
@@ -2093,7 +2169,7 @@ function registerInventoryRoutes(router, ctx) {
             renderV(document.getElementById("ivsDV"),pts,{w:620,h:250});
           };
           if(klineCache[key]) render(klineCache[key]);
-          else fetchJson("/admin/inventory/stats/kline?icpno="+encodeURIComponent(ICPNO)+"&code="+encodeURIComponent(it.code)+"&wh="+encodeURIComponent(S.wh)).then(function(kj){ klineCache[key]=kj; render(kj); }).catch(function(){});
+          else fetchJson("/admin/inventory/stats/kline?icpno="+encodeURIComponent(ICPNO)+"&code="+encodeURIComponent(it.code)+"&wh="+encodeURIComponent(S.wh)+futQ()).then(function(kj){ klineCache[key]=kj; render(kj); }).catch(function(){});
           box.scrollIntoView({behavior:"smooth",block:"nearest"});
         }
         document.getElementById("ivsHQ").addEventListener("input",function(){ S.hQ=this.value.trim(); drawHeat(); });
@@ -2119,7 +2195,7 @@ function registerInventoryRoutes(router, ctx) {
           document.getElementById("ivsICards").innerHTML='<div class="ivs-empty">載入中…</div>';
           document.getElementById("ivsIAcc").innerHTML=""; document.getElementById("ivsIMag").innerHTML="";
           document.getElementById("ivsIUp").innerHTML=""; document.getElementById("ivsIWatch").innerHTML="";
-          fetchJson("/admin/inventory/stats/improvement?icpno="+encodeURIComponent(ICPNO)+"&days="+S.iDays)
+          fetchJson("/admin/inventory/stats/improvement?icpno="+encodeURIComponent(ICPNO)+"&days="+S.iDays+futQ())
             .then(function(j){ impCache[S.iDays]=j; S.imp=j; drawImprove(); })
             .catch(function(e){ document.getElementById("ivsICards").innerHTML='<div class="ivs-empty">載入失敗：'+esc(e.message)+'</div>'; });
         }
@@ -2203,6 +2279,15 @@ function registerInventoryRoutes(router, ctx) {
           var b=ev.target.closest("button"); if(!b) return;
           this.querySelectorAll("button").forEach(function(x){x.classList.remove("on");}); b.classList.add("on");
           S.iDays=+b.dataset.d; loadImprove();
+        });
+
+        /* ── 未來銷貨加回開關（只影響本頁圖表）── */
+        document.getElementById("ivsFut").addEventListener("change",function(){
+          S.fut=this.checked; klineCache={}; S.imp=null;
+          if(S.view==="heat") loadHeat();
+          else if(S.view==="improve") loadImprove();
+          else if(S.item) loadKline();
+          else loadGrid();
         });
 
         /* ── 檢視切換 ── */

@@ -212,5 +212,35 @@ test("7. 統計熱力圖：盤差同口徑（sys 含凍結的未來量）", asyn
     const cell = it.cells[TODAY];
     assert.ok(cell, "應有今天的格子");
     assert.equal(cell.sys, 91.2, "sys 應為應有量 91.2（含凍結未來 26.8）");
+    assert.equal(cell.fut, 26.8, "格子要帶未來量供 tooltip 拆算式");
+    assert.ok(!cell.fut_est, "有凍結值就不是推估");
     assert.ok(Math.abs(cell.v - 0.9) < 0.2, "盤差% 應接近 +0.9%，實得 " + cell.v);
+});
+
+test("8. 統計 ?fut=0：本頁開關關掉＝回到原始凌越量口徑（不動全域設定）", async () => {
+    const res = await fetch(baseUrl + "/admin/inventory/stats/heatmap?icpno=" + ICP + "&days=7&fut=0", { headers: cookie() });
+    const j = await res.json();
+    const cell = (j.items || []).find((x) => x.code === "B001").cells[TODAY];
+    assert.equal(cell.sys, 64.4, "關掉時 sys＝原始凌越量 64.4");
+    assert.ok(!cell.fut, "關掉時不帶未來量");
+    assert.ok(cell.v > 40, "關掉時盤差% 回到未修正的 +42.9% 量級，實得 " + cell.v);
+    // 全域設定沒被改動：不帶 fut 參數時仍是加回後的口徑
+    const back = await (await fetch(baseUrl + "/admin/inventory/stats/heatmap?icpno=" + ICP + "&days=7", { headers: cookie() })).json();
+    assert.equal((back.items || []).find((x) => x.code === "B001").cells[TODAY].sys, 91.2);
+});
+
+test("9. 統計對「上線前送出（future_qty NULL）」的列也會推估，熱力圖才不會跟盤點頁對不起來", async () => {
+    // 5b 建的 FN005 舊列（G001，sys 30、實盤 34、future_qty NULL）；未來量 5 → 應有 35、盤差 −1
+    const res = await fetch(baseUrl + "/admin/inventory/stats/heatmap?icpno=" + ICP + "&days=7", { headers: cookie() });
+    const j = await res.json();
+    const cell = (j.items || []).find((x) => x.code === "G001").cells[TODAY];
+    // 同日 FN013 也盤過 G001（凍結 0、sys 10、實盤 10）→ 跨倉加總 sys 40、實盤 44、
+    // 該組有凍結值（FN013 那列）故不推估，未來量以凍結的 0 計
+    assert.equal(cell.sys, 40, "同組有凍結值時以凍結值為準（不重複加回）");
+    // 只看 FN005 這一倉時，整組都是 NULL → 推估補 5
+    const wres = await fetch(baseUrl + "/admin/inventory/stats/heatmap?icpno=" + ICP + "&wh=" + WH2 + "&days=7", { headers: cookie() });
+    const wj = await wres.json();
+    const wcell = (wj.items || []).find((x) => x.code === "G001").cells[TODAY];
+    assert.equal(wcell.sys, 35, "整組沒有凍結值 → 用目前的未來銷貨推估：30＋5＝35");
+    assert.equal(wcell.fut_est, 1, "要標成推估，讓 tooltip 說得出來");
 });
