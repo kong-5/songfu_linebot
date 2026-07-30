@@ -109,9 +109,11 @@ function makeFutureResolver(db, date) {
             const code = String(r.erp_code || "");
             const q = Number(r.qty || 0);
             if (wc) whSet.add(wc);
-            if (!code || !(q > 0)) continue;
+            if (!code || !wc) continue;
             const cur = best[code];
-            // 同量時取倉號較小者，讓結果穩定（不隨查詢順序跳動）
+            // [fix] 比大小**不排除 0/負庫存**：實務上一個料號通常只放一倉，那一倉當下是 0 或負的
+            // （賣很兇、又先開了未來單——最需要加回的那種）也必須認得出主倉，否則整包未來量被丟掉。
+            // 同量時取倉號較小者，讓結果穩定（不隨查詢順序跳動）。
             if (!cur || q > cur.qty || (q === cur.qty && wc < cur.wh)) best[code] = { wh: wc, qty: q };
         }
         const main = {};

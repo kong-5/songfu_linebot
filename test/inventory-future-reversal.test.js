@@ -7,7 +7,7 @@
  *
  * 鎖住的行為：
  *   1. 送出盤點時**凍結**未來銷貨淨量到 stocktake_count.future_qty（未來單會隨日期滾動消失）。
- *   2. 分倉分攤：未來量只掛該料號的**主倉**（分倉量最大者），其餘倉 0 → 跨倉加總不會雙倍。
+ *   2. 分倉分攤：未來量只掛該料號的**主倉**（分倉量最大者，0/負庫存也算），其餘倉 0 → 跨倉加總不會雙倍。
  *   3. 每日盤點頁開關開：多「應有＝系統＋未來」欄，**盤差對應有算**（92 − 91.2 ＝ +0.8）。
  *   4. 開關關：完全回到舊行為（無應有欄、盤差＝92 − 64.4 ＝ +27.6）。
  *   5. 過去日期的「最新/當日應有」讀 erp_future_daily 當日收盤，不是今天的 erp_future_sales。
@@ -108,6 +108,15 @@ test("1. 盤點端 API 帶 f（本倉分攤後的未來量）：主倉才有，�
     const futFor = makeFutureResolver(db, "");
     assert.equal((await futFor(ICP, WH2)).get("G001"), 5, "老薑主倉 FN005 才加回");
     assert.equal((await futFor(ICP, WH)).get("G001"), 0, "非主倉不加回");
+});
+
+test("1b. 唯一那一倉是 0／負庫存也要認得出主倉（賣很兇又先開未來單的品項最需要加回）", async () => {
+    const now = new Date().toISOString();
+    await db.prepare("INSERT INTO erp_stock_items (icpno, erp_code, name, spec, unit, qty, wh_code, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(ICP, "Z001", "洋蔥", "", "KG", -3, WH, now);
+    await db.prepare("INSERT INTO erp_stock_wh_qty (icpno, wh_code, erp_code, qty, updated_at) VALUES (?, ?, ?, ?, ?)").run(ICP, WH, "Z001", -3, now);
+    await db.prepare("INSERT INTO erp_future_sales (icpno, erp_code, qty, updated_at) VALUES (?, ?, ?, ?)").run(ICP, "Z001", 12, now);
+    const futFor = makeFutureResolver(db, "");
+    assert.equal((await futFor(ICP, WH)).get("Z001"), 12, "分倉量 −3（唯一一倉）仍要加回 12，不能整包丟掉");
 });
 
 test("2. 送出盤點：future_qty 被凍結進 stocktake_count（伺服器端算，不吃前端值）", async () => {
