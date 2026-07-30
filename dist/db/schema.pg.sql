@@ -487,3 +487,12 @@
     created_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ
   );
+
+  -- ── 報價「大類」（分類）清單與顯示順序；kind='monthly'（青菜月報＋飯店）／'frozen'（冷凍報價）──
+  CREATE TABLE IF NOT EXISTS quote_category (
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ,
+    PRIMARY KEY (kind, name)
+  );

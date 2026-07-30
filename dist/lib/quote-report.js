@@ -45,14 +45,30 @@ const FROZEN_CATEGORY_ORDER = [
 ];
 exports.FROZEN_CATEGORY_ORDER = FROZEN_CATEGORY_ORDER;
 
-// 排序權重查表＝兩組串接（青菜在前、冷凍在後）。同一份報價只會用到其中一組，
-// 串接後各組內部的先後仍然正確，getItems 就不必知道自己排的是哪一種報價。
+// 沒有指定順序時的預設查表＝兩組串接（青菜在前、冷凍在後）。同一份報價只會用到其中一組，
+// 串接後各組內部的先後仍然正確，呼叫端不傳 order 也不會排錯。
 const ALL_CATEGORY_ORDER = [...CATEGORY_ORDER, ...FROZEN_CATEGORY_ORDER];
 
-/** 分類排序權重：已知分類用其索引；未知分類排在已知之後（維持相對穩定）。 */
-function categoryRank(category) {
-    const idx = ALL_CATEGORY_ORDER.indexOf(String(category || "").trim());
-    return idx >= 0 ? idx : ALL_CATEGORY_ORDER.length + 1;
+/** 報價種類 → 大類群組 kind（飯店報價以月報為底，共用同一組大類）。 */
+function categoryKindOf(quoteKind) {
+    return String(quoteKind || "") === "frozen" ? "frozen" : "monthly";
+}
+exports.categoryKindOf = categoryKindOf;
+
+/** 某大類群組的內建清單（quote_category 尚未帶入時的底稿，也是「還原預設」的來源）。 */
+function baseCategoriesFor(kind) {
+    return categoryKindOf(kind) === "frozen" ? FROZEN_CATEGORY_ORDER.slice() : CATEGORY_ORDER.slice();
+}
+exports.baseCategoriesFor = baseCategoriesFor;
+
+/**
+ * 分類排序權重：已知分類用其索引；未知分類排在已知之後（維持相對穩定）。
+ * order 可傳該報價種類的大類順序（listCategories 的結果）；不傳則用內建清單。
+ */
+function categoryRank(category, order) {
+    const list = Array.isArray(order) && order.length ? order : ALL_CATEGORY_ORDER;
+    const idx = list.indexOf(String(category || "").trim());
+    return idx >= 0 ? idx : list.length + 1;
 }
 exports.categoryRank = categoryRank;
 
@@ -126,13 +142,16 @@ async function getReportByYm(db, ym) {
 }
 exports.getReportByYm = getReportByYm;
 
-/** 取某月報所有品項，已依「分類順序→分類內排序→序號」排好。 */
-async function getItems(db, reportId) {
+/**
+ * 取某報價所有品項，已依「分類順序→分類內排序→序號」排好。
+ * catOrder＝該報價種類的大類順序（listCategories 的結果）；不傳則用內建清單。
+ */
+async function getItems(db, reportId, catOrder) {
     const rows = await db.prepare(
         "SELECT * FROM quote_item WHERE report_id = ? ORDER BY sort_order ASC, created_at ASC"
     ).all(reportId);
     return rows.slice().sort((a, b) => {
-        const ra = categoryRank(a.category), rb = categoryRank(b.category);
+        const ra = categoryRank(a.category, catOrder), rb = categoryRank(b.category, catOrder);
         if (ra !== rb) return ra - rb;
         if (a.category !== b.category) return String(a.category).localeCompare(String(b.category), "zh-Hant");
         return (a.sort_order || 0) - (b.sort_order || 0);
@@ -141,8 +160,8 @@ async function getItems(db, reportId) {
 exports.getItems = getItems;
 
 /** 取品項並依分類分群，回傳 [{ category, items }]（分群後才做兩欄版面用）。 */
-async function getItemsGrouped(db, reportId) {
-    const items = await getItems(db, reportId);
+async function getItemsGrouped(db, reportId, catOrder) {
+    const items = await getItems(db, reportId, catOrder);
     const groups = [];
     const map = new Map();
     for (const it of items) {
@@ -157,6 +176,148 @@ async function getItemsGrouped(db, reportId) {
     return groups;
 }
 exports.getItemsGrouped = getItemsGrouped;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 大類（分類）維護：quote_category 是使用者可維護的權威清單，取代寫死的陣列。
+// kind：'monthly'（青菜月報＋飯店報價共用）／'frozen'（冷凍報價）。
+// 首次讀取時把內建清單一次性帶入（冪等），之後新增／排序／刪除都以本表為準。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 內建清單一次性帶入（該 kind 尚無任何列時才寫）。冪等、非致命：失敗時由呼叫端退回內建清單。 */
+async function ensureCategorySeed(db, kind) {
+    const k = categoryKindOf(kind);
+    const cnt = await db.prepare("SELECT COUNT(*) AS n FROM quote_category WHERE kind = ?").get(k);
+    if (cnt && Number(cnt.n) > 0) return false;
+    const base = baseCategoriesFor(k);
+    const doSeed = async (h) => {
+        let i = 0;
+        for (const name of base) {
+            await h.prepare(
+                "INSERT INTO quote_category (kind, name, sort_order, created_at) VALUES (?, ?, ?, ?)"
+            ).run(k, name, i++, nowIso());
+        }
+    };
+    if (typeof db.transaction === "function") await db.transaction(doSeed);
+    else await doSeed(db);
+    return true;
+}
+exports.ensureCategorySeed = ensureCategorySeed;
+
+/**
+ * 該 kind 的大類名稱清單（依顯示順序）。
+ * 讀表失敗或表是空的（seed 也失敗）一律退回內建清單——報價編輯頁不能因為分類表壞掉就開不起來。
+ */
+async function listCategories(db, kind) {
+    const k = categoryKindOf(kind);
+    try {
+        await ensureCategorySeed(db, k);
+        const rows = await db.prepare(
+            "SELECT name FROM quote_category WHERE kind = ? ORDER BY sort_order ASC, name ASC"
+        ).all(k);
+        const names = (rows || []).map(r => r.name).filter(Boolean);
+        return names.length ? names : baseCategoriesFor(k);
+    } catch (_) {
+        return baseCategoriesFor(k);
+    }
+}
+exports.listCategories = listCategories;
+
+/** 大類名稱正規化：去頭尾空白。空字串代表無效（呼叫端要擋）。 */
+function normCategoryName(name) {
+    return String(name == null ? "" : name).trim();
+}
+exports.normCategoryName = normCategoryName;
+
+/**
+ * 新增大類。afterName 有值就插在該大類之後，否則接在最後。
+ * 冪等：已存在同名（含尚未帶入的內建大類）就只回 { added:false }，不會重複或改動順序。
+ */
+async function addCategory(db, kind, name, afterName) {
+    const k = categoryKindOf(kind);
+    const nm = normCategoryName(name);
+    if (!nm) throw new Error("請輸入大類名稱（例如「冷凍包子類」）。");
+    if (nm.length > 20) throw new Error("大類名稱請控制在 20 字以內，太長會撐爆報價單的分類標題列。");
+    await ensureCategorySeed(db, k);
+    const cur = await db.prepare(
+        "SELECT name, sort_order FROM quote_category WHERE kind = ? ORDER BY sort_order ASC, name ASC"
+    ).all(k);
+    if (cur.some(r => r.name === nm)) return { added: false, reason: "exists", name: nm };
+
+    const names = cur.map(r => r.name);
+    const at = afterName ? names.indexOf(normCategoryName(afterName)) : -1;
+    const next = names.slice();
+    if (at >= 0) next.splice(at + 1, 0, nm);
+    else next.push(nm);
+
+    // 插入＋整組重新編號包同一交易：中斷會留下重複 sort_order，顯示順序就亂了。
+    const doAdd = async (h) => {
+        await h.prepare(
+            "INSERT INTO quote_category (kind, name, sort_order, created_at) VALUES (?, ?, ?, ?)"
+        ).run(k, nm, next.indexOf(nm), nowIso());
+        for (let i = 0; i < next.length; i++) {
+            await h.prepare("UPDATE quote_category SET sort_order = ? WHERE kind = ? AND name = ?").run(i, k, next[i]);
+        }
+    };
+    if (typeof db.transaction === "function") await db.transaction(doAdd);
+    else await doAdd(db);
+    return { added: true, name: nm, order: next };
+}
+exports.addCategory = addCategory;
+
+/** 大類上／下移一格（dir<0 上移、dir>0 下移）；已在頭／尾就不動。回傳 { moved, order }。 */
+async function moveCategory(db, kind, name, dir) {
+    const k = categoryKindOf(kind);
+    const nm = normCategoryName(name);
+    await ensureCategorySeed(db, k);
+    const rows = await db.prepare(
+        "SELECT name FROM quote_category WHERE kind = ? ORDER BY sort_order ASC, name ASC"
+    ).all(k);
+    const names = (rows || []).map(r => r.name);
+    const i = names.indexOf(nm);
+    const j = i + (Number(dir) < 0 ? -1 : 1);
+    if (i < 0 || j < 0 || j >= names.length) return { moved: false, order: names };
+    const next = names.slice();
+    next[i] = names[j];
+    next[j] = names[i];
+    const doMove = async (h) => {
+        for (let n = 0; n < next.length; n++) {
+            await h.prepare("UPDATE quote_category SET sort_order = ? WHERE kind = ? AND name = ?").run(n, k, next[n]);
+        }
+    };
+    if (typeof db.transaction === "function") await db.transaction(doMove);
+    else await doMove(db);
+    return { moved: true, order: next };
+}
+exports.moveCategory = moveCategory;
+
+/**
+ * 刪除大類。只有「完全沒有品項在用」才能刪——否則那些品項會變成未分類的孤兒，
+ * 報價單上會冒出一個沒人維護的分類標題。錯誤訊息直接告訴使用者怎麼修。
+ */
+async function deleteCategory(db, kind, name) {
+    const k = categoryKindOf(kind);
+    const nm = normCategoryName(name);
+    if (!nm) throw new Error("請指定要刪除的大類。");
+    await ensureCategorySeed(db, k);
+    const used = await db.prepare("SELECT COUNT(*) AS n FROM quote_item WHERE category = ?").get(nm);
+    if (used && Number(used.n) > 0) {
+        throw new Error(`「${nm}」底下還有 ${used.n} 個品項在用，不能刪。請先在「管理品項」把這些品項改成其他大類（或拖到別的大類）再刪。`);
+    }
+    const doDel = async (h) => {
+        await h.prepare("DELETE FROM quote_category WHERE kind = ? AND name = ?").run(k, nm);
+        const rows = await h.prepare(
+            "SELECT name FROM quote_category WHERE kind = ? ORDER BY sort_order ASC, name ASC"
+        ).all(k);
+        const names = (rows || []).map(r => r.name);
+        for (let i = 0; i < names.length; i++) {
+            await h.prepare("UPDATE quote_category SET sort_order = ? WHERE kind = ? AND name = ?").run(i, k, names[i]);
+        }
+    };
+    if (typeof db.transaction === "function") await db.transaction(doDel);
+    else await doDel(db);
+    return { deleted: true, name: nm };
+}
+exports.deleteCategory = deleteCategory;
 
 /**
  * 建立「一月一份」的報價（青菜月報 quote_report／冷凍報價 frozen_quote 共用同一套流程）。
@@ -183,7 +344,9 @@ async function createMonthlyQuoteIn(db, cfg, opts) {
         ).get(ym);
         if (prev) sourceId = prev.id;
     }
-    const srcItems = sourceId ? await getItems(db, sourceId) : null;
+    // 帶入底稿時用使用者維護的大類順序，複製出來的 sort_order 才和畫面上看到的一致。
+    const catOrder = await listCategories(db, cfg.catKind);
+    const srcItems = sourceId ? await getItems(db, sourceId, catOrder) : null;
 
     // [fix 2026-07-27 體檢] 月報主檔＋整份品項包同一交易：舊版逐筆裸奔，品項插到一半失敗會留下
     // 「只有前 N 項」的月報，且開頭的 existing 早退讓重按也補不回來（缺項的報價單就這樣寄給客戶）。
@@ -614,7 +777,7 @@ async function createHotelQuote(db, opts) {
     );
     let sourceId = opts.copyFromReportId || (await getLatestMonthlyReportId(db));
     if (sourceId) {
-        const src = await getItems(db, sourceId);
+        const src = await getItems(db, sourceId, await listCategories(db, "monthly"));
         let i = 0;
         for (const it of src) {
             await addItem(db, id, {
@@ -721,8 +884,8 @@ exports.SEED_FROZEN_ITEMS = SEED_FROZEN_ITEMS;
 
 // 兩種「一月一份」報價的設定（表名／id 前綴／預設表頭／第一份的 seed 清單）。
 // 放在兩份 seed 陣列之後宣告：只在函式執行時讀取，不會有 TDZ 問題。
-const MONTHLY_CFG = { table: "quote_report", idPrefix: "qr", defaultHeader: DEFAULT_HEADER, seedItems: SEED_JULY_ITEMS };
-const FROZEN_CFG = { table: "frozen_quote", idPrefix: "fz", defaultHeader: FROZEN_HEADER, seedItems: SEED_FROZEN_ITEMS };
+const MONTHLY_CFG = { table: "quote_report", idPrefix: "qr", catKind: "monthly", defaultHeader: DEFAULT_HEADER, seedItems: SEED_JULY_ITEMS };
+const FROZEN_CFG = { table: "frozen_quote", idPrefix: "fz", catKind: "frozen", defaultHeader: FROZEN_HEADER, seedItems: SEED_FROZEN_ITEMS };
 
 /** 列出所有冷凍報價（新到舊）。 */
 async function listFrozenQuotes(db) {
