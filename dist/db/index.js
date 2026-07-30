@@ -223,6 +223,10 @@ function initSqlite(dbPath) {
         "ALTER TABLE erp_stock_daily ADD COLUMN qty_open REAL",
         "ALTER TABLE erp_stock_daily ADD COLUMN qty_high REAL",
         "ALTER TABLE erp_stock_daily ADD COLUMN qty_low REAL",
+        // [未來銷貨加回 2026-07-30] 盤點送出當下凍結的「未來銷貨淨量」（本倉分攤後）：
+        // 應有實體量＝sys_qty + future_qty，盤差＝實盤 − 應有。未來單會隨日期滾動消失，
+        // 不凍結的話歷史盤差每天都會變（同 sys_qty 凍結的理由）。舊列 NULL 視同 0。
+        "ALTER TABLE stocktake_count ADD COLUMN future_qty REAL",
     ];
     try {
         sqlite.exec("CREATE TABLE IF NOT EXISTS order_attachments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_message_id TEXT NOT NULL, created_at TEXT, FOREIGN KEY (order_id) REFERENCES orders(id))");
@@ -396,6 +400,11 @@ function initSqlite(dbPath) {
         // qty＝該料號未來日期銷貨淨量（正＝顯示時要「加回」）。開關（app_settings.stock_future_reversal_enabled）
         // 打開時顯示庫存＝凌越快照＋人工調整＋此加回；關閉時遮蔽（回原凌越量方便對照查詢）。只影響內部顯示，不流入凌越回寫。
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_future_sales (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
+        // [未來銷貨加回 2026-07-30] 未來銷貨的**每日快照**（同 erp_stock_daily：庫存推送時一天一份、留 90 天）。
+        // erp_future_sales 只有「現在」一份（按公司覆蓋），拿去貼歷史盤點列會每天變一個樣；
+        // 過去日期的「應有實體量」一律讀這張表的當日收盤值。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_future_daily (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty REAL NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, snap_date))");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_erp_future_daily_date ON erp_future_daily(icpno, snap_date)");
     }
     catch (_) { /* table may already exist */ }
     try {
@@ -1227,6 +1236,10 @@ async function initPg() {
                 await client.query("CREATE INDEX IF NOT EXISTS idx_erp_stock_wh_daily_date ON erp_stock_wh_daily(icpno, wh_code, snap_date)");
                 // [未來銷貨加回 2026-07-17] 未來日期銷貨淨量（與 initSqlite 對應）：獨立表，隨庫存推送覆蓋。
                 await client.query("CREATE TABLE IF NOT EXISTS erp_future_sales (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
+                // [未來銷貨加回 2026-07-30] 未來銷貨每日快照（與 initSqlite 對應）：過去日期的「應有實體量」讀這張，
+                // 不讀只有現況一份的 erp_future_sales（否則歷史盤差每天跟著未來單滾動）。
+                await client.query("CREATE TABLE IF NOT EXISTS erp_future_daily (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, snap_date))");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_erp_future_daily_date ON erp_future_daily(icpno, snap_date)");
             }
             catch (_) { /* table may already exist */ }
             try {
@@ -1270,6 +1283,8 @@ async function initPg() {
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_at TEXT");
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_by TEXT");
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_by_name TEXT");
+                // [未來銷貨加回 2026-07-30] 送出當下凍結的未來銷貨淨量（本倉分攤後）：應有實體量＝sys_qty + future_qty
+                await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS future_qty DOUBLE PRECISION");
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_count_audit (id TEXT PRIMARY KEY, session_id TEXT, icpno TEXT, wh_code TEXT, count_date TEXT, erp_code TEXT, name TEXT, old_counted DOUBLE PRECISION, new_counted DOUBLE PRECISION, actor TEXT, actor_name TEXT, note TEXT, created_at TEXT)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_audit_session ON stocktake_count_audit(session_id)");
                 // 多公司盤點（松富00＋松揚02…）：場次記公司代碼，NULL 視為 '00'

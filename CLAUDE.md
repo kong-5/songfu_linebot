@@ -1,7 +1,7 @@
 # CLAUDE.md — 松富物流 LINE Bot / 後台（給每個新對話先讀）
 
 這份是「架構定案 + 不要再重複踩」的權威清單。**動到相關功能前先讀這份**；細節看 `docs/`。
-最後更新：2026-07-27
+最後更新：2026-07-30
 
 ---
 
@@ -72,12 +72,23 @@
 | 預設入庫倉別 | `SK_RKWHNO` | 後台倉別**只認凌越倉號**（如 FN005/Y99），不是自建倉 |
 | **停用碼** | **`SK_STOP`** | **`1`=停用；推送時一律過濾掉不推**（`ly_stock_push.py`） |
 - 庫存快照存 `erp_stock_items`（**按公司 icpno 覆蓋**）；後台「庫存管理 → 目前庫存」顯示（公司分段切換）。
-- **未來銷貨加回（2026-07-17）**：先打「明天以後」的銷貨單會即時扣 SK_NOWQTY → 推送順帶查未來日期
-  A1−A2 逐料號淨量（payload `future_sales`，`LY_FUTURE_DAYS` 預設 60 天）存 `erp_future_sales`（按公司覆蓋、
-  查失敗不帶＝保留上一份）。「未來銷貨加回」開關（`app_settings.stock_future_reversal_enabled`，目前庫存頁
-  與每日盤點頁各一顆、共用同一設定）：目前庫存頁開＝顯示量加回未來淨量（藍 badge「未來+N」）、關＝遮蔽回
-  原凌越量方便對照；每日盤點頁開＝「最新系統」欄標藍 badge **純提示**（解釋盤差來源）。**顯示層 only**，
-  一律不進「最新系統／盤差」計算、不寫回凌越。
+- **未來銷貨加回（2026-07-17；2026-07-30 改為進盤差）**：先打「明天以後」的銷貨單會即時扣 SK_NOWQTY →
+  推送順帶查未來日期 A1−A2 逐料號淨量（payload `future_sales`，`LY_FUTURE_DAYS` 預設 60 天）存
+  `erp_future_sales`（按公司覆蓋、查失敗不帶＝保留上一份）＋每日快照 `erp_future_daily`（同交易、留 90 天）。
+  開關 `app_settings.stock_future_reversal_enabled`（目前庫存頁與每日盤點頁各一顆、共用同一設定）。
+  **口徑：應有實體量＝凌越量＋未來銷貨（＋人工調整），盤差＝實盤−應有**——凌越欄位是「帳面可售量」、
+  盤點量的是「架上實體量」，不加回會天天假盤盈（回報案例：豆薯 系統 64.4／實盤 92／假盤差 +27.6＝未來單 26.8）。
+  權威 helper：`dist/lib/stock-future.js`（`futureReversalEnabled`／`makeFutureResolver`）。開關關＝完全回舊行為。
+  - ⚠ **必凍結**：未來單隨日期滾動消失，`erp_future_sales` 只有現況一份。盤點送出時把**本倉分攤後**的未來量
+    凍結進 `stocktake_count.future_qty`（伺服器端重算不吃前端值、**一律凍結不看開關**）；「最新/當日系統」側
+    今天讀 `erp_future_sales`、**過去日期讀 `erp_future_daily`**（查無＝以 0 計並標示）。
+  - ⚠ **必分攤**：未來銷貨是公司層級（凌越明細沒帶出庫倉），盤點是分倉的 → 該倉走分倉基準時**只加該料號主倉**
+    （分倉量最大者，**0/負庫存也算**——一個料號通常只放一倉，那一倉是負的正是最需要加回的情況），走公司總量基準時才用公司層級。逐倉相加剛好一次，統計跨倉加總不會雙倍。
+  - 連帶：**「套用實盤」delta＝實盤−應有**（舊版會把未來量寫成永久 delta → 出貨後雙重補償）、必盤判定比應有量、
+    盤點端（LIFF/掃碼/網頁版）items 帶 `f` 並顯示「帳 X 未來+Y」、統計圖表/熱力圖/改善檢視/異常排查表同口徑。
+  - smoke test：`test/inventory-future-reversal.test.js`。只影響內部顯示與盤差，**不寫回凌越**。
+  - 未做（要凌越端配合）：A1 明細 `SD_WHNO2`（出庫倉）帶出來就能真正分倉、免猜主倉；根治是未來日期改開
+    訂單/預購單而非銷貨單。
 - **依公司自主更新（2026-07-17）**：`stock/refresh` 可帶 `icpno`（旗標 `erp_stock_refresh_icpno`）→
   `inventory-wait` 回 `{refresh, icpno}` → 代理 `do_stock_push(icpno_override)` 只重推該公司。
   目前庫存頁按鈕＝當頁公司；每日盤點頁按鈕旁有公司下拉（預設全公司）。免改代理 LY_ICPNO 即可換公司更新。
@@ -104,8 +115,8 @@
   倉庫選擇→緊湊盤點清單→送出；白底、可隱藏0、**中／越雙語**、**續盤**（重開帶回今日已盤）。
   - **效期品**：由 `stocktake_expiry_item` 標記的品項才出現效期批號輸入。**此表已分公司**（主鍵 `(icpno, erp_code)`）；後台「庫存管理 → 效期品設定」(`/admin/inventory/expiry-items`) 可單筆或**整倉批次**帶入（例：松揚雜貨庫房）。
   - **網站版盤點入口** `/admin/inventory/entry`：後台帳號 cookie 登入、免 LINE token（解外部瀏覽器登入逾時），與 LIFF 頁共用 `stocktake.html`（`window.__STK_WEB__` 注入 WEB 模式），寫進同一套盤點表。
-  - **「最新系統／對最新盤差」欄的基準（2026-07-26 定案）**：權威 helper＝`dist/admin/inventory.js` 的 `makeStockBasisResolver(date)`（每日盤點頁／CSV／異常排查表／「套用實盤」共用）。**今天＝即時快照**（`erp_stock_wh_qty`→`erp_stock_items`）；**過去日期＝該日收盤快照**（`erp_stock_wh_daily`→`erp_stock_daily`）＝**凍結**，表頭改標「當日系統（凍結）」＋「已凍結 <日期> 收盤」badge。舊版不分日期都讀即時快照，昨天以前的盤差每天跟著今天的庫存跑（歷史盤差永遠不定案，2026-07-26 回報修正）。該日沒推送→退回「該日以前最近一次」快照並標「（該日無推送）」；連歷史快照都沒有（>90 天保留期／功能上線前）→退回即時量並標「無當日快照・顯示即時量」。凍結日期不顯示「未來+N」藍標（那是「現在」的未來銷貨，貼歷史列會誤導）。smoke test：`test/inventory-latest-frozen.test.js`。
-  - **庫存調整（誤差補償，免凌越重整）**：`stock_adjustment`（主鍵 `(icpno, erp_code)`、`delta`）。**顯示庫存＝凌越快照＋delta**（`/admin/inventory/stock`），每日盤點「最新系統／對最新盤差」也加 delta（校正後歸零）。每日盤點盤差表調整欄＝單一標籤（「調整」/「調 +N」）點開浮動面板（套用實盤/手動存值/刪除；2026-07-17 改版，實盤同時改成點數字原地複盤、列高一行），「套用實盤」＝`delta=實盤−當下顯示的系統量`（**基準與右側「系統」欄同一套 `makeStockBasisResolver`：分倉優先、過去日期用當日收盤**——舊版一律用即時總量，品項跨倉/他倉負庫存或看歷史日期時會算錯）；總管理在「庫存管理 → 庫存調整」(`/admin/inventory/adjustments`) 可改/刪。庫存統計圖表（熱力圖/盤差折線/卡牆盤點點）的盤差％一律**含調整**（`statsAdjMap`）。**只影響內部顯示與盤差，不寫回凌越**；凌越重整後要記得刪調整避免雙重補償。
+  - **「最新系統／對最新盤差」欄的基準（2026-07-26 定案）**：權威 helper＝`dist/admin/inventory.js` 的 `makeStockBasisResolver(date)`（每日盤點頁／CSV／異常排查表／「套用實盤」共用）。**今天＝即時快照**（`erp_stock_wh_qty`→`erp_stock_items`）；**過去日期＝該日收盤快照**（`erp_stock_wh_daily`→`erp_stock_daily`）＝**凍結**，表頭改標「當日系統（凍結）」＋「已凍結 <日期> 收盤」badge。舊版不分日期都讀即時快照，昨天以前的盤差每天跟著今天的庫存跑（歷史盤差永遠不定案，2026-07-26 回報修正）。該日沒推送→退回「該日以前最近一次」快照並標「（該日無推送）」；連歷史快照都沒有（>90 天保留期／功能上線前）→退回即時量並標「無當日快照・顯示即時量」。過去日期的未來銷貨改讀 `erp_future_daily` 當日快照（2026-07-30，見「未來銷貨加回」段）。smoke test：`test/inventory-latest-frozen.test.js`。
+  - **庫存調整（誤差補償，免凌越重整）**：`stock_adjustment`（主鍵 `(icpno, erp_code)`、`delta`）。**顯示庫存＝凌越快照＋delta**（`/admin/inventory/stock`），每日盤點「最新系統／對最新盤差」也加 delta（校正後歸零）。每日盤點盤差表調整欄＝單一標籤（「調整」/「調 +N」）點開浮動面板（套用實盤/手動存值/刪除；2026-07-17 改版，實盤同時改成點數字原地複盤、列高一行），「套用實盤」＝`delta=實盤−當下顯示的應有量`（**基準與右側欄同一套 `makeStockBasisResolver`＋`makeFutureResolver`：分倉優先、過去日期用當日收盤、含未來銷貨加回**——舊版一律用即時總量，品項跨倉/他倉負庫存或看歷史日期時會算錯；2026-07-30 再補未來量，否則未來單會被寫成永久 delta 造成雙重補償）；總管理在「庫存管理 → 庫存調整」(`/admin/inventory/adjustments`) 可改/刪。庫存統計圖表（熱力圖/盤差折線/卡牆盤點點）的盤差％一律**含調整**（`statsAdjMap`）。**只影響內部顯示與盤差，不寫回凌越**；凌越重整後要記得刪調整避免雙重補償。
   - **中價貨**：盤點數旁的小「⋯」點開才填中貨（極少數品項才有，方案B）；**counted_qty 存上＋中合計**，`mid_qty` 單獨保留。
   - **必盤**：盤點清單把「自昨天（或上次盤點）以來凌越有變動」的品項**排到最上面＋標紅「必盤」**（全公司）。權威 helper：`dist/lib/stock-mustcount.js` 的 `computeMustCount`（混合基準：優先比 `erp_stock_daily` 昨天快照、無則退回上次 `stocktake_count.sys_qty`；|變動|≥門檻才算，門檻預設 1、可用 `app_settings.stocktake_mustcount_min_delta` 覆寫）。每日快照由**庫存推送 `inventory-push` 同交易寫入 `erp_stock_daily`**（一天一份、留 90 天；含 K 線 OHLC 欄 `qty_open/qty_high/qty_low`——開＝當日首推時的昨收、高低＝當日各次推送極值、`qty`＝收）。帶 `warehouse_qty` 的推送同時寫**分倉每日快照 `erp_stock_wh_daily`**（同套 OHLC 規則）。
 - **庫存統計圖表** `/admin/inventory/stats`（盤點頁與側欄都有入口）：三欄式（日K/週K/月K＋期間｜倉庫｜品項模糊搜尋）看單品 K 線＋盤差％折線；另一檢視＝**盤差熱力圖**（品項×日期、紅虧藍盈、預設只列有盤差品項 Top 20 依嚴重度排序）＋排行＋點格下鑽。資料 API：`/stats/items`、`/stats/kline`、`/stats/heatmap`。盤差＝盤點凍結當下（`counted−sys`，`sys` 是送出當下寫進 `stocktake_count` 的凍結值，**不受「最新系統」欄影響**；分母 `max(|sys|,1)`），「當日最後」由一倉一日一筆天然成立、換日即定案，**免結算排程**；分倉 K 線在 `erp_stock_wh_daily` 無資料時自動退回公司層級並標示。

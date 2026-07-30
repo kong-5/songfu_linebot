@@ -22,6 +22,7 @@ exports.submitStocktake = submitStocktake;
  */
 const { newId } = require("./id.js");
 const stock_mustcount_js_1 = require("./stock-mustcount.js");
+const stock_future_js_1 = require("./stock-future.js");
 
 function StkApiError(httpStatus, message, code) {
     const e = new Error(message);
@@ -84,11 +85,21 @@ async function getStocktakeItems(db, { icpno, whCode, minimal }) {
     if (!minimal) {
         try { (await db.prepare("SELECT erp_code FROM erp_stock_item_photo").all() || []).forEach((r) => photoSet.add(String(r.erp_code || ""))); } catch (_) { /* 照片表缺失不擋盤點 */ }
     }
+    // [未來銷貨加回 2026-07-30] 未來日期的銷貨單已扣凌越庫存但貨還在架上 → 盤點人看到的 sys 會偏低、
+    // 一定「盤盈」。開關開時逐品項帶回 f（本倉分攤後的未來量），前端顯示「應有＝系統＋未來」並據此算差。
+    let futOn = false, futBasis = null;
+    try {
+        futOn = await (0, stock_future_js_1.futureReversalEnabled)(db);
+        if (futOn) futBasis = await (0, stock_future_js_1.makeFutureResolver)(db, "")(icpno, whCode);
+    }
+    catch (_) { futOn = false; futBasis = null; /* 未來銷貨查詢失敗不擋盤點 */ }
     const items = (rows || []).map((r) => {
         const c = String(r.erp_code || "");
         const isExp = !minimal && Object.prototype.hasOwnProperty.call(exp, c);
         const sysv = whQtyMap ? Number(whQtyMap[c] || 0) : Number(r.qty || 0);
         const it = { c, n: String(r.name || ""), s: String(r.spec || ""), u: String(r.unit || ""), sys: sysv, exp: isExp, eunit: isExp ? (exp[c] || String(r.unit || "")) : "" };
+        const fv = futBasis ? futBasis.get(c) : 0;
+        if (fv) it.f = Math.round(fv * 100) / 100;
         if (!minimal && photoSet.has(c)) it.hp = 1;
         return it;
     });
@@ -114,7 +125,7 @@ async function getStocktakeItems(db, { icpno, whCode, minimal }) {
         // 必盤：自昨天（或上次盤點）以來凌越有變動的品項；失敗吞錯不擋盤點
         try { const mc = await (0, stock_mustcount_js_1.computeMustCount)(db, { icpno, whCode, today: date }); items.forEach((it) => { if (mc.set.has(it.c)) it.mc = 1; }); } catch (_) { }
     }
-    const out = { date, warehouse: { code: whCode, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt };
+    const out = { date, warehouse: { code: whCode, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt, futureOn: futOn };
     if (!minimal) out.sysQtySource = sysQtySource;
     return out;
 }
@@ -171,6 +182,12 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
         const more = qtyErrors.length > 3 ? "（另有 " + (qtyErrors.length - 3) + " 項）" : "";
         throw StkApiError(400, "盤點數量格式錯誤：" + shown + more + "。請改成 0 或正數後再送出。", "bad_qty");
     }
+    // [未來銷貨加回 2026-07-30] 凍結未來銷貨淨量：未來單會隨日期滾動消失，不在送出當下凍結的話
+    // 歷史盤差每天都會變（同 sys_qty 凍結的理由）。**一律凍結**（不看開關）——開關只管顯示/計算，
+    // 之後才打開也能回溯套用。值一律由伺服器端重算，不吃前端傳來的數字。
+    let futFreeze = null;
+    try { futFreeze = await (0, stock_future_js_1.makeFutureResolver)(db, date)(icpno, whCode); }
+    catch (_) { futFreeze = null; /* 查不到＝存 0，不擋送出 */ }
     // 交易外先把所有列算好；交易內只做純寫入（sqlite transaction 限制：fn 內不得 await 外部 I/O）
     const sid = newId("stk");
     const countRows = counts.map((c) => {
@@ -178,7 +195,8 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
         const good = (c.counted == null || c.counted === "") ? null : Number(c.counted);
         const mid = (c.mid == null || c.mid === "") ? null : Number(c.mid);
         const cv = (good == null && mid == null) ? null : ((good || 0) + (mid || 0));
-        return [newId("stc"), sid, String(c.code || ""), String(c.name || ""), String(c.spec || ""), String(c.unit || ""), Number(c.sys || 0), cv, mid, JSON.stringify(c.expiry || []), now];
+        const fq = futFreeze ? Math.round(futFreeze.get(String(c.code || "")) * 100) / 100 : 0;
+        return [newId("stc"), sid, String(c.code || ""), String(c.name || ""), String(c.spec || ""), String(c.unit || ""), Number(c.sys || 0), cv, mid, JSON.stringify(c.expiry || []), now, fq];
     });
     try {
         const doWrite = async (tx) => {
@@ -199,13 +217,13 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
             await tx.prepare(`DELETE FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).run(whCode, date, icpno);
             await tx.prepare("INSERT INTO stocktake_session (id, wh_code, wh_name, count_date, status, group_id, created_by, created_by_name, item_count, counted_count, created_at, submitted_at, icpno) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 .run(sid, whCode, wh ? String(wh.name || "") : "", date, "submitted", null, createdBy || "", String(createdByName || "").trim(), total, counts.length, now, now, icpno);
-            const BATCH = 50; // 11 欄 × 50 = 550 個佔位符，pg 轉 $n 沒問題
+            const BATCH = 50; // 12 欄 × 50 = 600 個佔位符，pg 轉 $n 沒問題
             for (let i = 0; i < countRows.length; i += BATCH) {
                 const chunk = countRows.slice(i, i + BATCH);
-                const ph = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+                const ph = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
                 const params = [];
                 for (const row of chunk) params.push(...row);
-                await tx.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, updated_at) VALUES " + ph).run(...params);
+                await tx.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, updated_at, future_qty) VALUES " + ph).run(...params);
             }
         };
         if (typeof db.transaction === "function") await db.transaction(doWrite);

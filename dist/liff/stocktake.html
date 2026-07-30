@@ -85,6 +85,7 @@
   .sys .lab{font-size:11px;color:var(--txt-3);}
   .sys .v{font-size:13.5px;font-weight:700;line-height:1.1;}
   .sys .su{font-size:10px;font-weight:600;color:var(--txt-3);}
+  .sys .futn{font-size:10px;font-weight:700;color:#0369a1;background:#e0f2fe;border-radius:4px;padding:0 4px;margin-top:2px;display:inline-block;white-space:nowrap;}
   .qtybox{display:flex;align-items:center;gap:6px;}
   .qu{font-size:11px;font-weight:600;color:var(--txt-3);min-width:20px;}
   .qty{width:66px;text-align:right;font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;border:1.5px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--field);color:var(--txt);outline:none;}
@@ -182,6 +183,7 @@
       countedToday:'今日已盤',loadWhFail:'⚠ 載入倉庫失敗，請稍後再試',loadItems:'載入品項…',loadItemsFail:'⚠ 載入品項失敗',
       backWh:'‹ 倉庫',done:'已盤',todo:'未盤',searchPh:'搜尋料號 / 品名',fAll:'全部',fTodo:'未盤',fExp:'效期品',
       sys:'系統',qtyPh:'盤點',match:'相符',expChip:'效期',batchTitle:'各效期數量（呆料／到期警示用）',sum:'合計',
+      futHint:function(sys,f){return '帳 '+sys+' 未來'+(f>0?'+':'')+f;},
       addBatch:'＋ 新增效期',doneBatch:'完成收起 ▴',noMatch:'沒有符合的品項',submit:'送出盤點',submitting:'送出中…',
       sent:'盤點已送出',finish:'完成',submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',langBtn:'Tiếng Việt',resumed:'續盤（已帶回今日已盤）',
       midChip:'中',midTitle:'中價貨（品質較差）數量',midPh:'中價數量',midDone:'完成收起 ▴',
@@ -212,6 +214,7 @@
       countedToday:'Đã kiểm hôm nay',loadWhFail:'⚠ Tải kho thất bại, thử lại sau',loadItems:'Đang tải sản phẩm…',loadItemsFail:'⚠ Tải sản phẩm thất bại',
       backWh:'‹ Kho',done:'Đã kiểm',todo:'Chưa',searchPh:'Tìm mã / tên hàng',fAll:'Tất cả',fTodo:'Chưa kiểm',fExp:'Hàng HSD',
       sys:'Hệ thống',qtyPh:'Đếm',match:'Khớp',expChip:'HSD',batchTitle:'Số lượng theo HSD (cảnh báo hết hạn)',sum:'Tổng',
+      futHint:function(sys,f){return 'Sổ '+sys+' tương lai'+(f>0?'+':'')+f;},
       addBatch:'＋ Thêm HSD',doneBatch:'Xong ▴',noMatch:'Không có sản phẩm phù hợp',submit:'Gửi kiểm kê',submitting:'Đang gửi…',
       sent:'Đã gửi kiểm kê',finish:'Xong',submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',langBtn:'中文',resumed:'Tiếp tục (đã tải dữ liệu hôm nay)',
       midChip:'Loại B',midTitle:'Số lượng hàng loại B (chất lượng kém)',midPh:'SL loại B',midDone:'Xong ▴',
@@ -602,7 +605,10 @@
   // ---------- 盤點畫面 ----------
   function goodVal(it){ return S.counts[it.c]!=null&&S.counts[it.c]!==''?num(S.counts[it.c]):null; }
   function midVal(it){ return S.mid[it.c]!=null&&S.mid[it.c]!==''?num(S.mid[it.c]):null; }
-  function safetyDiff(it){ var cv=countedVal(it); if(cv==null||isNaN(cv)) return null; return Math.round((cv-it.sys)*100)/100; }
+  // 應有實體量＝系統 + 未來銷貨（未來日期的銷貨單已扣凌越帳但貨還在架上）；盤差對「應有」算，
+  // 否則先開單的品項在盤點頁一定顯示藍色「盤盈」，盤點人以為自己數錯。it.f 只在後台開關開時才有。
+  function shouldQty(it){ return Math.round((Number(it.sys||0)+Number(it.f||0))*100)/100; }
+  function safetyDiff(it){ var cv=countedVal(it); if(cv==null||isNaN(cv)) return null; return Math.round((cv-shouldQty(it))*100)/100; }
   // 合計 = 上貨 + 中貨（任一有值即計）
   function countedVal(it){ var g=goodVal(it),m=midVal(it); if((g==null||isNaN(g))&&(m==null||isNaN(m))) return null; return Math.round(((g||0)+(m||0))*100)/100; }
   function isCounted(it){ var g=goodVal(it),m=midVal(it); return (g!=null&&!isNaN(g))||(m!=null&&!isNaN(m)); } // NaN 視為未盤
@@ -643,9 +649,10 @@
     var mcBadge=it.mc?'<span class="mc-badge">'+esc(t('mustCount'))+'</span>':'';
     return '<div class="item'+cnt+open+mopen+(it.mc?' mc':'')+'" data-c="'+esc(it.c)+'"><div class="row">'+thumb+'<div class="info"><div class="nm">'+mcBadge+esc(it.n)+chip+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div></div>'
-      +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(it.sys)+(it.u?' <span class="su">'+esc(it.u)+'</span>':'')+'</div></div>'+right+'</div>'+midPanel(it)+(it.exp?batchRows(it):'')+'</div>';
+      +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(shouldQty(it))+(it.u?' <span class="su">'+esc(it.u)+'</span>':'')+'</div>'
+      +(it.f?'<div class="futn">'+esc(t('futHint')(fmt(it.sys),it.f))+'</div>':'')+'</div>'+right+'</div>'+midPanel(it)+(it.exp?batchRows(it):'')+'</div>';
   }
-  function isZeroIdle(it){ return Number(it.sys)===0 && !isCounted(it); }  // 帳上0且尚未盤
+  function isZeroIdle(it){ return shouldQty(it)===0 && !isCounted(it); }  // 應有量0且尚未盤
   function listHtml(){
     var q=S.q.toLowerCase();
     var searching=!!q;   // 搜尋時忽略隱藏/排序，讓帳上0但現場有的品項也找得到
