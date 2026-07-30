@@ -129,8 +129,15 @@ function registerInventoryRoutes(router, ctx) {
                 const counted = (r.counted_qty == null || r.counted_qty === "") ? null : Number(r.counted_qty);
                 const mid = (r.mid_qty == null || r.mid_qty === "") ? null : Number(r.mid_qty);
                 const code = String(r.erp_code || "");
-                // 盤點當下的未來銷貨（送出時凍結；舊列 NULL＝功能上線前，視同 0）
-                const fut = futOn ? Math.round(Number(r.future_qty || 0) * 100) / 100 : 0;
+                // 盤點當下的未來銷貨：送出時凍結的 future_qty。
+                // [fix 2026-07-30] **NULL ≠ 0**——NULL 是「功能上線前送出、當時沒記錄」，
+                // 當 0 用會讓左半邊顯示「應有＝系統」、右半邊卻標「未來+68」，畫面自相矛盾。
+                // 沒凍結值時退回與右側同一套基準（今天＝即時、過去＝當日收盤快照）並標「推估」，
+                // 讓使用者知道這個數字不是定案值。上線後送出的列一律有值（含真正的 0），走凍結路徑。
+                const futFrozenRow = r.future_qty != null && r.future_qty !== "";
+                const fut = !futOn ? 0
+                    : Math.round((futFrozenRow ? Number(r.future_qty || 0) : futBasis.get(code)) * 100) / 100;
+                const futEst = futOn && !futFrozenRow && fut !== 0; // 推估（非送出當下凍結）
                 const should = Math.round((sys + fut) * 100) / 100; // 應有實體量（當下）
                 const diff = counted == null ? null : Math.round((counted - should) * 100) / 100;
                 const adj = Number(am[sIcp + "|" + code] || 0); // 人工調整值
@@ -144,11 +151,12 @@ function registerInventoryRoutes(router, ctx) {
                 const diffLatest = (counted == null || latestShould == null) ? null : Math.round((counted - latestShould) * 100) / 100;
                 let expiry = [];
                 try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
-                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, fut, should, counted, mid, diff, latest, latestRaw, latestFut, latestShould, adj, diffLatest, expiry, editedAt: r.edited_at || null, editedBy: r.edited_by_name || null };
+                return { code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""), sys, fut, futEst, should, counted, mid, diff, latest, latestRaw, latestFut, latestShould, adj, diffLatest, expiry, editedAt: r.edited_at || null, editedBy: r.edited_by_name || null };
             });
             const diffCount = items.filter((it) => it.diff != null && it.diff !== 0).length;
             out.push({ session: s, items, diffCount, latestSource: basis.source, latestAsOf: basis.asOf, latestFrozen: basis.frozen, latestStale: basis.stale,
-                futOn, futStale: !!(futOn && futBasis.stale), futAsOf: futBasis.asOf, futMode: futBasis.mode });
+                futOn, futStale: !!(futOn && futBasis.stale), futAsOf: futBasis.asOf, futMode: futBasis.mode,
+                futEstAny: items.some((it) => it.futEst) });
         }
         return out;
     }
@@ -269,10 +277,12 @@ function registerInventoryRoutes(router, ctx) {
                 return `<button type="button" class="stk-adjchip2"${attrs} title="點開調整面板：把最新系統校正成實盤，或手動填調整值">調整</button>`;
             };
             // 未來銷貨（藍標）：未來日期的銷貨單已扣凌越帳、貨還在架上 → 應有實體量要加回來。
-            const futBadge = (v, note) => (v ? `<span class="stk-futb" title="${escapeAttr(note)}">未來${v > 0 ? "+" : ""}${v}</span>` : "");
-            const shouldCell = (it) => `<b>${fmtN(it.should)}</b>${futBadge(it.fut, `盤點當下：凌越帳 ${fmtN(it.sys)} ＋ 未來銷貨 ${it.fut > 0 ? "+" : ""}${it.fut}（先開單、貨還在架上）＝ 應有 ${fmtN(it.should)}。此欄為送出當下凍結值。`)}`;
+            const futBadge = (v, note, est) => (v ? `<span class="stk-futb${est ? " est" : ""}" title="${escapeAttr(note)}">未來${v > 0 ? "+" : ""}${v}${est ? "・推估" : ""}</span>` : "");
+            const shouldCell = (it) => `<b>${fmtN(it.should)}</b>${futBadge(it.fut, it.futEst
+                ? `此筆盤點在「未來銷貨加回」上線前送出，當下沒有凍結未來量 → 這裡用${frozenBasis ? basisAsOf + " 的收盤快照" : "目前的未來銷貨"}推估：凌越帳 ${fmtN(it.sys)} ＋ 未來 ${it.fut > 0 ? "+" : ""}${it.fut} ＝ 應有 ${fmtN(it.should)}。之後送出的盤點會凍結當下值，不再推估。`
+                : `盤點當下：凌越帳 ${fmtN(it.sys)} ＋ 未來銷貨 ${it.fut > 0 ? "+" : ""}${it.fut}（先開單、貨還在架上）＝ 應有 ${fmtN(it.should)}。此欄為送出當下凍結值。`, it.futEst)}`;
             const latestShouldCell = (it) => (it.latestShould == null ? "—"
-                : `<b>${fmtN(it.latestShould)}</b>${futBadge(it.latestFut, `${frozenBasis ? basisAsOf + " 收盤" : "最新"}：系統 ${fmtN(it.latest)} ＋ 未來銷貨 ${it.latestFut > 0 ? "+" : ""}${it.latestFut} ＝ 應有 ${fmtN(it.latestShould)}`)}`);
+                : `<b>${fmtN(it.latestShould)}</b>${futBadge(it.latestFut, `${frozenBasis ? basisAsOf + " 收盤" : "最新"}：系統 ${fmtN(it.latest)} ＋ 未來銷貨 ${it.latestFut > 0 ? "+" : ""}${it.latestFut} ＝ 應有 ${fmtN(it.latestShould)}`, false)}`);
             const latestCell = (it) => {
                 if (it.latest == null)
                     return "—";
@@ -318,12 +328,12 @@ function registerInventoryRoutes(router, ctx) {
                 ${frozenBasis
                     ? `<span class="stk-badge ok" title="此日期已過，右側「系統／${latestDiffName}」用 ${basisAsOf} 的收盤庫存快照（凍結），不會再跟著今天的庫存變動">已凍結 ${escapeHtml(basisAsOf)} 收盤${basisFallbackDay ? "（該日無推送）" : ""}</span>`
                     : (sel.latestStale ? `<span class="stk-badge warn" title="查無此日期（含之前）的每日庫存快照——可能超過 90 天保留期或當時尚未啟用推送，只好退回顯示即時庫存，此欄會隨庫存變動">無當日快照・顯示即時量</span>` : "")}
-                ${futOn ? `<span class="stk-badge fut" title="未來日期的銷貨單已扣凌越帳、貨還在架上 → 應有實體量＝系統＋未來銷貨，盤差對「應有」算。盤點當下側用送出時凍結的未來量${sel.futStale ? "；此日期查無未來銷貨快照，未來量以 0 計" : ""}">未來加回：${sel.futStale ? "無當日快照" : "已計入盤差"}</span>` : ""}
+                ${futOn ? `<span class="stk-badge fut" title="未來日期的銷貨單已扣凌越帳、貨還在架上 → 應有實體量＝系統＋未來銷貨，盤差對「應有」算。盤點當下側用送出時凍結的未來量${sel.futEstAny ? "；此單在功能上線前送出、當時沒凍結，標「推估」的列改用目前的未來銷貨回推" : ""}${sel.futStale ? "；此日期查無未來銷貨快照，未來量以 0 計" : ""}">未來加回：${sel.futStale ? "無當日快照" : (sel.futEstAny ? "已計入盤差（部分推估）" : "已計入盤差")}</span>` : ""}
                 <label class="sf-switch-label" style="font-size:11.5px;"><input type="checkbox" id="stkOnlyDiff"><span class="sf-switch"></span>只看盤差</label>
                 <button type="button" class="stk-ibtn" id="stkInfo2" aria-expanded="false" aria-label="盤差計算說明" title="盤差計算說明">${SF_ICONS.info}</button>
               </div>
             </div>
-            <div class="stk-note" id="stkInfo2Box" hidden>紅底＝盤差(對當下)超過 <b>±5%</b> 的品項。「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。${futOn ? `<b>「應有」＝系統＋未來銷貨</b>：未來日期的銷貨單一打進凌越就<b>立刻扣帳</b>，但貨還在架上——所以<b>盤差一律對「應有」算</b>，先開單的品項才不會天天假盤盈。此欄是<b>盤點送出當下凍結</b>的未來量（未來單會隨日期消失，不凍結歷史盤差會一直變）。${sel.futStale ? "<b>此日期查無未來銷貨快照</b>（功能上線前或超過 90 天保留期）→ 未來量以 0 計。" : ""}` : ""}右側<b>${escapeHtml(latestGrpTitle)}</b>取自${sel.latestSource === "warehouse" ? "<b>此倉的分倉庫存</b>" : "<b>全公司總量</b>（此倉尚無分倉資料）"}${frozenBasis
+            <div class="stk-note" id="stkInfo2Box" hidden>紅底＝盤差(對當下)超過 <b>±5%</b> 的品項。「系統(盤點當下)」是同事盤點<b>那一刻</b>的凌越庫存(已凍結)；若當時庫存快照較舊，盤差會偏大。${futOn ? `<b>「應有」＝系統＋未來銷貨</b>：未來日期的銷貨單一打進凌越就<b>立刻扣帳</b>，但貨還在架上——所以<b>盤差一律對「應有」算</b>，先開單的品項才不會天天假盤盈。此欄是<b>盤點送出當下凍結</b>的未來量（未來單會隨日期消失，不凍結歷史盤差會一直變）。${sel.futEstAny ? ("此單在功能上線前送出、當時沒有凍結未來量，標<b>「推估」</b>的列是用" + (frozenBasis ? "當日收盤快照" : "目前的未來銷貨") + "回推的參考值——之後送出的盤點都會凍結，不再推估（統計圖表只採凍結值，不吃推估）。") : ""}${sel.futStale ? "<b>此日期查無未來銷貨快照</b>（功能上線前或超過 90 天保留期）→ 未來量以 0 計。" : ""}` : ""}右側<b>${escapeHtml(latestGrpTitle)}</b>取自${sel.latestSource === "warehouse" ? "<b>此倉的分倉庫存</b>" : "<b>全公司總量</b>（此倉尚無分倉資料）"}${frozenBasis
                 ? `的 <b>${escapeHtml(basisAsOf)} 收盤快照</b>${basisFallbackDay ? "（該日沒有推送紀錄，取此日之前最近一次）" : ""}——<b>已凍結</b>，不會再跟著今天的庫存跑，<b>${escapeHtml(latestDiffName)}＝實盤−當日系統</b>是當天的定案值。`
                 : `的即時快照(資料時間 ${escapeHtml(liveSnapAt)})，<b>對最新盤差＝實盤−最新系統</b>可較貼近現況。按「更新最新庫存」可先拉一次最新再看。`}</div>
             <div class="stk-tblwrap">
@@ -427,6 +437,7 @@ function registerInventoryRoutes(router, ctx) {
         .stk-latest{color:#5b616e;}
         .stk-ladj2{margin-left:4px;font-size:10.5px;color:#8250df;font-weight:600;}
         .stk-futb{margin-left:4px;font-size:10px;font-weight:700;color:#0369a1;background:#e0f2fe;border-radius:4px;padding:0 4px;white-space:nowrap;}
+        .stk-futb.est{color:#8a5a10;background:#fcf3e2;}
         .stk-mid2{margin-left:4px;font-size:10px;font-weight:700;color:#2383e2;background:#e8f1fd;border-radius:4px;padding:0 4px;}
         .stk-editmark{margin-left:3px;font-size:10.5px;color:#8250df;cursor:default;}
         tr.stk-n .stk-diff{color:#b3261e;font-weight:700;}

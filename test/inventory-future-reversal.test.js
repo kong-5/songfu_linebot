@@ -14,6 +14,8 @@
  *   6. 「套用實盤」的 delta 基準＝應有量（不把未來量寫成永久調整 → 免雙重補償）。
  *   7. 統計熱力圖盤差同口徑（含凍結的未來量）。
  *   8. 盤點端 API（LIFF/掃碼/網頁版）逐品項帶 f，讓盤點人看得到「應有」。
+ *   9. future_qty IS NULL（功能上線前送出）≠ 0：改用目前的未來銷貨推估並標「推估」，
+ *      否則左半邊「應有＝系統」右半邊卻標「未來+68」，畫面自相矛盾。
  *
  * 跑法：npm test（node --test test/）。實際 listen 隨機埠、偽造合法 session cookie 打真路由。
  */
@@ -166,6 +168,25 @@ test("5. 過去日期：最新應有用該日的未來銷貨收盤快照（9）�
     assert.ok(row.includes(">51<"), "當下應有＝凍結 48＋3＝51：" + row);
     assert.ok(row.includes(">59<"), "當日應有＝收盤 50＋未來收盤 9＝59：" + row);
     assert.ok(!row.includes("未來+26.8"), "不可把今天的未來單 26.8 貼到歷史列：" + row);
+});
+
+test("5b. 功能上線前送出的舊列（future_qty IS NULL）：不當 0，改用目前的未來銷貨推估並標示", async () => {
+    const now = new Date().toISOString();
+    const sid = "stk-legacy-1";
+    await db.prepare("INSERT INTO stocktake_session (id, icpno, wh_code, wh_name, count_date, status, item_count, counted_count, created_by_name, created_at, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(sid, ICP, WH2, "冷凍庫", TODAY, "submitted", 1, 1, "丁文順", now, now);
+    // future_qty 不給值＝NULL，模擬新版上線前送出的盤點
+    await db.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(sid + "-1", sid, "G001", "老薑", "30KG/箱", "KG", 30, 34, now);
+    const html = await getPage("date=" + TODAY + "&wh=" + ICP + ":" + WH2);
+    const row = rowOf(html, "G001");
+    assert.ok(row.includes(">35<"), "應有＝30＋目前未來 5＝35（NULL 不可當 0）：" + row);
+    assert.ok(row.includes("未來+5・推估"), "推估值要標示出來，不能看起來像凍結值：" + row);
+    assert.ok(html.includes("已計入盤差（部分推估）"), "卡片 badge 要標出此單有推估列");
+    // 對照：有凍結值 0 的列（新版送出、當下確實沒有未來單）不會被推估蓋掉
+    const fn013 = await getPage("date=" + TODAY + "&wh=" + ICP + ":" + WH);
+    const g = rowOf(fn013, "G001");
+    assert.ok(!g.includes("未來+"), "FN013 的 G001 凍結值是 0（非主倉），不該被推估補上：" + g);
 });
 
 test("6. 套用實盤：delta 基準＝應有量（不把未來量寫成永久調整）", async () => {
