@@ -125,6 +125,7 @@
   .cand .nm{font-size:14px;font-weight:700;}
   .cand .meta{font-size:11px;color:var(--txt-3);margin-top:1px;font-variant-numeric:tabular-nums;}
   .cand .sysv{font-size:12.5px;color:var(--txt-2);font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .cur-qty .sysbox .futn{display:inline-block;margin-left:6px;font-size:10.5px;font-weight:700;color:#0369a1;background:#e0f2fe;border-radius:4px;padding:0 4px;}
   .bind-qps{display:flex;align-items:center;gap:10px;background:var(--warn-soft);border:1px solid color-mix(in srgb,var(--warn) 28%,transparent);border-radius:10px;padding:10px 12px;margin:4px 0 10px;}
   .bind-qps .lab{flex:1;font-size:12.5px;color:var(--warn);font-weight:700;}
   .bind-qps input{width:76px;text-align:center;font-size:16px;font-weight:800;border:1.5px solid var(--line);border-radius:9px;padding:7px 6px;background:var(--card);color:var(--txt);}
@@ -170,6 +171,7 @@
       manualPh:'掃不到？手動輸入條碼或料號',manualGo:'帶入',
       curHint:'掃到的品項會出現在這裡；同一條碼連掃會累加，或用大鍵盤直接輸入數量。',
       sysLab:'帳上',notInWh:function(w){return '非本倉品項（'+w+'）';},
+      futHint:function(sys,f){return '帳 '+sys+' 未來'+(f>0?'+':'')+f;},
       kpClear:'清',kpOk:'完成',match:'相符',
       listT:function(n){return '已盤 '+n+' 項（點品項可修改）';},
       barTxt:function(d,t){return '已盤 <b>'+d+'</b> / 倉內 '+t+' 項';},
@@ -209,6 +211,7 @@
       manualPh:'Không quét được? Nhập mã vạch / mã hàng',manualGo:'Nhập',
       curHint:'Sản phẩm quét được sẽ hiện ở đây; quét cùng mã sẽ cộng dồn, hoặc dùng bàn phím lớn nhập số lượng.',
       sysLab:'Hệ thống',notInWh:function(w){return 'Không thuộc kho này ('+w+')';},
+      futHint:function(sys,f){return 'Sổ '+sys+' tương lai'+(f>0?'+':'')+f;},
       kpClear:'Xóa',kpOk:'Xong',match:'Khớp',
       listT:function(n){return 'Đã kiểm '+n+' SP (nhấn để sửa)';},
       barTxt:function(d,t){return 'Đã kiểm <b>'+d+'</b> / '+t+' SP trong kho';},
@@ -517,6 +520,9 @@
   }
 
   function itemOf(code){return S.itemIdx[code]||S.extra[code]||null;}
+  // 應有實體量＝帳上 + 未來銷貨（未來日期的銷貨單已扣凌越帳、貨還在架上）。
+  // it.f 只在後台「未來銷貨加回」開關開時才有；沒有就等於帳上量（行為與舊版相同）。
+  function scShould(it){return Math.round((Number((it&&it.sys)||0)+Number((it&&it.f)||0))*100)/100;}
   function countedCount(){return S.order.filter(function(c){return S.counts[c]!=null&&S.counts[c]!=='';}).length;}
 
   // ---------- 掃描畫面 ----------
@@ -722,7 +728,7 @@
     box.innerHTML='<div class="cur"><div class="cur-in"><div class="nm">'+esc(it.n)+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div>'
       +(notInWh?'<div class="tags"><span class="tag warn">'+esc(L('notInWh')(it.w||'?'))+'</span></div>':'')
-      +'<div class="cur-qty"><div class="sysbox">'+esc(L('sysLab'))+' <b>'+fmt(it.sys)+'</b> '+esc(it.u||'')+'</div>'
+      +'<div class="cur-qty"><div class="sysbox">'+esc(L('sysLab'))+' <b>'+fmt(scShould(it))+'</b> '+esc(it.u||'')+(it.f?'<span class="futn">'+esc(L('futHint')(fmt(it.sys),it.f))+'</span>':'')+'</div>'
         +'<div class="qdisp'+(S.kpOpen?' editing':'')+'" id="scQd"><span class="v" id="scQv">'+esc(S.counts[it.c]!=null&&S.counts[it.c]!==''?S.counts[it.c]:'0')+'</span><span class="u">'+esc(it.u||'')+'</span></div></div>'
       +'</div>'+(S.kpOpen?kpHtml():'')+'</div>';
     document.getElementById('scQd').addEventListener('click',function(){S.kpOpen=!S.kpOpen;S.kpFresh=true;renderCur();});
@@ -763,7 +769,7 @@
   // ---------- 已盤清單 ----------
   function diffPill(it){
     var v=parseFloat(S.counts[it.c]);if(!isFinite(v))return '';
-    var d=Math.round((v-Number(it.sys||0))*100)/100;
+    var d=Math.round((v-scShould(it))*100)/100;
     if(d===0)return '<span class="diff eq">'+esc(L('match'))+'</span>';
     return '<span class="diff '+(d>0?'sp':'sn')+'">'+(d>0?'+'+fmt(d):fmt(d))+'</span>';
   }

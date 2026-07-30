@@ -364,6 +364,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
                     const pruneBefore = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(Date.now() - 90 * 86400000));
                     await h.prepare("DELETE FROM erp_stock_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date < ?").run(icpno, pruneBefore);
                     await h.prepare("DELETE FROM erp_stock_wh_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date < ?").run(icpno, pruneBefore);
+                    await h.prepare("DELETE FROM erp_future_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date < ?").run(icpno, pruneBefore);
                 } catch (_) { /* prune 失敗不影響推送 */ }
                 // 分倉快照：同交易內覆蓋（失敗整批回滾，與主表一致）；沒帶 warehouse_qty 就跳過不動。
                 // [fix 2026-07-14] 多公司安全改為「按公司覆蓋」：凌越倉號可跨公司重複（erp_warehouse
@@ -422,6 +423,17 @@ function registerLingyueWritebackRoutes(router, ctx) {
                         await h.prepare("INSERT INTO erp_future_sales (icpno, erp_code, qty, updated_at) VALUES " + ph).run(...flat);
                     }
                     await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_future_sales_snapshot_at", snapshotAt);
+                    // [未來銷貨加回 2026-07-30] 每日快照：未來單會隨日期滾動消失，只留「現在」一份的話
+                    // 歷史盤點列的「應有實體量」每天都會變。同交易內一天一份（最後一次推送為準）。
+                    await h.prepare("DELETE FROM erp_future_daily WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ? AND snap_date = ?").run(icpno, dailySnapDate);
+                    for (let i = 0; i < futRows.length; i += FCHUNK) {
+                        const chunk = futRows.slice(i, i + FCHUNK);
+                        const ph = chunk.map(() => "(?,?,?,?,?)").join(",");
+                        const flat = [];
+                        for (const r of chunk)
+                            flat.push(icpno, r[0], dailySnapDate, r[1], r[2]); // r = [erp_code, qty, at]
+                        await h.prepare("INSERT INTO erp_future_daily (icpno, erp_code, snap_date, qty, updated_at) VALUES " + ph).run(...flat);
+                    }
                 }
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_snapshot_at", snapshotAt);
                 await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_stock_item_count", String(rows.length));
