@@ -262,6 +262,17 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
       .qe-row.qe-noq-on .qe-unit,
       .qe-row.qe-noq-on .qe-prev{ color:var(--txt-3); }
       .qe-del{ color:#b91c1c; }
+      .qe-mv[disabled]{ opacity:.35; cursor:default; }
+      .sf-btn[disabled]{ opacity:.4; cursor:not-allowed; }
+      /* 大類（分類）管理卡片 */
+      .qe-catnew{ margin:0 0 12px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; }
+      .qe-catnew label{ display:flex; flex-direction:column; gap:4px; font-size:11px; color:var(--txt-3); }
+      .qe-catnew input, .qe-catnew select{ font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:8px; color:var(--txt-1); }
+      .qe-catlist{ border-top:var(--hairline); }
+      .qe-catrow{ display:grid; grid-template-columns:1fr 56px auto auto; gap:10px; align-items:center; padding:7px 2px; border-bottom:var(--hairline); }
+      .qe-catrow:last-child{ border-bottom:none; }
+      .qe-catname{ font-size:14px; }
+      .qe-catn{ font-size:12px; color:var(--txt-3); text-align:right; }
       @media (max-width:640px){
         .sf-qwrap{ padding:16px; }
         .sf-qlist-head{ display:none; }
@@ -283,9 +294,15 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
         const items = groups.flatMap(g => g.items);
         // 分類下拉依報價種類給對應那組（冷凍單不該出現「生鮮蔬菜」，反之亦然）；
         // 已存在於本份報價的分類一律保留，免得舊資料的分類在下拉裡消失、一存檔就被改掉。
-        const baseCats = kind === "frozen" ? quote_report_js_1.FROZEN_CATEGORY_ORDER : quote_report_js_1.CATEGORY_ORDER;
+        const baseCats = Array.isArray(opts.catOrder) && opts.catOrder.length
+            ? opts.catOrder
+            : quote_report_js_1.baseCategoriesFor(kind);
         const allCats = Array.from(new Set([...baseCats, ...groups.map(g => g.category)]));
         const catOptions = (sel) => allCats.map(c => `<option value="${escapeAttr(c)}"${c === sel ? " selected" : ""}>${escapeHtml(c)}</option>`).join("");
+        // 大類管理卡片用：本份報價各大類的品項數（顯示「N 項」並擋掉還在用的大類的刪除鈕）。
+        const groupByCatCount = new Map(groups.map(g => [g.category, g.items.length]));
+        const catKindLabel = kind === "frozen" ? "冷凍報價" : "青菜月報 ＋ 飯店客戶報價";
+        const catErr = opts.catErr || "";
         const enc = encodeURIComponent(id);
         const isHotel = kind === "hotel";
         const isFrozen = kind === "frozen";
@@ -357,7 +374,11 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
               </div>`;
         }
         if (manage) {
-            for (const g of groups) {
+            // 管理品項模式列出「所有大類」（含目前 0 項的），空的會顯示虛線落點框可以直接拖品項進去——
+            // 不然剛新增的大類在畫面上根本不存在，等於加了也用不到。
+            const groupByCat = new Map(groups.map(g => [g.category, g]));
+            const manageGroups = allCats.map(c => groupByCat.get(c) || { category: c, items: [] });
+            for (const g of manageGroups) {
                 let rows = "";
                 for (const it of g.items) {
                     seq++;
@@ -608,6 +629,44 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                 <label style="font-size:12px;color:var(--txt-3);">單價<input name="price" inputmode="decimal" placeholder="留白=不報價" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:3px;text-align:right;"></label>
                 <button class="sf-btn" type="submit">新增</button>
               </form>
+            </div>
+
+            <div class="sf-card" style="padding:16px 18px;">
+              <div style="font-weight:600;margin-bottom:4px;">大類（分類）管理</div>
+              <p style="margin:0 0 12px;font-size:12px;color:var(--txt-3);line-height:1.6;">
+                報價單依大類分群列印，這裡的順序＝報價單上的分群順序。新增後上方會多一個虛線空框，把品項拖進去（或用每列的分類下拉）即可。
+                此清單由「${escapeHtml(catKindLabel)}」共用${isHotel ? "（飯店報價與青菜月報同一組）" : ""}。
+              </p>
+              ${catErr ? `<div class="sf-card sf-qflash" style="border-left-color:#b91c1c;margin-bottom:12px;"><span style="color:#b91c1c;">${escapeHtml(catErr)}</span></div>` : ""}
+              <form method="post" action="/admin/quotes/category-add" class="qe-catnew">
+                <input type="hidden" name="back" value="${escapeAttr(id)}">
+                <label>新增大類<input name="name" required maxlength="20" placeholder="例如：冷凍包子類" autocomplete="off"></label>
+                <label>插入位置<select name="after">
+                  <option value="">最後面</option>
+                  ${baseCats.map(c => `<option value="${escapeAttr(c)}">放在「${escapeHtml(c)}」之後</option>`).join("")}
+                </select></label>
+                <button class="sf-btn primary" type="submit">＋ 新增大類</button>
+              </form>
+              <div class="qe-catlist">
+                ${baseCats.map((c, i) => {
+                    const used = (groupByCatCount.get(c) || 0);
+                    return `<div class="qe-catrow">
+                      <span class="qe-catname">${escapeHtml(c)}</span>
+                      <span class="qe-catn">${used} 項</span>
+                      <form method="post" action="/admin/quotes/category-move" style="margin:0;display:flex;gap:2px;">
+                        <input type="hidden" name="back" value="${escapeAttr(id)}">
+                        <input type="hidden" name="name" value="${escapeAttr(c)}">
+                        <button class="qe-mv" type="submit" name="dir" value="-1" title="上移一格"${i === 0 ? " disabled" : ""}>${QI.up}</button>
+                        <button class="qe-mv" type="submit" name="dir" value="1" title="下移一格"${i === baseCats.length - 1 ? " disabled" : ""}>${QI.down}</button>
+                      </form>
+                      <form method="post" action="/admin/quotes/category-delete" style="margin:0;">
+                        <input type="hidden" name="back" value="${escapeAttr(id)}">
+                        <input type="hidden" name="name" value="${escapeAttr(c)}">
+                        <button class="sf-btn sm qe-del" type="submit"${used ? " disabled title=\"底下還有品項，請先把品項改到其他大類\"" : ""} onclick="return confirm('刪除大類「${escJsStr(c)}」？')">刪</button>
+                      </form>
+                    </div>`;
+                }).join("")}
+              </div>
             </div>` : ""}
             ${priceScript}${orderScript}
           </div>`;
@@ -801,6 +860,80 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
     });
 
 
+    // ── 大類（分類）維護 ───────────────────────────────────────────────────────
+    // 路徑刻意用兩段式 /quotes/category-xxx：三段的 /quotes/categories/delete 會被
+    // /quotes/:id/delete 吃掉（:id='categories'），改名就完全不用擔心註冊順序。
+    // 三個端點都吃 back=<報價 id>，做完回原本那份報價的「管理品項」頁。
+    const catBackUrl = (backId, err) => {
+        const base = backId ? `/admin/quotes/${encodeURIComponent(backId)}?manage=1` : "/admin/quotes";
+        return err ? `${base}&caterr=${encodeURIComponent(err)}` : base;
+    };
+    /** 由 back（報價 id）推該報價種類的大類群組 kind；back 沒帶就當月報。 */
+    function catKindFromBack(backId) {
+        if (!backId) return "monthly";
+        return quote_report_js_1.categoryKindOf(quoteKindOf(backId));
+    }
+
+    router.post("/quotes/category-add", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const backId = String(req.body.back || "").trim();
+        try {
+            const kind = catKindFromBack(backId);
+            const name = String(req.body.name || "");
+            const after = String(req.body.after || "");
+            const r = await quote_report_js_1.addCategory(db, kind, name, after);
+            if (r.added) {
+                await logDataChange(req, {
+                    entityType: "quote_category", entityId: `${kind}:${r.name}`, action: "create",
+                    summary: `新增報價大類「${r.name}」（${kind === "frozen" ? "冷凍報價" : "青菜月報"}）`,
+                    meta: { after: r.order },
+                });
+            }
+            res.redirect(catBackUrl(backId, r.added ? "" : `「${r.name}」已經在清單裡了，不需要重複新增。`));
+        } catch (e) {
+            console.error("[admin] /quotes/category-add failed", e);
+            res.redirect(catBackUrl(backId, String(e && e.message || e)));
+        }
+    });
+
+    router.post("/quotes/category-move", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const backId = String(req.body.back || "").trim();
+        try {
+            const kind = catKindFromBack(backId);
+            const name = String(req.body.name || "");
+            const dir = Number(req.body.dir) < 0 ? -1 : 1;
+            const r = await quote_report_js_1.moveCategory(db, kind, name, dir);
+            if (r.moved) {
+                await logDataChange(req, {
+                    entityType: "quote_category", entityId: `${kind}:${name}`, action: "reorder",
+                    summary: `調整報價大類順序：「${name}」${dir < 0 ? "上移" : "下移"}一格`,
+                    meta: { after: r.order },
+                });
+            }
+            res.redirect(catBackUrl(backId));
+        } catch (e) {
+            console.error("[admin] /quotes/category-move failed", e);
+            res.redirect(catBackUrl(backId, String(e && e.message || e)));
+        }
+    });
+
+    router.post("/quotes/category-delete", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        const backId = String(req.body.back || "").trim();
+        try {
+            const kind = catKindFromBack(backId);
+            const name = String(req.body.name || "");
+            await quote_report_js_1.deleteCategory(db, kind, name);
+            await logDataChange(req, {
+                entityType: "quote_category", entityId: `${kind}:${name}`, action: "delete",
+                summary: `刪除報價大類「${name}」（${kind === "frozen" ? "冷凍報價" : "青菜月報"}）`,
+                meta: { before: name },
+            });
+            res.redirect(catBackUrl(backId));
+        } catch (e) {
+            console.error("[admin] /quotes/category-delete failed", e);
+            res.redirect(catBackUrl(backId, String(e && e.message || e)));
+        }
+    });
+
     // 標記月報「已發送給客戶」（寫 app_settings quote_sent_<ym>；儀表板發送提醒的按鈕呼叫）
     router.post("/quotes/mark-sent", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         try {
@@ -817,9 +950,12 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
         try {
             const { kind, row } = await resolveQuoteRow(req.params.id);
             if (!row) { res.status(404).type("text/html").send(notionPage("報價管理", `<div style="padding:32px;">找不到此報價。<a href="/admin/quotes">返回</a></div>`, "quotes", res)); return; }
-            const groups = await quote_report_js_1.getItemsGrouped(db, row.id);
+            // 大類順序是使用者維護的（quote_category），分群與下拉都以它為準。
+            const catOrder = await quote_report_js_1.listCategories(db, quote_report_js_1.categoryKindOf(kind));
+            const groups = await quote_report_js_1.getItemsGrouped(db, row.id, catOrder);
             const manage = String(req.query.manage || "") === "1";
             const okMsg = String(req.query.ok || "");
+            const catErr = String(req.query.caterr || "");
             // 前月價格比較：只對「月報／冷凍報價」且非管理模式建 map（飯店報價無月份概念）。
             // 冷凍要比的是上個月的「冷凍」報價，故傳 getFrozenQuoteByYm；前月不存在則靜默省略。
             let prevMap = null;
@@ -827,7 +963,7 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
                 const byYm = kind === "frozen" ? quote_report_js_1.getFrozenQuoteByYm : undefined;
                 try { prevMap = await quote_report_js_1.buildPrevPriceMap(db, row.ym, byYm); } catch (_) { prevMap = null; }
             }
-            const body = renderQuoteEditor(row, groups, { kind, manage, okMsg, prevMap });
+            const body = renderQuoteEditor(row, groups, { kind, manage, okMsg, prevMap, catOrder, catErr });
             res.type("text/html").send(notionPage("編輯報價單", body, "quotes", res));
         } catch (e) {
             console.error("[admin] /quotes/:id failed", e);
@@ -839,10 +975,13 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
     // parameterLimit 放大：一份報價常有上百項 × 每項 5~6 個欄位，預設 1000 會擋下整份儲存。
     router.post("/quotes/:id/save", express_1.default.urlencoded({ extended: true, parameterLimit: 20000 }), async (req, res) => {
         try {
-            const { row } = await resolveQuoteRow(req.params.id);
+            const { kind, row } = await resolveQuoteRow(req.params.id);
             if (!row) { res.redirect("/admin/quotes"); return; }
             const manage = String(req.query.manage || "") === "1";
-            const items = await quote_report_js_1.getItems(db, row.id);
+            // 這裡的排序要和畫面上的順序一致（planItemOrder 靠 items 的相對位置補回沒送出的品項），
+            // 所以同樣用使用者維護的大類順序。
+            const catOrder = await quote_report_js_1.listCategories(db, quote_report_js_1.categoryKindOf(kind));
+            const items = await quote_report_js_1.getItems(db, row.id, catOrder);
             // 管理品項模式會帶回畫面順序（item_order＝逗號串接的品項 id）。先在交易外算好最終順序，
             // 沒送 item_order（價格模式／JS 停用）就不動 sort_order。
             const orderRaw = String(req.body.item_order || "").trim();
@@ -952,7 +1091,8 @@ function qSetFont(v){ if(!QFONTS[v]) return; document.body.style.fontFamily = QF
     async function loadQuoteForRender(id) {
         const { kind, row } = await resolveQuoteRow(id);
         if (!row) return null;
-        const groups = await quote_report_js_1.getItemsGrouped(db, id);
+        const catOrder = await quote_report_js_1.listCategories(db, quote_report_js_1.categoryKindOf(kind));
+        const groups = await quote_report_js_1.getItemsGrouped(db, id, catOrder);
         const report = kind === "hotel" ? { ...row, roc_label: row.customer_name, ym: row.customer_name } : row;
         return { report, groups, kind };
     }

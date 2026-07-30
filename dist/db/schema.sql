@@ -519,3 +519,15 @@ CREATE TABLE IF NOT EXISTS frozen_quote (
   created_at TEXT,
   updated_at TEXT
 );
+
+-- ── 報價「大類」（分類）清單與顯示順序 ──
+-- 舊版大類寫死在 quote-report.js 的陣列裡，後台加不了新大類（如「冷凍包子類」）。
+-- 這張表是使用者可維護的權威清單：kind='monthly'（青菜月報＋飯店報價）／'frozen'（冷凍報價）。
+-- 首次讀取時以程式內建清單一次性帶入（listCategories 的 ensure），之後完全以本表為準。
+CREATE TABLE IF NOT EXISTS quote_category (
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT,
+  PRIMARY KEY (kind, name)
+);
