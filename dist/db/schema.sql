@@ -500,3 +500,22 @@ CREATE TABLE IF NOT EXISTS hotel_quote (
   updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_hotel_quote_name ON hotel_quote(customer_name);
+
+-- ── 冷凍報價：與月報同結構（一月一份、新月帶入上月），品項沿用 quote_item（report_id = frozen_quote.id）──
+-- 與 quote_report 分表而非共表加欄位：兩份報價的月份各自獨立（ym UNIQUE 不能互相卡位），
+-- 且列表／建立／月底提醒都各走各的，分表最省事也最不會誤動青菜月報。
+CREATE TABLE IF NOT EXISTS frozen_quote (
+  id TEXT PRIMARY KEY,
+  ym TEXT NOT NULL UNIQUE,
+  roc_label TEXT,
+  title TEXT,
+  subtitle TEXT,
+  company TEXT,
+  address TEXT,
+  tel TEXT,
+  fax TEXT,
+  status TEXT NOT NULL DEFAULT 'draft',
+  note TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
