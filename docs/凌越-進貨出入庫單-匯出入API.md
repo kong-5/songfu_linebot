@@ -436,3 +436,31 @@ B6 明細**沒有**：`SD_CJNAME` 以外的促銷欄（`SD_CSNO`/`SD_CSREC`/`SD_
     寫回前務必重讀 CLAUDE.md「庫存調整只影響內部顯示」的定案再另案評估。
 - 原始文件備份：凌越提供的 PDF 與 8 份 doc 未入 repo（二進位），本文即完整轉錄；
   原檔留存於使用者處，如需覆核以原檔為準。
+
+## 11. 串接測試工具 `scripts/ly_newdoc_test.py`
+
+雲端連不到凌越 LAN——把這支複製到內網「凌越整合代理」資料夾（或 `D:\Work\lystk_tool`）執行，
+依賴同資料夾／`LYSTK_DIR` 的 `lystk.py`（憑證沿用 `lystk.py setup` 存的那組）。
+
+**測試順序（前兩步唯讀零風險）：**
+
+```bat
+REM 1. 確認凌越元件版本認得五個函式（印 WSDL 簽名）
+py ly_newdoc_test.py probe
+
+REM 2. 唯讀查詢：四個新單別各查近 7 天（驗證資料種類存在＋帳號有權限）
+py ly_newdoc_test.py read 松富
+py ly_newdoc_test.py read 松富 --kind 進貨 --days 30
+
+REM 3. 寫一張測試單（備註【API測試請刪除】）→ 回查 → 自動刪
+REM    B6/B7 預設「不過帳」（imode 位12=0，不動庫存）；--keep 保留供人工核對
+py ly_newdoc_test.py write-test 入庫 --company 松富 --ctno <編號> --skno <料號> --whno FN005 --unit KG --keep
+REM 核對完手動刪，或：
+py ly_newdoc_test.py delete 入庫 --company 松富 --no APITEST2026....
+```
+
+- `write-test --dry-run` 只印組好的 XML 不寫入，先看欄位對不對。
+- `SD_UNIT_FG` 文件寫法不一致（§9 第 2 點）——被拒時照提示用 `--unitfg` 換另一種寫法重試，
+  **實測結果記回本文件**。
+- `delete` 有安全鎖：只刪 `APITEST` 開頭的單，`--force` 才能刪其他單號。
+- 測試通過後要正式串接，照 `docs/凌越串接-通用方法說明.md` §2 的兩段式步驟另案實作。
