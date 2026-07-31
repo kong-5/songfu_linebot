@@ -95,8 +95,12 @@ def _get(resp, key, default=None):
         return default
 
 
-def lydataout(icpno, idakd, where, whval, limit=0):
-    """回傳 (title_rows, detail_rows, itotrec)。唯讀。"""
+def lydataout(icpno, idakd, where, whval, limit=0, want_tmpnm=False):
+    """回傳 (title_rows, detail_rows, itotrec)；want_tmpnm=True 時多回 itmpnm。唯讀。
+
+    limit>0＝分頁模式，會在 lystemp 建暫存物件並回傳 itmpnm——可用來探測
+    lystemp 是否正常（LyDataIn 的 GetRsByXml 也依賴同一個 lystemp 資料庫）。
+    """
     client = lystk.get_client()
     resp = client.service.LyDataOut(
         ikye=lystk.fresh_key(), icpno=icpno, idakd=idakd,
@@ -119,6 +123,8 @@ def lydataout(icpno, idakd, where, whval, limit=0):
         for node, bucket in ((".//LYDATATITLE", titles), (".//LYDATADETAIL", details)):
             for t in root.findall(node):
                 bucket.append({c.tag: (c.text or "").strip() for c in t})
+    if want_tmpnm:
+        return titles, details, tot, _get(resp, "itmpnm", "")
     return titles, details, tot
 
 
@@ -186,12 +192,30 @@ def cmd_read(args):
     for kd in kinds:
         name = NEW_KINDS.get(kd, kd)
         try:
-            titles, details, tot = lydataout(icpno, kd, where, whval)
+            if args.limit:
+                titles, details, tot, tmpnm = lydataout(
+                    icpno, kd, where, whval, limit=args.limit, want_tmpnm=True)
+            else:
+                titles, details, tot = lydataout(icpno, kd, where, whval)
+                tmpnm = None
         except Exception as e:
             failed += 1
             print(f"[{kd} {name}] ❌ {e}")
             continue
         print(f"[{kd} {name}] 抬頭 {len(titles)} 筆、明細 {len(details)} 筆（itotrec={tot}）")
+        if args.limit:
+            # 分頁會在 lystemp 建暫存物件——有拿到檔名＝lystemp 可正常建立暫存
+            print(f"    分頁暫存檔名 itmpnm={tmpnm!r}"
+                  + ("  ✅ lystemp 可建暫存" if tmpnm else "  ⚠ 沒拿到暫存檔名"))
+            if tmpnm:
+                try:
+                    client = lystk.get_client()
+                    rc = client.service.LyDataPage(
+                        ikye=lystk.fresh_key(), icpno=icpno, idakd=kd,
+                        itykd="1", itmpnm=str(tmpnm), ipageno=0)
+                    print(f"    清除暫存 LyDataPage(itykd=1) rc={_get(rc, 'LyDataPageResult', rc)}")
+                except Exception as e:
+                    print(f"    ⚠ 清除暫存失敗: {e}")
         for t in titles[: args.show]:
             print(f"    {t.get('SP_NO','')}  {t.get('SP_DATE','')[:10]}  "
                   f"{t.get('SP_CTNO','')} {t.get('SP_CTNAME','')}  合計={t.get('SP_TOT','')}")
@@ -337,6 +361,9 @@ def main():
     r.add_argument("--days", type=int, default=7, help="近 N 天（預設 7）")
     r.add_argument("--start"); r.add_argument("--end")
     r.add_argument("--show", type=int, default=5, help="每單別最多列出幾筆（預設 5）")
+    r.add_argument("--limit", type=int, default=0,
+                   help="每頁筆數 >0＝分頁模式，會在 lystemp 建暫存並印 itmpnm"
+                        "（用來探測 lystemp 是否正常；仍是唯讀）")
 
     w = sub.add_parser("write-test", help="寫一張測試單→回查→刪（--keep 保留）")
     w.add_argument("kind", help="進貨/進退/入庫/出庫 或 0000AO/AP/B6/B7")
