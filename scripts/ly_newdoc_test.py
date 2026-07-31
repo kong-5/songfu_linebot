@@ -269,26 +269,37 @@ def cmd_write_test(args):
     d = f"{now:%Y/%m/%d}"
     spno = f"APITEST{now:%Y%m%d%H%M%S}"  # 21 字元 < 22 上限，好搜好刪
 
+    # 以下預設值來自 2026-07-31 對真實單據的 inspect 統計（文件 §13），
+    # 不是照規格猜的——訂貨單踩過「照文件填但實務不是那樣打」的坑。
     header = {"SP_DATE": d, "SP_NO": spno, "SP_CTNO": args.ctno,
+              "SP_QKDATE": d,          # 實測 100%＝單據日期
+              "SP_RATE": 1, "SP_RATE_NM": "NT",   # 實測 100%
               "SP_REM": f"{TEST_MARK} ly_newdoc_test write-test"}
     if idakd in ("0000AO", "0000AP"):
-        header["SP_QKCUST"] = args.qkcust or args.ctno  # AO/AP 抬頭必填
+        header["SP_QKCUST"] = args.qkcust or args.ctno  # 文件必填，實測 100%
+    if idakd in ("0000B6", "0000B7"):
+        # ⚠ 文件完全沒提，但實測每張單都有：入庫=8、出庫=9（兩單別同表共用單號序）
+        header["SP_SLIP_FG"] = "8" if idakd == "0000B6" else "9"
+        header["SP_QKCUST"] = args.qkcust or args.ctno  # 實測 100%（文件未標必填）
+        header["SP_TAXKIND"] = "3"    # 實測 100% 都是 3=無稅（內部調撥不計稅）
 
     detail = {"SD_DATE": d, "SD_NO": spno, "SD_CTNO": args.ctno,
-              "SD_SKNO": args.skno, "SD_QTY": args.qty, "SD_SEQ": 1}
+              "SD_SKNO": args.skno, "SD_QTY": args.qty, "SD_SEQ": 1,
+              "SD_YSNUM": args.qty,   # 實測 100%＝SD_QTY（不驗貨時）
+              "SD_RQTY": 1}           # 實測 100%；基本單位固定 1
     if args.unit:
         detail["SD_UNIT"] = args.unit
     if args.whno:
         detail["SD_WHNO"] = args.whno
-    # SD_UNIT_FG 文件寫法不一致：AO/B6=F/T、AP/B7=0/1（--unitfg 可覆寫實測）
-    default_unitfg = {"0000AO": None, "0000AP": "0", "0000B6": "F", "0000B7": "0"}[idakd]
-    unitfg = args.unitfg or default_unitfg
-    if unitfg is not None:
-        detail["SD_UNIT_FG"] = unitfg
-        detail["SD_RQTY"] = 1  # 基本單位固定 1
+        detail["SD_WHNO2"] = args.whno  # 實測 100%，多數與 SD_WHNO 相同
+    # SD_UNIT_FG：文件寫 F/T 或 0/1 不一致——實測真實單據一律存 '0'/'1'，故預設 '0'
+    detail["SD_UNIT_FG"] = args.unitfg or "0"
     if idakd == "0000B6":
-        detail["SD_ADJUST_FG"] = "0"  # B6 必填：非加工入庫
-    # 單價刻意不送 → 凌越自動帶價（送 0 會強制蓋 0）
+        detail["SD_ADJUST_FG"] = "0"  # 必填：0=非加工入庫（實測真單皆 0）
+    if idakd in ("0000B6", "0000B7"):
+        detail["SD_SLIP_FG"] = "8" if idakd == "0000B6" else "9"
+    # 單價刻意不送 → 凌越自動帶價（AO 實測自動帶出 63；送 0 會強制蓋 0）
+    # B6/B7 實測 SD_PRICE 恆為 0，成本走 SD_LAVE_P/SD_PAVE_P 系列，不由我方送
 
     xml = _build_xml(header, [detail])
     imode = build_imode(idakd, post=args.post)
@@ -359,15 +370,19 @@ REQUIRED = {
 }
 
 
-def _is_blank(v):
-    """凌越常回 0 / 0.0 / 1900-01-01 當「沒填」——一併視為空。"""
+def _is_empty(v):
+    """真正的空：空字串或凌越的空日期 1900-01-01。
+
+    ⚠ 不把 '0' 當空——旗標欄（SD_UNIT_FG=0 基本單位、SD_ADJUST_FG=0 非加工入庫）
+    的 0 是有意義的值，早期版本誤判成空，會謊報「文件標必填但實際全空」。
+    """
     s = str(v).strip()
-    if s == "":
-        return True
-    if s.startswith("1900-01-01") or s.startswith("1900/01/01"):
-        return True
+    return s == "" or s.startswith("1900-01-01") or s.startswith("1900/01/01")
+
+
+def _is_zero(v):
     try:
-        return float(s) == 0.0
+        return float(str(v).strip()) == 0.0
     except ValueError:
         return False
 
@@ -382,36 +397,39 @@ def _profile(rows, required, label, args):
             if k not in cols:
                 cols.append(k)
     print(f"  {label} {len(rows)} 筆 / 欄位 {len(cols)} 個"
-          f"（★＝文件標示必填；填寫率＝非空白且非0的比例）\n")
+          f"（★＝文件標示必填；填寫率＝非空字串的比例，'0' 算有值）\n")
     print(f"    {'欄位':<18}{'填寫率':>8}  {'相異值':>6}  範例值")
     print(f"    {'-'*18}{'-'*8:>8}  {'-'*6:>6}  {'-'*40}")
     stats = []
     for c in cols:
         vals = [r.get(c, "") for r in rows]
-        filled = [v for v in vals if not _is_blank(v)]
-        stats.append((c, len(filled) / len(rows), sorted({str(v).strip() for v in filled})))
-    # 有填的排前面，全空的收在最後
-    for c, rate, uniq in sorted(stats, key=lambda x: (-x[1], x[0])):
-        if rate == 0 and not args.all:
+        filled = [v for v in vals if not _is_empty(v)]
+        uniq = sorted({str(v).strip() for v in filled})
+        allzero = bool(filled) and all(_is_zero(v) for v in filled)
+        stats.append((c, len(filled) / len(rows), uniq, allzero))
+    # 有填的排前面；全空、以及「有值但整欄都是 0」預設收起來（--all 才列）
+    for c, rate, uniq, allzero in sorted(stats, key=lambda x: (-x[1], x[0])):
+        if (rate == 0 or allzero) and not args.all:
             continue
         star = "★" if c in required else " "
         sample = "、".join(u[:18] for u in uniq[:3])
         if len(uniq) > 3:
             sample += " …"
-        print(f"  {star} {c:<18}{rate*100:>7.0f}%  {len(uniq):>6}  {sample[:60]}")
-    blank_req = [c for c, rate, _ in stats if rate == 0 and c in required]
+        tag = " （全0）" if allzero else ""
+        print(f"  {star} {c:<18}{rate*100:>7.0f}%  {len(uniq):>6}  {sample[:60]}{tag}")
+    blank_req = [c for c, rate, _u, _z in stats if rate == 0 and c in required]
     missing_req = [c for c in required if c not in cols]
     if blank_req:
         print(f"\n    ⚠ 文件標必填但實際全空：{'、'.join(blank_req)}")
     if missing_req:
         print(f"    ⚠ 文件標必填但回傳中無此欄位：{'、'.join(missing_req)}")
-    always = [c for c, rate, _ in stats if rate == 1.0 and c not in required]
+    always = [c for c, rate, _u, z in stats if rate == 1.0 and not z and c not in required]
     if always:
         print(f"    ℹ 文件未標必填但 100% 都有值（寫入時建議跟著填）：{'、'.join(always)}")
     if not args.all:
-        n = sum(1 for _, rate, _ in stats if rate == 0)
+        n = sum(1 for _c, rate, _u, z in stats if rate == 0 or z)
         if n:
-            print(f"\n    （另有 {n} 個欄位全空，加 --all 可一併列出）")
+            print(f"\n    （另有 {n} 個欄位全空或整欄為 0，加 --all 可一併列出）")
 
 
 def cmd_inspect(args):
