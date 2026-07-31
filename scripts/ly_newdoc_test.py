@@ -404,6 +404,29 @@ def cmd_discover(args):
     print("（唯讀、irec=1 只取一筆，不會整表查詢；已知代碼已跳過）\n")
 
     client = _probe_client(args.timeout)
+
+    # ── 陰性對照：先拿絕對不存在的代碼打，確認 rc=0 真的有鑑別力 ──
+    # 2026-07-31 實測發現 0000AN/0000AM 回 rc=0 但總筆數 0、無欄位，
+    # 懷疑元件對未知代碼也回 0 → 沒有對照組就會把雜訊當成發現。
+    control_rc0 = []
+    for bogus in ("ZZZZZZ", "0000ZZ"):
+        try:
+            r = client.service.LyDataOut(
+                ikye=lystk.fresh_key(), icpno=icpno, idakd=bogus,
+                ifld="", idetfields="", irwhere="", iwhval="", irec=1,
+                imode=" " * 30, iorder="", idtorder="", iswhere="", isifld="",
+                Isecgroup="", iseckindfg="", iseckind="", Isecorder="", Isecrec=0)
+            if str(_get(r, "LyDataOutResult")) == "0":
+                control_rc0.append(bogus)
+        except Exception:
+            pass  # 丟例外＝有鑑別力，正是我們期待的
+    if control_rc0:
+        print(f"⚠ 陰性對照失敗：不存在的代碼 {'、'.join(control_rc0)} 也回 rc=0。")
+        print("  → **rc=0 不代表該資料種類存在**。以下只有「總筆數>0 或有欄位樣本」")
+        print("     的結果才可信，空結果一律視為無法判定。\n")
+    else:
+        print("✅ 陰性對照通過：不存在的代碼會被拒絕，rc=0 具鑑別力。\n")
+
     hits, misses, timeouts = [], 0, 0
     for idx, kd in enumerate(cands, 1):
         print(f"  [{idx}/{len(cands)}] {kd} …", end="", flush=True)
@@ -445,10 +468,16 @@ def cmd_discover(args):
             except Exception:
                 pass
         known = KNOWN_KINDS.get(kd)
-        print(f" ✅ 存在（總筆數 {tot}）{'' if known else '  ★ 文件未列！'}")
+        # 有實體證據（筆數>0 或帶得出欄位）才算確認；否則只是 rc=0，可能是假陽性
+        try:
+            confirmed = bool(fields) or int(str(tot or 0)) > 0
+        except ValueError:
+            confirmed = bool(fields)
+        mark = "✅ 存在" if confirmed else "❔ rc=0 但無資料無欄位（無法確認）"
+        print(f" {mark}（總筆數 {tot}）{'' if known or not confirmed else '  ★ 文件未列！'}")
         if fields:
             print(f"        欄位樣本：{', '.join(fields)}")
-        hits.append((kd, known, tot, fields))
+        hits.append((kd, known, tot, fields, confirmed))
 
         # 清掉剛才建的分頁暫存檔，不留垃圾在 lystemp
         if tmpnm:
@@ -459,15 +488,20 @@ def cmd_discover(args):
             except Exception:
                 pass
 
-    print(f"\n共 {len(hits)} 個可用、{misses} 個不支援"
-          + (f"、{timeouts} 個逾時" if timeouts else "") + "。")
-    new = [h for h in hits if not h[1]]
+    confirmed = [h for h in hits if h[4]]
+    unclear = [h for h in hits if not h[4]]
+    print(f"\n確認存在 {len(confirmed)} 個、無法確認 {len(unclear)} 個、"
+          f"{misses} 個不支援" + (f"、{timeouts} 個逾時" if timeouts else "") + "。")
+    if unclear:
+        print(f"  ❔ 無法確認（rc=0 但空）：{'、'.join(h[0] for h in unclear)}"
+              + ("　← 陰性對照已失敗，這些很可能不存在" if control_rc0 else ""))
+    new = [h for h in confirmed if not h[1]]
     if new:
-        print(f"⚠ 文件未列但可用的代碼：{'、'.join(h[0] for h in new)}")
+        print(f"⚠ 文件未列但確認存在：{'、'.join(h[0] for h in new)}")
         print(f"  → 看欄位判斷是哪種單（**務必帶 --days 限縮期間**）："
               f"\n     python ly_newdoc_test.py inspect {new[0][0]} --company {args.company} --days 3")
     else:
-        print("沒有掃到文件以外的資料種類——採購單應該沒開放，需要問凌越。")
+        print("沒有確認到文件以外的資料種類——採購單應該沒開放，需要問凌越。")
     return 0
 
 
