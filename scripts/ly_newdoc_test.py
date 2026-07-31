@@ -303,7 +303,12 @@ def cmd_write_test(args):
     rc, ireno = lydatain(icpno, idakd, xml, imode)
     if rc != "0":
         print(f"❌ LyDataIn 失敗: {_IN_ERRS.get(rc, '')} (code={rc})")
-        if unitfg is not None:
+        if "GetRsByXml" in rc or "lystemp" in rc:
+            # 2026-07-31 實測：B6 卡在此、AO 同樣呼叫卻成功 → 伺服器端該單別匯入未佈建，
+            # 不是欄位問題（錯誤發生在解析我方 XML 欄位之前）。詳見文件 §12。
+            print("   ⚠ 這是伺服器端 lystemp 暫存物件問題，與欄位內容無關——")
+            print("     改欄位重試沒有用，請把完整錯誤字串轉給凌越（見文件 §12）。")
+        elif unitfg is not None:
             other = {"F": "1", "T": "1", "0": "F", "1": "F"}.get(str(unitfg), "F")
             print(f"   提示：可試 --unitfg {other}（SD_UNIT_FG 文件寫法不一致）")
         return 1
@@ -322,8 +327,8 @@ def cmd_write_test(args):
         print("⚠ 寫入回 0 但回查不到——檢查公司別/單別畫面是否勾「含未審核」（通用方法說明 §4 坑 1）")
 
     if args.keep:
-        print(f"\n--keep：測試單 {spno} 保留，請進凌越人工核對後手動刪除"
-              f"（或跑：py ly_newdoc_test.py delete {args.kind} --company {icpno} --no {spno}）")
+        print(f"\n--keep：測試單 {spno} 保留，請進凌越人工核對後手動刪除（或跑：\n"
+              f"  python ly_newdoc_test.py delete {args.kind} --company {icpno} --no {spno}）")
         return 0
 
     rc = lydatadel(icpno, idakd, spno)
@@ -332,6 +337,121 @@ def cmd_write_test(args):
     if not ok:
         print(f"   {_DEL_ERRS.get(str(rc), '')}；請進凌越手動刪 {spno}")
     return 0 if ok else 1
+
+
+# ------------------------------------------------------------
+#  指令：inspect（唯讀）— 統計真人開的單「實際填了哪些欄位」
+# ------------------------------------------------------------
+
+# 文件標示的必填欄（docs/凌越-進貨出入庫單-匯出入API.md）
+REQUIRED = {
+    "0000AO": (["SP_DATE", "SP_NO", "SP_CTNO", "SP_QKCUST"],
+               ["SD_DATE", "SD_NO", "SD_CTNO", "SD_SKNO", "SD_SEQ"]),
+    "0000AP": (["SP_DATE", "SP_NO", "SP_CTNO", "SP_QKCUST"],
+               ["SD_DATE", "SD_NO", "SD_CTNO", "SD_SKNO", "SD_UNIT",
+                "SD_UNIT_FG", "SD_RQTY", "SD_SEQ"]),
+    "0000B6": (["SP_DATE", "SP_NO", "SP_CTNO"],
+               ["SD_DATE", "SD_NO", "SD_CTNO", "SD_SKNO", "SD_UNIT", "SD_WHNO",
+                "SD_UNIT_FG", "SD_RQTY", "SD_SEQ", "SD_ADJUST_FG"]),
+    "0000B7": (["SP_DATE", "SP_NO", "SP_CTNO"],
+               ["SD_DATE", "SD_NO", "SD_CTNO", "SD_SKNO", "SD_UNIT", "SD_WHNO",
+                "SD_UNIT_FG", "SD_RQTY", "SD_SEQ"]),
+}
+
+
+def _is_blank(v):
+    """凌越常回 0 / 0.0 / 1900-01-01 當「沒填」——一併視為空。"""
+    s = str(v).strip()
+    if s == "":
+        return True
+    if s.startswith("1900-01-01") or s.startswith("1900/01/01"):
+        return True
+    try:
+        return float(s) == 0.0
+    except ValueError:
+        return False
+
+
+def _profile(rows, required, label, args):
+    if not rows:
+        print(f"  （{label}無資料）")
+        return
+    cols = []
+    for r in rows:
+        for k in r:
+            if k not in cols:
+                cols.append(k)
+    print(f"  {label} {len(rows)} 筆 / 欄位 {len(cols)} 個"
+          f"（★＝文件標示必填；填寫率＝非空白且非0的比例）\n")
+    print(f"    {'欄位':<18}{'填寫率':>8}  {'相異值':>6}  範例值")
+    print(f"    {'-'*18}{'-'*8:>8}  {'-'*6:>6}  {'-'*40}")
+    stats = []
+    for c in cols:
+        vals = [r.get(c, "") for r in rows]
+        filled = [v for v in vals if not _is_blank(v)]
+        stats.append((c, len(filled) / len(rows), sorted({str(v).strip() for v in filled})))
+    # 有填的排前面，全空的收在最後
+    for c, rate, uniq in sorted(stats, key=lambda x: (-x[1], x[0])):
+        if rate == 0 and not args.all:
+            continue
+        star = "★" if c in required else " "
+        sample = "、".join(u[:18] for u in uniq[:3])
+        if len(uniq) > 3:
+            sample += " …"
+        print(f"  {star} {c:<18}{rate*100:>7.0f}%  {len(uniq):>6}  {sample[:60]}")
+    blank_req = [c for c, rate, _ in stats if rate == 0 and c in required]
+    missing_req = [c for c in required if c not in cols]
+    if blank_req:
+        print(f"\n    ⚠ 文件標必填但實際全空：{'、'.join(blank_req)}")
+    if missing_req:
+        print(f"    ⚠ 文件標必填但回傳中無此欄位：{'、'.join(missing_req)}")
+    always = [c for c, rate, _ in stats if rate == 1.0 and c not in required]
+    if always:
+        print(f"    ℹ 文件未標必填但 100% 都有值（寫入時建議跟著填）：{'、'.join(always)}")
+    if not args.all:
+        n = sum(1 for _, rate, _ in stats if rate == 0)
+        if n:
+            print(f"\n    （另有 {n} 個欄位全空，加 --all 可一併列出）")
+
+
+def cmd_inspect(args):
+    icpno = lystk.resolve_icpno(args.company)
+    idakd = lystk.resolve_idakd(args.kind)
+    req_t, req_d = REQUIRED.get(idakd, ([], []))
+
+    if args.no:
+        where, whval = "SP_NO='@v1@'", args.no
+        span = f"單號 {args.no}"
+    else:
+        end = lystk.resolve_date(args.end) if args.end else datetime.date.today()
+        start = lystk.resolve_date(args.start) if args.start else end - datetime.timedelta(days=args.days)
+        where = "SP_DATE between '@v1@' and '@v2@'"
+        whval = f"{start:%Y-%m-%d} @#1#@ {end:%Y-%m-%d} 23:59:59"
+        span = f"{start} ~ {end}"
+
+    titles, details, tot = lydataout(icpno, idakd, where, whval)
+    print(f"=== {idakd} {NEW_KINDS.get(idakd, idakd)}｜公司 {icpno}｜{span}｜"
+          f"抬頭 {len(titles)} 筆、明細 {len(details)} 筆 ===\n")
+    if not titles:
+        print("查無資料——換個期間或單別再試。")
+        return 0
+
+    _profile(titles, req_t, "【抬頭 LYDATATITLE】", args)
+    print()
+    _profile(details, req_d, "【明細 LYDATADETAIL】", args)
+
+    if args.dump:
+        # 完整傾印第一張單（含空欄位），看真人開的單長什麼樣
+        first = titles[0]
+        no = first.get("SP_NO", "")
+        print(f"\n=== 完整傾印第一張單 {no} ===\n【抬頭】")
+        for k in sorted(first):
+            print(f"    {k:<18} = {first[k]!r}")
+        for d in [x for x in details if x.get("SD_NO") == no][: args.show]:
+            print(f"\n【明細 #{d.get('SD_SEQ','')}】")
+            for k in sorted(d):
+                print(f"    {k:<18} = {d[k]!r}")
+    return 0
 
 
 def cmd_delete(args):
@@ -379,13 +499,23 @@ def main():
     w.add_argument("--keep", action="store_true", help="不自動刪，留給人工核對")
     w.add_argument("--dry-run", action="store_true", help="只印 XML 不寫入")
 
+    i = sub.add_parser("inspect", help="統計真人開的單實際填了哪些欄位（唯讀）")
+    i.add_argument("kind", help="進貨/進退/入庫/出庫 或 0000AO/AP/B6/B7")
+    i.add_argument("--company", required=True)
+    i.add_argument("--days", type=int, default=30, help="近 N 天（預設 30）")
+    i.add_argument("--start"); i.add_argument("--end")
+    i.add_argument("--no", help="只看某一張單（單號）")
+    i.add_argument("--dump", action="store_true", help="完整傾印第一張單的所有欄位值")
+    i.add_argument("--all", action="store_true", help="連全空的欄位也列出")
+    i.add_argument("--show", type=int, default=2, help="--dump 時最多印幾筆明細（預設 2）")
+
     dl = sub.add_parser("delete", help="刪測試單（預設只允許 APITEST 開頭）")
     dl.add_argument("kind"); dl.add_argument("--company", required=True)
     dl.add_argument("--no", required=True, help="單號")
     dl.add_argument("--force", action="store_true")
 
     args = ap.parse_args()
-    fn = {"probe": cmd_probe, "read": cmd_read,
+    fn = {"probe": cmd_probe, "read": cmd_read, "inspect": cmd_inspect,
           "write-test": cmd_write_test, "delete": cmd_delete}[args.cmd]
     try:
         return fn(args)
