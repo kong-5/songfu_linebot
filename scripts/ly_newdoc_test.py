@@ -351,6 +351,77 @@ def cmd_write_test(args):
 
 
 # ------------------------------------------------------------
+#  指令：discover（唯讀）— 掃描還有哪些資料種類代碼可用
+# ------------------------------------------------------------
+
+# 已知代碼（文件有列）
+KNOWN_KINDS = {
+    "000000": "貨品基本資料", "000004": "倉庫基本資料", "000009": "目前庫存",
+    "00000D": "客戶基本資料", "00000E": "廠商基本資料", "00000P": "聯絡人清單",
+    "0000A0": "訂貨單", "0000A1": "銷貨單", "0000A2": "銷貨退回單",
+    "0000AO": "進貨單", "0000AP": "進貨退回單",
+    "0000B6": "入庫單", "0000B7": "出庫單",
+}
+
+
+def cmd_discover(args):
+    """對候選 idakd 逐一做唯讀 LyDataOut，看哪些回 0（＝該資料種類存在）。
+
+    目的：文件只列 12 種資料種類，其中**沒有採購單**——但進貨單的
+    SP_ORDNO/SD_ORDNO（採購單號）實測 66–69% 有值，代表凌越裡確實有採購單，
+    只是不確定匯出入元件開不開放。這裡用零風險方式掃出來。
+    """
+    icpno = lystk.resolve_icpno(args.company)
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=args.days)
+
+    cands = []
+    if args.codes:
+        cands = [c.strip().upper() for c in args.codes.split(",") if c.strip()]
+    else:
+        # 依已知命名規律掃：0000A0-A9、0000AA-AZ、0000B0-B9
+        cands = [f"0000A{c}" for c in "0123456789"]
+        cands += [f"0000A{chr(c)}" for c in range(ord("A"), ord("Z") + 1)]
+        cands += [f"0000B{c}" for c in "0123456789"]
+
+    print(f"公司 {icpno}｜期間 {start} ~ {end}｜掃描 {len(cands)} 個候選代碼")
+    print("（唯讀 LyDataOut；rc=0＝該資料種類存在，其他＝不支援或無權限）\n")
+
+    hits, misses = [], 0
+    for kd in cands:
+        known = KNOWN_KINDS.get(kd)
+        # 單據類用 SP_DATE 過濾；掃不到就退成不帶條件（基本資料類沒有 SP_DATE）
+        for where, whval in (("SP_DATE between '@v1@' and '@v2@'",
+                              f"{start:%Y-%m-%d} @#1#@ {end:%Y-%m-%d} 23:59:59"), ("", "")):
+            try:
+                titles, details, tot = lydataout(icpno, kd, where, whval)
+            except Exception as e:
+                err = str(e)
+                continue
+            fields = sorted(titles[0].keys())[:6] if titles else []
+            tag = f"（已知：{known}）" if known else "  ★ 文件未列！"
+            print(f"  ✅ {kd}  抬頭 {len(titles):>5} 筆／明細 {len(details):>5} 筆  {tag}")
+            if fields:
+                print(f"       欄位樣本：{', '.join(fields)}")
+            hits.append((kd, known, len(titles), len(details)))
+            break
+        else:
+            misses += 1
+            if args.verbose:
+                print(f"  ✗  {kd}  {err[:90]}")
+
+    print(f"\n共 {len(hits)} 個可用、{misses} 個不支援。")
+    new = [h for h in hits if not h[1]]
+    if new:
+        print(f"⚠ 文件未列但可用的代碼：{'、'.join(h[0] for h in new)}")
+        print("  → 用 inspect 看欄位內容判斷是哪種單："
+              f"python ly_newdoc_test.py inspect {new[0][0]} --company {args.company}")
+    else:
+        print("沒有掃到文件以外的資料種類。")
+    return 0
+
+
+# ------------------------------------------------------------
 #  指令：inspect（唯讀）— 統計真人開的單「實際填了哪些欄位」
 # ------------------------------------------------------------
 
@@ -517,6 +588,12 @@ def main():
     w.add_argument("--keep", action="store_true", help="不自動刪，留給人工核對")
     w.add_argument("--dry-run", action="store_true", help="只印 XML 不寫入")
 
+    dc = sub.add_parser("discover", help="掃描還有哪些資料種類代碼可用（唯讀，找採購單用）")
+    dc.add_argument("company")
+    dc.add_argument("--days", type=int, default=7)
+    dc.add_argument("--codes", help="只掃指定代碼，逗號分隔（不帶＝掃 A0-A9/AA-AZ/B0-B9）")
+    dc.add_argument("--verbose", action="store_true", help="連失敗的代碼與錯誤訊息也印出")
+
     i = sub.add_parser("inspect", help="統計真人開的單實際填了哪些欄位（唯讀）")
     i.add_argument("kind", help="進貨/進退/入庫/出庫 或 0000AO/AP/B6/B7")
     i.add_argument("--company", required=True)
@@ -534,7 +611,8 @@ def main():
 
     args = ap.parse_args()
     fn = {"probe": cmd_probe, "read": cmd_read, "inspect": cmd_inspect,
-          "write-test": cmd_write_test, "delete": cmd_delete}[args.cmd]
+          "discover": cmd_discover, "write-test": cmd_write_test,
+          "delete": cmd_delete}[args.cmd]
     try:
         return fn(args)
     except Exception as e:
