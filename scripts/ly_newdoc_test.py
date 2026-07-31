@@ -364,60 +364,110 @@ KNOWN_KINDS = {
 }
 
 
-def cmd_discover(args):
-    """對候選 idakd 逐一做唯讀 LyDataOut，看哪些回 0（＝該資料種類存在）。
+def _probe_client(timeout):
+    """獨立的 zeep client，帶硬性逾時——掃描不能因為單一代碼卡死整支程式。"""
+    from zeep import Client, Settings
+    from zeep.transports import Transport
+    return Client(lystk.API_URL,
+                  settings=Settings(strict=False, xml_huge_tree=True),
+                  transport=Transport(timeout=timeout, operation_timeout=timeout))
 
-    目的：文件只列 12 種資料種類，其中**沒有採購單**——但進貨單的
+
+def cmd_discover(args):
+    """對候選 idakd 逐一做**有界**的唯讀探測，看哪些回 0（＝該資料種類存在）。
+
+    目的：文件只列 12 種資料種類，其中沒有採購單——但進貨單的
     SP_ORDNO/SD_ORDNO（採購單號）實測 66–69% 有值，代表凌越裡確實有採購單，
-    只是不確定匯出入元件開不開放。這裡用零風險方式掃出來。
+    只是不確定匯出入元件開不開放。
+
+    ⚠ 安全設計（2026-07-31 修正，初版曾把凌越拉到卡住）：
+      1. **irec=1**：分頁模式只回第一頁一筆，絕不整表吐出。
+      2. **跳過已知代碼**：0000A0 訂貨單等已知存在的大表不再重複探測
+         （初版就是撞在 0000A0——它的日期欄是 OR_DATE1 不是 SP_DATE，
+         過濾失敗後退回「不帶條件」＝整表查詢）。
+      3. **絕不使用無條件全表查詢**當 fallback。
+      4. 每個代碼硬性逾時（--timeout，預設 30 秒）。
+      5. 探測完立刻清掉分頁暫存檔。
     """
     icpno = lystk.resolve_icpno(args.company)
-    end = datetime.date.today()
-    start = end - datetime.timedelta(days=args.days)
 
-    cands = []
     if args.codes:
         cands = [c.strip().upper() for c in args.codes.split(",") if c.strip()]
     else:
-        # 依已知命名規律掃：0000A0-A9、0000AA-AZ、0000B0-B9
-        cands = [f"0000A{c}" for c in "0123456789"]
+        # 只掃「文件未列」的代碼——已知的沒必要再打一次，且多是大表
+        cands = [f"0000A{c}" for c in "3456789"]
         cands += [f"0000A{chr(c)}" for c in range(ord("A"), ord("Z") + 1)]
-        cands += [f"0000B{c}" for c in "0123456789"]
+        cands += [f"0000B{c}" for c in "01234589"]
+        cands = [c for c in cands if c not in KNOWN_KINDS]
 
-    print(f"公司 {icpno}｜期間 {start} ~ {end}｜掃描 {len(cands)} 個候選代碼")
-    print("（唯讀 LyDataOut；rc=0＝該資料種類存在，其他＝不支援或無權限）\n")
+    print(f"公司 {icpno}｜掃描 {len(cands)} 個候選代碼｜每個逾時 {args.timeout} 秒")
+    print("（唯讀、irec=1 只取一筆，不會整表查詢；已知代碼已跳過）\n")
 
-    hits, misses = [], 0
-    for kd in cands:
-        known = KNOWN_KINDS.get(kd)
-        # 單據類用 SP_DATE 過濾；掃不到就退成不帶條件（基本資料類沒有 SP_DATE）
-        for where, whval in (("SP_DATE between '@v1@' and '@v2@'",
-                              f"{start:%Y-%m-%d} @#1#@ {end:%Y-%m-%d} 23:59:59"), ("", "")):
-            try:
-                titles, details, tot = lydataout(icpno, kd, where, whval)
-            except Exception as e:
-                err = str(e)
-                continue
-            fields = sorted(titles[0].keys())[:6] if titles else []
-            tag = f"（已知：{known}）" if known else "  ★ 文件未列！"
-            print(f"  ✅ {kd}  抬頭 {len(titles):>5} 筆／明細 {len(details):>5} 筆  {tag}")
-            if fields:
-                print(f"       欄位樣本：{', '.join(fields)}")
-            hits.append((kd, known, len(titles), len(details)))
-            break
-        else:
+    client = _probe_client(args.timeout)
+    hits, misses, timeouts = [], 0, 0
+    for idx, kd in enumerate(cands, 1):
+        print(f"  [{idx}/{len(cands)}] {kd} …", end="", flush=True)
+        try:
+            resp = client.service.LyDataOut(
+                ikye=lystk.fresh_key(), icpno=icpno, idakd=kd,
+                ifld="", idetfields="", irwhere="", iwhval="",
+                irec=1,                       # ← 關鍵：只回第一頁一筆
+                imode=" " * 30, iorder="", idtorder="",
+                iswhere="", isifld="", Isecgroup="", iseckindfg="",
+                iseckind="", Isecorder="", Isecrec=0,
+            )
+        except Exception as e:
+            msg = str(e)
+            if "timed out" in msg.lower() or "timeout" in msg.lower():
+                timeouts += 1
+                print(f" ⏱ 逾時（跳過）")
+            else:
+                misses += 1
+                print(f" ✗{('  ' + msg[:60]) if args.verbose else ''}")
+            continue
+
+        rc = str(_get(resp, "LyDataOutResult"))
+        if rc != "0":
             misses += 1
-            if args.verbose:
-                print(f"  ✗  {kd}  {err[:90]}")
+            print(f" ✗ rc={rc}")
+            continue
 
-    print(f"\n共 {len(hits)} 個可用、{misses} 個不支援。")
+        tot = _get(resp, "itotrec")
+        tmpnm = _get(resp, "itmpnm", "")
+        fields = []
+        xml = _get(resp, "ixmlda")
+        if xml:
+            try:
+                root = ET.fromstring(str(xml))
+                t = root.find(".//LYDATATITLE")
+                if t is not None:
+                    fields = sorted(c.tag for c in t)[:8]
+            except Exception:
+                pass
+        known = KNOWN_KINDS.get(kd)
+        print(f" ✅ 存在（總筆數 {tot}）{'' if known else '  ★ 文件未列！'}")
+        if fields:
+            print(f"        欄位樣本：{', '.join(fields)}")
+        hits.append((kd, known, tot, fields))
+
+        # 清掉剛才建的分頁暫存檔，不留垃圾在 lystemp
+        if tmpnm:
+            try:
+                client.service.LyDataPage(ikye=lystk.fresh_key(), icpno=icpno,
+                                          idakd=kd, itykd="1", itmpnm=str(tmpnm),
+                                          ipageno=0)
+            except Exception:
+                pass
+
+    print(f"\n共 {len(hits)} 個可用、{misses} 個不支援"
+          + (f"、{timeouts} 個逾時" if timeouts else "") + "。")
     new = [h for h in hits if not h[1]]
     if new:
         print(f"⚠ 文件未列但可用的代碼：{'、'.join(h[0] for h in new)}")
-        print("  → 用 inspect 看欄位內容判斷是哪種單："
-              f"python ly_newdoc_test.py inspect {new[0][0]} --company {args.company}")
+        print(f"  → 看欄位判斷是哪種單（**務必帶 --days 限縮期間**）："
+              f"\n     python ly_newdoc_test.py inspect {new[0][0]} --company {args.company} --days 3")
     else:
-        print("沒有掃到文件以外的資料種類。")
+        print("沒有掃到文件以外的資料種類——採購單應該沒開放，需要問凌越。")
     return 0
 
 
@@ -590,8 +640,8 @@ def main():
 
     dc = sub.add_parser("discover", help="掃描還有哪些資料種類代碼可用（唯讀，找採購單用）")
     dc.add_argument("company")
-    dc.add_argument("--days", type=int, default=7)
-    dc.add_argument("--codes", help="只掃指定代碼，逗號分隔（不帶＝掃 A0-A9/AA-AZ/B0-B9）")
+    dc.add_argument("--codes", help="只掃指定代碼，逗號分隔（不帶＝掃文件未列的候選碼）")
+    dc.add_argument("--timeout", type=int, default=30, help="每個代碼的硬性逾時秒數（預設 30）")
     dc.add_argument("--verbose", action="store_true", help="連失敗的代碼與錯誤訊息也印出")
 
     i = sub.add_parser("inspect", help="統計真人開的單實際填了哪些欄位（唯讀）")
