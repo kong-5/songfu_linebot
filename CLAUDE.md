@@ -144,6 +144,23 @@
   - 遷移：舊 `stocktake_group` 於 DB init 一次性帶入 `group_features`（非客戶群→訂單 off；已綁客戶群→訂單 on 保留收單），冪等。`stocktake_group` 保留為群組探索來源，行為已不再依賴它。
 - **後台每日盤點** `/admin/inventory`：選日期一次列出當日各倉盤點卡片（盤點人、比例、
   **盤差/盤差%**、含中貨、效期），可「只看盤差」、CSV 匯出。舊自建庫房盤點在 `/admin/inventory/legacy`。
+- **盤點結果圖（JPG，2026-08-03）**：盤完產一張圖，**盤點的人自己傳到群組——刻意不推播**。
+  推群組是**按群組人數**計則數（8 人群組推一次＝8 則），每天每倉推一次很快吃掉方案額度；產圖＝零則數。
+  送出成功畫面有「產生結果圖」→ 圖＋「傳到 LINE 群組」（Web Share API，`navigator.canShare({files})`
+  才顯示，LINE 內建瀏覽器不一定支援）／「儲存到手機」（`<a download>`＋長按存圖提示）。
+  **忘了傳可回頭重下載**：盤點頁與掃碼頁的倉庫清單「今日已盤 · 結果圖」徽章可點、後台每日盤點卡片有「結果圖」。
+  - 權威 helper：`dist/lib/stocktake-report.js`（資料）＋`dist/lib/stocktake-report-image.js`（SVG→sharp→JPG）。
+    紅標判定抽到 `dist/lib/stocktake-hot-rule.js`（與每日盤點頁共用同一份門檻）。
+  - 端點：`/liff/api/stocktake/report.jpg`（LIFF token）、`/admin/inventory/report.jpg`
+    ＋`/admin/inventory/entry/report.jpg`＋`/admin/scan/report.jpg`（後台 cookie）。
+    ⚠ **不做免登入公開網址**——圖上有整倉庫存量；公開 token 網址只有推播才需要（LINE 伺服器要抓圖）。
+  - 口徑＝**盤點送出當下的凍結值**（`sys_qty`/`future_qty`/`counted_qty`），不是「最新系統」欄——
+    圖是當下的憑證，隔天重下載數字不該變。**即時重算不存檔**，複盤改過實盤數重新產生就是最新的。
+  - **版面是條列不是表格**：盤差逐項展開（紅標最前、標「要查」）、未盤只列品名、相符壓成
+    「品名 數量」段落、帳 0 收一行字；**長期無貨整段不列**（`idle`＝帳 0＋現場 0＋近 60 天
+    `erp_stock_daily` 都沒量，天數 `app_settings.stocktake_report_idle_days`，0＝關閉），頁尾記
+    「另有 N 項長期無貨未列」不默默吃掉。查無快照一律不判 idle。內容長自動分頁（單頁 ≤4096px）。
+  - smoke test：`test/stocktake-report.test.js`、`test/stocktake-report-image.test.js`。
 - **異常排查表** `/admin/inventory/anomalies`（每日盤點頁入口）：當日「對最新盤差≠0」品項＋依訊號自動列**可能原因**（盤差方向→進貨未入/銷貨未開等、跨倉持有、他倉負庫存、已掛調整），勾選後推送 LINE 群組請大家複查（群組清單＝`stocktake_group`，記住上次選擇 `app_settings.stocktake_anomaly_group_id`）；純提示不寫帳。
 - 資料表：`stocktake_session`（一倉一日一筆）、`stocktake_count`（逐品項，含 `mid_qty`）、
   `erp_warehouse`（倉號→中文名＋納入盤點）、`group_features`（群組三功能開關）、`stocktake_group`（舊白名單／探索來源）、`stocktake_expiry_item`。

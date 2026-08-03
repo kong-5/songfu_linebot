@@ -159,6 +159,17 @@
   .lb-err-ic{font-size:34px;color:#ffcf6b;line-height:1;}
   .lb-err-tx{font-size:14px;color:#e7e9ee;}
   .lb-retry{border:0;border-radius:10px;background:#fff;color:var(--txt);font-size:15px;font-weight:700;padding:12px 24px;cursor:pointer;min-height:44px;}
+  /* 盤點結果圖：確認數字 → 自己傳到群組（不推播，推群組是按人數計則數） */
+  .rep{padding:12px 12px 96px;}
+  .rep-h{display:flex;align-items:baseline;gap:8px;padding:6px 2px 10px;}
+  .rep-h h1{margin:0;font-size:17px;font-weight:700;color:var(--txt);}
+  .rep-h .m{font-size:12.5px;color:var(--txt-3);}
+  .rep-pg{font-size:12px;color:var(--txt-3);padding:8px 2px 4px;}
+  .rep-img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:10px;background:#fff;}
+  .rep-hint{font-size:12.5px;color:var(--txt-3);line-height:1.6;padding:12px 2px 0;}
+  .rep-bar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);padding:10px 12px calc(10px + env(safe-area-inset-bottom));display:flex;gap:8px;}
+  .rep-bar button,.rep-bar a{flex:1;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--txt);font-size:15px;font-weight:700;padding:13px 8px;cursor:pointer;text-align:center;text-decoration:none;min-height:46px;display:flex;align-items:center;justify-content:center;}
+  .rep-bar .pri{border:0;background:var(--accent);color:#fff;}
 </style>
 </head>
 <body>
@@ -206,7 +217,13 @@
       itemsN:function(n){return n+' 項';},totalN:function(n){return '共 '+n+' 項';},batchN:function(n){return n+' 批';},
       progN:function(d,a){return '已盤 '+d+'/'+a;},barN:function(d,a){return '已盤 '+d+'/'+a+' · 未盤 '+(a-d);},
       confirm:function(wh,d,a){return '送出盤點？\n\n倉庫：'+wh+'\n已盤 '+d+'/'+a+' 項（未盤的會標「未盤」）';},
-      recorded:function(c,t){return '已記錄 '+c+'/'+t+' 項，未盤 '+(t-c)+' 項';}
+      recorded:function(c,t){return '已記錄 '+c+'/'+t+' 項，未盤 '+(t-c)+' 項';},
+      repMake:'產生結果圖',repMaking:'產生中…',repTitle:'盤點結果圖',repFail:'產生結果圖失敗，請重試',
+      repShare:'傳到 LINE 群組',repSave:'儲存到手機',repBack:'關閉',repAgain:'重新產生',
+      repHint:'確認數字沒問題後，自己把圖片傳到群組',
+      repSaveHint:'沒有跳出存檔？長按圖片 →「儲存影像」',
+      repPage:function(a,b){return '第 '+a+'/'+b+' 張';},
+      repReopen:'結果圖'
     },
     vi:{
       loading:'Đang tải…',liffNotSet:'⚠ Chưa cấu hình LIFF ID',liffFail:'⚠ Khởi tạo LIFF thất bại',
@@ -237,7 +254,13 @@
       itemsN:function(n){return n+' SP';},totalN:function(n){return n+' sản phẩm';},batchN:function(n){return n+' lô';},
       progN:function(d,a){return 'Đã kiểm '+d+'/'+a;},barN:function(d,a){return 'Đã kiểm '+d+'/'+a+' · Chưa '+(a-d);},
       confirm:function(wh,d,a){return 'Gửi kiểm kê?\n\nKho: '+wh+'\nĐã kiểm '+d+'/'+a+' (mục chưa kiểm sẽ được đánh dấu "Chưa")';},
-      recorded:function(c,t){return 'Đã ghi '+c+'/'+t+' mục, chưa kiểm '+(t-c)+' mục';}
+      recorded:function(c,t){return 'Đã ghi '+c+'/'+t+' mục, chưa kiểm '+(t-c)+' mục';},
+      repMake:'Tạo ảnh kết quả',repMaking:'Đang tạo…',repTitle:'Ảnh kết quả kiểm kê',repFail:'Tạo ảnh thất bại, thử lại',
+      repShare:'Gửi lên nhóm LINE',repSave:'Lưu về máy',repBack:'Đóng',repAgain:'Tạo lại',
+      repHint:'Kiểm tra số liệu xong, tự gửi ảnh vào nhóm',
+      repSaveHint:'Không hiện lưu? Nhấn giữ ảnh → "Lưu ảnh"',
+      repPage:function(a,b){return 'Ảnh '+a+'/'+b;},
+      repReopen:'Ảnh kết quả'
     }
   };
   var initLang='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') initLang='vi'; }catch(_){}
@@ -528,27 +551,33 @@
     showCenter('<div class="spin"></div><div>'+t('loadWh')+'</div>');
     api(STK+'/warehouses?icpno='+encodeURIComponent(S.icpno)).then(function(res){
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
-      var whs=res.warehouses||[];
+      var whs=res.warehouses||[], pickDate=res.date||'';
       var coseg='<div class="co-seg">'+CO_ORDER.map(function(c){return '<button data-co="'+c+'" class="'+(c===S.icpno?'on':'')+'">'+esc(COMPANY[c])+'</button>';}).join('')+'</div>';
       var html='<div class="pk-head"><div class="pk-top"><h1>'+esc(coName())+esc(t('pickTitle'))+'</h1>'
         +'<button class="lang" id="stLang">'+esc(t('langBtn'))+'</button></div>'
         +'<div class="sub">'+esc(t('countDay'))+' '+esc(res.date||'')+(S.name?' · '+esc(S.name):'')+'</div></div>'+coseg;
       if(!whs.length){ html+='<div class="empty">'+t('noWh')+'</div>'; }
       else{
-        var pkDate=res.date||'';
+        var pkDate=pickDate;
         html+='<div class="pk-list">'+whs.map(function(w){
           var draft=hasDraft(w.code,pkDate);
           return '<button class="pk" data-w="'+esc(w.code)+'">'
             +'<div class="pk-ic">📦</div>'
             +'<div class="pk-i"><div class="n">'+esc(w.name||w.code)+'</div><div class="m">'+esc(w.code)+' · '+esc(t('itemsN')(w.items))+'</div></div>'
-            +(draft?'<span class="pk-draft">'+esc(t('drafting'))+'</span>':(w.countedToday?'<span class="pk-done">'+esc(t('countedToday'))+'</span>':''))
+            // 已盤的倉：徽章本身可點＝重新產結果圖（忘了傳、或傳錯群組時不用重盤）
+            +(draft?'<span class="pk-draft">'+esc(t('drafting'))+'</span>'
+              :(w.countedToday?'<span class="pk-done" data-rep="'+esc(w.code)+'" data-repn="'+esc(w.name||w.code)+'">'+esc(t('countedToday'))+' · '+esc(t('repReopen'))+'</span>':''))
             +'<span class="pk-arrow">›</span></button>';
         }).join('')+'</div>';
       }
       app.innerHTML='<div class="wrapx">'+html+'</div>';
       var lb=document.getElementById('stLang'); if(lb) lb.addEventListener('click',toggleLang);
       Array.prototype.forEach.call(app.querySelectorAll('.co-seg button'),function(b){ b.addEventListener('click',function(){ S.icpno=b.getAttribute('data-co'); applyCoTheme(); showPicker(); }); });
-      Array.prototype.forEach.call(app.querySelectorAll('.pk'),function(b){ b.addEventListener('click',function(){ openWarehouse(b.getAttribute('data-w')); }); });
+      Array.prototype.forEach.call(app.querySelectorAll('.pk'),function(b){ b.addEventListener('click',function(e){
+        var rep=e.target.closest('[data-rep]');   // 點「今日已盤 · 結果圖」徽章＝重看結果圖，不進盤點清單
+        if(rep){ showReport(rep.getAttribute('data-rep'),pickDate,rep.getAttribute('data-repn'),showPicker); return; }
+        openWarehouse(b.getAttribute('data-w'));
+      }); });
     }).catch(function(){ showCenter('<div>'+t('loadWhFail')+'</div>'); });
   }
 
@@ -749,6 +778,92 @@
     document.getElementById('stSubmit').addEventListener('click',submit);
   }
 
+  // ---------- 盤點結果圖（JPG）----------
+  // 不推播：推到群組是按「群組人數」計則數（8 人群組推一次＝8 則），每天每倉推一次很快吃掉方案額度。
+  // 改成產一張圖，盤點的人自己確認完再用手機分享／存檔傳到群組 —— 零則數。
+  // <img> 帶不了 Authorization header，故 fetch 成 blob 再轉 objectURL／File（同品項照片端點的作法）。
+  // 伺服器即時重算不存檔：複盤改過實盤數，重新產生就是最新的。
+  var _repUrls=[];
+  function repRevoke(){ _repUrls.forEach(function(u){ try{URL.revokeObjectURL(u);}catch(_){} }); _repUrls=[]; }
+  function repFetch(wh,date,page){
+    var u=STK+'/report.jpg?warehouse='+encodeURIComponent(wh)+'&date='+encodeURIComponent(date)
+      +'&icpno='+encodeURIComponent(S.icpno)+'&page='+page+'&_='+Date.now();
+    return fetch(u,{headers:{'Authorization':'Bearer '+freshToken()}}).then(function(r){
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      var n=Number(r.headers.get('X-Report-Pages')||1)||1;   // 品項多會分頁
+      return r.blob().then(function(b){ return {blob:b,pages:n}; });
+    });
+  }
+  function showReport(wh,date,whLabel,onBack){
+    repRevoke();
+    showCenter('<div class="spin"></div><div>'+esc(t('repMaking'))+'</div>');
+    repFetch(wh,date,1).then(function(first){
+      var jobs=[Promise.resolve(first)];
+      for(var p=2;p<=first.pages;p++) jobs.push(repFetch(wh,date,p));
+      return Promise.all(jobs);
+    }).then(function(list){
+      var base='盤點結果_'+wh+'_'+String(date).replace(/-/g,'');
+      var urls=[],files=[],names=[];
+      list.forEach(function(x,i){
+        var nm=base+(list.length>1?'_'+(i+1):'')+'.jpg';
+        names.push(nm); urls.push(URL.createObjectURL(x.blob));
+        try{ files.push(new File([x.blob],nm,{type:'image/jpeg'})); }catch(_){ /* 舊瀏覽器沒有 File 建構子 → 只能存檔 */ }
+      });
+      _repUrls=urls;
+      renderReport({urls:urls,files:files,names:names,wh:wh,date:date,whLabel:whLabel,onBack:onBack});
+    }).catch(function(){
+      showCenter('<div style="font-size:36px">⚠</div><div>'+esc(t('repFail'))+'</div>'
+        +'<button class="btn-primary" id="repRetry">'+esc(t('repAgain'))+'</button>'
+        +'<button class="lang" id="repBack2" style="margin-top:6px">'+esc(t('repBack'))+'</button>');
+      document.getElementById('repRetry').addEventListener('click',function(){ showReport(wh,date,whLabel,onBack); });
+      document.getElementById('repBack2').addEventListener('click',function(){ repRevoke(); onBack(); });
+    });
+  }
+  function renderReport(r){
+    // 手機內建分享（Web Share API）：LINE 內建瀏覽器不一定支援，不支援就只顯示存檔（並附長按提示）
+    var canShare=false;
+    try{ canShare=!!(r.files.length&&navigator.share&&navigator.canShare&&navigator.canShare({files:r.files})); }catch(_){ canShare=false; }
+    var imgs=r.urls.map(function(u,i){
+      return (r.urls.length>1?'<div class="rep-pg">'+esc(t('repPage')(i+1,r.urls.length))+'</div>':'')
+        +'<img class="rep-img" src="'+u+'" alt="">';
+    }).join('');
+    var saveBtns=r.urls.map(function(u,i){
+      return '<a class="'+(canShare?'':'pri')+'" href="'+u+'" download="'+esc(r.names[i])+'">'
+        +esc(t('repSave'))+(r.urls.length>1?' ('+(i+1)+'/'+r.urls.length+')':'')+'</a>';
+    }).join('');
+    app.innerHTML='<div class="rep">'
+      +'<div class="rep-h"><h1>'+esc(t('repTitle'))+'</h1><div class="m">'+esc(r.whLabel||r.wh)+' · '+esc(r.date)+'</div></div>'
+      +imgs
+      +'<div class="rep-hint">'+esc(t('repHint'))+'<br>'+esc(t('repSaveHint'))+'</div>'
+      +'</div>'
+      +'<div class="rep-bar">'
+        +(canShare?'<button class="pri" id="repShare">'+esc(t('repShare'))+'</button>':'')
+        +saveBtns
+        +'<button id="repBack">'+esc(t('repBack'))+'</button>'
+      +'</div>';
+    if(canShare){
+      document.getElementById('repShare').addEventListener('click',function(){
+        // 失敗（含使用者取消）不彈錯：存檔按鈕仍在，讓他改用另一條路
+        try{ navigator.share({files:r.files,title:t('repTitle'),text:(r.whLabel||r.wh)+' · '+r.date}).catch(function(){}); }catch(_){}
+      });
+    }
+    document.getElementById('repBack').addEventListener('click',function(){ repRevoke(); r.onBack(); });
+  }
+
+  // 送出完成畫面：獨立成函式，讓「結果圖」關掉後可以回到這裡再產一次（忘了傳不用重盤）
+  function showSubmitDone(whCode,whLabel,dateLabel,counted,total){
+    function finishClose(){ try{ if(!WEB && liff.isInClient()) liff.closeWindow(); else showPicker(); }catch(_){ showPicker(); } }
+    showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(t('sent'))+'</div>'
+      +'<div>'+esc(whLabel)+' · '+esc(dateLabel)+'</div>'
+      +'<div style="font-size:13px;color:var(--txt-3)">'+esc(t('recorded')(counted,total))+'</div>'
+      +'<button class="btn-primary" id="stReport" style="margin-top:8px">'+esc(t('repMake'))+'</button>'
+      +'<button class="lang" id="stClose" style="margin-top:2px">'+esc(t('finish'))+'</button>');
+    document.getElementById('stReport').addEventListener('click',function(){
+      showReport(whCode,dateLabel,whLabel,function(){ showSubmitDone(whCode,whLabel,dateLabel,counted,total); });
+    });
+    document.getElementById('stClose').addEventListener('click',finishClose);
+  }
+
   // ---------- 送出 ----------
   function submit(){
     // 送出前防呆：掃出無效（NaN）或負數的輸入，列出品名（中越雙語）並中止
@@ -808,13 +923,9 @@
       }
       if(res.error){ btn.disabled=false; btn.textContent=t('submit'); alert(t('submitFail')+res.error); return; }
       clearDraft(); // 已送出，清掉本機暫存
-      var whLabel=S.wh.name||S.wh.code, dateLabel=S.date;
+      var whLabel=S.wh.name||S.wh.code, dateLabel=S.date, whCode=S.wh.code;
       S.wh=null; // 避免之後切背景時 flushDraft 又把已送出的內容寫回草稿
-      showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(t('sent'))+'</div>'
-        +'<div>'+esc(whLabel)+' · '+esc(dateLabel)+'</div>'
-        +'<div style="font-size:13px;color:var(--txt-3)">'+esc(t('recorded')(res.counted,res.total))+'</div>'
-        +'<button class="btn-primary" id="stClose" style="margin-top:8px">'+esc(t('finish'))+'</button>');
-      document.getElementById('stClose').addEventListener('click',function(){ try{ if(!WEB && liff.isInClient()) liff.closeWindow(); else showPicker(); }catch(_){ showPicker(); } });
+      showSubmitDone(whCode,whLabel,dateLabel,res.counted,res.total);
     }).catch(function(){ btn.disabled=false; btn.textContent=t('submit'); alert(t('submitFailRetry')); });
   }
 
