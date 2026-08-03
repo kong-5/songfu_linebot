@@ -6,13 +6,21 @@
  * 每天每倉推一次很快就吃掉方案額度。改成「產圖 → 人自己傳」＝零則數。
  *
  * 為什麼是 SVG→sharp 不是 headless browser：比照 announcement-image.js / quote-report.js，
- * puppeteer 對這種固定版面太重。代價是要自己算座標與斷字（見 estWidth/clip）。
+ * puppeteer 對這種固定版面太重。代價是要自己算座標與斷行（見 estWidth/clip/wrapInline）。
+ *
+ * **版面是條列不是表格**（2026-08-03 定案）：整倉逐列排表格，品項上百時圖會長到 3、4 張，
+ * 在 LINE 上根本沒人捲得完。改成「要看的展開、不用看的收成一行字」：
+ *   ⚠ 有盤差 → 逐項明細（紅標排最前，這是唯一真的要人看的東西）
+ *   ⛔ 未盤　 → 只列品名（漏盤要看得見）
+ *   ✓ 相符　 → 「品名 數量」串成段落自動折行（數字還在，但不佔一列）
+ *   帳上 0　 → 收成一行字
+ *   長期無貨 → 完全不列，只在頁尾記一筆數量（idle 由 stocktake-report.js 判定）
  *
  * 口徑：一律用「盤點當下」凍結值（sys/fut/should/counted/diff），與每日盤點頁左半邊、
  * 統計圖表同一套 —— 圖是「當下定案」的憑證，不能隔天回頭看數字就變了。
  * 紅標沿用 isHotDiff 的結果（呼叫端算好放進 item.hot）。
  *
- * 品項多時自動分頁（LINE 圖片上限 4096px），回傳多張 JPEG。
+ * 內容超長時自動分頁（LINE 圖片上限 4096px），回傳多張 JPEG。
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.renderStocktakeReportJpegs = renderStocktakeReportJpegs;
@@ -22,8 +30,7 @@ const sharp = require("sharp");
 
 const W = 1080;
 const PAD = 40;
-const ROW_H = 52;
-const ROWS_PER_PAGE = 30;      // 30 列 ≈ 2100px 高，遠低於 LINE 4096px 上限
+const MAX_PAGE_H = 3600;   // LINE 圖片上限 4096px，留餘裕
 const FONT = "'Noto Sans CJK TC','Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif";
 
 // 顏色沿用後台既有 hex（每日盤點頁同一組），圖與畫面看起來是同一個系統
@@ -39,7 +46,6 @@ const C = {
     good: "#1f7a46",
     bad: "#b3261e",
     info: "#0369a1",
-    adj: "#8250df",
     hotBg: "#fdeceb",
 };
 
@@ -52,13 +58,11 @@ function escapeXml(s) {
 /** 估算字串寬度（px）：CJK/全形算 1 個字寬，英數半形算 0.55。SVG 沒有 measureText，只能估。 */
 function estWidth(s, fontSize) {
     let u = 0;
-    for (const ch of String(s || "")) {
-        u += /[　-鿿＀-￯]/.test(ch) ? 1 : 0.55;
-    }
+    for (const ch of String(s || "")) u += /[　-鿿＀-￯]/.test(ch) ? 1 : 0.55;
     return u * fontSize;
 }
 
-/** 超過 maxPx 就截斷加「…」，避免品名壓到數字欄。 */
+/** 超過 maxPx 就截斷加「…」 */
 function clip(s, fontSize, maxPx) {
     const t = String(s || "");
     if (estWidth(t, fontSize) <= maxPx) return t;
@@ -70,7 +74,22 @@ function clip(s, fontSize, maxPx) {
     return out + "…";
 }
 
-/** 數量顯示：整數不帶小數點，小數最多兩位；null → 「—」 */
+/** 把一串短詞用分隔符接成多行（每行不超過 maxPx）。相符/未盤/帳 0 這幾段都靠它壓成幾行字。 */
+function wrapInline(parts, fontSize, maxPx, sep) {
+    const s = sep == null ? "、" : sep;
+    const lines = [];
+    let cur = "";
+    for (const raw of parts) {
+        const w = String(raw || "").trim();
+        if (!w) continue;
+        const next = cur ? cur + s + w : w;
+        if (cur && estWidth(next, fontSize) > maxPx) { lines.push(cur + s); cur = w; }
+        else cur = next;
+    }
+    if (cur) lines.push(cur);
+    return lines;
+}
+
 function n2(v) {
     if (v == null || v === "") return "—";
     const n = Number(v);
@@ -84,6 +103,11 @@ function signed(v) {
     const s = Math.round(n * 100) / 100;
     return (s > 0 ? "+" : "") + String(s);
 }
+/** 盤差% 的分母同每日盤點頁：max(|基準|,1)，基準＝未來加回開時的應有量 */
+function diffPct(it, futOn) {
+    const base = Math.max(Math.abs(Number((futOn ? it.should : it.sys) || 0)), 1);
+    return Math.round((Number(it.diff || 0) / base) * 1000) / 10;
+}
 
 const WD = ["日", "一", "二", "三", "四", "五", "六"];
 function dateLabel(d) {
@@ -94,56 +118,125 @@ function dateLabel(d) {
     return `${m[1]}/${m[2]}/${m[3]}${w}`;
 }
 
+const CONTENT_W = W - PAD * 2;
+
 /**
  * @param {object} p
- *   companyName 公司名（松富物流／松揚…）、whCode 倉號、whName 倉名、date YYYY-MM-DD、
- *   countedBy 盤點人、submittedAt 送出時間字串、futOn 是否顯示未來銷貨欄、hotRuleText 紅標規則說明、
- *   items[] { name, spec, unit, code, sys, fut, should, counted, mid, diff, hot, expiry[] }
+ *   companyName／whCode／whName／date／countedBy／submittedAt／futOn／hotRuleText／
+ *   items[] { name, spec, unit, code, sys, fut, should, counted, mid, diff, hot, idle, expiry[] }
  * @returns {string[]} 每頁一個 SVG 字串
  */
 function buildStocktakeReportSvgs(p) {
-    const items = Array.isArray(p.items) ? p.items : [];
+    const all = Array.isArray(p.items) ? p.items : [];
     const futOn = !!p.futOn;
-    // 未盤（counted == null）也要列出來——群組看到的是「這倉今天盤了什麼」，漏盤要看得見
-    const total = items.length;
-    const done = items.filter((it) => it.counted != null).length;
-    const diffN = items.filter((it) => it.diff != null && it.diff !== 0).length;
-    const hotN = items.filter((it) => it.hot).length;
 
-    // 欄位右邊界（品名區 = PAD .. nameRight）
-    const xDiff = W - PAD;
-    const xCounted = xDiff - 130;
-    const xShould = xCounted - 130;
-    const xFut = futOn ? xShould - 110 : null;
-    const xSys = (futOn ? xFut : xShould) - 110;
-    const nameRight = xSys - 130;
-    const nameMax = nameRight - PAD;
+    // 長期無貨（帳 0、現場也 0、近期庫存都沒動過）整段不列——這種品項每倉都幾十個，
+    // 列出來只會把圖拉長，真正要看的盤差反而被埋掉。頁尾記一筆數量，不默默吃掉。
+    const items = all.filter((it) => !it.idle);
+    const idleN = all.length - items.length;
 
+    const total = all.length;
+    const done = all.filter((it) => it.counted != null).length;
+    const diffs = items.filter((it) => it.counted != null && it.diff != null && it.diff !== 0)
+        .sort((a, b) => (b.hot ? 1 : 0) - (a.hot ? 1 : 0) || Math.abs(diffPct(b, futOn)) - Math.abs(diffPct(a, futOn)));
+    const uncounted = items.filter((it) => it.counted == null);
+    const same = items.filter((it) => it.counted != null && it.diff === 0);
+    const zeros = same.filter((it) => Number(it.should || 0) === 0 && Number(it.counted || 0) === 0);
+    const matched = same.filter((it) => !(Number(it.should || 0) === 0 && Number(it.counted || 0) === 0));
+    const hotN = diffs.filter((it) => it.hot).length;
+
+    // ── 內容拆成一個個 block（{h, draw(y)}），再依高度分頁 ──
+    const blocks = [];
+    const sectionHead = (title, color, note) => ({
+        h: 62,
+        draw: (y) => `
+<rect x="${PAD}" y="${y + 14}" width="${CONTENT_W}" height="2" fill="${C.line2}"/>
+<text x="${PAD}" y="${y + 48}" font-size="24" font-weight="800" fill="${color}">${escapeXml(title)}</text>
+${note ? `<text x="${W - PAD}" y="${y + 48}" text-anchor="end" font-size="17" fill="${C.t3}">${escapeXml(note)}</text>` : ""}`,
+    });
+
+    // 1) 有盤差：逐項明細（紅標在最前面、整塊淡紅底）
+    if (diffs.length) {
+        blocks.push(sectionHead("盤差", C.bad, `${diffs.length} 項${hotN ? `・紅標 ${hotN}` : ""}`));
+        diffs.forEach((it) => {
+            const pct = diffPct(it, futOn);
+            const nameTxt = clip((it.name || it.code) + (it.spec ? `　${it.spec}` : ""), 25, CONTENT_W - 220);
+            const sysTxt = (futOn && it.fut)
+                ? `應有 ${n2(it.should)}（帳 ${n2(it.sys)} ${signed(it.fut)} 未來）`
+                : `系統 ${n2(it.sys)}`;
+            const midTxt = it.mid ? `（含中 ${n2(it.mid)}）` : "";
+            const expTxt = (it.expiry && it.expiry.length) ? `・效期 ${it.expiry.length} 筆` : "";
+            const dColor = it.diff > 0 ? C.good : C.bad;
+            blocks.push({
+                h: 86,
+                draw: (y) => `
+${it.hot ? `<rect x="${PAD - 10}" y="${y}" width="${CONTENT_W + 20}" height="80" rx="6" fill="${C.hotBg}"/>` : ""}
+<text x="${PAD}" y="${y + 32}" font-size="25" font-weight="700" fill="${C.t1}">${escapeXml(nameTxt)}</text>
+${it.hot ? `<text x="${W - PAD}" y="${y + 32}" text-anchor="end" font-size="16" font-weight="700" fill="${C.bad}">要查</text>` : ""}
+<text x="${PAD}" y="${y + 66}" font-size="21" fill="${C.t2}">${escapeXml(`${sysTxt} → 實盤 ${n2(it.counted)}${midTxt}${expTxt}`)}</text>
+<text x="${W - PAD}" y="${y + 68}" text-anchor="end" font-size="27" font-weight="800" fill="${dColor}">${escapeXml(`${signed(it.diff)}（${pct > 0 ? "+" : ""}${pct}%）`)}</text>`,
+            });
+        });
+    }
+
+    // 2) 未盤：漏盤一定要看得見，但只需要品名
+    if (uncounted.length) {
+        blocks.push(sectionHead("未盤", "#b26a00", `${uncounted.length} 項`));
+        wrapInline(uncounted.map((it) => it.name || it.code), 22, CONTENT_W).forEach((ln) => {
+            blocks.push({ h: 36, draw: (y) => `<text x="${PAD}" y="${y + 26}" font-size="22" fill="${C.t2}">${escapeXml(ln)}</text>` });
+        });
+    }
+
+    // 3) 相符：數字還在（「品名 數量」），但串成段落不佔一列一項
+    if (matched.length) {
+        blocks.push(sectionHead("相符", C.good, `${matched.length} 項`));
+        wrapInline(matched.map((it) => `${it.name || it.code} ${n2(it.counted)}`), 21, CONTENT_W).forEach((ln) => {
+            blocks.push({ h: 34, draw: (y) => `<text x="${PAD}" y="${y + 25}" font-size="21" fill="${C.t2}">${escapeXml(ln)}</text>` });
+        });
+    }
+
+    // 4) 帳上 0 且現場也 0：收成一行字（不是長期無貨，今天確實有人去看過）
+    if (zeros.length) {
+        const names = zeros.map((it) => it.name || it.code);
+        const head = `帳上 0・現場也 0（${zeros.length} 項）：`;
+        wrapInline(names, 19, CONTENT_W - estWidth(head, 19)).forEach((ln, i) => {
+            blocks.push({ h: 30, draw: (y) => `<text x="${PAD}" y="${y + 22}" font-size="19" fill="${C.t3}">${escapeXml((i === 0 ? head : "　") + ln)}</text>` });
+        });
+    }
+
+    // ── 依高度分頁 ──
+    const HEAD1 = 300, HEADN = 150, FOOT = 84;
     const pages = [];
-    const pageCount = Math.max(1, Math.ceil(total / ROWS_PER_PAGE));
+    let cur = [], curH = 0;
+    const budget = () => MAX_PAGE_H - (pages.length === 0 ? HEAD1 : HEADN) - FOOT;
+    for (const b of blocks) {
+        if (curH + b.h > budget() && cur.length) { pages.push(cur); cur = []; curH = 0; }
+        cur.push(b); curH += b.h;
+    }
+    pages.push(cur);   // 最後一頁（沒有任何 block 時也要出一張，圖上只有抬頭與統計）
 
-    for (let pi = 0; pi < pageCount; pi++) {
-        const slice = items.slice(pi * ROWS_PER_PAGE, (pi + 1) * ROWS_PER_PAGE);
-        const headH = pi === 0 ? 300 : 150;   // 第 2 頁起省略 KPI 卡，只留標題列
-        const tableTop = headH + 10;
-        const H = tableTop + 56 + slice.length * ROW_H + 96;
+    return pages.map((blks, pi) => {
+        const headH = pi === 0 ? HEAD1 : HEADN;
+        let y = headH;
+        let body = "";
+        for (const b of blks) { body += b.draw(y); y += b.h; }
+        const H = Math.max(y + FOOT, headH + FOOT + 60);
 
         let head = "";
         if (pi === 0) {
-            head += `
+            head = `
 <text x="${PAD}" y="66" font-size="20" fill="${C.accent}" font-weight="600">松富物流 · 每日盤點</text>
-<text x="${PAD}" y="132" font-size="54" font-weight="800" fill="${C.t1}">盤點結果表</text>
+<text x="${PAD}" y="132" font-size="54" font-weight="800" fill="${C.t1}">盤點結果</text>
 <text x="${PAD}" y="178" font-size="26" fill="${C.t2}">${escapeXml(dateLabel(p.date))} ｜ ${escapeXml(p.companyName || "")} ｜ ${escapeXml((p.whCode || "") + " " + (p.whName || ""))}</text>
 <text x="${W - PAD}" y="66" text-anchor="end" font-size="18" fill="${C.t3}">盤點人 ${escapeXml(p.countedBy || "—")}</text>
 <text x="${W - PAD}" y="94" text-anchor="end" font-size="18" fill="${C.t3}">送出 ${escapeXml(p.submittedAt || "")}</text>`;
-            // KPI 四格
             const kpis = [
                 { label: "品項", value: String(total), color: C.t1 },
                 { label: "已盤", value: `${done}/${total}`, color: done === total ? C.good : "#b26a00" },
-                { label: "有盤差", value: String(diffN), color: diffN ? C.bad : C.good },
+                { label: "有盤差", value: String(diffs.length), color: diffs.length ? C.bad : C.good },
                 { label: "紅標", value: String(hotN), color: hotN ? C.bad : C.good },
             ];
-            const cw = (W - PAD * 2 - 24) / 4;
+            const cw = (CONTENT_W - 24) / 4;
             kpis.forEach((k, i) => {
                 const x = PAD + i * (cw + 8);
                 head += `
@@ -151,68 +244,33 @@ function buildStocktakeReportSvgs(p) {
 <text x="${x + 16}" y="228" font-size="17" fill="${C.t3}">${escapeXml(k.label)}</text>
 <text x="${x + cw - 16}" y="264" text-anchor="end" font-size="34" font-weight="800" fill="${k.color}">${escapeXml(k.value)}</text>`;
             });
-        } else {
-            head += `
-<text x="${PAD}" y="70" font-size="34" font-weight="800" fill="${C.t1}">盤點結果表（續）</text>
+        }
+        else {
+            head = `
+<text x="${PAD}" y="70" font-size="34" font-weight="800" fill="${C.t1}">盤點結果（續）</text>
 <text x="${PAD}" y="112" font-size="21" fill="${C.t2}">${escapeXml(dateLabel(p.date))} ｜ ${escapeXml((p.whCode || "") + " " + (p.whName || ""))}</text>`;
         }
 
-        // 表頭
-        let rows = `
-<line x1="${PAD}" y1="${tableTop}" x2="${W - PAD}" y2="${tableTop}" stroke="${C.line2}" stroke-width="2"/>
-<text x="${PAD}" y="${tableTop + 36}" font-size="19" font-weight="700" fill="${C.t2}">品項</text>
-<text x="${xSys}" y="${tableTop + 36}" text-anchor="end" font-size="19" font-weight="700" fill="${C.t2}">系統</text>
-${futOn ? `<text x="${xFut}" y="${tableTop + 36}" text-anchor="end" font-size="19" font-weight="700" fill="${C.info}">未來</text>` : ""}
-<text x="${xShould}" y="${tableTop + 36}" text-anchor="end" font-size="19" font-weight="700" fill="${C.t2}">應有</text>
-<text x="${xCounted}" y="${tableTop + 36}" text-anchor="end" font-size="19" font-weight="700" fill="${C.t1}">實盤</text>
-<text x="${xDiff}" y="${tableTop + 36}" text-anchor="end" font-size="19" font-weight="700" fill="${C.t1}">盤差</text>
-<line x1="${PAD}" y1="${tableTop + 54}" x2="${W - PAD}" y2="${tableTop + 54}" stroke="${C.line}"/>`;
-
-        slice.forEach((it, i) => {
-            const y = tableTop + 54 + i * ROW_H;
-            const midY = y + 33;
-            if (it.hot) {
-                rows += `<rect x="${PAD - 10}" y="${y + 1}" width="${W - PAD * 2 + 20}" height="${ROW_H - 2}" fill="${C.hotBg}"/>`;
-            }
-            // 品名（第一行）＋ 規格/單位/料號、含中、效期（第二行小字）
-            const name = clip(it.name || it.code || "", 22, nameMax);
-            const sub = [];
-            if (it.spec) sub.push(String(it.spec));
-            if (it.code) sub.push(String(it.code));
-            if (it.mid) sub.push(`含中 ${n2(it.mid)}`);
-            if (Array.isArray(it.expiry) && it.expiry.length) sub.push(`效期 ${it.expiry.length} 筆`);
-            rows += `<text x="${PAD}" y="${y + 26}" font-size="22" font-weight="${it.hot ? 700 : 500}" fill="${C.t1}">${escapeXml(name)}</text>`;
-            if (sub.length) {
-                rows += `<text x="${PAD}" y="${y + 45}" font-size="15" fill="${C.t3}">${escapeXml(clip(sub.join(" · "), 15, nameMax))}</text>`;
-            }
-            const dColor = it.diff == null ? C.t3 : (it.diff === 0 ? C.t3 : (it.diff > 0 ? C.good : C.bad));
-            rows += `
-<text x="${xSys}" y="${midY}" text-anchor="end" font-size="22" fill="${C.t2}">${escapeXml(n2(it.sys))}</text>
-${futOn ? `<text x="${xFut}" y="${midY}" text-anchor="end" font-size="22" fill="${it.fut ? C.info : C.t3}">${escapeXml(it.fut ? signed(it.fut) : "—")}</text>` : ""}
-<text x="${xShould}" y="${midY}" text-anchor="end" font-size="22" fill="${C.t2}">${escapeXml(n2(it.should))}</text>
-<text x="${xCounted}" y="${midY}" text-anchor="end" font-size="24" font-weight="700" fill="${it.counted == null ? C.t3 : C.t1}">${escapeXml(it.counted == null ? "未盤" : n2(it.counted))}</text>
-<text x="${xDiff}" y="${midY}" text-anchor="end" font-size="24" font-weight="${it.diff ? 700 : 400}" fill="${dColor}">${escapeXml(it.diff == null ? "—" : (it.diff === 0 ? "0" : signed(it.diff)))}</text>
-<line x1="${PAD}" y1="${y + ROW_H}" x2="${W - PAD}" y2="${y + ROW_H}" stroke="${C.line}"/>`;
-        });
-
-        const footY = H - 44;
+        const notes = [];
+        notes.push(`盤差＝實盤−${futOn ? "應有（系統＋未來銷貨）" : "系統"}`);
+        if (p.hotRuleText) notes.push(`紅標 ${p.hotRuleText}`);
+        if (idleN) notes.push(`另有 ${idleN} 項長期無貨未列`);
         const foot = `
-<line x1="${PAD}" y1="${H - 76}" x2="${W - PAD}" y2="${H - 76}" stroke="${C.line}"/>
-<text x="${PAD}" y="${footY}" font-size="16" fill="${C.t3}">應有＝系統${futOn ? "＋未來銷貨" : ""}　盤差＝實盤−應有　${escapeXml(p.hotRuleText ? "紅標：" + p.hotRuleText : "")}</text>
-<text x="${W - PAD}" y="${footY}" text-anchor="end" font-size="16" fill="${C.t3}">${pageCount > 1 ? `第 ${pi + 1}/${pageCount} 頁 · ` : ""}松富物流 LINE 盤點系統</text>`;
+<line x1="${PAD}" y1="${H - 64}" x2="${W - PAD}" y2="${H - 64}" stroke="${C.line}"/>
+<text x="${PAD}" y="${H - 32}" font-size="16" fill="${C.t3}">${escapeXml(notes.join("　"))}</text>
+<text x="${W - PAD}" y="${H - 32}" text-anchor="end" font-size="16" fill="${C.t3}">${pages.length > 1 ? `第 ${pi + 1}/${pages.length} 頁 · ` : ""}松富物流 LINE 盤點系統</text>`;
 
-        pages.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONT}">
+        return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONT}">
 <rect width="${W}" height="${H}" fill="${C.bg}"/>
 <rect x="0" y="0" width="8" height="${H}" fill="${C.accent}"/>
 ${head}
-${rows}
+${body}
 ${foot}
-</svg>`);
-    }
-    return pages;
+</svg>`;
+    });
 }
 
-/** 回傳 JPEG Buffer 陣列（品項多時分頁）。 */
+/** 回傳 JPEG Buffer 陣列（內容長時分頁）。 */
 async function renderStocktakeReportJpegs(p) {
     const svgs = buildStocktakeReportSvgs(p);
     const out = [];

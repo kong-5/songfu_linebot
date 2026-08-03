@@ -140,6 +140,17 @@
   /* toast */
   .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:110px;z-index:50;background:rgba(25,30,40,.92);color:#fff;font-size:13.5px;font-weight:700;padding:10px 16px;border-radius:99px;box-shadow:0 4px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .18s;pointer-events:none;max-width:86vw;text-align:center;}
   .toast.on{opacity:1;}
+  /* 盤點結果圖：確認數字 → 自己傳到群組（不推播，推群組是按人數計則數） */
+  .rep{padding:12px 12px 96px;}
+  .rep-h{display:flex;align-items:baseline;gap:8px;padding:6px 2px 10px;}
+  .rep-h h1{margin:0;font-size:17px;font-weight:700;color:var(--txt);}
+  .rep-h .m{font-size:12.5px;color:var(--txt-3);}
+  .rep-pg{font-size:12px;color:var(--txt-3);padding:8px 2px 4px;}
+  .rep-img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:10px;background:#fff;}
+  .rep-hint{font-size:12.5px;color:var(--txt-3);line-height:1.6;padding:12px 2px 0;}
+  .rep-bar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);padding:10px 12px calc(10px + env(safe-area-inset-bottom));display:flex;gap:8px;z-index:40;}
+  .rep-bar button,.rep-bar a{flex:1;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--txt);font-size:15px;font-weight:700;padding:13px 8px;cursor:pointer;text-align:center;text-decoration:none;min-height:46px;display:flex;align-items:center;justify-content:center;}
+  .rep-bar .pri{border:0;background:var(--accent);color:#fff;}
 </style>
 </head>
 <body>
@@ -180,6 +191,12 @@
       conflict:'這個倉今天已經有人送出盤點了。\n將重新載入最新資料並合併你未送出的數量，請確認後再送出。',
       submitFail:'送出失敗：',submitFailRetry:'送出失敗，請稍後再試',
       sent:'盤點已送出',recorded:function(n){return '已記錄 '+n+' 項';},finish:'完成',
+      repMake:'產生結果圖',repMaking:'產生中…',repTitle:'盤點結果圖',repFail:'產生結果圖失敗，請重試',
+      repShare:'傳到 LINE 群組',repSave:'儲存到手機',repBack:'關閉',repAgain:'重新產生',
+      repHint:'確認數字沒問題後，自己把圖片傳到群組',
+      repSaveHint:'沒有跳出存檔？長按圖片 →「儲存影像」',
+      repPage:function(a,b){return '第 '+a+'/'+b+' 張';},
+      repReopen:'結果圖',
       notFound:'查無品項 ',
       bindTitle:'新條碼，綁定品項',
       bindBc:function(bc,co){return '條碼 <b>'+bc+'</b> 還沒對應到'+co+'的品項';},
@@ -220,6 +237,12 @@
       conflict:'Kho này hôm nay đã có người gửi kiểm kê.\nSẽ tải lại dữ liệu mới và gộp số lượng chưa gửi của bạn, vui lòng kiểm tra rồi gửi lại.',
       submitFail:'Gửi thất bại: ',submitFailRetry:'Gửi thất bại, thử lại sau',
       sent:'Đã gửi kiểm kê',recorded:function(n){return 'Đã ghi '+n+' mục';},finish:'Xong',
+      repMake:'Tạo ảnh kết quả',repMaking:'Đang tạo…',repTitle:'Ảnh kết quả kiểm kê',repFail:'Tạo ảnh thất bại, thử lại',
+      repShare:'Gửi lên nhóm LINE',repSave:'Lưu về máy',repBack:'Đóng',repAgain:'Tạo lại',
+      repHint:'Kiểm tra số liệu xong, tự gửi ảnh vào nhóm',
+      repSaveHint:'Không hiện lưu? Nhấn giữ ảnh → "Lưu ảnh"',
+      repPage:function(a,b){return 'Ảnh '+a+'/'+b;},
+      repReopen:'Ảnh kết quả',
       notFound:'Không tìm thấy ',
       bindTitle:'Mã vạch mới, gán sản phẩm',
       bindBc:function(bc,co){return 'Mã <b>'+bc+'</b> chưa gán với sản phẩm nào của '+co;},
@@ -249,6 +272,7 @@
       case 'warehouses': return '/liff/api/stocktake/warehouses';
       case 'items': return '/liff/api/stocktake/items';
       case 'submit': return '/liff/api/stocktake/submit';
+      case 'report.jpg': return '/liff/api/stocktake/report.jpg';
       default: return '/liff/api/scan/'+kind; // barcodes|search|bind
     }
   }
@@ -446,7 +470,7 @@
           return '<button class="pk" data-w="'+esc(w.code)+'">'
             +'<div class="pk-ic">▦</div>'
             +'<div class="pk-i"><div class="n">'+esc(w.name||w.code)+'</div><div class="m">'+esc(w.code)+' · '+esc(L('itemsN')(w.items))+'</div></div>'
-            +(w.countedToday?'<span class="pk-done">'+esc(L('countedToday'))+'</span>':'')
+            +(w.countedToday?'<span class="pk-done" data-rep="'+esc(w.code)+'" data-repn="'+esc(w.name||w.code)+'">'+esc(L('countedToday'))+' · '+esc(L('repReopen'))+'</span>':'')
             +'<span class="pk-arrow">›</span></button>';
         }).join('')+'</div>';
       }
@@ -461,7 +485,12 @@
           showPicker();
         });
       });
-      Array.prototype.forEach.call(app.querySelectorAll('.pk'),function(b){b.addEventListener('click',function(){openWarehouse(b.getAttribute('data-w'));});});
+      var pickDate=res.date||'';
+      Array.prototype.forEach.call(app.querySelectorAll('.pk'),function(b){b.addEventListener('click',function(e){
+        var rep=e.target.closest('[data-rep]');   // 點「今日已盤 · 結果圖」徽章＝重看結果圖，不進盤點畫面
+        if(rep){ showReport(rep.getAttribute('data-rep'),pickDate,rep.getAttribute('data-repn'),showPicker); return; }
+        openWarehouse(b.getAttribute('data-w'));
+      });});
     }).catch(function(){
       showCenter('<div>'+esc(L('loadWhFail'))+'</div><button class="btn-primary" style="margin-top:8px" id="scPkRetry">'+esc(L('retry'))+'</button>');
       var r=document.getElementById('scPkRetry');if(r)r.addEventListener('click',showPicker);
@@ -866,6 +895,89 @@
   }
 
   // ---------- 送出 ----------
+  // ---------- 盤點結果圖（JPG）----------
+  // 不推播：推到群組是按「群組人數」計則數（8 人群組推一次＝8 則），每天每倉推一次很快吃掉方案額度。
+  // 改成產一張圖，盤點的人確認完再用手機分享／存檔傳到群組 —— 零則數。
+  // <img> 帶不了 Authorization header，故 fetch 成 blob 再轉 objectURL／File。
+  var _repUrls=[];
+  function repRevoke(){ _repUrls.forEach(function(u){ try{URL.revokeObjectURL(u);}catch(_){} }); _repUrls=[]; }
+  function repFetch(wh,date,page){
+    var u=apiUrl('report.jpg')+'?warehouse='+encodeURIComponent(wh)+'&date='+encodeURIComponent(date)
+      +'&icpno='+encodeURIComponent(S.icpno)+'&page='+page+'&_='+Date.now();
+    var opt=WEB?{credentials:'same-origin'}:{headers:{'Authorization':'Bearer '+freshToken()}};
+    return fetch(u,opt).then(function(r){
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      var n=Number(r.headers.get('X-Report-Pages')||1)||1;
+      return r.blob().then(function(b){ return {blob:b,pages:n}; });
+    });
+  }
+  function showReport(wh,date,whLabel,onBack){
+    repRevoke();
+    showCenter('<div class="spin"></div><div>'+esc(L('repMaking'))+'</div>');
+    repFetch(wh,date,1).then(function(first){
+      var jobs=[Promise.resolve(first)];
+      for(var p=2;p<=first.pages;p++) jobs.push(repFetch(wh,date,p));
+      return Promise.all(jobs);
+    }).then(function(list){
+      var base='盤點結果_'+wh+'_'+String(date).replace(/-/g,'');
+      var urls=[],files=[],names=[];
+      list.forEach(function(x,i){
+        var nm=base+(list.length>1?'_'+(i+1):'')+'.jpg';
+        names.push(nm); urls.push(URL.createObjectURL(x.blob));
+        try{ files.push(new File([x.blob],nm,{type:'image/jpeg'})); }catch(_){ }
+      });
+      _repUrls=urls;
+      renderReport({urls:urls,files:files,names:names,wh:wh,date:date,whLabel:whLabel,onBack:onBack});
+    }).catch(function(){
+      showCenter('<div style="font-size:36px">⚠</div><div>'+esc(L('repFail'))+'</div>'
+        +'<button class="btn-primary" id="repRetry" style="margin-top:8px">'+esc(L('repAgain'))+'</button>'
+        +'<button class="btn-primary" id="repBack2" style="margin-top:6px;background:transparent;color:var(--txt-2);border:1px solid var(--line);">'+esc(L('repBack'))+'</button>');
+      document.getElementById('repRetry').addEventListener('click',function(){ showReport(wh,date,whLabel,onBack); });
+      document.getElementById('repBack2').addEventListener('click',function(){ repRevoke(); onBack(); });
+    });
+  }
+  function renderReport(r){
+    var canShare=false;
+    try{ canShare=!!(r.files.length&&navigator.share&&navigator.canShare&&navigator.canShare({files:r.files})); }catch(_){ canShare=false; }
+    var imgs=r.urls.map(function(u,i){
+      return (r.urls.length>1?'<div class="rep-pg">'+esc(L('repPage')(i+1,r.urls.length))+'</div>':'')
+        +'<img class="rep-img" src="'+u+'" alt="">';
+    }).join('');
+    var saveBtns=r.urls.map(function(u,i){
+      return '<a class="'+(canShare?'':'pri')+'" href="'+u+'" download="'+esc(r.names[i])+'">'
+        +esc(L('repSave'))+(r.urls.length>1?' ('+(i+1)+'/'+r.urls.length+')':'')+'</a>';
+    }).join('');
+    app.innerHTML='<div class="rep">'
+      +'<div class="rep-h"><h1>'+esc(L('repTitle'))+'</h1><div class="m">'+esc(r.whLabel||r.wh)+' · '+esc(r.date)+'</div></div>'
+      +imgs
+      +'<div class="rep-hint">'+esc(L('repHint'))+'<br>'+esc(L('repSaveHint'))+'</div>'
+      +'</div>'
+      +'<div class="rep-bar">'
+        +(canShare?'<button class="pri" id="repShare">'+esc(L('repShare'))+'</button>':'')
+        +saveBtns
+        +'<button id="repBack">'+esc(L('repBack'))+'</button>'
+      +'</div>';
+    if(canShare){
+      document.getElementById('repShare').addEventListener('click',function(){
+        try{ navigator.share({files:r.files,title:L('repTitle'),text:(r.whLabel||r.wh)+' · '+r.date}).catch(function(){}); }catch(_){}
+      });
+    }
+    document.getElementById('repBack').addEventListener('click',function(){ repRevoke(); r.onBack(); });
+  }
+  // 送出完成畫面：獨立成函式，讓「結果圖」關掉後回得來（忘了傳不用重盤）
+  function showSubmitDone(whCode,whLabel,dateLabel,counted){
+    function finishClose(){ try{ if(!WEB&&liff.isInClient()) liff.closeWindow(); else showPicker(); }catch(_){ showPicker(); } }
+    showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(L('sent'))+'</div>'
+      +'<div>'+esc(whLabel)+'（'+esc(coName())+'）· '+esc(dateLabel)+'</div>'
+      +'<div style="font-size:13px;color:var(--txt-3)">'+esc(L('recorded')(counted))+'</div>'
+      +'<button class="btn-primary" id="scReport" style="margin-top:8px">'+esc(L('repMake'))+'</button>'
+      +'<button class="btn-primary" id="scClose" style="margin-top:6px;background:transparent;color:var(--txt-2);border:1px solid var(--line);">'+esc(L('finish'))+'</button>');
+    document.getElementById('scReport').addEventListener('click',function(){
+      showReport(whCode,dateLabel,whLabel,function(){ showSubmitDone(whCode,whLabel,dateLabel,counted); });
+    });
+    document.getElementById('scClose').addEventListener('click',finishClose);
+  }
+
   function submit(){
     var codes=S.order.filter(function(c){return S.counts[c]!=null&&S.counts[c]!=='';});
     if(!codes.length){alert(L('noneScanned'));return;}
@@ -900,11 +1012,7 @@
         alert(L('submitFail')+res.error);return;
       }
       clearDraft();stopScan();
-      showCenter('<div style="font-size:44px">✅</div><div style="font-size:17px;font-weight:700;color:var(--txt)">'+esc(L('sent'))+'</div>'
-        +'<div>'+esc(S.wh.name||S.wh.code)+'（'+esc(coName())+'）· '+esc(S.date)+'</div>'
-        +'<div style="font-size:13px;color:var(--txt-3)">'+esc(L('recorded')(res.counted))+'</div>'
-        +'<button class="btn-primary" id="scClose" style="margin-top:8px">'+esc(L('finish'))+'</button>');
-      document.getElementById('scClose').addEventListener('click',function(){try{if(liff.isInClient())liff.closeWindow();else showPicker();}catch(_){showPicker();}});
+      showSubmitDone(S.wh.code,S.wh.name||S.wh.code,S.date,res.counted);
     }).catch(function(){btn.disabled=false;btn.textContent=L('submit');alert(L('submitFailRetry'));});
   }
 

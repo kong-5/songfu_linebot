@@ -121,7 +121,35 @@ test("5. 每日盤點頁的倉庫卡片有「結果圖」入口（忘了傳可�
     assert.match(html, new RegExp(`/admin/inventory/report\\.jpg\\?icpno=${ICP}&wh=${WH}&date=${TODAY}`), "卡片要有結果圖連結");
 });
 
-test("6. 複盤改過實盤數 → 重新產圖是最新值（即時重算不存檔）", async () => {
+test("6. 掃碼盤點頁（松揚）也取得到結果圖：/admin/scan/report.jpg", async () => {
+    const res = await fetch(`${baseUrl}/admin/scan/report.jpg?icpno=${ICP}&warehouse=${WH}&date=${TODAY}`, { headers: cookie() });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "image/jpeg");
+});
+
+test("7. 長期無貨（帳 0、現場也 0、近 60 天快照都沒量）標 idle，結果圖才不會被塞爆", async () => {
+    const s = await db.prepare("SELECT id FROM stocktake_session WHERE count_date = ? AND wh_code = ?").get(TODAY, WH);
+    const now = new Date().toISOString();
+    await db.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run("stkc-idle", s.id, "A003", "停用品", "", "KG", 0, 0, now);
+    // 沒有任何每日快照時：無從判定 → 一律不標 idle（寧可圖長也不默默吃掉品項）
+    let r = await loadStocktakeReport(db, { icpno: ICP, whCode: WH, date: TODAY });
+    assert.equal(r.items.find((x) => x.code === "A003").idle, false, "沒快照就不該判定 idle");
+    // 有快照後：A001 有量→不 idle；A003 快照都是 0 且帳 0 現場 0 → idle
+    for (const [code, qty] of [["A001", 100], ["A002", 50], ["A003", 0]])
+        await db.prepare("INSERT INTO erp_stock_daily (icpno, erp_code, snap_date, qty, updated_at) VALUES (?, ?, ?, ?, ?)").run(ICP, code, TODAY, qty, now);
+    r = await loadStocktakeReport(db, { icpno: ICP, whCode: WH, date: TODAY });
+    assert.equal(r.items.find((x) => x.code === "A003").idle, true, "帳 0、現場 0、快照也 0 → 長期無貨");
+    assert.equal(r.items.find((x) => x.code === "A001").idle, false, "有庫存的品項不可被藏起來");
+    // 關閉開關（設 0 天）→ 回到全部照列
+    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("stocktake_report_idle_days", "0");
+    r = await loadStocktakeReport(db, { icpno: ICP, whCode: WH, date: TODAY });
+    assert.equal(r.items.find((x) => x.code === "A003").idle, false, "設 0 天＝關閉過濾");
+    await db.prepare("DELETE FROM app_settings WHERE key = ?").run("stocktake_report_idle_days");
+    await db.prepare("DELETE FROM stocktake_count WHERE id = ?").run("stkc-idle");
+});
+
+test("8. 複盤改過實盤數 → 重新產圖是最新值（即時重算不存檔）", async () => {
     const s = await db.prepare("SELECT id FROM stocktake_session WHERE count_date = ? AND wh_code = ?").get(TODAY, WH);
     await db.prepare("UPDATE stocktake_count SET counted_qty = ? WHERE session_id = ? AND erp_code = ?").run(48, s.id, "A002");
     const r = await loadStocktakeReport(db, { icpno: ICP, whCode: WH, date: TODAY });

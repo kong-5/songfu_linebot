@@ -990,8 +990,9 @@ function registerInventoryRoutes(router, ctx) {
         }
     }
     router.get("/inventory/report.jpg", serveReportJpg);
-    // 網站版盤點入口（stocktake.html 的 WEB 模式）用 STK+'/report.jpg' 取圖，路徑要對得上
+    // 網站版盤點入口（stocktake.html 的 WEB 模式）與掃碼頁 WEB 模式各自用 <base>+'/report.jpg' 取圖
     router.get("/inventory/entry/report.jpg", serveReportJpg);
+    router.get("/scan/report.jpg", serveReportJpg);
     // ============================================================
     // 盤點異常排查表（2026-07-17）：當日「對最新盤差≠0」品項＋依訊號自動列可能原因，
     // 可勾選後推送 LINE 群組請大家複查。原因訊號：盤差方向（實盤偏多/偏少）、

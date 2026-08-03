@@ -16,6 +16,47 @@ const { normIcpno, erpCompanyName } = require("./erp-companies.js");
 const { futureReversalEnabled, makeFutureResolver } = require("./stock-future.js");
 const { loadHotRule, isHotDiff, hotRuleText } = require("./stocktake-hot-rule.js");
 
+const ICP_SQL = "COALESCE(NULLIF(TRIM(icpno),''),'00')";
+const IDLE_DAYS_DEFAULT = 60;
+
+/**
+ * 「長期無貨」判定：帳 0、現場也 0（或沒盤），而且近 N 天的每日庫存快照裡從沒出現過量。
+ * 這種品項每個倉都有幾十個（凌越主檔留著但早就不進了），列進結果圖只會把圖拉長、
+ * 把真正要看的盤差埋掉 → 結果圖整段不列，只在頁尾記「另有 N 項長期無貨未列」。
+ *
+ * 保守原則：查不到任何快照（功能上線前／保留期外／查詢失敗）一律**不判定 idle**，
+ * 寧可圖長一點也不要默默吃掉品項。
+ * 天數可用 app_settings.stocktake_report_idle_days 覆寫，設 0＝關閉此過濾。
+ */
+async function loadIdleCodes(db, icp, date, codes) {
+    let days = IDLE_DAYS_DEFAULT;
+    try {
+        const r = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("stocktake_report_idle_days");
+        const v = r && r.value != null && String(r.value).trim() !== "" ? Number(r.value) : NaN;
+        if (Number.isFinite(v) && v >= 0) days = v;
+    }
+    catch (_) { /* 沒設定就用預設 */ }
+    if (!days) return new Set();
+    const from = new Date(new Date(date + "T12:00:00+08:00").getTime() - days * 86400000).toISOString().slice(0, 10);
+    let rows = [];
+    try {
+        rows = (await db.prepare(
+            `SELECT erp_code, MAX(ABS(qty)) AS mx FROM erp_stock_daily WHERE ${ICP_SQL} = ? AND snap_date >= ? AND snap_date <= ? GROUP BY erp_code`
+        ).all(icp, from, date)) || [];
+    }
+    catch (_) { return new Set(); }
+    if (!rows.length) return new Set();   // 沒有任何快照＝無從判定，全部照列
+    const idle = new Set();
+    const seen = new Set();
+    for (const r of rows) {
+        seen.add(String(r.erp_code || ""));
+        if (Number(r.mx || 0) === 0) idle.add(String(r.erp_code || ""));
+    }
+    // 快照期間內完全沒出現過的料號：也算長期無貨（凌越推送本來就只推有效品項）
+    for (const c of codes) if (!seen.has(c)) idle.add(c);
+    return idle;
+}
+
 function twTime(iso) {
     if (!iso) return "";
     try {
@@ -51,6 +92,8 @@ async function loadStocktakeReport(db, { icpno, whCode, date }) {
         "SELECT erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, future_qty, expiry_json FROM stocktake_count WHERE session_id = ? ORDER BY erp_code"
     ).all(s.id)) || [];
 
+    const idleSet = await loadIdleCodes(db, icp, d, rows.map((r) => String(r.erp_code || "")));
+
     const items = rows.map((r) => {
         const code = String(r.erp_code || "");
         const sys = Number(r.sys_qty || 0);
@@ -63,10 +106,13 @@ async function loadStocktakeReport(db, { icpno, whCode, date }) {
         const diff = counted == null ? null : Math.round((counted - should) * 100) / 100;
         let expiry = [];
         try { expiry = JSON.parse(r.expiry_json || "[]") || []; } catch (_) { expiry = []; }
+        // idle＝長期無貨（見 loadIdleCodes）：帳 0、現場也 0/沒盤，才可以不列進結果圖。
+        // 只要今天有量或有人盤到數字，一律照列——不能因為「快照都是 0」就把真的盤盈藏起來。
+        const idle = idleSet.has(code) && sys === 0 && (counted == null || counted === 0);
         return {
             code, name: String(r.name || ""), spec: String(r.spec || ""), unit: String(r.unit || ""),
             sys, fut, futEst: futOn && !futFrozen && fut !== 0, should, counted, mid, diff,
-            hot: isHotDiff(hotRule, diff, futOn ? should : sys), expiry,
+            hot: isHotDiff(hotRule, diff, futOn ? should : sys), expiry, idle,
         };
     });
 
