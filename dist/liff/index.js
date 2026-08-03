@@ -149,6 +149,28 @@ function createLiffRouter() {
             res.status(500).json({ error: String(e?.message || e).slice(0, 200) });
         }
     });
+    // 盤點結果圖（JPG）：送出後自己存下來／用手機分享功能貼到群組，不走推播（推群組是按人數計則數）。
+    // 沿用 stkAuth（LIFF token）——圖上有整倉庫存量，不做免登入公開網址。
+    // <img> 帶不了 Authorization，前端用 fetch 取 blob 後轉 objectURL／File（同 photo 端點的作法）。
+    // 即時重算不存檔：複盤改過實盤數，重新下載就是最新的。品項多會分頁，?page= 取第幾張。
+    router.get("/api/stocktake/report.jpg", async (req, res) => {
+        try {
+            const v = await stkAuth(req, res); if (!v) return;
+            const wh = String(req.query.warehouse || "").trim();
+            const date = String(req.query.date || "").trim() || (0, stocktake_api_js_1.stkTaipeiDate)();
+            if (!wh) { res.status(400).json({ error: "缺少 warehouse" }); return; }
+            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const db = (0, index_js_1.getDb)(dbPath);
+            const data = await require("../lib/stocktake-report.js").loadStocktakeReport(db, { icpno, whCode: wh, date });
+            if (!data) { res.status(404).json({ error: "這一天這個倉還沒有盤點紀錄" }); return; }
+            const bufs = await require("../lib/stocktake-report-image.js").renderStocktakeReportJpegs(data);
+            const page = Math.min(Math.max(1, Number(req.query.page || 1) || 1), bufs.length);
+            res.setHeader("X-Report-Pages", String(bufs.length));
+            res.setHeader("Cache-Control", "no-store");
+            res.type("image/jpeg").send(bufs[page - 1]);
+        }
+        catch (e) { console.error("[liff stocktake report]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
+    });
 
     // ── 掃碼盤點 LIFF 頁（手機當 PDA）＋條碼 API ─────────────────────────
     // 預設松揚（icpno=02，冷凍貨/雜貨），頁面可用 ?icpno= 切公司。

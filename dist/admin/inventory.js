@@ -23,28 +23,9 @@ function registerInventoryRoutes(router, ctx) {
     // 兩段式的原因：只看 % → 小量品項（帳 0.5 差 0.5＝100%）整片紅；只看量 → 大量品項差 1 也紅。
     // 兩者都設才篩得出「真的要去查」的那幾項（2026-07-30 回報：81 項全紅，沒辦法 focus）。
     // 全域設定（每日盤點頁工具列「紅標規則」可改）：stocktake_hot_pct 預設 5、stocktake_hot_qty 預設 0（不限）。
-    const HOT_PCT_DEFAULT = 5, HOT_QTY_DEFAULT = 0;
-    async function loadHotRule() {
-        const num = async (key, dft) => {
-            try {
-                const r = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
-                const v = r && r.value != null && String(r.value).trim() !== "" ? Number(r.value) : NaN;
-                return (Number.isFinite(v) && v >= 0) ? v : dft;
-            }
-            catch (_) { return dft; }
-        };
-        return { pct: await num("stocktake_hot_pct", HOT_PCT_DEFAULT), qty: await num("stocktake_hot_qty", HOT_QTY_DEFAULT) };
-    }
-    // diff＝盤差量、base＝盤差的基準（應有量或凌越量）。base=0 時 % 無意義 → 只看量。
-    const isHotDiff = (rule, diff, base) => {
-        if (diff == null) return false;
-        const d = Math.abs(Number(diff) || 0);
-        if (d < Number(rule.qty || 0)) return false;
-        const b = Math.abs(Number(base) || 0);
-        if (!b) return d > 0 && Number(rule.qty || 0) > 0; // 基準 0：只有設了量門檻才判定得了
-        return (d / b) * 100 >= Number(rule.pct || 0);
-    };
-    const hotRuleText = (rule) => `≥${rule.pct}%` + (rule.qty ? ` 且 ≥${rule.qty}` : "");
+    // [refactor 2026-08-03] 判定本體搬到 lib/stocktake-hot-rule.js（結果圖也要吃同一份），此處只保留 db 綁定。
+    const { isHotDiff, hotRuleText, HOT_PCT_DEFAULT, HOT_QTY_DEFAULT } = require("../lib/stocktake-hot-rule.js");
+    const loadHotRule = () => require("../lib/stocktake-hot-rule.js").loadHotRule(db);
     // ── 「最新系統／對最新盤差」欄的庫存基準（單一權威：每日盤點頁／CSV／異常排查表／「套用實盤」共用）──
     // 今天：即時快照（erp_stock_wh_qty / erp_stock_items）——當天要看的就是「凌越現在怎麼記」。
     // 過去日期：**該日的收盤快照**（erp_stock_wh_daily / erp_stock_daily），凍結不再飄。
@@ -354,6 +335,7 @@ function registerInventoryRoutes(router, ctx) {
               <div class="stk-card-m">
                 <span>盤點人 ${escapeHtml(s.created_by_name || "—")}</span>
                 <span>送出 ${escapeHtml(stkAdminTwTime(s.submitted_at))}</span>
+                <a class="stk-togbtn" style="text-decoration:none;" target="_blank" rel="noopener" title="產生這張盤點的結果圖（JPG），存下來自己貼到 LINE 群組——不走推播（推群組是按群組人數計則數）。即時重算，複盤改過的實盤數會反映在圖上。" href="/admin/inventory/report.jpg?icpno=${encodeURIComponent((0, erp_companies_js_1.normIcpno)(s.icpno))}&wh=${encodeURIComponent(String(s.wh_code || ""))}&date=${encodeURIComponent(date)}">${SF_ICONS.image} 結果圖</a>
                 <span class="stk-badge ${done >= all && all > 0 ? "ok" : ""}">已盤 ${done}/${all}（${pct(done, all)}%）</span>
                 <span class="stk-badge ${sel.diffCount ? "warn" : "ok"}">盤差 ${sel.diffCount} 項</span>
                 <span class="stk-badge ${sel.hotCount ? "warn" : "ok"}" title="符合紅標規則（${escapeAttr(hotRuleText(hotRule))}）的品項＝值得優先去查的">紅標 ${sel.hotCount} 項</span>
@@ -982,6 +964,34 @@ function registerInventoryRoutes(router, ctx) {
         res.setHeader("Content-Disposition", `attachment; filename="stocktake-${date}.csv"`);
         res.type("text/csv").send("﻿" + lines.join("\r\n"));
     });
+    // ── 盤點結果圖（JPG）：盤點完自己存下來貼到 LINE 群組，不走推播（推群組是按人數計則數）──
+    // 即時重算不存檔：複盤改過實盤數，重新下載就是最新的；圖的口徑＝盤點當下凍結值（見 lib/stocktake-report.js）。
+    // 品項多會分頁，用 ?page= 取第幾張（1 起算）；?dl=1 才強制下載，預設 inline 讓瀏覽器直接顯示。
+    async function serveReportJpg(req, res) {
+        try {
+            const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
+            const wh = String(req.query.wh || req.query.warehouse || "").trim();
+            const qd = String(req.query.date || "").trim();
+            const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : stkAdminTaipeiDate();
+            if (!wh) { res.status(400).type("text/plain").send("缺少倉別 wh"); return; }
+            const data = await require("../lib/stocktake-report.js").loadStocktakeReport(db, { icpno, whCode: wh, date });
+            if (!data) { res.status(404).type("text/plain").send(`${date} 的 ${wh} 倉沒有盤點紀錄，無法產生結果圖`); return; }
+            const bufs = await require("../lib/stocktake-report-image.js").renderStocktakeReportJpegs(data);
+            const page = Math.min(Math.max(1, Number(req.query.page || 1) || 1), bufs.length);
+            const fn = `盤點結果_${data.whCode}_${date.replace(/-/g, "")}${bufs.length > 1 ? "_" + page : ""}.jpg`;
+            res.setHeader("Content-Disposition", `${req.query.dl ? "attachment" : "inline"}; filename="stocktake-${data.whCode}-${date}.jpg"; filename*=UTF-8''${encodeURIComponent(fn)}`);
+            res.setHeader("X-Report-Pages", String(bufs.length));
+            res.setHeader("Cache-Control", "no-store");
+            res.type("image/jpeg").send(bufs[page - 1]);
+        }
+        catch (e) {
+            console.error("[inventory report.jpg]", e);
+            res.status(500).type("text/plain").send("產生結果圖失敗：" + String(e?.message || e).slice(0, 200));
+        }
+    }
+    router.get("/inventory/report.jpg", serveReportJpg);
+    // 網站版盤點入口（stocktake.html 的 WEB 模式）用 STK+'/report.jpg' 取圖，路徑要對得上
+    router.get("/inventory/entry/report.jpg", serveReportJpg);
     // ============================================================
     // 盤點異常排查表（2026-07-17）：當日「對最新盤差≠0」品項＋依訊號自動列可能原因，
     // 可勾選後推送 LINE 群組請大家複查。原因訊號：盤差方向（實盤偏多/偏少）、
