@@ -344,6 +344,7 @@ function registerInventoryRoutes(router, ctx) {
                     ? `<span class="stk-badge ok" title="此日期已過，右側「系統／${latestDiffName}」用 ${basisAsOf} 的收盤庫存快照（凍結），不會再跟著今天的庫存變動">已凍結 ${escapeHtml(basisAsOf)} 收盤${basisFallbackDay ? "（該日無推送）" : ""}</span>`
                     : (sel.latestStale ? `<span class="stk-badge warn" title="查無此日期（含之前）的每日庫存快照——可能超過 90 天保留期或當時尚未啟用推送，只好退回顯示即時庫存，此欄會隨庫存變動">無當日快照・顯示即時量</span>` : "")}
                 ${futOn ? `<span class="stk-badge fut" title="未來日期的銷貨單已扣凌越帳、貨還在架上 → 應有實體量＝系統＋未來銷貨，盤差對「應有」算。盤點當下側用送出時凍結的未來量${sel.futEstAny ? "；此單在功能上線前送出、當時沒凍結，標「推估」的列改用目前的未來銷貨回推" : ""}${sel.futStale ? "；此日期查無未來銷貨快照，未來量以 0 計" : ""}">未來加回：${sel.futStale ? "無當日快照" : (sel.futEstAny ? "已計入盤差（部分推估）" : "已計入盤差")}</span>` : ""}
+                <button type="button" class="stk-togbtn sm" id="stkWideBtn" style="display:inline-flex;align-items:center;gap:5px;" title="整面模式：收合左邊「近期盤點日／倉庫」欄，表格吃滿整個畫面、不用左右拖曳。會記住選擇；要換倉點左側窄條展開。">${SF_ICONS.panelLeft} 整面</button>
                 <div class="sf-seg" id="stkRowFilter" style="font-size:11.5px;">
                   <button type="button" class="sf-seg-btn on" data-f="all">全部</button>
                   <button type="button" class="sf-seg-btn" data-f="diff">有盤差</button>
@@ -409,6 +410,17 @@ function registerInventoryRoutes(router, ctx) {
         .stk-drow.on .stk-dc{background:#2383e2;border-color:#2383e2;color:#fff;}
         .stk-grid{display:grid;grid-template-columns:132px 246px minmax(0,1fr);gap:14px;align-items:start;}
         @media(max-width:1020px){.stk-grid{grid-template-columns:1fr;}}
+        /* 本頁滿版：盤點表欄位多（未來加回開著有 11 欄），別被 .notion-main 的 1600px＋大留白卡住 */
+        .notion-main{max-width:none;padding:24px clamp(14px,1.8vw,30px) 64px;}
+        /* 整面模式：收合左邊「近期盤點日／倉庫」兩欄，表格吃滿整個畫面；
+           .stk-restore 是收合後留下的窄條，點了展開（要換倉時用）。狀態記在 localStorage stk_wide。 */
+        .stk-restore{display:none;flex-direction:column;align-items:center;justify-content:flex-start;gap:10px;padding:12px 0;background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;color:#9b9a97;cursor:pointer;font-size:11px;}
+        .stk-restore:hover{color:#2383e2;border-color:#2383e2;}
+        .stk-restore svg{width:15px;height:15px;flex:none;}
+        .stk-restore span{writing-mode:vertical-rl;letter-spacing:.2em;}
+        .stk-grid.stk-wide{grid-template-columns:34px minmax(0,1fr);}
+        .stk-grid.stk-wide>.wh-panel{display:none;}
+        .stk-grid.stk-wide>.stk-restore{display:flex;}
         .wh-panel{background:var(--notion-card,#fff);border:1px solid var(--notion-border,#e3e2e0);border-radius:12px;overflow:hidden;}
         .wh-panel-h{padding:9px 13px;font-size:11px;font-weight:700;color:#787774;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--notion-border,#e3e2e0);}
         .wh-it{display:block;padding:9px 13px;border-bottom:1px solid var(--notion-border-soft,#f0efed);text-decoration:none;color:inherit;cursor:pointer;}
@@ -529,6 +541,7 @@ function registerInventoryRoutes(router, ctx) {
       </div>
       <div class="stk-card" id="stkSearchCard" style="display:none;margin-bottom:14px;"></div>
       <div class="stk-grid" id="stkGrid">
+        <button type="button" class="stk-restore" id="stkRestore" title="展開「近期盤點日／倉庫」欄（要換日期或換倉時用）">${SF_ICONS.panelLeft}<span>日期｜倉庫</span></button>
         <div class="wh-panel">
           <div class="wh-panel-h">近期盤點日</div>
           ${dateColHtml || `<div class="wh-it idle"><div class="wh-n">尚無盤點</div></div>`}
@@ -581,6 +594,19 @@ function registerInventoryRoutes(router, ctx) {
             tr.style.display=show?'':'none';
           });
         }); }
+        /* ── 整面模式：收合左邊兩欄讓表格吃滿（localStorage 記住；要換倉點左側窄條展開）── */
+        var wideBtn=document.getElementById('stkWideBtn'), restoreBar=document.getElementById('stkRestore');
+        function stkSetWide(on){
+          if(!grid) return;
+          grid.classList.toggle('stk-wide',!!on);
+          if(wideBtn) wideBtn.classList.toggle('on',!!on);
+          try{ localStorage.setItem('stk_wide',on?'1':''); }catch(e){}
+          stkStickyFix(); // 寬度變了表頭列高可能換行，重算第二列 sticky top
+        }
+        if(wideBtn) wideBtn.addEventListener('click',function(){ stkSetWide(!grid.classList.contains('stk-wide')); });
+        if(restoreBar) restoreBar.addEventListener('click',function(){ stkSetWide(false); });
+        // 只有已選倉（有表格）才自動套用記住的整面；沒選倉時左邊兩欄是唯一入口，不能收
+        try{ if(localStorage.getItem('stk_wide')==='1'&&document.getElementById('stkCard')) stkSetWide(true); }catch(e){}
         /* ── 紅標規則：點工具列標籤開面板改門檻（全域設定，寫稽核軌跡）── */
         var hotBtn=document.getElementById('stkHotRule');
         if(hotBtn){ hotBtn.addEventListener('click',function(e){
