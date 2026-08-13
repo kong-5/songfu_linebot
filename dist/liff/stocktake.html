@@ -97,9 +97,6 @@
   .diff.sp{background:var(--accent-soft);color:var(--accent);}
   .diff.sn{background:var(--neg-soft);color:var(--neg);}
   .zsep{font-size:11px;font-weight:700;color:var(--txt-3);letter-spacing:.02em;text-align:center;padding:9px 8px;background:var(--bg);border-top:1px solid var(--line);border-bottom:1px solid var(--line-soft);}
-  .zsep.mcsep{color:#c0392b;background:#fdecea;border-top-color:#f3c2bc;}
-  .mc-badge{display:inline-block;font-size:10.5px;font-weight:800;color:#fff;background:#e74c3c;border-radius:5px;padding:1px 6px;margin-right:6px;vertical-align:1px;letter-spacing:.02em;}
-  .item.mc{background:#fef6f5;box-shadow:inset 3px 0 0 #e74c3c;}
   .hz-hint{display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;color:var(--txt-3);padding:12px 8px 4px;}
   .hz-show{border:1px solid var(--line);background:var(--card);color:var(--accent);font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;cursor:pointer;}
   .batches{border-top:1px dashed var(--line);padding:9px 13px 12px;background:color-mix(in srgb,var(--warn-soft) 40%,var(--card));display:none;}
@@ -202,7 +199,6 @@
       conflictStale:'開頁後已有他人送出此倉盤點，請重載後續盤再送出',
       sumLine:function(g,m,tot){return '上 '+g+'  ＋  中 '+m+'  ＝  合計 '+tot;},
       zeroSep:function(n){return '— 帳上 0（現場有再盤）· '+n+' 項 —';},
-      mustCount:'必盤',mcSep:function(n){return '— ⚠ 必盤：昨天以來有異動，務必確認 · '+n+' 項 —';},
       draftResumed:'已回復未送出',drafting:'盤點中(未送出)',
       relogin:'登入逾時，重新登入中…（已盤資料已暫存）',
       reloginStuckTitle:'登入一直逾時',
@@ -239,7 +235,6 @@
       conflictStale:'Sau khi bạn mở trang, đã có người khác gửi kiểm kê kho này. Vui lòng tải lại, kiểm tiếp rồi gửi lại',
       sumLine:function(g,m,tot){return 'Loại A '+g+'  +  Loại B '+m+'  =  Tổng '+tot;},
       zeroSep:function(n){return '— Tồn 0 (có hàng thì kiểm) · '+n+' —';},
-      mustCount:'Phải kiểm',mcSep:function(n){return '— ⚠ Phải kiểm: có biến động từ hôm qua · '+n+' —';},
       draftResumed:'Đã khôi phục (chưa gửi)',drafting:'Đang kiểm (chưa gửi)',
       relogin:'Phiên đăng nhập hết hạn, đang đăng nhập lại… (dữ liệu đã kiểm được lưu tạm)',
       reloginStuckTitle:'Đăng nhập liên tục hết hạn',
@@ -675,8 +670,7 @@
     var nb=(S.batches[it.c]||[]).length;
     var chip=it.exp?'<button class="exp-chip'+(nb?' filled':'')+'" data-toggle>'+esc(t('expChip'))+(nb?' '+esc(t('batchN')(nb)):'')+(S.expanded[it.c]?' ▴':' ▾')+'</button>':'';
     var thumb=it.hp?'<button type="button" class="stk-thumb" data-pc="'+esc(it.c)+'" aria-label="'+esc(it.n)+' 照片"></button>':'';
-    var mcBadge=it.mc?'<span class="mc-badge">'+esc(t('mustCount'))+'</span>':'';
-    return '<div class="item'+cnt+open+mopen+(it.mc?' mc':'')+'" data-c="'+esc(it.c)+'"><div class="row">'+thumb+'<div class="info"><div class="nm">'+mcBadge+esc(it.n)+chip+'</div>'
+    return '<div class="item'+cnt+open+mopen+'" data-c="'+esc(it.c)+'"><div class="row">'+thumb+'<div class="info"><div class="nm">'+esc(it.n)+chip+'</div>'
       +'<div class="meta">'+esc(it.c)+(it.s?' · '+esc(it.s):'')+'</div></div>'
       +'<div class="sys"><div class="lab">'+esc(t('sys'))+'</div><div class="v">'+fmt(shouldQty(it))+(it.u?' <span class="su">'+esc(it.u)+'</span>':'')+'</div>'
       +(it.f?'<div class="futn">'+esc(t('futHint')(fmt(it.sys),it.f))+'</div>':'')+'</div>'+right+'</div>'+midPanel(it)+(it.exp?batchRows(it):'')+'</div>';
@@ -696,11 +690,11 @@
     if(searching){
       body='<div class="list">'+arr.map(rowHtml).join('')+'</div>';
     } else {
-      // 排序：必盤（昨天以來有異動）浮到最上面 → 一般 → 帳上0沉到最後（各自分隔）
-      var must=[],top=[],zeros=[];
-      for(var i=0;i<arr.length;i++){ var it=arr[i]; if(it.mc) must.push(it); else if(isZeroIdle(it)) zeros.push(it); else top.push(it); }
+      // 排序：一般 → 帳上0沉到最後（分隔）。「必盤」置頂已於 2026-08-13 整組移除（現場回饋：
+      // 帳面變動不代表架上動過，紅標置頂反而誤導、打亂原本的盤點順序）。
+      var top=[],zeros=[];
+      for(var i=0;i<arr.length;i++){ var it=arr[i]; if(isZeroIdle(it)) zeros.push(it); else top.push(it); }
       var html='';
-      if(must.length) html+='<div class="zsep mcsep">'+esc(t('mcSep')(must.length))+'</div>'+must.map(rowHtml).join('');
       html+=top.map(rowHtml).join('');
       if(zeros.length) html+='<div class="zsep">'+esc(t('zeroSep')(zeros.length))+'</div>'+zeros.map(rowHtml).join('');
       body='<div class="list">'+html+'</div>';

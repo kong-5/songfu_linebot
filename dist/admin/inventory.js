@@ -3645,7 +3645,7 @@ function registerInventoryRoutes(router, ctx) {
             const code = String(req.query.warehouse || "").trim();
             if (!code) { res.status(400).json({ error: "缺少 warehouse" }); return; }
             const icpno = scanIc(req.query.icpno);
-            // minimal：掃碼頁不用效期標記/照片/必盤欄位（saved 的效期仍完整帶回，submit 原樣回傳）
+            // minimal：掃碼頁不用效期標記/照片欄位（saved 的效期仍完整帶回，submit 原樣回傳）
             res.json(await stocktake_api_js_1.getStocktakeItems(db, { icpno, whCode: code, minimal: true }));
         } catch (e) { console.error("[admin scan items]", e?.message || e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });

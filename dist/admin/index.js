@@ -100,7 +100,6 @@ const export_backup_js_1 = require("./export-backup.js");
 const lingyue_writeback_js_1 = require("./lingyue-writeback.js");
 const ai_settings_js_1 = require("./ai-settings.js");
 const imports_js_1 = require("./imports.js");
-const stock_mustcount_js_1 = require("../lib/stock-mustcount.js");
 const line_conversation_js_1 = require("../lib/line-conversation.js");
 const announcement_templates_js_1 = require("../lib/announcement-templates.js");
 const announcement_image_js_1 = require("../lib/announcement-image.js");

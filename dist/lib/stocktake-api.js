@@ -16,12 +16,11 @@ exports.submitStocktake = submitStocktake;
  * 行為契約（與收斂前逐項對齊，不改變任何回應形狀）：
  * - warehouses：{ date, warehouses:[{code,name,sort,items,countedToday}] }
  * - items：{ date, warehouse:{code,name}, items, saved, resumed, submittedAt[, sysQtySource] }
- *   minimal 模式（掃碼頁）：items 不帶 exp/eunit 真值、hp、mc，回應不帶 sysQtySource。
+ *   minimal 模式（掃碼頁）：items 不帶 exp/eunit 真值、hp，回應不帶 sysQtySource。
  * - submit：{ ok:true, counted, total }；錯誤丟 StkApiError（httpStatus/code），由 router 轉 JSON。
  *   三保險不變：日期僅限今/昨、樂觀鎖 baseSubmittedAt、唯一索引撞鍵 409 fallback、整批單一交易。
  */
 const { newId } = require("./id.js");
-const stock_mustcount_js_1 = require("./stock-mustcount.js");
 const stock_future_js_1 = require("./stock-future.js");
 
 function StkApiError(httpStatus, message, code) {
@@ -62,7 +61,7 @@ async function listStocktakeWarehouses(db, { icpno }) {
 }
 
 /**
- * minimal=true（掃碼頁）：不查效期品/照片/必盤，items 帶 exp:false/eunit:""，回應無 sysQtySource。
+ * minimal=true（掃碼頁）：不查效期品/照片，items 帶 exp:false/eunit:""，回應無 sysQtySource。
  * minimal=false（盤點頁/網頁版）：完整欄位。saved 兩種模式都完整帶回 counted/mid/expiry——
  * submit 是整場覆蓋，缺一樣就會把別的入口寫的資料洗掉。
  */
@@ -121,10 +120,8 @@ async function getStocktakeItems(db, { icpno, whCode, minimal }) {
         resumed = (cRows || []).length > 0;
         submittedAt = sess.submitted_at != null && sess.submitted_at !== "" ? String(sess.submitted_at) : null;
     }
-    if (!minimal) {
-        // 必盤：自昨天（或上次盤點）以來凌越有變動的品項；失敗吞錯不擋盤點
-        try { const mc = await (0, stock_mustcount_js_1.computeMustCount)(db, { icpno, whCode, today: date }); items.forEach((it) => { if (mc.set.has(it.c)) it.mc = 1; }); } catch (_) { }
-    }
+    // [removed 2026-08-13] 「必盤」標記（自昨天以來凌越有變動就標紅置頂）已整組移除——
+    // 現場回饋不需要且會誤導（打單/出貨造成的帳面變動不代表架上動過，反而讓人以為要優先查）。
     const out = { date, warehouse: { code: whCode, name: wh ? String(wh.name || "") : "" }, items, saved, resumed, submittedAt, futureOn: futOn };
     if (!minimal) out.sysQtySource = sysQtySource;
     return out;
@@ -170,7 +167,7 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
             if (!Number.isFinite(n)) { qtyErrors.push("「" + nm + "」" + label + "數量「" + raw + "」不是有效數字"); }
             else if (n < 0) { qtyErrors.push("「" + nm + "」" + label + "數量不可為負數（" + raw + "）"); }
         }
-        // sys（凍結系統量）也不得信任前端：NaN 會寫進 sys_qty（所有盤差/統計/必盤退回的基準）。
+        // sys（凍結系統量）也不得信任前端：NaN 會寫進 sys_qty（所有盤差/統計的基準）。
         // 負數合法（凌越負庫存正常），只擋非數字。
         const sysRaw = c ? c.sys : null;
         if (sysRaw != null && sysRaw !== "" && !Number.isFinite(Number(sysRaw))) {
