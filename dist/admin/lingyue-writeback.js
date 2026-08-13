@@ -11,7 +11,6 @@ exports.registerLingyueWritebackRoutes = registerLingyueWritebackRoutes;
 const express_1 = { default: require("express") };
 const id_js_1 = require("../lib/id.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
-const stock_mustcount_js_1 = require("../lib/stock-mustcount.js");
 const ops_notify_js_1 = require("../lib/ops-notify.js");
 const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./_shared.js");
 
@@ -326,7 +325,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
                         flat.push(...r);
                     await h.prepare("INSERT INTO erp_stock_items (erp_code, name, spec, unit, qty, wh_code, icpno, updated_at) VALUES " + ph).run(...flat);
                 }
-                // 每日庫存快照（供盤點「必盤」判定＋統計圖表 K 線）：同交易內，一天一份、最後一次推送為準（先刪今天這家再整批插）。
+                // 每日庫存快照（統計圖表 K 線／歷史盤差凍結基準用）：同交易內，一天一份、最後一次推送為準（先刪今天這家再整批插）。
                 // [統計圖表 2026-07-16] K 線 OHLC：開＝當日第一次推送時的「昨日收」（無昨日快照＝當次量）；
                 // 高/低＝當日所有推送觀測到的極值（含開）；qty＝收（最後推送量）。同日重推保留既有 open、只擴 high/low。
                 const dailySnapDate = stkAdminTaipeiDate();

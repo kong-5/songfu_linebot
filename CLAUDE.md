@@ -89,7 +89,7 @@
   - **統計圖表（K線盤差線/熱力圖/改善檢視）同口徑**，且頁面工具列有**本頁專屬開關**（`?fut=0/1` 覆寫全域，
     只影響本頁圖表不改全域設定）。凍結值優先；**整組（料號,日期）都沒凍結值時退回推估**（同盤點頁），
     逐「組」補一次而非逐列（未來量是公司層級，逐列加會雙倍）；熱力圖 tooltip 會拆成 凌越帳→未來→應有。
-  - 連帶：**「套用實盤」delta＝實盤−應有**（舊版會把未來量寫成永久 delta → 出貨後雙重補償）、必盤判定比應有量、
+  - 連帶：**「套用實盤」delta＝實盤−應有**（舊版會把未來量寫成永久 delta → 出貨後雙重補償）、
     盤點端（LIFF/掃碼/網頁版）items 帶 `f` 並顯示「帳 X 未來+Y」、統計圖表/熱力圖/改善檢視/異常排查表同口徑。
   - smoke test：`test/inventory-future-reversal.test.js`。只影響內部顯示與盤差，**不寫回凌越**。
   - 未做（要凌越端配合）：A1 明細 `SD_WHNO2`（出庫倉）帶出來就能真正分倉、免猜主倉；根治是未來日期改開
@@ -123,7 +123,8 @@
   - **「最新系統／對最新盤差」欄的基準（2026-07-26 定案）**：權威 helper＝`dist/admin/inventory.js` 的 `makeStockBasisResolver(date)`（每日盤點頁／CSV／異常排查表／「套用實盤」共用）。**今天＝即時快照**（`erp_stock_wh_qty`→`erp_stock_items`）；**過去日期＝該日收盤快照**（`erp_stock_wh_daily`→`erp_stock_daily`）＝**凍結**，表頭改標「當日系統（凍結）」＋「已凍結 <日期> 收盤」badge。舊版不分日期都讀即時快照，昨天以前的盤差每天跟著今天的庫存跑（歷史盤差永遠不定案，2026-07-26 回報修正）。該日沒推送→退回「該日以前最近一次」快照並標「（該日無推送）」；連歷史快照都沒有（>90 天保留期／功能上線前）→退回即時量並標「無當日快照・顯示即時量」。過去日期的未來銷貨改讀 `erp_future_daily` 當日快照（2026-07-30，見「未來銷貨加回」段）。smoke test：`test/inventory-latest-frozen.test.js`。
   - **庫存調整（誤差補償，免凌越重整）**：`stock_adjustment`（主鍵 `(icpno, erp_code)`、`delta`）。**顯示庫存＝凌越快照＋delta**（`/admin/inventory/stock`），每日盤點「最新系統／對最新盤差」也加 delta（校正後歸零）。每日盤點盤差表調整欄＝單一標籤（「調整」/「調 +N」）點開浮動面板（套用實盤/手動存值/刪除；2026-07-17 改版，實盤同時改成點數字原地複盤、列高一行），「套用實盤」＝`delta=實盤−當下顯示的應有量`（**基準與右側欄同一套 `makeStockBasisResolver`＋`makeFutureResolver`：分倉優先、過去日期用當日收盤、含未來銷貨加回**——舊版一律用即時總量，品項跨倉/他倉負庫存或看歷史日期時會算錯；2026-07-30 再補未來量，否則未來單會被寫成永久 delta 造成雙重補償）；總管理在「庫存管理 → 庫存調整」(`/admin/inventory/adjustments`) 可改/刪。庫存統計圖表（熱力圖/盤差折線/卡牆盤點點）的盤差％一律**含調整**（`statsAdjMap`）。**只影響內部顯示與盤差，不寫回凌越**；凌越重整後要記得刪調整避免雙重補償。
   - **中價貨**：盤點數旁的小「⋯」點開才填中貨（極少數品項才有，方案B）；**counted_qty 存上＋中合計**，`mid_qty` 單獨保留。
-  - **必盤**：盤點清單把「自昨天（或上次盤點）以來凌越有變動」的品項**排到最上面＋標紅「必盤」**（全公司）。權威 helper：`dist/lib/stock-mustcount.js` 的 `computeMustCount`（混合基準：優先比 `erp_stock_daily` 昨天快照、無則退回上次 `stocktake_count.sys_qty`；|變動|≥門檻才算，門檻預設 1、可用 `app_settings.stocktake_mustcount_min_delta` 覆寫）。每日快照由**庫存推送 `inventory-push` 同交易寫入 `erp_stock_daily`**（一天一份、留 90 天；含 K 線 OHLC 欄 `qty_open/qty_high/qty_low`——開＝當日首推時的昨收、高低＝當日各次推送極值、`qty`＝收）。帶 `warehouse_qty` 的推送同時寫**分倉每日快照 `erp_stock_wh_daily`**（同套 OHLC 規則）。
+  - **每日快照**：由**庫存推送 `inventory-push` 同交易寫入 `erp_stock_daily`**（一天一份、留 90 天；含 K 線 OHLC 欄 `qty_open/qty_high/qty_low`——開＝當日首推時的昨收、高低＝當日各次推送極值、`qty`＝收）。帶 `warehouse_qty` 的推送同時寫**分倉每日快照 `erp_stock_wh_daily`**（同套 OHLC 規則）。供 K 線與歷史盤差凍結基準用。
+  - ~~必盤~~（**已移除 2026-08-13**）：舊功能把「自昨天以來凌越有變動」的品項標紅置頂，現場回饋不需要且會誤導（打單/出貨造成的帳面變動不代表架上動過，紅標反而讓人以為要優先查、又打亂盤點順序）→ `dist/lib/stock-mustcount.js` 已刪、盤點清單不再標記排序；`app_settings.stocktake_mustcount_min_delta` 已無作用。**別再把它加回來**，除非現場主動要求。
 - **庫存統計圖表** `/admin/inventory/stats`（盤點頁與側欄都有入口）：三欄式（日K/週K/月K＋期間｜倉庫｜品項模糊搜尋）看單品 K 線＋盤差％折線；另一檢視＝**盤差熱力圖**（品項×日期、紅虧藍盈、預設只列有盤差品項 Top 20 依嚴重度排序）＋排行＋點格下鑽。資料 API：`/stats/items`、`/stats/kline`、`/stats/heatmap`。盤差＝盤點凍結當下（`counted−sys`，`sys` 是送出當下寫進 `stocktake_count` 的凍結值，**不受「最新系統」欄影響**；分母 `max(|sys|,1)`），「當日最後」由一倉一日一筆天然成立、換日即定案，**免結算排程**；分倉 K 線在 `erp_stock_wh_daily` 無資料時自動退回公司層級並標示。
   - **紅標規則（可調門檻，2026-07-30）**：整列紅底／「只看紅標」篩選／異常排查表**共用同一條規則**——
     `|盤差%| ≥ stocktake_hot_pct`（預設 5）**且** `|盤差量| ≥ stocktake_hot_qty`（預設 0＝不限），兩者都成立才算。
