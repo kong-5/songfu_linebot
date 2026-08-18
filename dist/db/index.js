@@ -408,6 +408,12 @@ function initSqlite(dbPath) {
     }
     catch (_) { /* table may already exist */ }
     try {
+        // [2026-07-11] 凌越客戶主檔（資料種類 000001）快照：內網 agent 隨庫存推送整批推 → 按公司(icpno)覆蓋。
+        // 常用欄位攤平（地址/電話/統編/付款/業務…），raw_json 存整筆原始欄位（凌越有的都留著，網站要顯示什麼都查得到）。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS erp_customers (icpno TEXT NOT NULL DEFAULT '00', ctno TEXT NOT NULL, name TEXT, short_name TEXT, addr1 TEXT, addr2 TEXT, tel1 TEXT, tel2 TEXT, fax TEXT, unino TEXT, boss TEXT, contact TEXT, fkfs TEXT, sales TEXT, stop TEXT, raw_json TEXT, updated_at TEXT, PRIMARY KEY (icpno, ctno))");
+    }
+    catch (_) { /* table may already exist */ }
+    try {
         // 凌越倉別設定：代號→中文名、是否納入盤點。代號來源＝erp_stock_items.wh_code。
         sqlite.exec("CREATE TABLE IF NOT EXISTS erp_warehouse (code TEXT PRIMARY KEY, name TEXT, include_stocktake INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
     }
@@ -1240,6 +1246,11 @@ async function initPg() {
                 // 不讀只有現況一份的 erp_future_sales（否則歷史盤差每天跟著未來單滾動）。
                 await client.query("CREATE TABLE IF NOT EXISTS erp_future_daily (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, snap_date TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (icpno, erp_code, snap_date))");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_erp_future_daily_date ON erp_future_daily(icpno, snap_date)");
+            }
+            catch (_) { /* table may already exist */ }
+            try {
+                // [2026-07-11] 凌越客戶主檔（資料種類 000001）快照（與 initSqlite 對應）：按公司(icpno)覆蓋，raw_json 存整筆原始欄位。
+                await client.query("CREATE TABLE IF NOT EXISTS erp_customers (icpno TEXT NOT NULL DEFAULT '00', ctno TEXT NOT NULL, name TEXT, short_name TEXT, addr1 TEXT, addr2 TEXT, tel1 TEXT, tel2 TEXT, fax TEXT, unino TEXT, boss TEXT, contact TEXT, fkfs TEXT, sales TEXT, stop TEXT, raw_json TEXT, updated_at TEXT, PRIMARY KEY (icpno, ctno))");
             }
             catch (_) { /* table may already exist */ }
             try {
