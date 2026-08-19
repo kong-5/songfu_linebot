@@ -1,0 +1,128 @@
+{
+  "_說明": "agentic coding 七步流程的驗證閘門設定。要調整某一步怎麼驗，改這裡就好——scripts/verify.mjs 與 .claude/commands/ac.md 都讀這一份，不會有兩套定義。",
+  "_欄位": {
+    "id": "階段代號，跑 `npm run verify -- <id>` 用",
+    "no": "步驟編號 1..7",
+    "gate": "auto=自動指令判定｜human=要人回覆確認｜both=兩者都要",
+    "auto": "自動檢查；builtin=node-check 走內建（對變更的 .js 逐一 node --check），否則跑 run 的 shell 指令",
+    "auto[].when": "省略=一律跑；db=只有這次改動碰到資料庫才跑",
+    "manual": "人工/AI 自檢清單，逐條要有明確答案，不能只回「有做」",
+    "fixHint": "沒過時要怎麼修（守則 4：錯誤訊息必須告訴使用者怎麼修正）"
+  },
+  "stages": [
+    {
+      "id": "spec",
+      "no": 1,
+      "name": "釐清需求",
+      "gate": "human",
+      "auto": [],
+      "manual": [
+        "已把需求覆述成「一句話需求」（不是抄使用者原文，是自己的理解）",
+        "已列出可驗收的條件清單（每條都能指出「怎麼看出有沒有達成」）",
+        "已列出這次「明確不做」的範圍，避免順手擴張",
+        "使用者已回覆確認；未確認前不進步驟 2"
+      ],
+      "fixHint": "驗收條件寫不出「怎麼看出達成」＝需求還沒釐清，回頭問使用者，不要靠猜往下做。"
+    },
+    {
+      "id": "explore",
+      "no": 2,
+      "name": "探勘定位",
+      "gate": "human",
+      "auto": [],
+      "manual": [
+        "已列出要動的檔案清單（含行號範圍），不是「大概在 admin 那邊」",
+        "已列出本次適用的 CLAUDE.md 守則條號與段落（例：守則 2 冪等、庫存段「未來銷貨加回」）",
+        "已確認是否有現成的權威 helper 可用（例：makeStockBasisResolver / makeFutureResolver / loadHotRule / getGroupFeatures），不重造一套口徑",
+        "已確認相關 docs/ 文件讀過（動凌越、盤點、部署一定要先讀對應文件）"
+      ],
+      "fixHint": "空手進步驟 3 是這個專案最貴的錯——口徑重造會產生第二套算法，之後兩邊永遠對不起來。先 Grep 出權威 helper 再往下。"
+    },
+    {
+      "id": "plan",
+      "no": 3,
+      "name": "擬定計畫",
+      "gate": "human",
+      "auto": [],
+      "manual": [
+        "計畫每一步都寫了「改什麼」＋「怎麼驗」，沒有「之後再測」的步驟",
+        "不變式自檢：Cloud Run --max-instances=1 沒被動到",
+        "不變式自檢：新增表/欄位有同時改 initSqlite 與 initPg（雙寫）",
+        "不變式自檢：SQL 可攜或 isPg 雙分支，沒用 SQLite 專屬語法送進 PG",
+        "不變式自檢：admin 域檔註冊呼叫在 const 宣告之後（TDZ）；cash.js 註冊位置未移動",
+        "不變式自檢：新路由不會被 /orders/:orderId 這類既有 pattern 吃掉",
+        "不變式自檢：單一檔案改完不超過 1000 行，超過已提出拆分建議",
+        "寫入類改動已規劃交易原子性、冪等性、稽核軌跡三件事各自怎麼做",
+        "使用者已確認計畫；未確認前不動手改檔"
+      ],
+      "fixHint": "任一項不變式答不出來，先回步驟 2 補讀 CLAUDE.md 對應段落與 docs/，不要邊改邊想。"
+    },
+    {
+      "id": "impl",
+      "no": 4,
+      "name": "實作",
+      "gate": "auto",
+      "auto": [
+        { "name": "語法檢查", "builtin": "node-check" },
+        { "name": "Lint（eslint 正確性規則）", "run": "npm run lint" }
+      ],
+      "manual": [
+        "dist/ 是實際執行碼，確認改的是 dist/ 而不是 src/",
+        "錯誤訊息有寫「怎麼修正」，不是只說格式錯誤"
+      ],
+      "fixHint": "node --check 紅＝語法錯，看檔名行號直接修。lint 紅＝多半是打錯變數名或重複 key（dist/ 手改 JS 沒有編譯期檢查，這關就是替代品），照 eslint 輸出的 rule 修完重跑 `npm run verify -- impl`。"
+    },
+    {
+      "id": "test",
+      "no": 5,
+      "name": "測試",
+      "gate": "both",
+      "auto": [
+        { "name": "單元／不變式測試", "run": "npm test" },
+        { "name": "Postgres 冒煙（本次改動碰到 DB 才跑）", "run": "npm run smoke:pg", "when": "db" }
+      ],
+      "manual": [
+        "本次改動有新增對應的 smoke test（守則 6），不是只靠既有測試全綠",
+        "新測試確實會因為「改動前的舊行為」而失敗（不是恆真測試）",
+        "冪等性有被測到：同一筆輸入重跑兩次不產生重複資料"
+      ],
+      "fixHint": "smoke:pg 需要可連的 postgres；本機沒有就設 DATABASE_URL 指向測試庫，或先跳過並在交付說明中註記「PG 冒煙留給 Cloud Build 把關」。npm test 紅先看是不是自己改壞了既有不變式，不要直接改測試遷就程式。"
+    },
+    {
+      "id": "review",
+      "no": 6,
+      "name": "自我審查",
+      "gate": "human",
+      "auto": [
+        { "name": "列出本次 diff 統計", "run": "git --no-pager diff --stat HEAD" }
+      ],
+      "manual": [
+        "守則 2：寫入操作具備交易原子性（同一交易內完成，不會寫一半）",
+        "守則 2：寫入操作具備冪等性（重複執行不產生重複資料）",
+        "守則 3：資料異動有寫稽核軌跡（誰、何時、改了什麼、舊值新值）",
+        "守則 4：錯誤訊息告訴使用者怎麼修正",
+        "守則 1：沒有為了通用性加抽象層，解決的是眼前實際問題",
+        "後台頁面改動有用既有元件（notion-card / sf-input / SF_ICONS 線條圖示 / sf-switch / sf-seg），沒手刻一次性樣式",
+        "diff 內沒有夾帶與本次需求無關的順手修改"
+      ],
+      "fixHint": "任一條不成立就回步驟 4 補，不要留到交付後再說。稽核軌跡與冪等是這個系統最常被漏掉的兩項。"
+    },
+    {
+      "id": "ship",
+      "no": 7,
+      "name": "交付",
+      "gate": "both",
+      "auto": [
+        { "name": "工作區乾淨（該進的都已 commit）", "run": "git diff --quiet && git diff --cached --quiet" },
+        { "name": "分支已推上遠端", "run": "git rev-parse --abbrev-ref --symbolic-full-name @{u}" }
+      ],
+      "manual": [
+        "commit message 說明「為什麼改」而不只是「改了什麼」",
+        "已開 draft PR，內文寫清楚驗收條件與驗證結果",
+        "Cloud Build 綠：lint → npm test → PG 冒煙 → 金絲雀 /health → 導流；沒綠就不算完成",
+        "本次流程的驗證結果已留檔到 docs/agentic-runs/"
+      ],
+      "fixHint": "Cloud Build 紅在金絲雀健檢那步＝新版沒上線但線上流量仍在舊版（不用緊急回滾），看 Cloud Run 該修訂版本的記錄檔，多半是 DB 未就緒或遷移失敗，修好再推。"
+    }
+  ]
+}
