@@ -19,7 +19,10 @@ ly_check_cjsum.py — 銷貨單「單據數量 SD_QTY vs 扣庫存數量 CJSUM�
 用法
 ----
   python ly_check_cjsum.py                          # 查今天（松富 00），只列有差的行
+  python ly_check_cjsum.py --recent 5               # ★ 往回掃，找最近 5 張有差異的單＋完整資料
+  python ly_check_cjsum.py --recent 5 --days 30     #   往回掃 30 天（預設 14 天）
   python ly_check_cjsum.py --date 2026-08-03        # 查指定日期
+  python ly_check_cjsum.py --date today --detail    # 當天有差異的單印完整資料
   python ly_check_cjsum.py --date today --all       # 連沒差的行也一起列（看全貌）
   python ly_check_cjsum.py --icpno 02               # 松揚；01 龍港、03 松成
   python ly_check_cjsum.py --doc A202608030001      # 只查一張單
@@ -130,6 +133,11 @@ def classify_row(detail: dict, cj_field: str = CJ_FIELD) -> dict:
     return out
 
 
+def has_diff(rows: list) -> bool:
+    """這張單有沒有任何一行對不上（missing 不算——那是欄位問題不是數量問題）。"""
+    return any(r["kind"] not in ("ok", "missing") for r in rows)
+
+
 def summarize(rows: list) -> dict:
     """把 classify_row 的結果彙總成驗收數字。"""
     s = {
@@ -232,6 +240,46 @@ def print_doc(doc: dict, rows: list, show_all: bool):
               f"{fmt(r['qty']):>10}{fmt(r['cj']):>10}{fmt(r['diff']):>10}")
 
 
+KIND_LABEL = {
+    "ok": "相符", "rounded": "四捨五入", "zero_qty": "單據0庫存有扣",
+    "missing": "無CJSUM欄位", "other": "其他差異",
+}
+
+
+def print_doc_full(doc: dict, dets: list, rows: list):
+    """
+    有差異的單的「詳細資料」：主表全部欄位 ＋ 逐行明細全部欄位。
+    這是要貼給廠商的那份——單號、時間、經手、倉別、兩個數量都在裡面。
+    """
+    no = str(doc.get("SP_NO", "")).strip()
+    bad = [r for r in rows if r["kind"] not in ("ok", "missing")]
+    print("\n" + "━" * 72)
+    print(f"  單號 {no}   有差異 {len(bad)} 行／共 {len(rows)} 行")
+    print("━" * 72)
+
+    print("  【單據主表 全部欄位】")
+    for k, v in doc.items():
+        if str(v).strip() != "":
+            print(f"    {k:<16} {v}")
+
+    print("\n  【差異行一覽】")
+    print(f"    {'料號':<12}{'品名':<20}{'單位':<6}{'SD_QTY':>10}{'CJSUM':>10}{'庫存差':>10}  類型")
+    for r in rows:
+        if r["kind"] == "ok":
+            continue
+        print(f"  {MARK.get(r['kind'], '  ')}{r['code']:<12}{r['name'][:18]:<20}{r['unit']:<6}"
+              f"{fmt(r['qty']):>10}{fmt(r['cj']):>10}{fmt(r['diff']):>10}  {KIND_LABEL.get(r['kind'], '')}")
+
+    print("\n  【差異行的明細 全部欄位】（含批號/倉別/單價，廠商會問）")
+    for i, (d, r) in enumerate(zip(dets, rows), 1):
+        if r["kind"] == "ok":
+            continue
+        print(f"    ── 第 {i} 行  {r['code']} {r['name']} ──")
+        for k, v in d.items():
+            if str(v).strip() != "":
+                print(f"      {k:<16} {v}")
+
+
 def print_summary(s: dict, span: str, icpno: str):
     print("\n" + "=" * 72)
     print(f"  {span}  公司 {icpno}  對帳結果")
@@ -286,6 +334,19 @@ def selftest() -> int:
     if lower["kind"] != "rounded":
         fails.append(f"  小寫欄位名應照樣比得出來，實得 {lower['kind']}")
 
+    # has_diff：判斷「這張單要不要撈出來給廠商看」
+    def _rows(*pairs):
+        return [classify_row({"SD_SKNO": "X", QTY_FIELD: q, **({CJ_FIELD: c} if c is not None else {})})
+                for q, c in pairs]
+    if has_diff(_rows(("4.3", "4.3"), ("2", "2"))):
+        fails.append("  全部相符的單不該被當成有差異")
+    if not has_diff(_rows(("4.3", "4.3"), ("1.8", "2"))):
+        fails.append("  有一行四捨五入就該算有差異")
+    if not has_diff(_rows(("0", "1"),)):
+        fails.append("  單據0庫存有扣也該算有差異")
+    if has_diff(_rows(("1.2", None), ("3", None))):
+        fails.append("  整張都沒有 CJSUM 欄位時不該算成數量有差異（那是欄位問題）")
+
     # 彙總：全相符 → ✅；有四捨五入 → ❌
     all_ok = summarize([classify_row({"SD_SKNO": "A", QTY_FIELD: "4.3", CJ_FIELD: "4.3"})])
     if not verdict(all_ok).startswith("✅"):
@@ -301,13 +362,120 @@ def selftest() -> int:
         print("❌ selftest 失敗：")
         print("\n".join(fails))
         return 1
-    print(f"✅ selftest 通過（{len(cases) + 5} 項）")
+    print(f"✅ selftest 通過（{len(cases) + 9} 項）")
     return 0
 
 
 # ─────────────────────────────────────────────────────────────
 #  主流程
 # ─────────────────────────────────────────────────────────────
+
+def process_doc(lystk, icpno: str, doc: dict, cj_field: str):
+    """撈一張單的明細並逐行比對。回傳 (dets, rows)；查詢失敗回 (None, None)。"""
+    no = str(doc.get("SP_NO", "")).strip()
+    try:
+        dets = fetch_details(lystk, icpno, no)
+    except Exception as e:
+        print(f"    … {no} 明細查詢失敗：{e}", flush=True)
+        return None, None
+    return dets, [classify_row(d, cj_field) for d in dets]
+
+
+def run_recent(args, lystk, icpno: str, cj_field: str) -> int:
+    """
+    從今天往回掃，找出「最近 N 張有差異的單」，每張印完整資料。
+    這是要拿去跟廠商對質的模式——單號、時間、經手、倉別、批號、兩個數量全都印出來。
+    """
+    import datetime
+    want = args.recent
+    days = args.days
+    today = lystk.resolve_date("today")
+    print(f"▶ 從今天往回掃最多 {days} 天，找最近 {want} 張有差異的銷貨單  公司 {icpno} …", flush=True)
+
+    found, scanned_docs, scanned_days, all_rows = [], 0, 0, []
+    for back in range(days):
+        if len(found) >= want:
+            break
+        day = today - datetime.timedelta(days=back)
+        ds = day.strftime("%Y-%m-%d")
+        try:
+            docs = lystk.query(icpno=icpno, idakd=IDAKD_SALES, date=day,
+                               order="order by SP_NO desc")
+        except Exception as e:
+            print(f"  … {ds} 查詢失敗：{e}", flush=True)
+            continue
+        if args.prefix:
+            docs = [r for r in docs if str(r.get("SP_NO", "")).strip().upper().startswith(args.prefix.upper())]
+        scanned_days += 1
+        hit_today = 0
+        for doc in docs:
+            if len(found) >= want:
+                break
+            dets, rows = process_doc(lystk, icpno, doc, cj_field)
+            if rows is None:
+                continue
+            scanned_docs += 1
+            all_rows += rows
+            if has_diff(rows):
+                found.append((doc, dets, rows))
+                hit_today += 1
+        print(f"  … {ds}  掃 {len(docs)} 張，有差異 {hit_today} 張"
+              f"（累計 {len(found)}/{want}）", flush=True)
+
+    if not found:
+        print(f"\n✅ 最近 {scanned_days} 天、{scanned_docs} 張單裡**找不到**任何"
+              f" {QTY_FIELD} 與 {cj_field} 對不上的單。"
+              f"\n  → 這個範圍已經沒有四捨五入了。若要再往前找，加 --days 30。")
+        if summarize(all_rows)["missing"] == len(all_rows) and all_rows:
+            print(f"  ⚠ 但這些明細裡根本沒有 {cj_field} 欄位——先用 --fields 確認欄位名有沒有被改。")
+        return 0
+
+    for doc, dets, rows in found:
+        print_doc_full(doc, dets, rows)
+
+    print("\n" + "=" * 72)
+    print(f"  最近 {len(found)} 張有差異的單（掃了 {scanned_days} 天、{scanned_docs} 張）")
+    print("=" * 72)
+    for doc, _dets, rows in found:
+        bad = [r for r in rows if r["kind"] not in ("ok", "missing")]
+        tot = sum((abs(r["diff"]) for r in bad if r["diff"] is not None), Decimal("0"))
+        print(f"  {str(doc.get('SP_NO','')).strip():<18}{str(doc.get('SP_DATE','')).strip()[:10]:<12}"
+              f"{str(doc.get('SP_CTNAME','')).strip()[:16]:<18}差 {len(bad)} 行  絕對差 {fmt(tot)}")
+    print()
+    print_summary(summarize([r for _d, _dd, rows in found for r in rows]),
+                  f"最近 {len(found)} 張有差異的單", icpno)
+
+    if args.json:
+        write_json(args, icpno, cj_field, f"recent{len(found)}",
+                   [(doc, rows) for doc, _dets, rows in found], all_only=True)
+    return 0
+
+
+def write_json(args, icpno: str, cj_field: str, span: str, per_doc: list, all_only: bool = False):
+    """把結果寫成 JSON（給廠商佐證）。"""
+    s = summarize([r for _doc, rows in per_doc for r in rows])
+    payload = {
+        "span": span, "icpno": icpno, "qty_field": QTY_FIELD, "cj_field": cj_field,
+        "docs": len(per_doc),
+        "summary": {k: (fmt(v) if isinstance(v, Decimal) else v)
+                    for k, v in s.items() if k != "by_item"},
+        "by_item": {c: {"name": it["name"], "net": fmt(it["net"]), "lines": it["lines"]}
+                    for c, it in s["by_item"].items()},
+        "rows": [
+            {"doc": str(doc.get("SP_NO", "")).strip(),
+             "date": str(doc.get("SP_DATE", "")).strip(),
+             "customer": str(doc.get("SP_CTNAME", "")).strip(),
+             "code": r["code"], "name": r["name"], "unit": r["unit"],
+             "qty": fmt(r["qty"]), "cj": fmt(r["cj"]), "diff": fmt(r["diff"]),
+             "kind": r["kind"]}
+            for doc, rows in per_doc for r in rows
+            if (args.all and not all_only) or r["kind"] != "ok"
+        ],
+    }
+    with open(args.json, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    print(f"📄 已寫出 {args.json}（可直接給廠商）\n")
+
 
 def run(args) -> int:
     if args.selftest:
@@ -317,6 +485,9 @@ def run(args) -> int:
     cj_field = (args.cj_field or CJ_FIELD).strip()
     lystk = load_lystk()
     ensure_timeout_client(lystk, args.timeout)
+
+    if args.recent and not args.doc:
+        return run_recent(args, lystk, icpno, cj_field)
 
     # 決定要對帳哪些單
     if args.doc:
@@ -347,10 +518,8 @@ def run(args) -> int:
     all_rows, per_doc, dumped = [], [], False
     for i, doc in enumerate(docs, 1):
         no = str(doc.get("SP_NO", "")).strip()
-        try:
-            dets = fetch_details(lystk, icpno, no)
-        except Exception as e:
-            print(f"    … {no} 明細查詢失敗：{e}", flush=True)
+        dets, rows = process_doc(lystk, icpno, doc, cj_field)
+        if rows is None:
             continue
         if args.fields and dets and not dumped:
             dumped = True
@@ -358,39 +527,21 @@ def run(args) -> int:
             for k, v in dets[0].items():
                 print(f"    {k:<16} {v}")
             print()
-        rows = [classify_row(d, cj_field) for d in dets]
         all_rows += rows
-        per_doc.append((doc, rows))
+        per_doc.append((doc, dets, rows))
         if i % 20 == 0:
             print(f"    … 已處理 {i}/{len(docs)} 張", flush=True)
 
-    for doc, rows in per_doc:
-        print_doc(doc, rows, args.all)
+    for doc, dets, rows in per_doc:
+        if args.detail and has_diff(rows):
+            print_doc_full(doc, dets, rows)
+        else:
+            print_doc(doc, rows, args.all)
 
-    s = summarize(all_rows)
-    print_summary(s, span, icpno)
+    print_summary(summarize(all_rows), span, icpno)
 
     if args.json:
-        payload = {
-            "span": span, "icpno": icpno, "qty_field": QTY_FIELD, "cj_field": cj_field,
-            "docs": len(per_doc),
-            "summary": {k: (fmt(v) if isinstance(v, Decimal) else v)
-                        for k, v in s.items() if k != "by_item"},
-            "by_item": {c: {"name": it["name"], "net": fmt(it["net"]), "lines": it["lines"]}
-                        for c, it in s["by_item"].items()},
-            "rows": [
-                {"doc": str(doc.get("SP_NO", "")).strip(),
-                 "customer": str(doc.get("SP_CTNAME", "")).strip(),
-                 "code": r["code"], "name": r["name"], "unit": r["unit"],
-                 "qty": fmt(r["qty"]), "cj": fmt(r["cj"]), "diff": fmt(r["diff"]),
-                 "kind": r["kind"]}
-                for doc, rows in per_doc for r in rows
-                if args.all or r["kind"] != "ok"
-            ],
-        }
-        with open(args.json, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        print(f"📄 已寫出 {args.json}（可直接給廠商）\n")
+        write_json(args, icpno, cj_field, span, [(doc, rows) for doc, _d, rows in per_doc])
 
     return 0
 
@@ -398,6 +549,12 @@ def run(args) -> int:
 def build_parser():
     p = argparse.ArgumentParser(
         description="銷貨單 SD_QTY vs CJSUM 對帳——驗收凌越端的四捨五入有沒有修好（唯讀）")
+    p.add_argument("--recent", type=int, metavar="N", nargs="?", const=5,
+                   help="從今天往回掃，找最近 N 張『有差異』的單並印完整資料（不給數字＝5）")
+    p.add_argument("--days", type=int, default=14, metavar="D",
+                   help="搭配 --recent：最多往回掃幾天（預設 14）")
+    p.add_argument("--detail", action="store_true",
+                   help="有差異的單印完整資料（主表全欄位＋差異行明細全欄位）")
     p.add_argument("--date", help="查哪一天 YYYY-MM-DD／today／yesterday（預設 today）")
     p.add_argument("--doc", help="只查一張單（單號），優先於 --date")
     p.add_argument("--icpno", help="公司代碼（預設 00 松富；01 龍港、02 松揚、03 松成，或 LY_ICPNO）")

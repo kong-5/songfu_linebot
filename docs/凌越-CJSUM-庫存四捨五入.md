@@ -51,6 +51,9 @@ C0100065   四角方籃           0      1      −1
 
 ```bash
 python ly_check_cjsum.py                       # 今天（松富 00），只列有差的行
+python ly_check_cjsum.py --recent 5             # ★ 往回掃，找最近 5 張有差異的單＋完整資料
+python ly_check_cjsum.py --recent 5 --days 30   #   往回掃 30 天（預設 14）
+python ly_check_cjsum.py --date today --detail  # 當天有差異的單印完整資料
 python ly_check_cjsum.py --date 2026-08-03      # 指定日期
 python ly_check_cjsum.py --icpno 02             # 松揚（01 龍港、03 松成）
 python ly_check_cjsum.py --prefix A             # 只看寺岡/EDI 回轉的 A 開頭單
@@ -58,6 +61,10 @@ python ly_check_cjsum.py --doc A202608030001    # 只查一張
 python ly_check_cjsum.py --json d:\cjsum.json   # 存檔給廠商
 python ly_check_cjsum.py --selftest             # 不連凌越，驗算比對邏輯
 ```
+
+`--recent N` 是「拿去跟廠商對質」的模式：從今天往回一天一天掃，找到 N 張**有差異**的單
+就停，每張印出**主表全部欄位**（單號／日期／客戶／部門／審核／備註）＋**差異行的明細全部欄位**
+（倉別／批號／單價／兩個數量），最後給一張總表（每張差幾行、絕對差多少）。
 
 結論怎麼讀：
 
