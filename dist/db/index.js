@@ -454,6 +454,21 @@ function initSqlite(dbPath) {
         sqlite.exec("INSERT INTO group_features (group_id, feat_order, feat_stocktake, feat_basket, updated_at) SELECT sg.group_id, CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.line_group_id IS NOT NULL AND c.line_group_id <> '' AND LOWER(REPLACE(c.line_group_id,' ','')) = LOWER(REPLACE(sg.group_id,' ',''))) THEN 1 ELSE 0 END, 1, 1, datetime('now') FROM stocktake_group sg WHERE NOT EXISTS (SELECT 1 FROM group_features gf WHERE gf.group_id = sg.group_id)");
     }
     catch (_) { /* tables may already exist */ }
+    // [migration 2026-08-27] 停用 LINE「辨識訂單」：現場已改以盤點為主，訂單辨識沒人在用，
+    // 卻每則群組訊息都要送 Gemini／OCR（AI 費用大宗）。這裡一次性把 LINE 機器人切成 always_off
+    // ＝webhook 仍照收訊息、仍回應 #盤點／空籃／取得群組ID 等指令，只是不再把一般文字/圖片送 AI 解析成訂單。
+    // 冪等：靠 marker 鍵只做一次。日後要恢復＝後台「系統設定 → LINE 機器人」選「一律開啟」並儲存，
+    // marker 已存在，之後每次部署都不會再把它蓋回關閉。
+    try {
+        const MIG_ORDER_OFF = "order_recognition_off_migrated_20260827";
+        const migDone = sqlite.prepare("SELECT value FROM app_settings WHERE key = ?").get(MIG_ORDER_OFF);
+        if (!migDone) {
+            sqlite.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run("line_bot_mode", "always_off");
+            sqlite.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING").run(MIG_ORDER_OFF, "1");
+            console.log("[migration] 已停用 LINE 訂單辨識（line_bot_mode=always_off）；要恢復請到後台「系統設定 → LINE 機器人」選「一律開啟」");
+        }
+    }
+    catch (e) { console.warn("[migration] 停用訂單辨識設定失敗:", e?.message || e); }
     // [migration 2026-07-13] 效期品也按公司：主鍵 erp_code → (icpno, erp_code)；舊資料補 icpno='00'（松富）。
     try {
         const hasIcpno = sqlite.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('stocktake_expiry_item') WHERE name='icpno'").get().n > 0;
@@ -1317,6 +1332,17 @@ async function initPg() {
                 await client.query("INSERT INTO group_features (group_id, feat_order, feat_stocktake, feat_basket, updated_at) SELECT sg.group_id, CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.line_group_id IS NOT NULL AND c.line_group_id <> '' AND LOWER(REPLACE(c.line_group_id,' ','')) = LOWER(REPLACE(sg.group_id,' ',''))) THEN 1 ELSE 0 END, 1, 1, to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SS') FROM stocktake_group sg WHERE NOT EXISTS (SELECT 1 FROM group_features gf WHERE gf.group_id = sg.group_id)");
             }
             catch (_) { /* tables may already exist */ }
+            // [migration 2026-08-27] 停用 LINE「辨識訂單」（與 initSqlite 對應，理由與恢復方式見該處註解）。
+            try {
+                const MIG_ORDER_OFF = "order_recognition_off_migrated_20260827";
+                const migRow = await client.query("SELECT value FROM app_settings WHERE key = $1", [MIG_ORDER_OFF]);
+                if (!migRow.rows.length) {
+                    await client.query("INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", ["line_bot_mode", "always_off"]);
+                    await client.query("INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING", [MIG_ORDER_OFF, "1"]);
+                    console.log("[migration] 已停用 LINE 訂單辨識（line_bot_mode=always_off）；要恢復請到後台「系統設定 → LINE 機器人」選「一律開啟」");
+                }
+            }
+            catch (e) { console.warn("[migration] 停用訂單辨識設定失敗:", e?.message || e); }
             try {
                 // [fix 2026-07-10] 盤點「一倉一日一筆」補真正的 UNIQUE 約束（與 initSqlite 對應）：
                 // 先冪等去重（同倉同日保留最後送出者、清落選明細），再建唯一索引。
