@@ -551,11 +551,27 @@ function registerTrainingRoutes(router, ctx) {
         const icp = icpOf(req);
         const item = await db.prepare("SELECT * FROM training_plan_item WHERE id = ?").get(req.params.id);
         if (!item) { res.redirect(`/admin/training/plans?c=${icp}&err=${encodeURIComponent("找不到項目")}`); return; }
+        // [fix 2026-07-27 體檢] 冪等：舊版沒有「已轉過」的守衛，重按一次就多一門課程，
+        // plan_item.course_id 只留最後一筆，先前建的變成查不到來源的孤兒課程（ISO 訓練時數會重複計）。
+        if (item.course_id) {
+            const exist = await db.prepare("SELECT id FROM training_course WHERE id = ?").get(item.course_id);
+            if (exist) {
+                res.redirect(`/admin/training/courses/${encodeURIComponent(item.course_id)}?c=${icp}&ok=${encodeURIComponent("此項目已建立過課程，直接開啟")}`);
+                return;
+            }
+            // course_id 指到已被刪除的課程 → 視為未轉，往下重建
+        }
         const plan = await db.prepare("SELECT * FROM training_plan WHERE id = ?").get(item.plan_id);
         const cid = newId("tcourse");
-        await db.prepare("INSERT INTO training_course (id, icpno, plan_item_id, title, category, hours, instructor, instructor_type, location, status, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
-            .run(cid, plan ? plan.icpno : icp, item.id, item.theme || "未命名課程", item.category || null, item.planned_hours, item.instructor || null, item.instructor_type || null, item.location || null, "planned", actorOf(req) || null, nowIso(), nowIso());
-        await db.prepare("UPDATE training_plan_item SET course_id = ? WHERE id = ?").run(cid, item.id);
+        // 建課程＋回寫 plan_item.course_id 包同一交易：舊版兩句分開，UPDATE 失敗會留下
+        // 孤兒課程且畫面仍顯示「未建課程」，再按一次又多一門。
+        const doToCourse = async (h) => {
+            await h.prepare("INSERT INTO training_course (id, icpno, plan_item_id, title, category, hours, instructor, instructor_type, location, status, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                .run(cid, plan ? plan.icpno : icp, item.id, item.theme || "未命名課程", item.category || null, item.planned_hours, item.instructor || null, item.instructor_type || null, item.location || null, "planned", actorOf(req) || null, nowIso(), nowIso());
+            await h.prepare("UPDATE training_plan_item SET course_id = ? WHERE id = ?").run(cid, item.id);
+        };
+        if (typeof db.transaction === "function") await db.transaction(doToCourse);
+        else await doToCourse(db);
         res.redirect(`/admin/training/courses/${encodeURIComponent(cid)}?c=${icp}&ok=${encodeURIComponent("已建立課程，請補齊日期與內容")}`);
     });
 

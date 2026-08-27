@@ -60,10 +60,22 @@ async function getOrCreateBasketLog(db, payload) {
         return { id: existing.id, isNew: false };
     }
     const id = (0, id_js_1.newId)("bsk");
-    await db.prepare(
-        "INSERT INTO basket_logs (id, customer_id, log_date, line_group_id, reporter_user_id, reporter_display_name, created_at, updated_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, " + now + ", " + now + ")"
-    ).run(id, customerId, logDate, lineGroupId ?? null, reporterUserId ?? null, reporterDisplayName ?? null);
+    try {
+        await db.prepare(
+            "INSERT INTO basket_logs (id, customer_id, log_date, line_group_id, reporter_user_id, reporter_display_name, created_at, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, " + now + ", " + now + ")"
+        ).run(id, customerId, logDate, lineGroupId ?? null, reporterUserId ?? null, reporterDisplayName ?? null);
+    }
+    catch (e) {
+        // [fix 2026-07-27 體檢] 上面的先查後寫有 race window，撞 ux_basket_logs_cust_date 時
+        // 舊版會把 500 丟到司機手機上（LIFF 空籃回報雙擊很常見）。改成重讀既有列＝天然冪等。
+        const m = String(e?.message || e);
+        const isDup = /ux_basket_logs_cust_date/i.test(m) || /UNIQUE constraint failed/i.test(m) || /duplicate key value/i.test(m);
+        if (!isDup) throw e;
+        const raced = await db.prepare("SELECT id FROM basket_logs WHERE customer_id = ? AND log_date = ?").get(customerId, logDate);
+        if (!raced) throw e;
+        return { id: raced.id, isNew: false };
+    }
     return { id, isNew: true };
 }
 
@@ -100,14 +112,21 @@ async function upsertBasketLogLines(db, args) {
         }
     }
     const now = nowSqlExpr();
-    const { id: logId } = await getOrCreateBasketLog(db, { customerId, logDate, lineGroupId, reporterUserId, reporterDisplayName });
-    const prevLines = await getBasketLinesForLog(db, logId);
     // 同步更新 basket_logs.taken_to/picked_up 為三規格總計（向後相容舊欄位）
     let sumTo = 0, sumPick = 0;
     for (const l of cleanLines) { sumTo += l.takenTo; sumPick += l.pickedUp; }
+    let logId = null;
     // [fix 2026-07-08] 刪舊分項＋插新分項＋回寫總計包進單一交易；過去無交易，
     // 中途失敗（或並發）會留下「分項與 basket_logs 總計不一致」或撞唯一索引丟半套資料。
+    // [fix 2026-07-27 體檢] history 快照併入同一交易：舊版寫在交易外且吞錯，
+    // 主紀錄改成功但 history 失敗＝空籃數字被改卻查不到前後值（守則 #3 稽核軌跡）。
+    // 併進來後任一段失敗整批回滾，司機端會看到失敗而不是「存了但沒軌跡」。
     const doWrite = async (h) => {
+        // [fix 2026-07-27 體檢] 主列建立與前值讀取也移進交易：舊版在交易外，doWrite 回滾後
+        // 會留下一筆空的 basket_logs 主列；且前值是交易外讀的，與寫入之間有窗口。
+        logId = (await getOrCreateBasketLog(h, { customerId, logDate, lineGroupId, reporterUserId, reporterDisplayName })).id;
+        const prevLines = await getBasketLinesForLog(h, logId);
+        const prevSum = prevLines.reduce((acc, l) => ({ to: acc.to + (l.taken_to || 0), pk: acc.pk + (l.picked_up || 0) }), { to: 0, pk: 0 });
         await h.prepare("DELETE FROM basket_log_lines WHERE basket_log_id = ?").run(logId);
         for (const l of cleanLines) {
             const lid = (0, id_js_1.newId)("bskl");
@@ -119,24 +138,18 @@ async function upsertBasketLogLines(db, args) {
         await h.prepare(
             "UPDATE basket_logs SET taken_to = ?, picked_up = ?, raw_message = ?, updated_at = " + now + " WHERE id = ?"
         ).run(sumTo, sumPick, rawMessage ?? null, logId);
+        const hid = (0, id_js_1.newId)("bskh");
+        await h.prepare(
+            "INSERT INTO basket_log_history (id, basket_log_id, customer_id, log_date, prev_taken_to, prev_picked_up, new_taken_to, new_picked_up, prev_lines_json, new_lines_json, actor, reporter_user_id, raw_message, created_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " + now + ")"
+        ).run(hid, logId, customerId, logDate, prevSum.to, prevSum.pk, sumTo, sumPick,
+            JSON.stringify(prevLines), JSON.stringify(cleanLines), actor ?? null, reporterUserId ?? null, rawMessage ?? null);
     };
     if (typeof db.transaction === "function") {
         await db.transaction(doWrite);
     }
     else {
         await doWrite(db);
-    }
-    // history 快照
-    try {
-        const hid = (0, id_js_1.newId)("bskh");
-        const prevSum = prevLines.reduce((acc, l) => ({ to: acc.to + (l.taken_to || 0), pk: acc.pk + (l.picked_up || 0) }), { to: 0, pk: 0 });
-        await db.prepare(
-            "INSERT INTO basket_log_history (id, basket_log_id, customer_id, log_date, prev_taken_to, prev_picked_up, new_taken_to, new_picked_up, prev_lines_json, new_lines_json, actor, reporter_user_id, raw_message, created_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " + now + ")"
-        ).run(hid, logId, customerId, logDate, prevSum.to, prevSum.pk, sumTo, sumPick,
-            JSON.stringify(prevLines), JSON.stringify(cleanLines), actor ?? null, reporterUserId ?? null, rawMessage ?? null);
-    } catch (e) {
-        console.warn("[basket-log] history 寫入失敗（不影響主紀錄）:", e?.message || e);
     }
     return { logId, lines: cleanLines, sumTo, sumPick };
 }
