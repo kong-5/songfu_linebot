@@ -1,7 +1,7 @@
 # CLAUDE.md — 松富物流 LINE Bot / 後台（給每個新對話先讀）
 
 這份是「架構定案 + 不要再重複踩」的權威清單。**動到相關功能前先讀這份**；細節看 `docs/`。
-最後更新：2026-07-30
+最後更新：2026-08-27
 
 ---
 
@@ -165,6 +165,21 @@
 - **異常排查表** `/admin/inventory/anomalies`（每日盤點頁入口）：當日「對最新盤差≠0」品項＋依訊號自動列**可能原因**（盤差方向→進貨未入/銷貨未開等、跨倉持有、他倉負庫存、已掛調整），勾選後推送 LINE 群組請大家複查（群組清單＝`stocktake_group`，記住上次選擇 `app_settings.stocktake_anomaly_group_id`）；純提示不寫帳。
 - 資料表：`stocktake_session`（一倉一日一筆）、`stocktake_count`（逐品項，含 `mid_qty`）、
   `erp_warehouse`（倉號→中文名＋納入盤點）、`group_features`（群組三功能開關）、`stocktake_group`（舊白名單／探索來源）、`stocktake_expiry_item`。
+
+## ⛔ 訂單辨識已全域停用（2026-08-27）
+現場已改以**盤點**為主，訂單辨識沒人在用，卻每則群組訊息都要送 Gemini／OCR＝**AI 費用大宗**。
+- **總開關＝既有的 `app_settings.line_bot_mode`**（後台 系統設定 → LINE 機器人 → 運作模式）。
+  值 `always_off` ＝停用；`always_on` ＝恢復；`scheduled` ＝依時段。權威判斷＝
+  `dist/lib/line-bot-control.js` 的 `isBotAcceptingOrders()`，閘門在 `webhook/line.js`（`accepting`）。
+  **不要再加第二個「訂單辨識」開關**——兩個重疊開關日後一定會出現「關了還在跑／開了沒反應」。
+- **停用範圍只有訂單**：閘門位置在 `#盤點`／空籃／`取得群組ID`／員工綁定等指令**之後**，
+  所以機器人仍待在群組、仍照常回應這些指令，只是不再把一般文字/照片送 AI 解析成訂單。
+  副作用一項：未綁定群組不再自動登錄「待綁定清單」（加入群組事件仍會登錄）。
+- **一次性遷移**（`dist/db/index.js`，SQLite/PG 各一份）把 `line_bot_mode` 設成 `always_off`，
+  靠 marker 鍵 `order_recognition_off_migrated_20260827` **只做一次**——使用者日後在後台改回
+  「一律開啟」後，之後每次部署都不會再被蓋回關閉。**別移除 marker 判斷。**
+- 恢復方式：後台改「一律開啟」→ 儲存，**立即生效、免部署**。
+- smoke test：`test/line-order-recognition-off.test.js`（含「AI 解析一定在閘門之後、盤點/空籃一定在之前」的順序不變式）。
 
 ## LINE 收單可靠性（2026-07-21 定案）
 - **失敗可重試閉環**：`processLineWebhookEvents` 回傳 `{failed,total}`；Cloud Tasks worker

@@ -3408,8 +3408,8 @@ function createAdminRouter() {
         }
         catch (_) { }
         const modeOpts = [
-            { v: "always_on", l: "一律開啟（測試／全天候）" },
-            { v: "always_off", l: "一律關閉（不回覆叫貨）" },
+            { v: "always_on", l: "一律開啟（全天候辨識訂單）" },
+            { v: "always_off", l: "一律關閉（停止訂單辨識・不呼叫 AI，省費用）" },
             { v: "scheduled", l: "依下方時段（台北時間）" },
         ].map((o) => `<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:var(--hairline);border-radius:var(--radius);margin-bottom:6px;cursor:pointer;${s.mode === o.v ? "background:var(--accent-soft);border-color:var(--accent-line);" : ""}"><input type="radio" name="line_bot_mode" value="${escapeAttr(o.v)}" ${s.mode === o.v ? "checked" : ""}> <span style="font-size:13px;">${escapeHtml(o.l)}</span></label>`).join("");
         const logRows = logs.length
@@ -3428,8 +3428,8 @@ function createAdminRouter() {
                 <span class="sf-kpi-label">目前狀態</span>
                 <span class="sf-dot ${accepting ? "ok" : "bad"}"></span>
               </div>
-              <div style="font-size:14px;color:var(--txt-1);font-weight:500;margin-top:4px;">${accepting ? "可收單" : "休眠中"}</div>
-              <div style="font-size:11px;color:var(--txt-3);margin-top:4px;">${accepting ? "機器人會解析叫貨／可跑 AI" : "不呼叫 Gemini／不 OCR／不寫訂單"}</div>
+              <div style="font-size:14px;color:var(--txt-1);font-weight:500;margin-top:4px;">${accepting ? "訂單辨識：開啟" : "訂單辨識：已停用"}</div>
+              <div style="font-size:11px;color:var(--txt-3);margin-top:4px;">${accepting ? "機器人會解析叫貨／可跑 AI" : "不呼叫 Gemini／不 OCR／不寫訂單（盤點・空籃・群組指令不受影響）"}</div>
             </div>
             ${s.suppressCustomerReply ? `<div class="sf-kpi status-warn" style="max-width:380px;">
               <div class="sf-kpi-head"><span class="sf-kpi-label">對客戶回覆</span><span class="sf-dot warn"></span></div>
@@ -3443,6 +3443,7 @@ function createAdminRouter() {
                 <div class="sf-card-title">${SF_ICONS.spark} 運作模式</div>
               </div>
               <div style="padding:16px 18px;">
+                <p style="margin:0 0 10px;font-size:12px;color:var(--txt-3);line-height:1.6;">這是 <strong style="color:var(--txt-1);">LINE 訂單辨識的總開關</strong>。選「一律關閉」後，機器人仍會待在群組、仍回應 <code>#盤點</code>／空籃／取得群組ID 等指令，只是<strong style="color:var(--txt-1);">不再把一般文字與照片送 AI 解析成訂單</strong>（不產生 Gemini／OCR 費用）。日後要恢復收單，改回「一律開啟」並儲存即可，不需重新部署。</p>
                 ${modeOpts}
                 <div style="margin-top:14px;padding-top:14px;border-top:var(--hairline);">
                   <label class="sf-label">排程時段（台北時間）</label>
