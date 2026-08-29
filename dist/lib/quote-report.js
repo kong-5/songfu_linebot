@@ -1017,17 +1017,32 @@ function buildDisplayRows(groups) {
 exports.buildDisplayRows = buildDisplayRows;
 
 /**
- * 把顯示列平均分成兩欄；為避免「分類標題落在欄尾、內容跑到下一欄開頭」，
- * 分割點盡量落在分類邊界附近。回傳 [leftRows, rightRows]。
+ * 單欄容量（列）＝一頁兩欄合計 QUOTE_PAGE_ROWS。
+ * 由 A4 圖版反推：內容從 y=278（表頭 236＋欄位標題 42）起算、列高 54、頁尾字在 y=1730，
+ * 278＋26×54＝1682 還在頁尾之上；27 列＝1736 會壓到頁尾（最後一列被切一半，2026-08 回報）。
+ * 列印頁（HTML）的列比圖版矮，套同一個值只會更寬鬆，兩邊分頁結果才一致。
  */
-function splitTwoColumns(rows) {
+const QUOTE_COLUMN_ROWS = 26;
+const QUOTE_PAGE_ROWS = QUOTE_COLUMN_ROWS * 2;
+exports.QUOTE_COLUMN_ROWS = QUOTE_COLUMN_ROWS;
+exports.QUOTE_PAGE_ROWS = QUOTE_PAGE_ROWS;
+
+/**
+ * 把一頁的顯示列分成兩欄；為避免「分類標題落在欄尾、內容跑到下一欄開頭」，
+ * 分割點盡量落在分類邊界附近。回傳 [leftRows, rightRows]。
+ * cap＝單欄容量（不傳＝不限）：切點會夾在 [total-cap, cap] 內，右欄才不會超出頁面被切掉。
+ */
+function splitTwoColumns(rows, cap) {
     const total = rows.length;
     if (total === 0) return [[], []];
-    const target = Math.ceil(total / 2);
+    const limit = cap > 0 ? Math.min(cap, total) : total;
+    const lo = Math.max(1, total - limit);   // 左欄至少要留這麼多，右欄才不超過 cap
+    const hi = limit;                        // 左欄上限
+    const target = Math.min(hi, Math.max(lo, Math.ceil(total / 2)));
     // 從 target 附近找最接近的「分類標題」當切點，避免標題孤兒
     let cut = target;
     let best = -1, bestDist = Infinity;
-    for (let i = 1; i < total; i++) {
+    for (let i = lo; i <= hi && i < total; i++) {
         if (rows[i].type === "cat") {
             const d = Math.abs(i - target);
             if (d < bestDist) { bestDist = d; best = i; }
@@ -1038,6 +1053,36 @@ function splitTwoColumns(rows) {
     return [rows.slice(0, cut), rows.slice(cut)];
 }
 exports.splitTwoColumns = splitTwoColumns;
+
+/** 從 rows[i] 起取一欄（最多 cap 列）；分類標題不留在欄尾當孤兒，整個往下一欄推。 */
+function takeColumn(rows, i, cap) {
+    let take = Math.min(cap, rows.length - i);
+    while (take > 1 && rows[i + take - 1].type === "cat") take--;
+    return rows.slice(i, i + take);
+}
+
+/**
+ * 依單欄容量把整份顯示列切成多頁 [左欄, 右欄]。
+ * 前面的頁一律把兩欄塞滿——舊版是「先切 50 列一頁、再對半分兩欄」，一旦切點落在分類邊界就會
+ * 一欄 23 列、另一欄 27 列：短的那欄下半頁整片空白、長的那欄最後一列被頁尾切掉（2026-08 回報）。
+ * 只有最後一頁才平均分兩欄（零星幾列時左右對稱比較好看）。
+ */
+function paginateColumns(rows, colRows) {
+    const cap = colRows > 0 ? colRows : QUOTE_COLUMN_ROWS;
+    const pages = [];
+    let i = 0;
+    while (i < rows.length) {
+        if (rows.length - i <= cap * 2) { pages.push(splitTwoColumns(rows.slice(i), cap)); break; }
+        const left = takeColumn(rows, i, cap);
+        i += left.length;
+        const right = takeColumn(rows, i, cap);
+        i += right.length;
+        pages.push([left, right]);
+    }
+    if (pages.length === 0) pages.push([[], []]);
+    return pages;
+}
+exports.paginateColumns = paginateColumns;
 
 function escapeXml(s) {
     return String(s ?? "")
@@ -1248,10 +1293,9 @@ exports.renderQuoteImage = renderQuoteImage;
 // ─────────────────────────────────────────────────────────────────────────────
 const QUOTE_PAGE_W = 1240;   // A4 直式 @150dpi 像素寬
 const QUOTE_PAGE_H = 1754;   // A4 直式 @150dpi 像素高
-const QUOTE_PAGE_ROWS = 50;  // 每頁列數（兩欄合計），與列印頁一致
 
-/** 產生單頁 A4 報價單 SVG（1240×1754）。 */
-function renderQuotePageSvg(report, pageRows, opts, pageNo, totalPages) {
+/** 產生單頁 A4 報價單 SVG（1240×1754）。pageCols＝paginateColumns 分好的 [左欄, 右欄]。 */
+function renderQuotePageSvg(report, pageCols, opts, pageNo, totalPages) {
     opts = opts || {};
     const logo = opts.logoDataUri || "";
     const FONT = (opts.fontCss ? opts.fontCss + "," : "") + "'Noto Sans CJK TC','Noto Sans TC','Microsoft JhengHei','PingFang TC',sans-serif";
@@ -1263,7 +1307,7 @@ function renderQuotePageSvg(report, pageRows, opts, pageNo, totalPages) {
     const colHeadH = 42;
     const bodyTop = headerH + colHeadH;
     const rowH = 54;
-    const [colL, colR] = splitTwoColumns(pageRows);
+    const [colL, colR] = pageCols;
 
     // 欄內欄位寬：序號 / 品名 / 規格 / 單價
     const cSeq = 52, cName = colW * 0.50, cSpec = colW * 0.26, cPrice = colW - cSeq - (colW * 0.50) - (colW * 0.26);
@@ -1328,11 +1372,8 @@ ${renderColumn(colR, M + colW + gap)}
 
 /** 依分頁把整份報價切成多頁 A4 SVG 字串。 */
 function renderQuotePageSvgs(report, groups, opts) {
-    const rows = buildDisplayRows(groups);
-    const pages = [];
-    for (let i = 0; i < rows.length; i += QUOTE_PAGE_ROWS) pages.push(rows.slice(i, i + QUOTE_PAGE_ROWS));
-    if (pages.length === 0) pages.push([]);
-    return pages.map((pg, idx) => renderQuotePageSvg(report, pg, opts, idx + 1, pages.length));
+    const pages = paginateColumns(buildDisplayRows(groups), QUOTE_COLUMN_ROWS);
+    return pages.map((cols, idx) => renderQuotePageSvg(report, cols, opts, idx + 1, pages.length));
 }
 exports.renderQuotePageSvgs = renderQuotePageSvgs;
 

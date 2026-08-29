@@ -44,11 +44,9 @@ function registerQuotesRoutes(router, ctx) {
         const fontCss = quoteFontCss(fkey);
         const rows = quote_report_js_1.buildDisplayRows(groups);
         const itemCount = rows.filter(r => r.type === "item").length;
-        // 每頁列數：兩欄合計；抓約可容納一整頁 A4 的量（保留邊界避免溢出到下一頁），讓內容自動分頁。
-        const PAGE_ROWS = 50;
-        const pages = [];
-        for (let i = 0; i < rows.length; i += PAGE_ROWS) pages.push(rows.slice(i, i + PAGE_ROWS));
-        if (pages.length === 0) pages.push([]);
+        // 分頁與分欄一律走 quote-report 的 paginateColumns（與 PDF／JPG 同一套，兩邊頁數才一致）：
+        // 前面的頁把兩欄塞滿、只有最後一頁對半分，不會出現「半頁空白＋另一欄被切掉」。
+        const pages = quote_report_js_1.paginateColumns(rows, quote_report_js_1.QUOTE_COLUMN_ROWS);
         const totalPages = pages.length;
 
         const colHtml = (colRows) => {
@@ -68,8 +66,7 @@ function registerQuotesRoutes(router, ctx) {
             : `<div class="logo-ph">LOGO</div>`;
         const colgroup = `<colgroup><col style="width:11%"><col style="width:45%"><col style="width:30%"><col style="width:14%"></colgroup>`;
         const thead = `${colgroup}<thead><tr><th>序號</th><th>品　名</th><th>規　格</th><th>單價</th></tr></thead>`;
-        const pagesHtml = pages.map((pg, idx) => {
-            const [colL, colR] = quote_report_js_1.splitTwoColumns(pg);
+        const pagesHtml = pages.map(([colL, colR], idx) => {
             return `<div class="sheet">
   <div class="head">
     ${logoHtml}
