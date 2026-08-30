@@ -185,12 +185,18 @@ test("6. 端對端（停用中）：後台頁面全擋、側欄不出現、機�
     const blocked = await db.prepare("SELECT sp_no FROM cash_sales_doc WHERE sp_no = ?").get("BLOCKED1");
     assert.equal(blocked, undefined, "停用時 cash-ingest 一列都不能寫進來");
 
-    const waitRes = await fetch(baseUrl + "/admin/lingyue-writeback/cash-refresh-wait?timeout=25", {
+    // 停用時回 disabled；但仍要 hold（舊版代理靠伺服器 hold 當節流，秒回會讓它空轉狂打）
+    const t0 = Date.now();
+    const waitRes = await fetch(baseUrl + "/admin/lingyue-writeback/cash-refresh-wait?timeout=2", {
         headers: { "x-writeback-key": "test-writeback-key" },
     });
     const waitJson = await waitRes.json();
-    assert.equal(waitJson.disabled, true, "停用時長連線要立刻回 disabled，不 hold 25 秒");
+    const held = Date.now() - t0;
+    assert.equal(waitJson.disabled, true, "停用時長連線要回 disabled");
     assert.equal(waitJson.refresh, false);
+    assert.ok(held >= 1800, `停用時仍要 hold 住（實際 ${held}ms）——秒回會讓沒更新的舊代理空轉狂打`);
+    const waitHeartbeat = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("ly_agent_last_cash_wait_at");
+    assert.equal(waitHeartbeat, undefined, "停用時不該寫代理心跳（這條線整個沒在跑）");
 });
 
 test("7. 端對端（開回來）：經理按啟用後整條線恢復；非經理不能動開關", async () => {

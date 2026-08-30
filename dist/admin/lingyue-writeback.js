@@ -640,8 +640,11 @@ function registerLingyueWritebackRoutes(router, ctx) {
             timeoutSec = 50;
         const deadline = Date.now() + timeoutSec * 1000;
         try {
-            // [2026-08-30 停用取銷貨單] 關著就不 hold 長連線、也不收「重新取單」請求，直接回 disabled。
+            // [2026-08-30 停用取銷貨單] 關著＝不收「重新取單」請求，回 {disabled:true} 讓代理安靜停下。
+            // ⚠ 仍要 hold 一段時間再回：舊版代理是靠「伺服器 hold 25 秒」當節流的（收到回應就立刻再問一次、
+            // 中間不 sleep），秒回會讓沒更新的那台對雲端空轉狂打。新版代理看到 disabled 會自己退避 5 分鐘。
             if (!(await cash_feature_js_1.cashFeatureEnabled(db))) {
+                await new Promise((r) => setTimeout(r, Math.min(timeoutSec, 20) * 1000));
                 res.json({ refresh: false, disabled: true, reason: cash_feature_js_1.CASH_DISABLED_REASON });
                 return;
             }
