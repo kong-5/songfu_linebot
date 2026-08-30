@@ -1,7 +1,7 @@
 # CLAUDE.md — 松富物流 LINE Bot / 後台（給每個新對話先讀）
 
 這份是「架構定案 + 不要再重複踩」的權威清單。**動到相關功能前先讀這份**；細節看 `docs/`。
-最後更新：2026-08-27
+最後更新：2026-08-30
 
 ---
 
@@ -180,6 +180,28 @@
   「一律開啟」後，之後每次部署都不會再被蓋回關閉。**別移除 marker 判斷。**
 - 恢復方式：後台改「一律開啟」→ 儲存，**立即生效、免部署**。
 - smoke test：`test/line-order-recognition-off.test.js`（含「AI 解析一定在閘門之後、盤點/空籃一定在之前」的順序不變式）。
+
+## ⛔ 取銷貨單／每日帳款收款已停用（2026-08-30）
+現場沒人在用，但這條線每天把凌越當日銷貨單（客戶、金額、未收）**整份推上雲端保存**＝白留一份
+高完整度營業資料在外面 → 整條線關掉。
+- **總開關＝`app_settings.cash_sales_enabled`**（後台 系統設定 → 每日帳款收款，**經理限定**）。
+  **未設定＝停用**（fail-closed）——所以**不需要一次性遷移**、也不會被下次部署蓋回去；
+  按過「啟用」寫進 `1` 就一直是開的。權威 helper＝`dist/lib/cash-feature.js` 的 `cashFeatureEnabled()`。
+  **不要再加第二個開關**（兩個重疊開關一定會出現「關了還在跑／開了沒反應」）。
+- **閘門三處**：① 後台所有 `/cash*` 路由共用的 `requireCash`（cash.js，先權限後開關）；
+  ② 機器端點 `cash-ingest`（關著＝整包丟掉、一列不寫）、`cash-refresh-wait`（不收「重新取單」，
+  但**仍 hold 住才回**——舊代理靠伺服器 hold 當節流，秒回會讓沒更新的那台空轉狂打）、
+  `cash-refresh-report`（不記狀態、不發告警）——都**回 200 `{disabled:true}`**，
+  代理拿到會安靜停下，不重試也不告警；③ 側欄「收款作業」群組隱藏（`res.locals.cashEnabled`）。
+  ⚠ **`/cash/feature`（開關頁本身）刻意不走 `requireCash`**，否則關掉就沒有入口開回來。
+- **內網代理**：`ly_agent_gui.py` 的 `sales_auto` 預設改 `False`；雲端回 `disabled` 時設旗標
+  「不撈凌越、每 5 分鐘回探一次」，後台開回來會自動恢復（`ly_sales_push.CashFeatureDisabled`）。
+  ⚠ 已安裝的機器 config 檔已存 `sales_auto: true`，**實際靠雲端閘門擋**；要徹底停就到 GUI ⚙ 取消勾選。
+- **既有資料保留**（使用者決定）：`cash_sales_doc`／`cash_customer`／`cash_payment*`／`cash_check`／
+  `cash_extra_income` 一列都沒刪，重新啟用完全接得回去。要清資料是另一件事，別順手做。
+- 恢復方式：後台「系統設定 → 每日帳款收款」按啟用 → 立即生效、免部署。
+- smoke test：`test/cash-sales-off.test.js`（含「開關頁不得掛 requireCash」「機器端點閘門在寫入之前」
+  等不變式）。
 
 ## LINE 收單可靠性（2026-07-21 定案）
 - **失敗可重試閉環**：`processLineWebhookEvents` 回傳 `{failed,total}`；Cloud Tasks worker

@@ -12,6 +12,7 @@ const express_1 = { default: require("express") };
 const id_js_1 = require("../lib/id.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
 const ops_notify_js_1 = require("../lib/ops-notify.js");
+const cash_feature_js_1 = require("../lib/cash-feature.js");
 const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./_shared.js");
 
 function registerLingyueWritebackRoutes(router, ctx) {
@@ -465,6 +466,12 @@ function registerLingyueWritebackRoutes(router, ctx) {
     // 內網推當日銷貨單上雲（機器對機器，X-Writeback-Key，走上方 /lingyue-writeback/ 中介層）
     router.post("/lingyue-writeback/cash-ingest", express_1.default.json({ limit: "16mb" }), async (req, res) => {
         try {
+            // [2026-08-30 停用取銷貨單] 總開關關著就整包丟掉、一列都不寫。
+            // 回 200（不是 4xx/5xx）是刻意的：代理拿到 disabled 會安靜停下，不會重試也不會噴告警。
+            if (!(await cash_feature_js_1.cashFeatureEnabled(db))) {
+                res.json({ ok: true, skipped: true, disabled: true, reason: cash_feature_js_1.CASH_DISABLED_REASON });
+                return;
+            }
             const body = req.body || {};
             const docs = Array.isArray(body.docs) ? body.docs : null;
             if (!docs) {
@@ -633,6 +640,14 @@ function registerLingyueWritebackRoutes(router, ctx) {
             timeoutSec = 50;
         const deadline = Date.now() + timeoutSec * 1000;
         try {
+            // [2026-08-30 停用取銷貨單] 關著＝不收「重新取單」請求，回 {disabled:true} 讓代理安靜停下。
+            // ⚠ 仍要 hold 一段時間再回：舊版代理是靠「伺服器 hold 25 秒」當節流的（收到回應就立刻再問一次、
+            // 中間不 sleep），秒回會讓沒更新的那台對雲端空轉狂打。新版代理看到 disabled 會自己退避 5 分鐘。
+            if (!(await cash_feature_js_1.cashFeatureEnabled(db))) {
+                await new Promise((r) => setTimeout(r, Math.min(timeoutSec, 20) * 1000));
+                res.json({ refresh: false, disabled: true, reason: cash_feature_js_1.CASH_DISABLED_REASON });
+                return;
+            }
             try {
                 await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("ly_agent_last_cash_wait_at", new Date().toISOString());
             }
@@ -665,6 +680,11 @@ function registerLingyueWritebackRoutes(router, ctx) {
     // 代理回報重新取單結果（cash-ingest 成功會另外寫時間戳；這裡主要記錄失敗原因供網站顯示）
     router.post("/lingyue-writeback/cash-refresh-report", express_1.default.json({ limit: "16kb" }), async (req, res) => {
         try {
+            // [2026-08-30 停用取銷貨單] 關著＝不記狀態、不發告警（舊代理還在跑也不會吵）。
+            if (!(await cash_feature_js_1.cashFeatureEnabled(db))) {
+                res.json({ ok: true, disabled: true });
+                return;
+            }
             const body = req.body || {};
             const now = new Date().toISOString();
             if (body.ok) {

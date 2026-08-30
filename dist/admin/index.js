@@ -52,6 +52,7 @@ const wholesale_price_js_1 = require("../lib/wholesale-price.js");
 const wholesale_snapshot_js_1 = require("../lib/wholesale-snapshot.js");
 const livestock_price_js_1 = require("../lib/livestock-price.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
+const cash_feature_js_1 = require("../lib/cash-feature.js");
 const unit_conversion_js_1 = require("../lib/unit-conversion.js");
 const gemini_order_helpers_js_1 = require("../lib/gemini-order-helpers.js");
 const parse_order_from_image_js_1 = require("../lib/parse-order-from-image.js");
@@ -1886,7 +1887,7 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/logistics/procurement", "logistics-procurement", "truck", "物流叫貨")}
         ${item("/admin/logistics/market", "logistics-reports", "chartLine", "行情報表")}
       </details>
-      ${opts.canCash ? `<details class="sf-nav-group" ${["cash","cash-collect","cash-customers","cash-report"].includes(active) ? "open" : ""}>
+      ${(opts.canCash && opts.cashEnabled) ? `<details class="sf-nav-group" ${["cash","cash-collect","cash-customers","cash-report"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">收款作業</div></summary>
         ${item("/admin/cash", "cash", "money", "松富銷貨統計")}
         ${item("/admin/cash/collect", "cash-collect", "check", "現金收款")}
@@ -1925,9 +1926,10 @@ function sfSidebar(active, opts = {}) {
         ${item("/admin/training/employees", "tr-employees", "user", "員工名冊")}
         ${item("/admin/training/system", "tr-system", "wand", "TTQS 系統文件")}
       </details>
-      <details class="sf-nav-group" ${["line-bot","users"].includes(active) ? "open" : ""}>
+      <details class="sf-nav-group" ${["line-bot","users","cash-feature"].includes(active) ? "open" : ""}>
         <summary><div class="sf-nav-group-title">系統設定</div></summary>
         ${item("/admin/line-bot", "line-bot", "message", "LINE 機器人")}
+        ${opts.canManageUsers ? item("/admin/cash/feature", "cash-feature", "money", "每日帳款收款", opts.cashEnabled ? "" : "已停用") : ""}
         ${item("/admin/users", "users", "user", "人員管理")}
       </details>
     </nav>
@@ -2551,7 +2553,7 @@ function notionPage(title, body, active = "", topBarOrRes = "", loggedInUserLega
         sfTheme = res.locals.sfTheme === "dark" ? "dark" : "light";
         adminUserName = res.locals.adminUser || "";
         adminTitle = res.locals.adminTitle || "";
-        sidebarOpts = { canCash: res.locals.canCash === true };
+        sidebarOpts = { canCash: res.locals.canCash === true, cashEnabled: res.locals.cashEnabled === true, canManageUsers: res.locals.canManageUsers === true };
         headerOpts = {
             canManageUsers: res.locals.canManageUsers === true,
             adminTitle: res.locals.adminTitle || "",
@@ -3220,6 +3222,8 @@ function createAdminRouter() {
         res.locals.adminTitle = profile.title;
         res.locals.canManageUsers = profile.title === "經理";
         res.locals.canCash = profile.title === "經理" || profile.canCash === true; // 收款作業權限（經理天生有）
+        // [2026-08-30 停用取銷貨單] 總開關關著＝側欄不顯示「收款作業」；經理才看得到系統設定裡的開關入口。
+        res.locals.cashEnabled = await cash_feature_js_1.cashFeatureEnabled(db);
         res.locals.isOwner = isAdminOwnerUsername(uname);
         // SF 主題：從 cookie sf_theme=dark|light 讀取（預設淺色）
         res.locals.sfTheme = (cookies.sf_theme === "dark") ? "dark" : "light";
@@ -3243,6 +3247,7 @@ function createAdminRouter() {
         { title: "辨識成效", href: "/admin/recognition-stats", keywords: ["stats", "gemini", "辨識"] },
         { title: "群發訊息", href: "/admin/broadcast", keywords: ["broadcast", "公告", "優惠"] },
         { title: "LINE 機器人", href: "/admin/line-bot", keywords: ["line", "bot", "排程"] },
+        { title: "每日帳款收款（開關）", href: "/admin/cash/feature", keywords: ["cash", "收款", "銷貨", "取單", "停用"] },
         { title: "人員管理", href: "/admin/users", keywords: ["users", "帳號", "員工"] },
         { title: "冷凍／冷藏庫", href: "/admin/freezer-fridge", keywords: ["freezer", "fridge", "冰箱"] },
         { title: "目前庫存", href: "/admin/inventory/stock", keywords: ["stock", "庫存", "凌越", "現有量", "nowqty"] },

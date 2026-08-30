@@ -99,7 +99,9 @@ DEFAULT_CONFIG = {
     "writeback_key": os.environ.get("LY_WRITEBACK_KEY", ""),
     "icpno": os.environ.get("LY_ICPNO", "all"),  # 庫存推送預設全公司（00,01,02,03）；回寫仍固定第一家=00
     "stock_times": os.environ.get("LY_STOCK_TIMES", "06:00,12:00"),
-    "sales_auto": True,         # 是否自動取當日銷貨單推上雲（每日帳款收款）＋掛長連線等網站「重新取單」
+    # [2026-08-30] 每日帳款收款（取銷貨單）已停用：預設不自動取單。雲端後台也有總開關
+    # （系統設定 → 每日帳款收款），關著時就算這裡打開，cash-ingest 也只會回 disabled、一列都不寫。
+    "sales_auto": False,        # 是否自動取當日銷貨單推上雲（每日帳款收款）＋掛長連線等網站「重新取單」
     "sales_times": os.environ.get("LY_SALES_TIMES", "08:30"),  # 每日定時取單時間（清空＝只靠按鈕/網站重新取單）
     "wb_auto": True,            # 是否掛著自動處理『上傳凌越』佇列（只寫使用者按過上傳的單）
     # 倉別規則固定為：每品項帶凌越貨品主檔預設倉(SK_RKWHNO)、查不到用固定倉別補（bridge 內建）
@@ -449,6 +451,7 @@ class AgentEngine:
         self._threads = []
         self._realtime_off = False        # 後台若無 inventory-wait 端點，改定時模式
         self._sales_realtime_off = False  # 後台若無 cash-refresh-wait 端點，銷貨改純定時模式
+        self._sales_cloud_disabled = False  # [2026-08-30] 後台總開關關著（回 disabled）＝不撈凌越、不推送
 
     # ── 記錄去重：同一則訊息只印一次，狀態改變再印 ──────────────
     def _log_once(self, tag: str, msg):
@@ -497,7 +500,7 @@ class AgentEngine:
         self.stop_event.clear()
         self.state["stock_running"] = True
         self.state["wb_running"] = bool(self.cfg.get("wb_auto"))
-        self.state["sales_running"] = bool(self.cfg.get("sales_auto", True))
+        self.state["sales_running"] = bool(self.cfg.get("sales_auto", False))
         self._threads = [
             threading.Thread(target=self._stock_loop, name="stock", daemon=True),
             threading.Thread(target=self._writeback_loop, name="writeback", daemon=True),
@@ -568,8 +571,14 @@ class AgentEngine:
                 n = ly_sales_push.push_once(base, key, icp, d)
                 self.state["erp"] = "ok"
                 self.state["sales_last_push"] = f"{now_full()}（{n} 張）"
+                self._sales_cloud_disabled = False
                 self._log_once("salespush", None)
                 return True
+            except getattr(ly_sales_push, "CashFeatureDisabled", ()) as e:
+                # 後台「系統設定 → 每日帳款收款」關著：不是錯誤，安靜停下（後台開回來就會自己恢復）。
+                self._sales_cloud_disabled = True
+                self._log_once("salespush", f"⏸ 後台已停用每日帳款收款（取銷貨單），暫停取單：{_short(e)}")
+                return False
             except Exception as e:
                 self._log_once(
                     "salespush",
@@ -923,11 +932,20 @@ class AgentEngine:
         for (h, m) in parse_times(self.cfg.get("sales_times", "")):
             if (now.hour, now.minute) >= (h, m):
                 pushed.add((today, h, m))
-        # 啟動先取一次今天，讓後台立刻有當日銷貨單
-        if self.cfg.get("sales_auto", True) and self.cfg["cloud_base"] and self.cfg["writeback_key"]:
-            self.do_sales_push(reason="啟動取單")
+        # 啟動先探一次後台總開關（免得功能已停用還白撈一次凌越），再取今天
+        if self.cfg.get("sales_auto", False) and self.cfg["cloud_base"] and self.cfg["writeback_key"]:
+            try:
+                probe = cloud_sales_refresh_wait(self.cfg["cloud_base"], self.cfg["writeback_key"], 1)
+                if probe.get("disabled"):
+                    self._sales_cloud_disabled = True
+                    self._log_once("saleswait", "⏸ 後台已停用每日帳款收款（取銷貨單）——不取單、不推送。"
+                                                "要恢復請到後台「系統設定 → 每日帳款收款」按啟用。")
+            except Exception:
+                pass  # 探測失敗就照常走下面流程
+            if not self._sales_cloud_disabled:
+                self.do_sales_push(reason="啟動取單")
         while not self.stop_event.is_set():
-            if not self.cfg.get("sales_auto", True):
+            if not self.cfg.get("sales_auto", False):
                 self.state["sales_running"] = False
                 self.stop_event.wait(10)
                 continue
@@ -937,6 +955,19 @@ class AgentEngine:
                 self.stop_event.wait(10)
                 continue
             self.state["sales_next"] = next_time_label(parse_times(self.cfg.get("sales_times", "")))
+            # [2026-08-30] 後台總開關關著：完全不碰凌越，只每 5 分鐘回探一次（後台開回來會自動恢復）
+            if self._sales_cloud_disabled:
+                self.state["sales_next"] = "已停用（後台）"
+                try:
+                    res = cloud_sales_refresh_wait(base, key, 1)
+                    if not res.get("disabled"):
+                        self._sales_cloud_disabled = False
+                        self._log_once("saleswait", "▶ 後台已重新啟用每日帳款收款，恢復取單。")
+                        continue
+                except Exception:
+                    pass
+                self.stop_event.wait(300)
+                continue
             # 先做定時取單
             try:
                 self._scheduled_sales_push(pushed)
@@ -950,6 +981,11 @@ class AgentEngine:
             try:
                 res = cloud_sales_refresh_wait(base, key, 25)
                 self._log_once("saleswait", None)
+                if res.get("disabled"):
+                    self._sales_cloud_disabled = True
+                    self._log_once("saleswait", "⏸ 後台已停用每日帳款收款（取銷貨單）——不取單、不推送。"
+                                                "要恢復請到後台「系統設定 → 每日帳款收款」按啟用。")
+                    continue
                 if res.get("refresh"):
                     d = (res.get("date") or "").strip() or None
                     icp = (res.get("icpno") or "").strip() or None
@@ -1353,8 +1389,9 @@ class SettingsDialog(tk.Toplevel):
             "24小時制、逗號分隔，如 06:00,12:00；清空＝只靠按鈕/即時")
 
         section("銷貨代理（每日帳款收款：取當日銷貨單推上雲）")
-        checkbox("自動取當日銷貨單推上雲（後台『松富銷貨統計/現金收款』會用到；並掛長連線等網站『重新取單』）",
-                 "sales_auto", True)
+        checkbox("自動取當日銷貨單推上雲（後台『松富銷貨統計/現金收款』會用到；並掛長連線等網站『重新取單』）"
+                 "　※ 2026-08-30 起此功能預設停用，後台總開關也要一起開才會生效",
+                 "sales_auto", False)
         row("每日取單時間 (LY_SALES_TIMES)", "sales_times",
             "24小時制、逗號分隔，如 08:30；清空＝只靠『立即取單』按鈕或網站『重新取單』。客戶改單後網站按『重新取單』會即時重撈")
 

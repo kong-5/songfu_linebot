@@ -124,6 +124,8 @@ test("/import-customers：已綁其他客戶的 LINE 群組不可被 CSV 蓋走"
 });
 
 test("反射型 XSS：/admin/import?ok= 與 /cash/collect?route= 不再原樣輸出", async () => {
+    // 每日帳款收款 2026-08-30 起預設停用；這支測的是輸出轉義，先把總開關打開才進得了頁面。
+    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("cash_sales_enabled", "1");
     const payload = '<img src=x onerror=alert(1)>';
     const r1 = await get("/admin/import?ok=" + encodeURIComponent(payload));
     assert.equal(r1.status, 200);

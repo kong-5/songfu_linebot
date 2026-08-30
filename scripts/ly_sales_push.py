@@ -151,6 +151,10 @@ def build_payload(icpno: str, date: str, verbose: bool) -> dict:
     }
 
 
+class CashFeatureDisabled(RuntimeError):
+    """後台「系統設定 → 每日帳款收款」關著：雲端不收銷貨單。不是錯誤，呼叫端安靜停下即可。"""
+
+
 def post_cloud(base: str, key: str, body: dict, timeout: int) -> dict:
     url = base.rstrip("/") + "/admin/lingyue-writeback/cash-ingest"
     payload = json.dumps(body).encode("utf-8")
@@ -193,10 +197,16 @@ def push_once(base: str, key: str, icpno: str, date=None, timeout: int = 90, ver
         try:
             body = build_payload(one, d, verbose=verbose)
             res = post_cloud(base, key, body, timeout)
+            # [2026-08-30] 後台「每日帳款收款」總開關關著＝回 {disabled:true}（HTTP 200，不是錯誤）。
+            # 雲端一列都不會寫，所以這裡直接判定「功能已停用」丟 CashFeatureDisabled，讓 GUI 安靜停下。
+            if isinstance(res, dict) and res.get("disabled"):
+                raise CashFeatureDisabled(str(res.get("reason") or "後台已停用每日帳款收款（取銷貨單）"))
             n = int(res.get("docs", len(body["docs"]))) if isinstance(res, dict) else len(body["docs"])
             if verbose:
                 print(f"✅ 已推 {n} 張（{one} {d}）", flush=True)
             total += n
+        except CashFeatureDisabled:
+            raise  # 後台整個功能關掉了，其餘公司也不必推
         except Exception as e:
             errors.append(f"{one}: {e}")
             print(f"❌ 公司 {one} 取單/推送失敗（續推其餘公司）：{e}", flush=True)
