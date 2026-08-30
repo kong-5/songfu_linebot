@@ -101,6 +101,8 @@ test("匯入域：/import、/import-customers、/import-teraoka 三頁可開", a
 });
 
 test("收款域註冊呼叫留在 index.js：/cash 路由仍在（夾在凌越區間中間、位置不可移動）", async () => {
+    // 每日帳款收款 2026-08-30 起預設停用（requireCash 會擋）；這支測的是路由註冊位置，先把總開關打開。
+    await db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("cash_sales_enabled", "1");
     const r = await get("/admin/cash/collect?icpno=00");
     assert.equal(r.status, 200, "/cash/collect 應仍可用");
 });

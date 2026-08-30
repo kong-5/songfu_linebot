@@ -8,17 +8,17 @@ const express_1 = { default: require("express") };
 const XLSX = require("xlsx");
 const id_js_1 = require("../lib/id.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
+const cash_feature_js_1 = require("../lib/cash-feature.js");
 const { SF_ICONS, escapeHtml, escapeAttr } = require("./_shared.js");
 
 function registerCashRoutes(router, ctx) {
     const { db, notionPage, logDataChange, getTaipeiCalendarDateYYYYMMDD } = ctx;
     // 收款作業權限：經理天生有；其他人需在人員管理勾「收款權限」
-    function requireCash(req, res, next) {
+    function hasCashPermission(req) {
         const p = req.adminProfile;
-        if (p && (p.title === "經理" || p.canCash === true)) {
-            next();
-            return;
-        }
+        return !!(p && (p.title === "經理" || p.canCash === true));
+    }
+    function denyCash(req, res) {
         const wantsJson = req.method === "POST" || (req.headers.accept || "").includes("application/json");
         if (wantsJson) {
             res.status(403).json({ error: "無收款作業權限（請聯絡經理開通）" });
@@ -26,6 +26,87 @@ function registerCashRoutes(router, ctx) {
         }
         res.status(403).type("text/html").send("<!DOCTYPE html><html lang=\"zh-TW\"><head><meta charset=\"utf-8\"><title>權限不足</title></head><body style=\"font-family:sans-serif;padding:24px;\"><p><strong>收款作業</strong>僅限有權限的人員使用，請聯絡經理開通。</p><p><a href=\"/admin\">返回儀表板</a></p></body></html>");
     }
+    // [2026-08-30 停用取銷貨單] 每日帳款收款整條線的單一閘門：先看權限、再看總開關。
+    // 全部 /cash* 路由都掛 requireCash，所以擋在這裡＝頁面／匯出／列印／收款寫入／重新取單全關。
+    // 只有「系統設定 → 每日帳款收款」那兩支（/cash/feature）不走這個閘門，否則關掉就打不開了。
+    async function requireCash(req, res, next) {
+        if (!hasCashPermission(req)) {
+            denyCash(req, res);
+            return;
+        }
+        if (await cash_feature_js_1.cashFeatureEnabled(db)) {
+            next();
+            return;
+        }
+        const wantsJson = req.method === "POST" || (req.headers.accept || "").includes("application/json");
+        if (wantsJson) {
+            res.status(403).json({ error: cash_feature_js_1.CASH_DISABLED_REASON + "。" + cash_feature_js_1.CASH_DISABLED_HOWTO });
+            return;
+        }
+        res.status(403).send(notionPage("每日帳款收款（已停用）", cashDisabledBody(req), "cash-feature", res));
+    }
+    // 停用說明頁（頁面版被擋時、以及系統設定入口共用）
+    function cashDisabledBody(req, opts = {}) {
+        const isManager = req.adminProfile?.title === "經理";
+        const enabled = !!opts.enabled;
+        return `
+        <div class="notion-page-title">每日帳款收款（取銷貨單）</div>
+        <div class="notion-card" style="max-width:720px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+            ${SF_ICONS.money || ""}
+            <strong style="font-size:15px;">目前狀態：${enabled ? "啟用中" : "已停用"}</strong>
+          </div>
+          <p style="color:#787774;font-size:13px;line-height:1.8;margin:0 0 12px;">
+            ${enabled
+            ? "內網代理會每天把凌越當日銷貨單推上雲端，後台「收款作業」三頁可用。"
+            : "凌越銷貨單<strong>不再推上雲端</strong>（cash-ingest／重新取單長連線都會被擋），後台「收款作業」三頁與現金日報表、匯出、列印全部關閉。"}
+          </p>
+          <p style="color:#787774;font-size:13px;line-height:1.8;margin:0 0 12px;">
+            既有的銷貨快照與收款紀錄<strong>原封不動留在資料庫</strong>，重新啟用後完全接得回去。
+          </p>
+          ${isManager ? `
+          <form method="post" action="/admin/cash/feature" style="margin-top:14px;">
+            <input type="hidden" name="enabled" value="${enabled ? "0" : "1"}">
+            <button type="submit" class="btn-primary">${enabled ? "停用此功能" : "啟用此功能"}</button>
+            <span style="margin-left:10px;color:#787774;font-size:12px;">立即生效、免部署</span>
+          </form>` : `
+          <div style="margin-top:14px;color:#787774;font-size:13px;">要開啟請找經理（系統設定 → 每日帳款收款）。</div>`}
+        </div>`;
+    }
+    // 系統設定 → 每日帳款收款：開關頁（經理限定，且**不受總開關影響**，否則關掉就沒有入口開回來）
+    router.get("/cash/feature", async (req, res) => {
+        if (req.adminProfile?.title !== "經理") {
+            denyCash(req, res);
+            return;
+        }
+        const enabled = await cash_feature_js_1.cashFeatureEnabled(db);
+        res.send(notionPage("每日帳款收款", cashDisabledBody(req, { enabled }), "cash-feature", res));
+    });
+    router.post("/cash/feature", express_1.default.urlencoded({ extended: true }), async (req, res) => {
+        if (req.adminProfile?.title !== "經理") {
+            denyCash(req, res);
+            return;
+        }
+        try {
+            const before = await cash_feature_js_1.cashFeatureEnabled(db);
+            const after = String(req.body?.enabled ?? "") === "1";
+            if (before !== after) {
+                await cash_feature_js_1.setCashFeatureEnabled(db, after);
+                await logDataChange(req, {
+                    entityType: "setting",
+                    entityId: cash_feature_js_1.CASH_FEATURE_KEY,
+                    action: "update",
+                    summary: `每日帳款收款（取銷貨單）：${before ? "啟用" : "停用"} → ${after ? "啟用" : "停用"}`,
+                    meta: { key: cash_feature_js_1.CASH_FEATURE_KEY, before: before ? "1" : "0", after: after ? "1" : "0" },
+                });
+            }
+            res.redirect(after ? "/admin/cash" : "/admin/cash/feature");
+        }
+        catch (e) {
+            console.error("[admin] /cash/feature", e?.message || e);
+            res.status(500).send("儲存失敗：" + escapeHtml(String(e?.message || e)));
+        }
+    });
     // 使用者在網站按「重新取單」→ 記一個待處理旗標；內網代理長連線（cash-refresh-wait）領走後重撈凌越該日 → cash-ingest。
     // 用途：客戶改單後，網站數量會跟一早抓的不符，按這顆就能即時反映凌越當下狀態（不必去內網手動跑腳本）。
     router.post("/cash/request-refresh", requireCash, express_1.default.json({ limit: "8kb" }), async (req, res) => {
