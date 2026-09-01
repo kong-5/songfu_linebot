@@ -21,6 +21,7 @@ const basket_log_js_1 = require("../lib/basket-log.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
 const stocktake_api_js_1 = require("../lib/stocktake-api.js");
 const stocktake_access_js_1 = require("../lib/stocktake-access.js");
+const audit_js_1 = require("../lib/audit.js");
 
 // 訂單審核 LIFF 允許的職稱（之後若要擴可加 "課長"、"行政"）
 const ORDER_REVIEW_ROLES = ["經理", "主任", "課長"];
@@ -309,20 +310,9 @@ function createLiffRouter() {
 
     // ===== 訂單審核 LIFF API =====
     // 寫入 data_change_log（無 admin session，僅記錄是哪個員工從 LIFF 操作）
+    // 實作收斂到 dist/lib/audit.js；這裡只負責把 LIFF 的 actor 前綴組出來。
     async function logFromLiff(db, employee, opts) {
-        try {
-            const id_js = require("../lib/id.js");
-            const logId = id_js.newId("dcl");
-            const actor = `liff:${employee.username}`;
-            const metaJson = opts.meta != null ? JSON.stringify(opts.meta) : null;
-            const isPg = Boolean(process.env.DATABASE_URL);
-            const tsSql = isPg ? "CURRENT_TIMESTAMP" : "datetime('now')";
-            await db
-                .prepare(`INSERT INTO data_change_log (id, entity_type, entity_id, product_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${tsSql})`)
-                .run(logId, opts.entityType, opts.entityId, opts.productId ?? null, opts.action, opts.summary ?? null, metaJson, actor);
-        } catch (e) {
-            console.warn("[liff] data_change_log insert failed:", e?.message || e);
-        }
+        await (0, audit_js_1.writeAuditSafe)(db, { ...opts, actor: `liff:${employee.username}` });
     }
 
     // GET /liff/api/order-review/list?date=YYYY-MM-DD&only_pending=1

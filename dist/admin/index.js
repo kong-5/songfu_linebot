@@ -45,6 +45,7 @@ const index_js_1 = require("../db/index.js");
 // [refactor 2026-07-18 批次1] 無狀態表現層 helper 抽到同層 _shared.js（拆分大檔第一步）。
 const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./_shared.js");
 const id_js_1 = require("../lib/id.js");
+const audit_js_1 = require("../lib/audit.js");
 const parse_order_message_js_1 = require("../lib/parse-order-message.js");
 const resolve_product_js_1 = require("../lib/resolve-product.js");
 const vision_ocr_js_1 = require("../lib/vision-ocr.js");
@@ -2936,16 +2937,12 @@ function createAdminRouter() {
         catch (_) { /* 無 cookie／解析失敗→用該頁預設 */ }
         return fb;
     }
+    // 稽核軌跡的實作已收斂到 dist/lib/audit.js（單一權威）。這裡保留同名同簽章的
+    // 薄包裝，26 個域檔透過 ctx 拿到的還是 logDataChange(req, opts)，呼叫處不用改。
+    // ⚠ 這條路徑是「主寫入 commit 後才補軌跡」＝失敗只留 log。要讓軌跡與主寫入
+    //   同生共死，請在交易內改用 writeAudit(h, {...})，見 lib/audit.js 開頭說明。
     async function logDataChange(req, opts) {
-        const logId = (0, id_js_1.newId)("dcl");
-        const actor = req.adminUsername || "";
-        const metaJson = opts.meta != null ? JSON.stringify(opts.meta) : null;
-        try {
-            await db.prepare(`INSERT INTO data_change_log (id, entity_type, entity_id, product_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`).run(logId, opts.entityType, opts.entityId, opts.productId ?? null, opts.action, opts.summary ?? null, metaJson, actor);
-        }
-        catch (e) {
-            console.error("[admin] data_change_log insert failed", e);
-        }
+        return (0, audit_js_1.writeAuditSafe)(db, { ...opts, actor: req.adminUsername || "" });
     }
     // [fix 2026-07-18 稽核] 群組功能開關（辨識訂單/盤點/空籃）異動須留軌跡：開錯會漏單/漏盤。
     // 讀當前有效設定當 before，寫入後只在「真有變動」時記錄舊值→新值＋操作者。
