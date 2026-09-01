@@ -16,6 +16,13 @@ ly_stock_push.py — 撈凌越目前庫存（貨品主檔 SK_NOWQTY）整批推�
 
 雲端收到後全表覆蓋 erp_stock_items，後台「庫存管理 → 目前庫存」即顯示最新。
 
+客戶主檔（資料種類 000001）
+--------------------------
+庫存推送成功後順帶撈整張客戶主檔推到
+`/admin/lingyue-writeback/customers-push`（雲端按公司覆蓋 erp_customers），
+後台「客戶管理 → 凌越客戶主檔」與編輯客戶頁的凌越資料由此而來。
+任何失敗只警告、不影響庫存推送。整筆原始欄位放 raw 一併上傳（雲端存 raw_json）。
+
 分倉庫存（資料種類 000009「目前庫存-廠內倉」）
 --------------------------------------------
 推送時順帶查 000009 逐倉別在庫量，成功時 payload 頂層多帶 `warehouse_qty`
@@ -324,6 +331,94 @@ def fetch_future_sales(icpno: str, timeout: int, horizon_days: int = None):
         return None
 
 
+# ── 客戶主檔（資料種類 000001）→ 雲端 erp_customers ──────────────────────────
+# 隨庫存推送順帶推整張客戶主檔，雲端按公司(icpno)覆蓋 → 後台「客戶管理 → 凌越客戶主檔」
+# 顯示，編輯客戶頁自動帶出地址/電話/統編等。失敗只警告，不影響庫存推送。
+# 已知欄位（docs/凌越串接-通用方法說明.md）：CT_NO/CT_NAME/CT_UNINO/CT_ADDR1/CT_FKFS/CT_SALES；
+# 其餘欄名是常見猜測 → 一律候選清單防禦式偵測，偵測不到就留空。
+# 整筆原始欄位放進 raw 一併上傳（雲端存 raw_json）——凌越有的欄位全保留。
+KIND_CUSTOMERS = "000001"
+CUST_FIELDS = {
+    # 攤平欄位: 候選欄名（依序取第一個存在的；CT_NO/CT_NAME 必要）
+    "ctno":       ("CT_NO",),
+    "name":       ("CT_NAME",),
+    "short_name": ("CT_SNAME", "CT_ABBR", "CT_SHORTNAME"),
+    "addr1":      ("CT_ADDR1", "CT_ADDR"),
+    "addr2":      ("CT_ADDR2",),
+    "tel1":       ("CT_TEL1", "CT_TEL"),
+    "tel2":       ("CT_TEL2",),
+    "fax":        ("CT_FAX", "CT_FAX1"),
+    "unino":      ("CT_UNINO",),
+    "boss":       ("CT_BOSS", "CT_OWNER"),
+    "contact":    ("CT_LINKMAN", "CT_CONTACT", "CT_LINK"),
+    "fkfs":       ("CT_FKFS",),
+    "sales":      ("CT_SALES",),
+    "stop":       ("CT_STOP",),
+}
+
+
+def fetch_customers(icpno: str, timeout: int, debug: bool = False):
+    """撈整張客戶主檔(000001)，回 [{ctno,name,…,raw}, ...]；查詢失敗回 None（本輪跳過客戶推送）。
+    停用客戶不過濾（後台要看最完整資料），stop 欄位帶上去由網站標示。"""
+    try:
+        ensure_timeout_client(timeout)
+        rows = lystk.query(icpno=icpno, idakd=KIND_CUSTOMERS)
+    except Exception as e:
+        print(f"⚠ 000001 客戶主檔查詢失敗（本輪不推客戶）：{_friendly_ly_error(e)}", flush=True)
+        return None
+    rows = rows or []
+    if debug:
+        print(f"  [000001] 原始回應 {len(rows)} 列，前 2 筆原樣：", flush=True)
+        for r in rows[:2]:
+            try:
+                print("    " + json.dumps({str(k): str(v) for k, v in dict(r).items()}, ensure_ascii=False), flush=True)
+            except Exception:
+                print(f"    {r!r}", flush=True)
+    if not rows:
+        return []
+    # 用第一列偵測各攤平欄位的實際欄名（查不到的欄位整批留空）
+    keymap = {}
+    for out_key, cands in CUST_FIELDS.items():
+        k = _pick_field(rows[0], cands)
+        if k is not None:
+            keymap[out_key] = k
+    if "ctno" not in keymap:
+        try:
+            avail = ", ".join(sorted(str(k) for k in rows[0].keys()))
+        except Exception:
+            avail = repr(rows[0])[:300]
+        print(f"⚠ 000001 找不到客戶編號欄位 CT_NO，實際欄位：{avail}（本輪不推客戶）", flush=True)
+        return None
+    out = []
+    for r in rows:
+        ctno = str(r.get(keymap["ctno"], "")).strip()
+        if not ctno:
+            continue
+        rec = {}
+        for out_key, real_key in keymap.items():
+            rec[out_key] = str(r.get(real_key, "") or "").strip()
+        try:
+            rec["raw"] = {str(k): ("" if v is None else str(v).strip()) for k, v in dict(r).items()}
+        except Exception:
+            rec["raw"] = {}
+        out.append(rec)
+    return out
+
+
+def push_customers(base: str, key: str, icpno: str, customers: list, timeout: int = 90) -> int:
+    """把客戶主檔整批 POST 到雲端 customers-push（按公司覆蓋）。回傳雲端回報筆數。"""
+    snapshot_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    payload = json.dumps({"icpno": icpno, "snapshot_at": snapshot_at, "customers": customers}).encode("utf-8")
+    url = base.rstrip("/") + "/admin/lingyue-writeback/customers-push"
+    req = urllib.request.Request(
+        url, data=payload, method="POST",
+        headers={"Content-Type": "application/json", "X-Writeback-Key": key, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        res = json.loads(resp.read().decode("utf-8") or "{}")
+    return int(res.get("count", len(customers)))
+
+
 # ── 單品項「進銷存」查詢（庫存頁點品項用）────────────────────────────
 # 重點欄位：存在才顯示；欄名是常見猜測，凌越沒有的自動略過（全部欄位一律附上）。
 SUMMARY_FIELDS = [
@@ -517,6 +612,17 @@ def _push_one_company(base: str, key: str, icpno: str, timeout: int = 90, verbos
         raise RuntimeError(f"連線失敗 POST {url}：{e.reason}") from None
     if verbose:
         print(f"✅ 已推送 {res.get('count', len(items))} 品項（snapshot_at={res.get('snapshot_at', snapshot_at)}）", flush=True)
+    # 客戶主檔（000001）：庫存推送成功後順帶推；任何失敗只警告，不影響庫存推送結果。
+    try:
+        customers = fetch_customers(icpno, timeout)
+        if customers:
+            n = push_customers(base, key, icpno, customers, timeout=timeout)
+            if verbose:
+                print(f"  （客戶主檔 000001：已推送 {n} 筆）", flush=True)
+        elif customers is not None and verbose:
+            print("  （客戶主檔 000001：0 筆，未推送）", flush=True)
+    except Exception as e:
+        print(f"⚠ 客戶主檔推送失敗（庫存推送不受影響）：{_friendly_ly_error(e)}", flush=True)
     return int(res.get("count", len(items)))
 
 
@@ -552,6 +658,15 @@ def run(args) -> int:
                 print(f"  {len(fs)} 品項有未來銷貨淨量，前 10 筆：")
                 for f in fs[:10]:
                     print(f"    {f['erp_code']:<12}淨量 {f['qty']}")
+            # 客戶主檔 000001：dry-run 印原始樣本＋解析結果，供內網第一次實跑核對欄位格式
+            print(f"▶ 查 000001 客戶主檔 ICPNO={one}（dry-run 驗證格式）…", flush=True)
+            custs = fetch_customers(one, args.timeout, debug=True)
+            if custs is None:
+                print("  000001 查詢失敗 → 正式推送時不推客戶主檔")
+            else:
+                print(f"  解析出 {len(custs)} 筆客戶，前 5 筆：")
+                for c in custs[:5]:
+                    print(f"    {c['ctno']:<10}{c['name'][:14]:<16}地址 {c.get('addr1','')[:20]:<22}電話 {c.get('tel1','')}")
         return 0
 
     if not base or not key:

@@ -458,6 +458,69 @@ function registerLingyueWritebackRoutes(router, ctx) {
             res.status(500).json({ error: "inventory-push 失敗", detail: String(e?.message || e) });
         }
     });
+    /**
+     * 凌越客戶主檔（資料種類 000001）快照 — 機器對機器端點（內網 agent 用，X-Writeback-Key 認證）。
+     *
+     * POST /admin/lingyue-writeback/customers-push
+     *   body: { icpno, snapshot_at, customers: [{ ctno, name, short_name, addr1, addr2,
+     *           tel1, tel2, fax, unino, boss, contact, fkfs, sales, stop, raw }, ...] }
+     *   內網 agent（ly_stock_push.py）隨庫存推送順帶推整張客戶主檔 → 按公司(icpno)覆蓋。
+     *   raw＝整筆原始欄位（dict），存 raw_json——凌越有的欄位全保留，前台要顯示什麼都查得到。
+     */
+    router.post("/lingyue-writeback/customers-push", express_1.default.json({ limit: "32mb" }), async (req, res) => {
+        try {
+            const body = req.body || {};
+            const customers = Array.isArray(body.customers) ? body.customers : null;
+            if (!customers) {
+                res.status(400).json({ error: "缺少 customers 陣列" });
+                return;
+            }
+            const icpno = String(body.icpno || "00").trim() || "00";
+            const snapshotAt = (typeof body.snapshot_at === "string" && body.snapshot_at.trim())
+                ? body.snapshot_at.trim() : new Date().toISOString();
+            const S = (v) => String(v ?? "").trim();
+            const rows = [];
+            for (const c of customers) {
+                const ctno = S(c?.ctno);
+                if (!ctno)
+                    continue;
+                let rawJson = "";
+                try { rawJson = c?.raw && typeof c.raw === "object" ? JSON.stringify(c.raw) : ""; } catch (_) { rawJson = ""; }
+                rows.push([
+                    icpno, ctno, S(c?.name), S(c?.short_name), S(c?.addr1), S(c?.addr2),
+                    S(c?.tel1), S(c?.tel2), S(c?.fax), S(c?.unino), S(c?.boss), S(c?.contact),
+                    S(c?.fkfs), S(c?.sales), S(c?.stop), rawJson, snapshotAt,
+                ]);
+            }
+            // 比照 inventory-push：單一交易內按公司覆蓋（DELETE WHERE icpno + 分批 INSERT + meta），
+            // 中途失敗整批回滾＝保留上一份完整快照；其他公司的資料不動。
+            const doReplace = async (h) => {
+                await h.prepare("DELETE FROM erp_customers WHERE COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").run(icpno);
+                const CHUNK = 50;
+                for (let i = 0; i < rows.length; i += CHUNK) {
+                    const chunk = rows.slice(i, i + CHUNK);
+                    const ph = chunk.map(() => "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").join(",");
+                    const flat = [];
+                    for (const r of chunk)
+                        flat.push(...r);
+                    await h.prepare("INSERT INTO erp_customers (icpno, ctno, name, short_name, addr1, addr2, tel1, tel2, fax, unino, boss, contact, fkfs, sales, stop, raw_json, updated_at) VALUES " + ph).run(...flat);
+                }
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_customers_snapshot_at", snapshotAt);
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_customers_snapshot_at_" + icpno, snapshotAt);
+                await h.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("erp_customers_count_" + icpno, String(rows.length));
+            };
+            if (typeof db.transaction === "function")
+                await db.transaction(doReplace);
+            else
+                await doReplace(db);
+            console.log("[admin] customers-push 完成：icpno", icpno, "共", rows.length, "筆");
+            res.json({ ok: true, count: rows.length, snapshot_at: snapshotAt });
+        }
+        catch (e) {
+            console.error("[admin] lingyue-writeback/customers-push", e?.message || e);
+            res.status(500).json({ error: "customers-push 失敗", detail: String(e?.message || e) });
+        }
+    });
     // ============================================================
     //  每日帳款收款（Phase 1：取單上雲 + 銷貨單總計表）
     //  資料源：凌越銷貨單(0000A1) 主表 + 客戶主檔(00000D) 結帳方式(CT_FKFS)，
