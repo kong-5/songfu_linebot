@@ -14,7 +14,7 @@ const audit_js_1 = require("../lib/audit.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
 const ops_notify_js_1 = require("../lib/ops-notify.js");
 const cash_feature_js_1 = require("../lib/cash-feature.js");
-const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./_shared.js");
+const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr, safeErrDetail } = require("./_shared.js");
 
 function registerLingyueWritebackRoutes(router, ctx) {
     const { db, notionPage, logDataChange, buildLingyuePreview, formatOrderDateForLingyue, stkAdminTaipeiDate, getTaipeiCalendarDateYYYYMMDD } = ctx;
@@ -71,7 +71,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/pending", e?.message || e);
-            res.status(500).json({ error: "pending 取得失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "pending 取得失敗", detail: safeErrDetail(e) });
         }
     });
     /**
@@ -147,7 +147,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/wait", e?.message || e);
-            res.status(500).json({ error: "wait 失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "wait 失敗", detail: safeErrDetail(e) });
         }
     });
     /**
@@ -259,7 +259,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/callback", e?.message || e);
-            res.status(500).json({ error: "callback 失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "callback 失敗", detail: safeErrDetail(e) });
         }
     });
     /**
@@ -482,7 +482,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
             console.error("[admin] lingyue-writeback/inventory-push", e?.message || e);
             // [ops 2026-07-10] 庫存推送失敗＝後台庫存可能過期，推播告警（交易已回滾、保留上一份快照）。
             ops_notify_js_1.notifyOps(db, `凌越庫存推送（inventory-push）失敗：${String(e?.message || e).slice(0, 200)}`).catch(() => { });
-            res.status(500).json({ error: "inventory-push 失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "inventory-push 失敗", detail: safeErrDetail(e) });
         }
     });
     // ============================================================
@@ -581,7 +581,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/cash-ingest", e?.message || e);
-            res.status(500).json({ error: "cash-ingest 失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "cash-ingest 失敗", detail: safeErrDetail(e) });
         }
     });
     /**
@@ -628,7 +628,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/inventory-wait", e?.message || e);
-            res.status(500).json({ error: "inventory-wait 失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "inventory-wait 失敗", detail: safeErrDetail(e) });
         }
     });
     // 代理回報庫存刷新失敗原因（如凌越連線逾時），讓網站顯示真正原因而非「代理未執行」
@@ -701,7 +701,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/cash-refresh-wait", e?.message || e);
-            res.status(500).json({ error: "cash-refresh-wait 失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "cash-refresh-wait 失敗", detail: safeErrDetail(e) });
         }
     });
     // 代理回報重新取單結果（cash-ingest 成功會另外寫時間戳；這裡主要記錄失敗原因供網站顯示）
@@ -774,7 +774,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/txn-wait", e?.message || e);
-            res.status(500).json({ error: "txn-wait 失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "txn-wait 失敗", detail: safeErrDetail(e) });
         }
     });
     /**
@@ -803,7 +803,7 @@ function registerLingyueWritebackRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] lingyue-writeback/txn-callback", e?.message || e);
-            res.status(500).json({ error: "txn-callback 失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "txn-callback 失敗", detail: safeErrDetail(e) });
         }
     });
     /**

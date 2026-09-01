@@ -9,7 +9,7 @@ const XLSX = require("xlsx");
 const id_js_1 = require("../lib/id.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
 const cash_feature_js_1 = require("../lib/cash-feature.js");
-const { SF_ICONS, escapeHtml, escapeAttr } = require("./_shared.js");
+const { SF_ICONS, escapeHtml, escapeAttr, safeErrDetail } = require("./_shared.js");
 
 function registerCashRoutes(router, ctx) {
     const { db, notionPage, logDataChange, getTaipeiCalendarDateYYYYMMDD } = ctx;
@@ -122,7 +122,7 @@ function registerCashRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] /cash/request-refresh", e?.message || e);
-            res.status(500).json({ error: "送出失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "送出失敗", detail: safeErrDetail(e) });
         }
     });
     // 前端輪詢：這顆回目前刷新狀態＋該 icpno/date 最新一次 cash-ingest 的時間戳（用來判斷資料是否已更新→自動重整）
@@ -423,7 +423,7 @@ function registerCashRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] /cash/gap-reason", e?.message || e);
-            res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "儲存失敗", detail: safeErrDetail(e) });
         }
     });
     // 匯出 Excel（銷貨單總計表）
@@ -997,7 +997,7 @@ function registerCashRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] /cash/collect/undo", e?.message || e);
-            res.status(500).json({ error: "取消失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "取消失敗", detail: safeErrDetail(e) });
         }
     });
     // 收款客戶主檔（維護路線／收現金／備註）＋ 司機名單。資料源＝凌越銷貨單帶入的 cash_customer。
@@ -1115,7 +1115,7 @@ function registerCashRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] /cash/customers/save", e?.message || e);
-            res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "儲存失敗", detail: safeErrDetail(e) });
         }
     });
     router.post("/cash/drivers/save", requireCash, express_1.default.json({ limit: "8kb" }), async (req, res) => {
@@ -1126,7 +1126,7 @@ function registerCashRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] /cash/drivers/save", e?.message || e);
-            res.status(500).json({ error: "儲存失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "儲存失敗", detail: safeErrDetail(e) });
         }
     });
     // 從 LINE 客戶管理帶入路線：依凌越客戶編號(CT_NO)對 hq_cust_code/teraoka_code，填進路線空白的收款客戶（不覆蓋已填）
@@ -1141,7 +1141,7 @@ function registerCashRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] /cash/customers/import-routes", e?.message || e);
-            res.status(500).json({ error: "帶入失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "帶入失敗", detail: safeErrDetail(e) });
         }
     });
     // ============================================================
@@ -1336,7 +1336,7 @@ function registerCashRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] /cash/extra-income", e?.message || e);
-            res.status(500).json({ error: "新增失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "新增失敗", detail: safeErrDetail(e) });
         }
     });
     router.post("/cash/extra-income/delete", requireCash, express_1.default.json({ limit: "8kb" }), async (req, res) => {
@@ -1364,7 +1364,7 @@ function registerCashRoutes(router, ctx) {
         }
         catch (e) {
             console.error("[admin] /cash/extra-income/delete", e?.message || e);
-            res.status(500).json({ error: "刪除失敗", detail: String(e?.message || e) });
+            res.status(500).json({ error: "刪除失敗", detail: safeErrDetail(e) });
         }
     });
     router.get("/cash/daily-report/export.xlsx", requireCash, async (req, res) => {

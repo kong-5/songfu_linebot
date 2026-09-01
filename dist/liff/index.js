@@ -22,6 +22,7 @@ const erp_companies_js_1 = require("../lib/erp-companies.js");
 const stocktake_api_js_1 = require("../lib/stocktake-api.js");
 const stocktake_access_js_1 = require("../lib/stocktake-access.js");
 const audit_js_1 = require("../lib/audit.js");
+const async_router_js_1 = require("../lib/async-router.js");
 
 // 訂單審核 LIFF 允許的職稱（之後若要擴可加 "課長"、"行政"）
 const ORDER_REVIEW_ROLES = ["經理", "主任", "課長"];
@@ -42,6 +43,9 @@ function noStore(res) {
 
 function createLiffRouter() {
     const router = express_1.Router();
+    // [fix 2026-09-01 體檢] 這個 router 過去沒有 async 錯誤網，全靠每個 handler 自己
+    // 寫 try/catch；加一個忘了 try 的 handler 就會讓請求永遠 hang。與 admin 同一份。
+    (0, async_router_js_1.wrapRouterAsync)(router);
     const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 
     // 通用：把 LIFF_ID 注入頁面後回傳

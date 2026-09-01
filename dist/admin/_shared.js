@@ -88,8 +88,44 @@ function escJsStr(s) {
     return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\r?\n/g, " ");
 }
 
+// ── 錯誤回應（2026-09-01 體檢）────────────────────────────────────────────
+// 舊寫法 `res.status(500).json({ error: "...失敗", detail: String(e?.message || e) })`
+// 在 lingyue-writeback / cash 共 17 處把原始錯誤訊息完整回給前端。問題不在「說太多」，
+// 而在說錯東西：sqlForPg 丟的錯誤本身含 SQL 前 120 字、PG 的唯一鍵衝突含索引與欄位名，
+// 這些對使用者一點用都沒有，卻把資料表結構送出去。
+//
+// 守則 #4 要的是「告訴使用者怎麼修正」，所以這裡不是把訊息拿掉，而是：
+//   1. 完整錯誤（含 stack）留在伺服器 log，前面標一個 ref 代碼
+//   2. 回給前端：可行動的訊息 ＋ 同一個 ref（回報時報這串就查得到）
+//   3. 只有「看起來像資料庫內部訊息」的才整段換掉，其餘保留（多半是可讀的商業邏輯錯誤，
+//      例如「此倉今日盤點已被其他人送出」——那種訊息很有用，不該一併消音）
+const SQLISH = /\b(SELECT|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|FROM\s+\w+|WHERE\s+\w+|CREATE\s+TABLE|ALTER\s+TABLE|constraint|duplicate key|relation ".+"|column ".+"|idx_|ux_)\b/i;
+
+function safeErrDetail(e) {
+    const raw = String(e?.message || e || "").trim();
+    if (!raw) return "";
+    if (SQLISH.test(raw)) return "資料庫操作失敗（詳細內容已記錄在伺服器日誌）";
+    return raw.slice(0, 200);
+}
+
+/**
+ * 統一的 500 JSON 回應。
+ * @param {*} res
+ * @param {*} e        原始錯誤（完整內容只進 log）
+ * @param {string} msg 給使用者看的、可行動的訊息
+ * @param {object} [opts] { status = 500, where = "" }
+ */
+function failJson(res, e, msg, opts) {
+    const status = opts?.status || 500;
+    const ref = Math.random().toString(36).slice(2, 8).toUpperCase();
+    console.error(`[err ${ref}]${opts?.where ? " " + opts.where : ""}`, e?.stack || e);
+    res.status(status).json({ error: msg, ref, detail: safeErrDetail(e) });
+}
+
 exports.SF_ICONS = SF_ICONS;
 exports.sfInlineIcon = sfInlineIcon;
 exports.escapeHtml = escapeHtml;
 exports.escapeAttr = escapeAttr;
 exports.escJsStr = escJsStr;
+exports.failJson = failJson;
+exports.safeErrDetail = safeErrDetail;

@@ -12,6 +12,7 @@ const bot_sdk_1 = require("@line/bot-sdk");
 const index_js_1 = require("../db/index.js");
 const parse_order_message_js_1 = require("../lib/parse-order-message.js");
 const audit_js_1 = require("../lib/audit.js");
+const async_router_js_1 = require("../lib/async-router.js");
 const resolve_product_js_1 = require("../lib/resolve-product.js");
 const id_js_1 = require("../lib/id.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
@@ -179,6 +180,11 @@ const { normalizeOrderUnit, insertOrderRowWithSplitMeta, findPriorOrderForLineMe
 const { markSameDayMainOrdersAsSplitBase, findSplitTargetOrderId, isSplitKeyUniqueConflict } = require("../lib/order-split.js");
 function createLineWebhook() {
     const router = express_1.default.Router();
+    // [fix 2026-09-01 體檢] 與 admin/liff 同一份 async 錯誤網：未捕捉的 rejection
+    // 在 Node 20 會直接終止程序（Cloud Run 重啟、進行中的請求一起死）。
+    // ⚠ 注意這行必須在 @line/bot-sdk 的 middleware(lineConfig) 掛上之前執行，
+    //    才包得到它與後面所有 handler。
+    (0, async_router_js_1.wrapRouterAsync)(router);
     const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
     const db = (0, index_js_1.getDb)(dbPath);
     // [fix 2026-07-28 §一A5/A6] 收單失敗告警閉環（notifyOps 內含 10 分鐘去重，發不出去不影響主流程）

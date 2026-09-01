@@ -46,6 +46,7 @@ const index_js_1 = require("../db/index.js");
 const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./_shared.js");
 const id_js_1 = require("../lib/id.js");
 const audit_js_1 = require("../lib/audit.js");
+const async_router_js_1 = require("../lib/async-router.js");
 const parse_order_message_js_1 = require("../lib/parse-order-message.js");
 const resolve_product_js_1 = require("../lib/resolve-product.js");
 const vision_ocr_js_1 = require("../lib/vision-ocr.js");
@@ -2897,25 +2898,9 @@ function createAdminRouter() {
     // 或請求永遠 hang。這裡攔截 router 的動詞方法與 use，把每個 handler 用 Promise.resolve().catch(next) 包起來，
     // 讓錯誤轉交 dist/index.js:225 的全域錯誤中介層（回 500 頁）而不是 crash / hang。
     // length >= 4 的錯誤中介層 (err,req,res,next) 不包；同步 middleware 不回傳 promise，包了也透明無副作用。
-    for (const _m of ["get", "post", "put", "delete", "patch", "all", "use"]) {
-        const _orig = router[_m].bind(router);
-        router[_m] = function (...args) {
-            const wrapped = args.map((h) => (typeof h === "function" && h.length < 4)
-                ? function (req, res, next) {
-                    try {
-                        const r = h(req, res, next);
-                        if (r && typeof r.then === "function")
-                            r.catch(next);
-                        return r;
-                    }
-                    catch (e) {
-                        next(e);
-                    }
-                }
-                : h);
-            return _orig(...wrapped);
-        };
-    }
+    // [refactor 2026-09-01] 實作抽到 dist/lib/async-router.js，liff / webhook 兩個
+    // router 也套上同一份（原本只有 admin 有這層網）。
+    (0, async_router_js_1.wrapRouterAsync)(router);
     const db = (0, index_js_1.getDb)(dbPath);
     // [UX 2026-07-19 C] 記住上次選的公司、跨庫存頁沿用：解決「松揚員工每進一頁先切一次公司、
     // 且各頁預設不一致（stock/settings 預設 00、adjustments/barcodes/expiry 預設 02）」。
