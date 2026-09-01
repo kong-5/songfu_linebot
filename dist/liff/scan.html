@@ -277,7 +277,7 @@
     }
   }
 
-  var S={idToken:null,name:'',icpno:'02',wh:null,date:'',items:[],itemIdx:{},counts:{},order:[],
+  var S={idToken:null,gid:'',name:'',icpno:'02',wh:null,date:'',items:[],itemIdx:{},counts:{},order:[],
          barcodes:{},cur:null,scanning:false,stream:null,detector:null,zreader:null,engine:'',extra:{},
          kpOpen:false,kpFresh:false,savedMeta:{}};
 
@@ -287,6 +287,14 @@
   // 掃一小時後送出必 401 只 alert「送出失敗」。草稿已自動落地，續登跳轉後接回。
   function flushDraftNow(){ if(!S.wh)return; try{localStorage.setItem(draftKey(),JSON.stringify({counts:S.counts,order:S.order,extra:S.extra}));}catch(_){} }
   function freshToken(){ try{var t=liff.getIDToken(); if(t) S.idToken=t;}catch(_){} return S.idToken||''; }
+  // [security 2026-09-01] 見 stocktake.html 同段註解與 lib/stocktake-access.js。
+  // WEB 模式走後台 cookie，不需要這組 header。
+  function H(extra){
+    var h={'Authorization':'Bearer '+freshToken()};
+    if(S.gid) h['X-Stk-Group']=S.gid;
+    if(extra) for(var k in extra) h[k]=extra[k];
+    return h;
+  }
   function relogin(){
     flushDraftNow();
     if(WEB){
@@ -372,11 +380,11 @@
   }
   function api(path){
     if(WEB) return fetch(path,{credentials:'same-origin'}).then(_handleRes);
-    return fetch(path,{headers:{'Authorization':'Bearer '+freshToken()}}).then(_handleRes);
+    return fetch(path,{headers:H()}).then(_handleRes);
   }
   function post(path,body){
     if(WEB) return fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(_handleRes);
-    return fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+freshToken()},body:JSON.stringify(body)}).then(_handleRes);
+    return fetch(path,{method:'POST',headers:H({'Content-Type':'application/json'}),body:JSON.stringify(body)}).then(_handleRes);
   }
   function showCenter(html){app.innerHTML='<div class="center">'+html+'</div>';}
   function coName(){return COMPANY[S.icpno]||('公司'+S.icpno);}
@@ -443,6 +451,7 @@
     liff.init({liffId:LIFF_ID}).then(function(){
       if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}
       S.idToken=liff.getIDToken();
+      try{ var ctx=liff.getContext(); if(ctx&&ctx.groupId) S.gid=ctx.groupId; }catch(_){}
       return liff.getProfile().then(function(pr){S.name=(pr&&pr.displayName)||'';}).catch(function(){});
     }).then(function(){showPicker();})
     .catch(function(e){showCenter('<div>⚠ LIFF 初始化失敗</div><div style="font-size:12px;color:var(--txt-3)">'+esc(e&&e.message||e)+'</div>');});
@@ -904,7 +913,7 @@
   function repFetch(wh,date,page){
     var u=apiUrl('report.jpg')+'?warehouse='+encodeURIComponent(wh)+'&date='+encodeURIComponent(date)
       +'&icpno='+encodeURIComponent(S.icpno)+'&page='+page+'&_='+Date.now();
-    var opt=WEB?{credentials:'same-origin'}:{headers:{'Authorization':'Bearer '+freshToken()}};
+    var opt=WEB?{credentials:'same-origin'}:{headers:H()};
     return fetch(u,opt).then(function(r){
       if(!r.ok) throw new Error('HTTP '+r.status);
       var n=Number(r.headers.get('X-Report-Pages')||1)||1;
