@@ -59,7 +59,21 @@ git clone --mirror git@github.com:kong-5/songfu_linebot.git songfu_backup_$(date
 通知所有成員：**把手上的 branch 推上去或先存 patch**，清除後舊 clone 不能再用。
 也要確認沒有開著的 PR（清除後 PR 的 base 會對不上，需重開）。
 
-### 步驟 3：用 git-filter-repo 清除
+### 步驟 2.5：先知道會動到多少東西（2026-09-01 實測）
+
+- 這個 repo 有 **64 個遠端分支**。資料從 `bca216d` 進來後存在於整條歷史，
+  所以 `--mirror` 推送會**改寫全部 64 個分支的 commit SHA**，不只 main。
+- main 只有 50 個 commit、`.git` 約 3.9 MB，改寫本身**約 1 秒**，不用擔心跑很久。
+- **main 若有分支保護（禁止 force push）要先暫時關掉**，推完再開回來。
+- 當時開著的 PR（例如體檢那支 #168）head 也會被改寫，PR 會指到新的 commit。
+
+### 步驟 3：清除歷史
+
+兩種做法擇一。**優先用 git-filter-repo**（官方建議、較安全）；
+裝不了的話用內建 `filter-branch`（下面那組指令 2026-09-01 已在真實歷史上演練過，
+61 個 commit 全部改寫成功、檔案確實消失）。
+
+#### 做法 A：git-filter-repo（建議）
 
 `git filter-branch` 已被官方棄用且極慢，用 `git-filter-repo`：
 
@@ -85,6 +99,42 @@ git filter-repo --invert-paths \
 ```bash
 git log --all --oneline -- cloudsql_export_data_20260323_132005.sql | wc -l
 git log --all --oneline -- data/songfu.db | wc -l
+```
+
+#### 做法 B：內建 git filter-branch（裝不了 filter-repo 時）
+
+`filter-branch` 官方已不建議使用，但這個 repo 很小、路徑也單純，實際跑起來沒問題。
+**2026-09-01 已在真實歷史上演練驗證過**（61 個 commit、約 1 秒、檔案確實從各分支消失）。
+
+```bash
+git clone --mirror git@github.com:kong-5/songfu_linebot.git songfu_clean.git
+cd songfu_clean.git
+
+export FILTER_BRANCH_SQUELCH_WARNING=1
+git filter-branch --force --index-filter \
+  'git rm --cached --ignore-unmatch -q \
+     cloudsql_export_data_20260323_132005.sql \
+     data/songfu.db data/songfu.db-shm data/songfu.db-wal \
+     .DS_Store dist/.DS_Store \
+     .claude/worktrees/nostalgic-wescoff-2974af' \
+  --prune-empty --tag-name-filter cat -- --all
+```
+
+⚠ **filter-branch 會把改寫前的 refs 備份在 `refs/original/`，那裡面還有完整的舊資料。**
+演練時就是因為這個，驗證指令一開始還會查到 2 筆命中。**一定要刪掉再 gc**：
+
+```bash
+git for-each-ref --format='%(refname)' refs/original | xargs -n1 git update-ref -d
+git reflog expire --expire=now --all
+git gc --prune=now --aggressive
+```
+
+再驗證（這時才會是 0）：
+
+```bash
+git log --all --oneline -- cloudsql_export_data_20260323_132005.sql data/songfu.db | wc -l
+# 也可以直接找客戶名確認：應該沒有任何輸出
+git grep -l "蘭嶼高中" $(git rev-list --all) 2>/dev/null
 ```
 
 ### 步驟 4：推回去
