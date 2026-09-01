@@ -47,6 +47,7 @@ const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./
 const id_js_1 = require("../lib/id.js");
 const audit_js_1 = require("../lib/audit.js");
 const async_router_js_1 = require("../lib/async-router.js");
+const xlsx_safe_js_1 = require("../lib/xlsx-safe.js");
 const parse_order_message_js_1 = require("../lib/parse-order-message.js");
 const resolve_product_js_1 = require("../lib/resolve-product.js");
 const vision_ocr_js_1 = require("../lib/vision-ocr.js");
@@ -4500,7 +4501,9 @@ function parseCsvLine(line) {
 }
 function parseRequestToSheet(req) {
     if (req.file?.buffer) {
-        const wb = XLSX.read(req.file.buffer, { type: "buffer" });
+        // [security 2026-09-01] xlsx@0.18.5 有 prototype pollution CVE（見 lib/xlsx-safe.js）。
+        // 這是全專案唯一一處「解析使用者上傳的檔案」，包一層污染偵測。
+        const wb = (0, xlsx_safe_js_1.readWorkbookSafe)(req.file.buffer);
         const sheetName = wb.SheetNames[0];
         if (!sheetName)
             return null;

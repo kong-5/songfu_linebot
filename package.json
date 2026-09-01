@@ -5,11 +5,11 @@
   "main": "dist/index.js",
   "scripts": {
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts",
     "test": "node --test test/*.test.js",
     "smoke:pg": "node scripts/pg-smoke.js",
     "lint": "eslint \"dist/**/*.js\" \"test/*.js\" \"scripts/*.js\"",
-    "deploy": "node scripts/deploy-cloud-run.mjs"
+    "deploy": "node scripts/deploy-cloud-run.mjs",
+    "dev": "node --watch dist/index.js"
   },
   "engines": {
     "node": ">=20"
@@ -36,12 +36,6 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
-    "@types/express": "^4.17.21",
-    "@types/multer": "^2.0.0",
-    "@types/node": "^20.14.0",
-    "eslint": "^8.57.0",
-    "tsx": "^4.19.2",
-    "typescript": "^5.5.0"
+    "eslint": "^8.57.0"
   }
 }
