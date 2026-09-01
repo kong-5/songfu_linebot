@@ -22,6 +22,7 @@ exports.submitStocktake = submitStocktake;
  */
 const { newId } = require("./id.js");
 const stock_future_js_1 = require("./stock-future.js");
+const audit_js_1 = require("./audit.js");
 
 function StkApiError(httpStatus, message, code) {
     const e = new Error(message);
@@ -210,6 +211,9 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
             if (curAtInTx !== baseSubmittedAt) {
                 throw StkApiError(409, "開頁後已有他人送出此倉盤點，請重載後續盤再送出", "conflict_stale");
             }
+            // [fix 2026-09-01 體檢] 送出＝整場覆蓋（DELETE 再 INSERT）。覆蓋前先取前一場次摘要，
+            // 否則「今天這倉本來誰盤的、盤了幾項」在覆盤後就永遠查不到了。
+            const prevSession = await tx.prepare(`SELECT id, created_by, created_by_name, item_count, counted_count, submitted_at FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).get(whCode, date, icpno);
             await tx.prepare(`DELETE FROM stocktake_count WHERE session_id IN (SELECT id FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?)`).run(whCode, date, icpno);
             await tx.prepare(`DELETE FROM stocktake_session WHERE wh_code = ? AND count_date = ? AND ${ICP} = ?`).run(whCode, date, icpno);
             await tx.prepare("INSERT INTO stocktake_session (id, wh_code, wh_name, count_date, status, group_id, created_by, created_by_name, item_count, counted_count, created_at, submitted_at, icpno) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -222,6 +226,30 @@ async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, creat
                 for (const row of chunk) params.push(...row);
                 await tx.prepare("INSERT INTO stocktake_count (id, session_id, erp_code, name, spec, unit, sys_qty, counted_qty, mid_qty, expiry_json, updated_at, future_qty) VALUES " + ph).run(...params);
             }
+            // 守則 #3：盤點是現在的主力業務，送出卻一直沒有 data_change_log。
+            // 與主寫入同交易（writeAudit 會 throw）＝寫不進去就整批 ROLLBACK，
+            // 不會出現「盤點覆蓋了、軌跡沒留」。
+            await (0, audit_js_1.writeAudit)(tx, {
+                entityType: "stocktake_session", entityId: sid,
+                action: prevSession ? "submit_overwrite" : "submit",
+                summary: prevSession
+                    ? `盤點送出（覆蓋 ${String(prevSession.created_by_name || prevSession.created_by || "他人")} 於 ${prevSession.submitted_at || "?"} 的同倉同日盤點）`
+                    : "盤點送出",
+                meta: {
+                    icpno, wh_code: whCode, wh_name: wh ? String(wh.name || "") : "", count_date: date,
+                    item_count: total, counted_count: counts.length,
+                    created_by: createdBy || "", created_by_name: String(createdByName || "").trim(),
+                    overwrote: prevSession ? {
+                        session_id: prevSession.id,
+                        created_by: prevSession.created_by || null,
+                        created_by_name: prevSession.created_by_name || null,
+                        item_count: prevSession.item_count,
+                        counted_count: prevSession.counted_count,
+                        submitted_at: prevSession.submitted_at || null,
+                    } : null,
+                },
+                actor: createdBy || "unknown",
+            });
         };
         if (typeof db.transaction === "function") await db.transaction(doWrite);
         else await doWrite(db);
