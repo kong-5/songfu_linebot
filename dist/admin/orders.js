@@ -19,9 +19,33 @@ const order_split_js_1 = require("../lib/order-split.js");
 const rebuild_order_from_sources_js_1 = require("../lib/rebuild-order-from-sources.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
 const customer_handwriting_hints_js_1 = require("../lib/customer-handwriting-hints.js");
+const audit_js_1 = require("../lib/audit.js");
 const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./_shared.js");
 
 function registerOrdersRoutes(router, ctx) {
+    // [fix 2026-09-01 體檢] 「增加品項」表單重送就多一列品項（表單重新整理、上一頁再送、
+    // 網路重試）。不能用「同單同品同量就去重」那種時間窗——CLAUDE.md 明載「同名同量分次
+    // 加叫是合法的」，去重會吃掉真實的加叫。改用一次性表單 token：只擋「同一張表單送兩次」，
+    // 不擋「刻意再加一次」（那會是另一張表單、另一個 token）。
+    // 存記憶體即可：max-instances=1 是本專案不變式（cloudbuild 釘死），且重啟後最多讓一次
+    // 陳年重送通過，代價可接受。上限 2000 筆，滿了砍最舊半批。
+    const usedAddItemTokens = new Set();
+    function issueAddItemToken() {
+        const t = (0, id_js_1.newId)("aif");
+        usedAddItemTokens.add(t);
+        if (usedAddItemTokens.size > 2000) {
+            const half = Math.floor(usedAddItemTokens.size / 2);
+            let i = 0;
+            for (const k of usedAddItemTokens) { usedAddItemTokens.delete(k); if (++i >= half) break; }
+        }
+        return t;
+    }
+    /** 消費 token：第一次回 true，之後（重送）回 false */
+    function consumeAddItemToken(t) {
+        const k = String(t || "").trim();
+        if (!k) return false;
+        return usedAddItemTokens.delete(k);
+    }
     const { db, notionPage, logDataChange, loadAdminUsers, getTaipeiCalendarDateYYYYMMDD, fmtTaipeiYMDHM, fmtTaipeiMMDDHHmm, voidReasonModalHtml, formatOrderDateForLingyue, rebuildOrderItemsFromRawText, ORDER_LINE_UNITS } = ctx;
     router.get("/orders", async (req, res) => {
         try {
@@ -1555,6 +1579,12 @@ function registerOrdersRoutes(router, ctx) {
                 res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?err=" + encodeURIComponent(msg));
                 return;
             }
+            // [fix 2026-09-01 體檢] 兩段式：先在交易外把每一列的最終值算完（單位換算會 await
+            // 讀 DB，SQLite 同步交易內不能 await 外部 I/O——這是全專案的既有慣例），
+            // 再進交易一次寫完＋同交易寫稽核。
+            // 舊版是「逐項 UPDATE、無交易、零稽核」：中途失敗＝半套改好半套沒改，而且這是後台
+            // 改單最常用的路徑，出貨數量對不上時完全查不到是誰在什麼時候改的。
+            const plans = [];
             for (const row of existingItems) {
                 const itemId = row.id;
                 // [fix 2026-07-08] 只更新「表單有送出欄位」的品項。作廢品項在明細頁不會渲染
@@ -1594,13 +1624,59 @@ function registerOrdersRoutes(router, ctx) {
                         ? (prevRemark.includes(originTag) ? prevRemark : (prevRemark + "；" + originTag))
                         : originTag;
                 }
-                await db.prepare("UPDATE order_items SET quantity = ?, unit = ?, remark = ?, sub_customer = ?, include_export = 1 WHERE id = ? AND order_id = ?").run(nextQty, nextUnit, nextRemark || null, subCustomerInput || null, itemId, orderId);
                 const ordRaw = body["ord_" + row.id];
                 const ordNum = parseInt(String(ordRaw || ""), 10);
-                if (Number.isFinite(ordNum) && ordNum > 0) {
-                    await db.prepare("UPDATE order_items SET display_order = ? WHERE id = ? AND order_id = ?").run(ordNum, row.id, orderId);
-                }
+                plans.push({
+                    itemId, orderId,
+                    name: String(row.raw_name || "").trim() || ("品項#" + itemId),
+                    nextQty, nextUnit,
+                    nextRemark: nextRemark || null,
+                    subCustomer: subCustomerInput || null,
+                    displayOrder: (Number.isFinite(ordNum) && ordNum > 0) ? ordNum : null,
+                    before: {
+                        quantity: Number.isFinite(Number(row.quantity)) ? Number(row.quantity) : null,
+                        unit: String(row.unit || "").trim() || null,
+                        remark: String(row.remark || "").trim() || null,
+                        sub_customer: String(row.sub_customer || "").trim() || null,
+                    },
+                });
             }
+
+            // 只挑「真的有變」的欄位進稽核 meta：全部塞進去的話，每次按儲存都會產生一大包
+            // 沒有資訊量的 before/after，反而讓事後查帳的人找不到重點。
+            const changes = [];
+            for (const p of plans) {
+                const after = { quantity: p.nextQty, unit: p.nextUnit, remark: p.nextRemark, sub_customer: p.subCustomer };
+                const diff = {};
+                for (const k of ["quantity", "unit", "remark", "sub_customer"]) {
+                    if (p.before[k] !== after[k]) diff[k] = { before: p.before[k], after: after[k] };
+                }
+                if (Object.keys(diff).length) changes.push({ item_id: p.itemId, name: p.name, ...diff });
+            }
+
+            const applyItems = async (h) => {
+                for (const p of plans) {
+                    await h.prepare("UPDATE order_items SET quantity = ?, unit = ?, remark = ?, sub_customer = ?, include_export = 1 WHERE id = ? AND order_id = ?")
+                        .run(p.nextQty, p.nextUnit, p.nextRemark, p.subCustomer, p.itemId, p.orderId);
+                    if (p.displayOrder != null) {
+                        await h.prepare("UPDATE order_items SET display_order = ? WHERE id = ? AND order_id = ?")
+                            .run(p.displayOrder, p.itemId, p.orderId);
+                    }
+                }
+                // 守則 #3：稽核與主寫入同交易——寫不進去就整批 ROLLBACK，
+                // 不會出現「明細改了、軌跡沒留」。沒有任何欄位變動時不留空紀錄。
+                if (changes.length) {
+                    await (0, audit_js_1.writeAudit)(h, {
+                        entityType: "order", entityId: orderId, action: "update_items",
+                        summary: `後台修改訂單明細（${changes.length} 項變更）`,
+                        meta: { source: "admin:orders/items", changes: changes.slice(0, 200) },
+                        actor: req.adminUsername || "",
+                    });
+                }
+            };
+            if (typeof db.transaction === "function") await db.transaction(applyItems);
+            else await applyItems(db);
+
             try {
                 await customer_handwriting_hints_js_1.recordHandwritingHintsForOrder(db, orderId);
             }
@@ -1813,6 +1889,7 @@ function registerOrdersRoutes(router, ctx) {
         <h1 class="notion-page-title">增加品項</h1>
         <div class="notion-card">
           <form method="post" action="/admin/orders/${encodeURIComponent(orderId)}/items/add" id="addItemForm" onsubmit="if(this.dataset.submitting)return false;this.dataset.submitting='1';return true;">
+            <input type="hidden" name="form_token" value="${escapeAttr(issueAddItemToken())}" />
             <div class="review-product-picker" style="position:relative;max-width:520px;margin-bottom:14px;">
               <label style="display:block;margin-bottom:6px;font-weight:500;">品項（打字搜尋，支援模糊比對）</label>
               <input type="text" class="review-product-search" autocomplete="off" placeholder="輸入品名、料號或條碼…" style="width:100%;box-sizing:border-box;padding:8px 12px;" />
@@ -1893,13 +1970,21 @@ function registerOrdersRoutes(router, ctx) {
             res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "/items/add?err=product");
             return;
         }
+        // 冪等：一次性 token。重送（重新整理／上一頁再送／網路重試）不再多一列品項。
+        if (!consumeAddItemToken(req.body.form_token)) {
+            console.warn("[admin] items/add 重複送出已忽略 order=%s product=%s", orderId, productId);
+            res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=add_item#items");
+            return;
+        }
         const itemId = (0, id_js_1.newId)("item");
-        await db.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer, confidence_score) VALUES (?, ?, ?, ?, ?, ?, 0, 1, NULL, 100)").run(itemId, orderId, productId, product.name, qty, unit);
         // 插入位置：after_item_id = 要插在哪一項之後（沒帶或找不到 → 排最後）。
         // 全部重編 display_order（既有品項可能從未存過排序、display_order 皆為 NULL）。
-        try {
-            const afterItemId = String(req.body.after_item_id || "").trim();
-            const ordered = await db.prepare("SELECT id FROM order_items WHERE order_id = ? AND voided_at IS NULL ORDER BY COALESCE(display_order, 999999), id").all(orderId);
+        // [fix 2026-09-01 體檢] INSERT 與整張單的排序重編要同交易：舊版排序在 try/catch 裡
+        // 只 log 不回滾，失敗就留下「品項加了、順序亂掉」的半套狀態。稽核也一併進交易。
+        const afterItemId = String(req.body.after_item_id || "").trim();
+        const ordered = await db.prepare("SELECT id FROM order_items WHERE order_id = ? AND voided_at IS NULL ORDER BY COALESCE(display_order, 999999), id").all(orderId);
+        const doAdd = async (h) => {
+            await h.prepare("INSERT INTO order_items (id, order_id, product_id, raw_name, quantity, unit, need_review, include_export, sub_customer, confidence_score) VALUES (?, ?, ?, ?, ?, ?, 0, 1, NULL, 100)").run(itemId, orderId, productId, product.name, qty, unit);
             const ids = ordered.map((r) => r.id).filter((x) => x !== itemId);
             let insertAt = ids.length;
             if (afterItemId) {
@@ -1908,12 +1993,18 @@ function registerOrdersRoutes(router, ctx) {
             }
             ids.splice(insertAt, 0, itemId);
             for (let i = 0; i < ids.length; i++) {
-                await db.prepare("UPDATE order_items SET display_order = ? WHERE id = ? AND order_id = ?").run(i + 1, ids[i], orderId);
+                await h.prepare("UPDATE order_items SET display_order = ? WHERE id = ? AND order_id = ?").run(i + 1, ids[i], orderId);
             }
-        }
-        catch (e) {
-            console.error("[admin] items/add 排序重編失敗（品項已新增，僅落在最後）:", e?.message || e);
-        }
+            await (0, audit_js_1.writeAudit)(h, {
+                entityType: "order", entityId: orderId, action: "add_item",
+                productId,
+                summary: `後台新增品項「${product.name}」${qty}${unit}`,
+                meta: { source: "admin:orders/items/add", item_id: itemId, product_id: productId, name: product.name, quantity: qty, unit, after_item_id: afterItemId || null },
+                actor: req.adminUsername || "",
+            });
+        };
+        if (typeof db.transaction === "function") await db.transaction(doAdd);
+        else await doAdd(db);
         res.redirect("/admin/orders/" + encodeURIComponent(orderId) + "?ok=add_item#items");
     });
     router.get("/orders/:orderId/order-sheet", async (req, res) => {
