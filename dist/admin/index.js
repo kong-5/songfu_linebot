@@ -3110,31 +3110,65 @@ function createAdminRouter() {
     // 這層擋的是無腦線上爆破。成功登入即清零。
     const loginFails = new Map(); // key → { n, until }
     const LOGIN_FAIL_MAX = 10, LOGIN_FAIL_WINDOW_MS = 10 * 60 * 1000;
-    function loginThrottleKey(req, username) {
-        const ip = String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim();
-        return username + "|" + ip;
+    // [fix 2026-09-01 體檢] 舊版節流可以用一個 header 完全繞過：
+    //   (a) key 取 X-Forwarded-For 的「第一段」＝完全由用戶端自填，每次換一個值就換一把 key
+    //   (b) loginFails.size > 1000 時整個 clear()，攻擊者塞 1000 把假 key 就能清空所有計數
+    // 兩個一起用，線上密碼爆破等於沒有節流。修法：
+    //   1. XFF 改取「最後一段」——那是 Cloud Run 附加上去的，用戶端偽造不了前面幾段的位置
+    //   2. 另開一條「只看帳號、不看 IP」的計數：換 IP 也擋得住（這條才是真正防爆破的）
+    //   3. 滿了改成淘汰最舊的一批（Map 保有插入順序），不再一次清光
+    const LOGIN_FAIL_MAX_USER = 20; // 帳號層級放寬一點：太嚴會被人用「一直打錯」鎖住同事的帳號
+    const LOGIN_FAILS_CAP = 5000;
+    function clientIpForThrottle(req) {
+        const xff = String(req.headers["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean);
+        if (xff.length) return xff[xff.length - 1];
+        return String(req.ip || "").trim();
+    }
+    function loginThrottleKeys(req, username) {
+        return {
+            ip: "ip|" + username + "|" + clientIpForThrottle(req),
+            user: "user|" + username,   // 不含 IP：換 IP 重來也躲不掉
+        };
+    }
+    function throttleBlocked(keys) {
+        const now = Date.now();
+        const a = loginFails.get(keys.ip);
+        if (a && a.n >= LOGIN_FAIL_MAX && now < a.until) return true;
+        const b = loginFails.get(keys.user);
+        if (b && b.n >= LOGIN_FAIL_MAX_USER && now < b.until) return true;
+        return false;
+    }
+    function bumpLoginFail(k) {
+        const cur = loginFails.get(k) || { n: 0, until: 0 };
+        cur.n += 1;
+        cur.until = Date.now() + LOGIN_FAIL_WINDOW_MS;
+        loginFails.delete(k);      // 重新 set 讓它移到 Map 尾端＝最近使用
+        loginFails.set(k, cur);
+        if (loginFails.size > LOGIN_FAILS_CAP) {
+            // 淘汰最舊的一成，而不是 clear()——否則塞爆就等於解鎖
+            const drop = Math.floor(LOGIN_FAILS_CAP / 10);
+            let i = 0;
+            for (const key of loginFails.keys()) { loginFails.delete(key); if (++i >= drop) break; }
+        }
     }
     router.post("/login", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const users = await loadAdminUsers();
         const username = (req.body.username || "").trim();
         const password = (req.body.password || "").toString();
-        const tkey = loginThrottleKey(req, username);
-        const rec = loginFails.get(tkey);
-        if (rec && rec.n >= LOGIN_FAIL_MAX && Date.now() < rec.until) {
+        const tkeys = loginThrottleKeys(req, username);
+        if (throttleBlocked(tkeys)) {
             res.redirect("/admin/login?err=throttled");
             return;
         }
         const u = users.find((x) => x.username === username);
         if (!u || !verifyAdminPassword(password, u.passwordHash)) {
-            const cur = loginFails.get(tkey) || { n: 0, until: 0 };
-            cur.n += 1;
-            cur.until = Date.now() + LOGIN_FAIL_WINDOW_MS;
-            loginFails.set(tkey, cur);
-            if (loginFails.size > 1000) loginFails.clear(); // 簡單上限防記憶體累積
+            bumpLoginFail(tkeys.ip);
+            bumpLoginFail(tkeys.user);
             res.redirect("/admin/login?err=1");
             return;
         }
-        loginFails.delete(tkey);
+        loginFails.delete(tkeys.ip);
+        loginFails.delete(tkeys.user);
         if (u.status === "disabled") {
             res.redirect("/admin/login?disabled=1");
             return;
@@ -3175,6 +3209,31 @@ function createAdminRouter() {
             }
             req.adminUsername = "lingyue-writeback-agent";
             return next();
+        }
+        // [security 2026-09-01 體檢] CSRF：全站沒有 CSRF token，唯一防線是 cookie 的
+        // SameSite=Lax。Lax 擋得住跨站的自動表單 POST，但擋不住 GET 型破壞性操作
+        // （pathLooksLikeDelete 自承系統存在 GET + /delete 的模式，Lax 對跨站 top-level
+        // GET 導航是會帶 cookie 的），舊版 Safari／某些 WebView 也可能把 Lax 當 None。
+        // 這裡加一道低成本的同源檢查，覆蓋所有既有表單、不用改任何一頁：
+        //   - 有 Origin → 必須同源
+        //   - 沒有 Origin 但有 Referer → 用 Referer 比對
+        //   - 兩者都沒有 → 放行（curl／內網代理等非瀏覽器客戶端；CSRF 要有瀏覽器才成立）
+        // 機器端點（/lingyue-writeback/*）在上面的分支已經 return，不會走到這裡。
+        if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+            const host = String(req.headers.host || "").trim();
+            const origin = String(req.headers.origin || "").trim();
+            const referer = String(req.headers.referer || "").trim();
+            const hostOf = (u) => { try { return new URL(u).host; } catch (_) { return null; } };
+            const src = origin || referer;
+            if (src && host) {
+                const srcHost = hostOf(src);
+                if (srcHost && srcHost !== host) {
+                    console.warn("[admin] 擋下跨站寫入請求 path=%s origin=%s host=%s", pathname, src, host);
+                    res.status(403).type("text/plain")
+                        .send("跨站請求已被阻擋。請直接從後台頁面操作，不要從其他網站送出表單。");
+                    return;
+                }
+            }
         }
         if (pathname === "/login" && req.method === "GET")
             return next();
