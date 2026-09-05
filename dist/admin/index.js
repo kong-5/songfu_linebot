@@ -45,6 +45,9 @@ const index_js_1 = require("../db/index.js");
 // [refactor 2026-07-18 批次1] 無狀態表現層 helper 抽到同層 _shared.js（拆分大檔第一步）。
 const { SF_ICONS, sfInlineIcon, escapeHtml, escapeAttr, escJsStr } = require("./_shared.js");
 const id_js_1 = require("../lib/id.js");
+const audit_js_1 = require("../lib/audit.js");
+const async_router_js_1 = require("../lib/async-router.js");
+const xlsx_safe_js_1 = require("../lib/xlsx-safe.js");
 const parse_order_message_js_1 = require("../lib/parse-order-message.js");
 const resolve_product_js_1 = require("../lib/resolve-product.js");
 const vision_ocr_js_1 = require("../lib/vision-ocr.js");
@@ -2896,25 +2899,9 @@ function createAdminRouter() {
     // 或請求永遠 hang。這裡攔截 router 的動詞方法與 use，把每個 handler 用 Promise.resolve().catch(next) 包起來，
     // 讓錯誤轉交 dist/index.js:225 的全域錯誤中介層（回 500 頁）而不是 crash / hang。
     // length >= 4 的錯誤中介層 (err,req,res,next) 不包；同步 middleware 不回傳 promise，包了也透明無副作用。
-    for (const _m of ["get", "post", "put", "delete", "patch", "all", "use"]) {
-        const _orig = router[_m].bind(router);
-        router[_m] = function (...args) {
-            const wrapped = args.map((h) => (typeof h === "function" && h.length < 4)
-                ? function (req, res, next) {
-                    try {
-                        const r = h(req, res, next);
-                        if (r && typeof r.then === "function")
-                            r.catch(next);
-                        return r;
-                    }
-                    catch (e) {
-                        next(e);
-                    }
-                }
-                : h);
-            return _orig(...wrapped);
-        };
-    }
+    // [refactor 2026-09-01] 實作抽到 dist/lib/async-router.js，liff / webhook 兩個
+    // router 也套上同一份（原本只有 admin 有這層網）。
+    (0, async_router_js_1.wrapRouterAsync)(router);
     const db = (0, index_js_1.getDb)(dbPath);
     // [UX 2026-07-19 C] 記住上次選的公司、跨庫存頁沿用：解決「松揚員工每進一頁先切一次公司、
     // 且各頁預設不一致（stock/settings 預設 00、adjustments/barcodes/expiry 預設 02）」。
@@ -2936,16 +2923,12 @@ function createAdminRouter() {
         catch (_) { /* 無 cookie／解析失敗→用該頁預設 */ }
         return fb;
     }
+    // 稽核軌跡的實作已收斂到 dist/lib/audit.js（單一權威）。這裡保留同名同簽章的
+    // 薄包裝，26 個域檔透過 ctx 拿到的還是 logDataChange(req, opts)，呼叫處不用改。
+    // ⚠ 這條路徑是「主寫入 commit 後才補軌跡」＝失敗只留 log。要讓軌跡與主寫入
+    //   同生共死，請在交易內改用 writeAudit(h, {...})，見 lib/audit.js 開頭說明。
     async function logDataChange(req, opts) {
-        const logId = (0, id_js_1.newId)("dcl");
-        const actor = req.adminUsername || "";
-        const metaJson = opts.meta != null ? JSON.stringify(opts.meta) : null;
-        try {
-            await db.prepare(`INSERT INTO data_change_log (id, entity_type, entity_id, product_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`).run(logId, opts.entityType, opts.entityId, opts.productId ?? null, opts.action, opts.summary ?? null, metaJson, actor);
-        }
-        catch (e) {
-            console.error("[admin] data_change_log insert failed", e);
-        }
+        return (0, audit_js_1.writeAuditSafe)(db, { ...opts, actor: req.adminUsername || "" });
     }
     // [fix 2026-07-18 稽核] 群組功能開關（辨識訂單/盤點/空籃）異動須留軌跡：開錯會漏單/漏盤。
     // 讀當前有效設定當 before，寫入後只在「真有變動」時記錄舊值→新值＋操作者。
@@ -3113,31 +3096,65 @@ function createAdminRouter() {
     // 這層擋的是無腦線上爆破。成功登入即清零。
     const loginFails = new Map(); // key → { n, until }
     const LOGIN_FAIL_MAX = 10, LOGIN_FAIL_WINDOW_MS = 10 * 60 * 1000;
-    function loginThrottleKey(req, username) {
-        const ip = String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim();
-        return username + "|" + ip;
+    // [fix 2026-09-01 體檢] 舊版節流可以用一個 header 完全繞過：
+    //   (a) key 取 X-Forwarded-For 的「第一段」＝完全由用戶端自填，每次換一個值就換一把 key
+    //   (b) loginFails.size > 1000 時整個 clear()，攻擊者塞 1000 把假 key 就能清空所有計數
+    // 兩個一起用，線上密碼爆破等於沒有節流。修法：
+    //   1. XFF 改取「最後一段」——那是 Cloud Run 附加上去的，用戶端偽造不了前面幾段的位置
+    //   2. 另開一條「只看帳號、不看 IP」的計數：換 IP 也擋得住（這條才是真正防爆破的）
+    //   3. 滿了改成淘汰最舊的一批（Map 保有插入順序），不再一次清光
+    const LOGIN_FAIL_MAX_USER = 20; // 帳號層級放寬一點：太嚴會被人用「一直打錯」鎖住同事的帳號
+    const LOGIN_FAILS_CAP = 5000;
+    function clientIpForThrottle(req) {
+        const xff = String(req.headers["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean);
+        if (xff.length) return xff[xff.length - 1];
+        return String(req.ip || "").trim();
+    }
+    function loginThrottleKeys(req, username) {
+        return {
+            ip: "ip|" + username + "|" + clientIpForThrottle(req),
+            user: "user|" + username,   // 不含 IP：換 IP 重來也躲不掉
+        };
+    }
+    function throttleBlocked(keys) {
+        const now = Date.now();
+        const a = loginFails.get(keys.ip);
+        if (a && a.n >= LOGIN_FAIL_MAX && now < a.until) return true;
+        const b = loginFails.get(keys.user);
+        if (b && b.n >= LOGIN_FAIL_MAX_USER && now < b.until) return true;
+        return false;
+    }
+    function bumpLoginFail(k) {
+        const cur = loginFails.get(k) || { n: 0, until: 0 };
+        cur.n += 1;
+        cur.until = Date.now() + LOGIN_FAIL_WINDOW_MS;
+        loginFails.delete(k);      // 重新 set 讓它移到 Map 尾端＝最近使用
+        loginFails.set(k, cur);
+        if (loginFails.size > LOGIN_FAILS_CAP) {
+            // 淘汰最舊的一成，而不是 clear()——否則塞爆就等於解鎖
+            const drop = Math.floor(LOGIN_FAILS_CAP / 10);
+            let i = 0;
+            for (const key of loginFails.keys()) { loginFails.delete(key); if (++i >= drop) break; }
+        }
     }
     router.post("/login", express_1.default.urlencoded({ extended: true }), async (req, res) => {
         const users = await loadAdminUsers();
         const username = (req.body.username || "").trim();
         const password = (req.body.password || "").toString();
-        const tkey = loginThrottleKey(req, username);
-        const rec = loginFails.get(tkey);
-        if (rec && rec.n >= LOGIN_FAIL_MAX && Date.now() < rec.until) {
+        const tkeys = loginThrottleKeys(req, username);
+        if (throttleBlocked(tkeys)) {
             res.redirect("/admin/login?err=throttled");
             return;
         }
         const u = users.find((x) => x.username === username);
         if (!u || !verifyAdminPassword(password, u.passwordHash)) {
-            const cur = loginFails.get(tkey) || { n: 0, until: 0 };
-            cur.n += 1;
-            cur.until = Date.now() + LOGIN_FAIL_WINDOW_MS;
-            loginFails.set(tkey, cur);
-            if (loginFails.size > 1000) loginFails.clear(); // 簡單上限防記憶體累積
+            bumpLoginFail(tkeys.ip);
+            bumpLoginFail(tkeys.user);
             res.redirect("/admin/login?err=1");
             return;
         }
-        loginFails.delete(tkey);
+        loginFails.delete(tkeys.ip);
+        loginFails.delete(tkeys.user);
         if (u.status === "disabled") {
             res.redirect("/admin/login?disabled=1");
             return;
@@ -3178,6 +3195,31 @@ function createAdminRouter() {
             }
             req.adminUsername = "lingyue-writeback-agent";
             return next();
+        }
+        // [security 2026-09-01 體檢] CSRF：全站沒有 CSRF token，唯一防線是 cookie 的
+        // SameSite=Lax。Lax 擋得住跨站的自動表單 POST，但擋不住 GET 型破壞性操作
+        // （pathLooksLikeDelete 自承系統存在 GET + /delete 的模式，Lax 對跨站 top-level
+        // GET 導航是會帶 cookie 的），舊版 Safari／某些 WebView 也可能把 Lax 當 None。
+        // 這裡加一道低成本的同源檢查，覆蓋所有既有表單、不用改任何一頁：
+        //   - 有 Origin → 必須同源
+        //   - 沒有 Origin 但有 Referer → 用 Referer 比對
+        //   - 兩者都沒有 → 放行（curl／內網代理等非瀏覽器客戶端；CSRF 要有瀏覽器才成立）
+        // 機器端點（/lingyue-writeback/*）在上面的分支已經 return，不會走到這裡。
+        if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+            const host = String(req.headers.host || "").trim();
+            const origin = String(req.headers.origin || "").trim();
+            const referer = String(req.headers.referer || "").trim();
+            const hostOf = (u) => { try { return new URL(u).host; } catch (_) { return null; } };
+            const src = origin || referer;
+            if (src && host) {
+                const srcHost = hostOf(src);
+                if (srcHost && srcHost !== host) {
+                    console.warn("[admin] 擋下跨站寫入請求 path=%s origin=%s host=%s", pathname, src, host);
+                    res.status(403).type("text/plain")
+                        .send("跨站請求已被阻擋。請直接從後台頁面操作，不要從其他網站送出表單。");
+                    return;
+                }
+            }
         }
         if (pathname === "/login" && req.method === "GET")
             return next();
@@ -4459,7 +4501,9 @@ function parseCsvLine(line) {
 }
 function parseRequestToSheet(req) {
     if (req.file?.buffer) {
-        const wb = XLSX.read(req.file.buffer, { type: "buffer" });
+        // [security 2026-09-01] xlsx@0.18.5 有 prototype pollution CVE（見 lib/xlsx-safe.js）。
+        // 這是全專案唯一一處「解析使用者上傳的檔案」，包一層污染偵測。
+        const wb = (0, xlsx_safe_js_1.readWorkbookSafe)(req.file.buffer);
         const sheetName = wb.SheetNames[0];
         if (!sheetName)
             return null;

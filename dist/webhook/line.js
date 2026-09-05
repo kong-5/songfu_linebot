@@ -11,6 +11,8 @@ const express_1 = __importDefault(require("express"));
 const bot_sdk_1 = require("@line/bot-sdk");
 const index_js_1 = require("../db/index.js");
 const parse_order_message_js_1 = require("../lib/parse-order-message.js");
+const audit_js_1 = require("../lib/audit.js");
+const async_router_js_1 = require("../lib/async-router.js");
 const resolve_product_js_1 = require("../lib/resolve-product.js");
 const id_js_1 = require("../lib/id.js");
 const line_bot_control_js_1 = require("../lib/line-bot-control.js");
@@ -178,6 +180,11 @@ const { normalizeOrderUnit, insertOrderRowWithSplitMeta, findPriorOrderForLineMe
 const { markSameDayMainOrdersAsSplitBase, findSplitTargetOrderId, isSplitKeyUniqueConflict } = require("../lib/order-split.js");
 function createLineWebhook() {
     const router = express_1.default.Router();
+    // [fix 2026-09-01 體檢] 與 admin/liff 同一份 async 錯誤網：未捕捉的 rejection
+    // 在 Node 20 會直接終止程序（Cloud Run 重啟、進行中的請求一起死）。
+    // ⚠ 注意這行必須在 @line/bot-sdk 的 middleware(lineConfig) 掛上之前執行，
+    //    才包得到它與後面所有 handler。
+    (0, async_router_js_1.wrapRouterAsync)(router);
     const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
     const db = (0, index_js_1.getDb)(dbPath);
     // [fix 2026-07-28 §一A5/A6] 收單失敗告警閉環（notifyOps 內含 10 分鐘去重，發不出去不影響主流程）
@@ -519,13 +526,12 @@ function createLineWebhook() {
                                     // 同交易寫入：快照失敗＝整批 ROLLBACK，不會有「單刪了、稽核沒留」的狀態。
                                     const ordSnap = await h.prepare("SELECT order_no, customer_id, order_date, status, raw_message FROM orders WHERE id = ?").get(oid);
                                     const itemSnap = await h.prepare("SELECT raw_name, quantity, unit, sub_customer FROM order_items WHERE order_id = ?").all(oid);
-                                    await h.prepare(
-                                        "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSqlUnsend + ")"
-                                    ).run("dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36),
-                                          "order", oid, "unsend_delete",
-                                          "客戶收回 LINE 訊息 → 自動刪除訂單" + (ordSnap?.order_no ? "（單號 " + ordSnap.order_no + "）" : ""),
-                                          JSON.stringify({ line_message_id: mid, before: ordSnap || null, items: (itemSnap || []).slice(0, 100) }),
-                                          "system:line_unsend");
+                                    await (0, audit_js_1.writeAudit)(h, {
+                                        entityType: "order", entityId: oid, action: "unsend_delete",
+                                        summary: "客戶收回 LINE 訊息 → 自動刪除訂單" + (ordSnap?.order_no ? "（單號 " + ordSnap.order_no + "）" : ""),
+                                        meta: { line_message_id: mid, before: ordSnap || null, items: (itemSnap || []).slice(0, 100) },
+                                        actor: "system:line_unsend",
+                                    });
                                     await h.prepare("DELETE FROM order_items WHERE order_id = ?").run(oid);
                                     await h.prepare("DELETE FROM order_attachments WHERE order_id = ?").run(oid);
                                     try {
@@ -1537,16 +1543,15 @@ function createLineWebhook() {
                                     "SELECT id, status FROM orders WHERE customer_id = ? AND COALESCE(LOWER(TRIM(status)),'') <> 'deleted' ORDER BY order_date DESC, updated_at DESC LIMIT 1"
                                 ).get(customerId);
                             }
-                            const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
                             if (target?.id) {
                                 await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("complaint", target.id);
                                 // 稽核記舊值（守則：誰/何時/改了什麼/舊值新值）：客訴覆寫任意狀態，沒 old_status 事後無法還原。
-                                await db.prepare(
-                                    "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
-                                ).run(dclId, "order", target.id, "auto_create_complaint",
-                                      `自動偵測「${earlyIntent.intent === "return_request" ? "退貨" : "客訴"}」關鍵詞 [${earlyIntent.keywords.join(",")}]（附加到既有訂單，非新建）`,
-                                      JSON.stringify({ intent: earlyIntent.intent, matched_keywords: earlyIntent.keywords, raw_text: text.slice(0, 500), source: "auto_intent_early", old_status: String(target.status || ""), new_status: "complaint" }),
-                                      "system:intent_detector");
+                                await (0, audit_js_1.writeAuditSafe)(db, {
+                                    entityType: "order", entityId: target.id, action: "auto_create_complaint",
+                                    summary: `自動偵測「${earlyIntent.intent === "return_request" ? "退貨" : "客訴"}」關鍵詞 [${earlyIntent.keywords.join(",")}]（附加到既有訂單，非新建）`,
+                                    meta: { intent: earlyIntent.intent, matched_keywords: earlyIntent.keywords, raw_text: text.slice(0, 500), source: "auto_intent_early", old_status: String(target.status || ""), new_status: "complaint" },
+                                    actor: "system:intent_detector",
+                                });
                                 console.log("[LINE] 早期客訴偵測：附加到既有訂單 " + target.id);
                                 const ordInfo = await db.prepare("SELECT order_no FROM orders WHERE id = ?").get(target.id);
                                 notifyManagerOfComplaint(lineClient, {
@@ -1558,12 +1563,12 @@ function createLineWebhook() {
                                 }).catch(()=>{});
                             } else {
                                 // 完全找不到歷史訂單：只寫 audit，不建空白訂單
-                                await db.prepare(
-                                    "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
-                                ).run(dclId, "customer", customerId, "complaint_no_target_order",
-                                      `偵測到「${earlyIntent.intent === "return_request" ? "退貨" : "客訴"}」但客戶無近期訂單，僅記錄稽核`,
-                                      JSON.stringify({ intent: earlyIntent.intent, matched_keywords: earlyIntent.keywords, raw_text: text.slice(0, 500), source: "auto_intent_early_no_order" }),
-                                      "system:intent_detector");
+                                await (0, audit_js_1.writeAuditSafe)(db, {
+                                    entityType: "customer", entityId: customerId, action: "complaint_no_target_order",
+                                    summary: `偵測到「${earlyIntent.intent === "return_request" ? "退貨" : "客訴"}」但客戶無近期訂單，僅記錄稽核`,
+                                    meta: { intent: earlyIntent.intent, matched_keywords: earlyIntent.keywords, raw_text: text.slice(0, 500), source: "auto_intent_early_no_order" },
+                                    actor: "system:intent_detector",
+                                });
                                 console.log("[LINE] 早期客訴偵測：客戶無近期訂單，僅寫稽核");
                                 notifyManagerOfComplaint(lineClient, {
                                     intentLabel: earlyIntent.intent === "return_request" ? "退貨" : "客訴",
@@ -1597,13 +1602,12 @@ function createLineWebhook() {
                             const kindLabel = verdict.kind === "chat" ? "閒聊" : "詢問";
                             console.log("[LINE] 意圖關卡：判定為「%s」(信心%s,%s) → 不開單，僅通知/記錄", kindLabel, verdict.confidence, verdict.via);
                             try {
-                                const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-                                await db.prepare(
-                                    "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
-                                ).run(dclId, "customer", customerId, "intent_gate_non_order",
-                                      `意圖關卡判定「${kindLabel}」(信心${verdict.confidence})，未開單`,
-                                      JSON.stringify({ kind: verdict.kind, confidence: verdict.confidence, via: verdict.via, raw_text: text.slice(0, 500), source: "intent_gate" }),
-                                      "system:intent_gate");
+                                await (0, audit_js_1.writeAuditSafe)(db, {
+                                    entityType: "customer", entityId: customerId, action: "intent_gate_non_order",
+                                    summary: `意圖關卡判定「${kindLabel}」(信心${verdict.confidence})，未開單`,
+                                    meta: { kind: verdict.kind, confidence: verdict.confidence, via: verdict.via, raw_text: text.slice(0, 500), source: "intent_gate" },
+                                    actor: "system:intent_gate",
+                                });
                             } catch (_) {}
                             // 通知管理員有一則未處理詢問（沿用客訴推播管道，標籤改為詢問/閒聊；未設 LINE_MANAGER_USER_ID 則自動略過）
                             notifyManagerOfComplaint(lineClient, {
@@ -1719,13 +1723,12 @@ function createLineWebhook() {
                         await db.prepare("UPDATE orders SET status = ?, updated_at = " + nowSql + " WHERE id = ?").run("complaint", orderId);
                         console.log("[LINE] 偵測到「" + intentHit.intent + "」意圖 [" + intentHit.keywords.join(",") + "] → 訂單 " + orderId + " 標為 complaint");
                         try {
-                            const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-                            await db.prepare(
-                                "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
-                            ).run(dclId, "order", orderId, "auto_create_complaint",
-                                  `自動偵測「${intentHit.intent === "return_request" ? "退貨" : "客訴"}」關鍵詞 [${intentHit.keywords.join(",")}]`,
-                                  JSON.stringify({ intent: intentHit.intent, matched_keywords: intentHit.keywords, raw_text: text.slice(0, 500), source: "auto_intent", old_status: String(oldStRow?.status || ""), new_status: "complaint" }),
-                                  "system:intent_detector");
+                            await (0, audit_js_1.writeAuditSafe)(db, {
+                                entityType: "order", entityId: orderId, action: "auto_create_complaint",
+                                summary: `自動偵測「${intentHit.intent === "return_request" ? "退貨" : "客訴"}」關鍵詞 [${intentHit.keywords.join(",")}]`,
+                                meta: { intent: intentHit.intent, matched_keywords: intentHit.keywords, raw_text: text.slice(0, 500), source: "auto_intent", old_status: String(oldStRow?.status || ""), new_status: "complaint" },
+                                actor: "system:intent_detector",
+                            });
                         } catch (_) {}
                         const ordInfo = await db.prepare("SELECT order_no FROM orders WHERE id = ?").get(orderId);
                         notifyManagerOfComplaint(lineClient, {
@@ -1756,13 +1759,12 @@ function createLineWebhook() {
                         const existing = String(r?.remark || "").trim();
                         const newRemark = existing.includes(newPrefix) ? existing : (existing ? newPrefix + " " + existing : newPrefix);
                         await db.prepare("UPDATE orders SET remark = ?, updated_at = " + nowSql + " WHERE id = ?").run(newRemark, orderId);
-                        const dclId = "dcl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-                        await db.prepare(
-                            "INSERT INTO data_change_log (id, entity_type, entity_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, " + nowSql + ")"
-                        ).run(dclId, "order", orderId, "auto_detect_intent",
-                              `自動偵測「${intentLabel}」意圖 [${intentHit.keywords.join(",")}]`,
-                              JSON.stringify({ intent: intentHit.intent, intent_label: intentLabel, matched_keywords: intentHit.keywords, raw_text: text.slice(0, 500), source: "auto_intent" }),
-                              "system:intent_detector");
+                        await (0, audit_js_1.writeAuditSafe)(db, {
+                            entityType: "order", entityId: orderId, action: "auto_detect_intent",
+                            summary: `自動偵測「${intentLabel}」意圖 [${intentHit.keywords.join(",")}]`,
+                            meta: { intent: intentHit.intent, intent_label: intentLabel, matched_keywords: intentHit.keywords, raw_text: text.slice(0, 500), source: "auto_intent" },
+                            actor: "system:intent_detector",
+                        });
                         console.log("[LINE] 偵測到「" + intentLabel + "」意圖 [" + intentHit.keywords.join(",") + "] → 已標註於訂單 " + orderId);
                     } catch (e) {
                         console.warn("[LINE] 標記意圖失敗:", e?.message || e);

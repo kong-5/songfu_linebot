@@ -443,6 +443,10 @@ function initSqlite(dbPath) {
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_count_audit (id TEXT PRIMARY KEY, session_id TEXT, icpno TEXT, wh_code TEXT, count_date TEXT, erp_code TEXT, name TEXT, old_counted REAL, new_counted REAL, actor TEXT, actor_name TEXT, note TEXT, created_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_stk_count_audit_session ON stocktake_count_audit(session_id)");
         sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
+        // [security 2026-09-01] 盤點 LIFF 授權記憶：使用者第一次從「已開盤點的群組」進來並通過
+        // LINE 群組成員驗證後記一筆；之後即使從聊天室外開啟（LIFF 歷史清單、外部瀏覽器，
+        // liff.getContext() 拿不到 groupId）也認得。詳見 dist/lib/stocktake-access.js。
+        sqlite.exec("CREATE TABLE IF NOT EXISTS stocktake_authorized_user (line_user_id TEXT PRIMARY KEY, group_id TEXT, display_name TEXT, first_seen TEXT, last_seen TEXT)");
         // [fix 2026-07-29 §五F2] 實例心跳：偵測「同時多個實例」用（本系統收單 session/告警去重/登入節流
         // 都在記憶體，max-instances=1 是不變式）。詳見 dist/lib/instance-guard.js。
         sqlite.exec("CREATE TABLE IF NOT EXISTS app_instance_heartbeat (instance_id TEXT PRIMARY KEY, revision TEXT, first_seen TEXT, last_seen TEXT)");
@@ -1293,6 +1297,8 @@ async function initPg() {
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_count (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, erp_code TEXT, name TEXT, spec TEXT, unit TEXT, sys_qty DOUBLE PRECISION, counted_qty DOUBLE PRECISION, expiry_json TEXT, updated_at TEXT)");
                 await client.query("CREATE INDEX IF NOT EXISTS idx_stk_count_session ON stocktake_count(session_id)");
                 await client.query("CREATE TABLE IF NOT EXISTS stocktake_expiry_item (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, expiry_unit TEXT, created_at TEXT, PRIMARY KEY (icpno, erp_code))");
+                // [security 2026-09-01] 盤點 LIFF 授權記憶（見 sqlite 段註解與 lib/stocktake-access.js）
+                await client.query("CREATE TABLE IF NOT EXISTS stocktake_authorized_user (line_user_id TEXT PRIMARY KEY, group_id TEXT, display_name TEXT, first_seen TEXT, last_seen TEXT)");
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS mid_qty DOUBLE PRECISION");
                 // [2026-07-13] 每日盤點「複盤直接改實盤」：最後修改時間/人 + 完整軌跡表
                 await client.query("ALTER TABLE stocktake_count ADD COLUMN IF NOT EXISTS edited_at TEXT");

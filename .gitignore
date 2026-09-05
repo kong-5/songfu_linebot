@@ -7,3 +7,24 @@ __pycache__/
 *.local
 # 含密碼的暫存檔，加入 .env 後可刪除
 scripts/env-cloudsql-add.txt
+
+# ⛔ 真實營運資料一律不得進 repo（2026-09-01 體檢定案）
+# 曾經誤 commit：cloudsql_export_data_20260323_132005.sql（632 筆客戶＋訂單）、
+# data/songfu.db。清除程序見 docs/資料外洩-git歷史清除程序.md。
+# 要交接資料請走 GCS 私有 bucket，不要放 repo。
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*_export_data_*.sql
+cloudsql_export*.sql
+*-dump.sql
+*_dump.sql
+pg_dump*.sql
+# 註：docs/*.sql 是「操作腳本」（診斷/修正用的 SELECT/UPDATE），不含資料傾印，刻意保留追蹤。
+
+# 編輯器/OS 雜物
+.DS_Store
+# Claude Code 工作區（曾誤 commit 成壞掉的 submodule gitlink）
+.claude/worktrees/

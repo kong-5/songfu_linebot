@@ -1,7 +1,7 @@
 # CLAUDE.md — 松富物流 LINE Bot / 後台（給每個新對話先讀）
 
 這份是「架構定案 + 不要再重複踩」的權威清單。**動到相關功能前先讀這份**；細節看 `docs/`。
-最後更新：2026-08-30
+最後更新：2026-09-01
 
 ---
 
@@ -36,6 +36,21 @@
 8. **SQL 一律可攜或 isPg 雙分支**：sqlForPg 對 SQLite 專屬語法（INSERT OR REPLACE/IGNORE、
    strftime、GROUP_CONCAT、datetime/date 任意形式、IFNULL、julianday、printf）與「字串常值內
    含 ?」一律 fail-fast 丟錯（不再默默送 PG 到雲端才 500）。datetime('now') 會自動轉換可放心用。
+9. **⛔ 真實營運資料一律不得進 repo**（2026-09-01 體檢，踩過）：DB dump、SQLite 檔、
+   含客戶名／`line_group_id` 的任何檔案。`.gitignore` 已補規則，但**規則對「已追蹤」的檔案無效**
+   ——別無腦 `git add -A`，加新檔前先 `git status` 看一眼。要交接資料走 GCS 私有 bucket。
+   曾誤 commit `cloudsql_export_data_*.sql`（632 筆客戶）與 `data/songfu.db`，
+   清歷史的程序見 `docs/資料外洩-git歷史清除程序.md`。
+10. **稽核一律走 `dist/lib/audit.js`，且盡量與主寫入同交易**：
+   `writeAudit(h, …)` 失敗會 throw（交易內用，寫不進去就整批 ROLLBACK）；
+   `writeAuditSafe(db, …)` 失敗只記 log（給「主寫入已 commit、軌跡補後面」的舊呼叫處）。
+   **別再自己寫 `INSERT INTO data_change_log`**——三套並存的下場就是永遠補不齊。
+11. **錯誤訊息分兩種處理**（守則 #4 的細則）：可讀的商業邏輯錯誤原樣給使用者（那才幫得上忙）；
+   看起來像資料庫內部訊息的（SQL 片段、PG 索引/欄位名）用 `_shared.js` 的 `safeErrDetail(e)`
+   換掉、完整內容只進 log。**別再寫 `detail: String(e?.message || e)`。**
+12. **新 router 一律套 `wrapRouterAsync(router)`**（`dist/lib/async-router.js`）：
+   忘了 try/catch 的 async handler 會讓請求永遠 hang，或未捕捉的 rejection 直接終止程序。
+   ⚠ 要掛在其他 middleware 之前才包得到它們。
 
 ## 部署（重要）
 - **推 `main` 就自動部署**：`cloudbuild.yaml` 由 `deploy-on-push` 觸發，建 image → 部署
@@ -116,6 +131,21 @@
   盤點 `stk_draft_<icpno>_<倉>_<日期>`（**都含公司代碼**，跨公司同倉號才不互染）。
 
 ## LINE 盤點系統（已上線）
+- **⚠ 盤點 LIFF API 授權（2026-09-01 體檢定案）**：權威 helper＝`dist/lib/stocktake-access.js`
+  的 `resolveStocktakeAccess(db, req)`。舊版只驗「ID Token 有效」＝**任何有 LINE 帳號的人**，
+  只要知道 LIFF ID（寫死在原始碼、也印在每張 `#盤點` 卡片上）就能讀全倉庫存量、匯出整份條碼
+  對照表、送假盤點、改條碼對應。改為三條路任一通過：
+  ① 已綁定員工 ② 授權記憶表 `stocktake_authorized_user` 有這個人
+  ③ 帶得出 groupId ＋ 該群開著盤點 ＋ **用 LINE API 驗證真的是該群成員**。
+  - groupId 由前端 `liff.getContext()` 送上（header `X-Stk-Group`），但**不信任**：
+    一定要打 LINE API 驗成員身分，貼一個看到的 groupId 沒有用。
+  - **必須有授權記憶表**：`getContext()` 只有從聊天室開啟才有 groupId，從 LIFF 歷史清單或
+    外部瀏覽器開就拿不到 → 沒有記憶會把現場人員鎖在門外。第一次一定要從群組進來。
+  - LINE API 失敗（網路/額度）＝**fail-open 放行**並記 log（盤點是現場作業，不能被 LINE
+    抖動鎖住；攻擊者無法主動製造這個狀態）；明確回「不是成員」才擋。
+  - 逃生門：`app_settings.stocktake_liff_open_access = '1'` 完全回舊行為、免部署。
+    現場真的被擋住又來不及查時用，**記得事後關掉**（每次放行都會 console.warn）。
+  - smoke test：`test/stocktake-liff-access.test.js`。
 - **LIFF 盤點頁** `dist/liff/stocktake.html`（LIFF `2010106501-VocNwkbA`，端點 `/liff/stocktake`）：
   倉庫選擇→緊湊盤點清單→送出；白底、可隱藏0、**中／越雙語**、**續盤**（重開帶回今日已盤）。
   - **效期品**：由 `stocktake_expiry_item` 標記的品項才出現效期批號輸入。**此表已分公司**（主鍵 `(icpno, erp_code)`）；後台「庫存管理 → 效期品設定」(`/admin/inventory/expiry-items`) 可單筆或**整倉批次**帶入（例：松揚雜貨庫房）。
@@ -233,7 +263,17 @@
 - `dist/db/index.js` 同時支援 **SQLite（本機）與 Postgres/Cloud SQL（雲端）**。
   新增表/欄位**要同時改 `initSqlite` 與 `initPg`**；加欄位用 sqlite `alters` 陣列 ＋ pg
   `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`。
-- `dist/` 是實際執行的 JS（非由 `src/` build），直接改 `dist/`。改完用 `node --check` 驗證。
+- ⚠ **每一邊各有兩個 DDL 來源**，很容易只改到其中一個：
+  SQLite＝`dist/db/schema.sql` ＋ `initSqlite` 內的 `sqlite.exec`；
+  PG＝`dist/db/schema.pg.sql` ＋ `initPg` 內的 `client.query`。
+  漏掉 PG 那邊的失效模式最惡劣：**本機測試全綠、部署到雲端才 500**。
+  `test/db-schema-parity.test.js` 會比對兩邊表名集合（目前 82 張一致），漏了會當場紅。
+- **`src/` 不存在**（2026-09-01 已清掉 package.json 裡指向它的 `dev` script 與 TS devDeps）。
+  `dist/` 就是唯一來源，直接改 `dist/`；裡面的 `__importDefault`／`exports.x = x`
+  是早年 TS 編譯的歷史遺跡，**不要因此跑去找 src**。改完用 `node --check` 驗證。
+- ⚠ **測試要起 express 時，記得比照 `dist/index.js` 先掛全域 body parser 再掛 `/admin`**
+  （正式環境是 line 130 vs 200）。少了它，沒有自帶 parser 的路由（如 `/broadcast/send`）
+  會拿到空的 `req.body`，測出來的是假象（2026-09-01 踩過）。
 
 ## 後台頁面設計規範
 用既有元件：`notion-page-title`（大標）、`notion-card`（白圓角卡）、預設 `<table>`（自帶樣式）、
@@ -251,6 +291,9 @@
 - 細節與可用圖示鍵清單見 `docs/設計風格指南.md` §3.1（圖示）、§3.2（版面寬度）、§3.3（滑桿元件）。
 
 ## 相關文件索引（細節在這裡）
+- `docs/體質健檢-2026-09-01.md`：本次系統面/結構面體檢（資料外洩、LIFF 授權、稽核覆蓋、
+  結構與測試缺口）與已修/未修清單。
+- `docs/資料外洩-git歷史清除程序.md`：清除 repo 歷史內營運資料的人工程序。
 - `docs/凌越-目前庫存-庫存管理.md`：庫存推送、停用過濾、內網代理。
 - `docs/凌越-進銷交易查詢.md`：庫存頁點品項→近期進銷交易（銷貨A1出＋銷退A2入、方向/淨變動）；
   凌越 API 資料種類代碼＋欄位權威整理（**此 API 無進貨單**）。

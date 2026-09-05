@@ -261,7 +261,7 @@
   var initLang='zh'; try{ if(localStorage.getItem('stk_lang')==='vi') initLang='vi'; }catch(_){}
   var COMPANY={'00':'松富','01':'龍港','02':'松揚','03':'松成'};
   var CO_ORDER=['00','01','02','03'];
-  var S={idToken:null,name:"",wh:null,date:"",icpno:'00',items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",lang:initLang,baseSubmittedAt:null};
+  var S={idToken:null,gid:"",name:"",wh:null,date:"",icpno:'00',items:[],counts:{},mid:{},midOpen:{},batches:{},expanded:{},q:"",f:"all",lang:initLang,baseSubmittedAt:null};
   function coName(){return COMPANY[S.icpno]||('公司'+S.icpno);}
   // 公司主題色:松揚(02)橘、其餘藍。改 :root --accent 讓整頁換色。
   function applyCoTheme(){var o=(S.icpno==='02');var r=document.documentElement.style;r.setProperty('--accent',o?'#e8730c':'#2383e2');r.setProperty('--accent-soft',o?'#fdecd9':'#e8f1fd');}
@@ -289,6 +289,15 @@
   }
   // ---------- API（每次現取 ID Token；過期自動續登）----------
   function freshToken(){ try{ var tk=liff.getIDToken(); if(tk) S.idToken=tk; }catch(_){} return S.idToken||''; }
+  // [security 2026-09-01] 盤點 API 授權：第一次要從「已開盤點的群組」進來，
+  // 後端會用 LINE API 驗證你真的是該群成員（見 lib/stocktake-access.js）。
+  // liff.getContext() 只有在聊天室內開啟才有 groupId；拿不到也沒關係，後端有授權記憶。
+  function H(extra){
+    var h={'Authorization':'Bearer '+freshToken()};
+    if(S.gid) h['X-Stk-Group']=S.gid;
+    if(extra) for(var k in extra) h[k]=extra[k];
+    return h;
+  }
   // 續登迴圈防護：外部瀏覽器（LINE App 以外）的 ID Token 會過期且 SDK 常回舊 token，
   // 一過期就 liff.login() 會無限「登入逾時→跳轉→又逾時」跳來跳去，卡在載入畫面回不到頁面。
   // 用 sessionStorage 記最近 60 秒的續登次數；連續 ≥2 次仍失敗＝進入迴圈，停止自動跳轉，
@@ -372,7 +381,7 @@
     try{ liff.login({redirectUri:location.href}); }catch(_){}
   }
   function api(path){
-    return fetch(path,{headers:{'Authorization':'Bearer '+freshToken()}}).then(function(r){
+    return fetch(path,{headers:H()}).then(function(r){
       if(WEB&&(r.status===401||r.status===403||r.redirected)){ webLoginNeeded(); return new Promise(function(){}); } // 後台 cookie 逾期/被導去登入頁
       if(r.status===401){ // 同 order-review.html 的續登模式；回傳不 resolve 的 promise 停在載入畫面等跳轉
         return r.json().catch(function(){return {};}).then(function(j){
@@ -395,7 +404,7 @@
   var _lb=null, _lbCode=null;
   // apiPhoto 回三態物件：{url:...}=成功；{missing:true,url:null}=404 查無；{error:true}=失敗(可重試)
   function apiPhoto(code){
-    return fetch(STK+'/photo/'+encodeURIComponent(code),{headers:{'Authorization':'Bearer '+freshToken()}})
+    return fetch(STK+'/photo/'+encodeURIComponent(code),{headers:H()})
       .then(function(r){
         if(r.status===404) return {missing:true,url:null};       // 伺服器明確：無照片
         if(!r.ok) return {error:true};                            // 5xx 等 → 可重試
@@ -527,6 +536,7 @@
     liff.init({liffId:LIFF_ID}).then(function(){
       if(!liff.isLoggedIn()){ liff.login({redirectUri:location.href}); return; }
       S.idToken=liff.getIDToken();
+      try{ var ctx=liff.getContext(); if(ctx&&ctx.groupId) S.gid=ctx.groupId; }catch(_){}
       return liff.getProfile().then(function(p){ S.name=(p&&p.displayName)||""; }).catch(function(){});
     }).then(function(){
       var ic=getParam('icpno'); if(ic&&/^\d{2}$/.test(ic)) S.icpno=ic; // #盤點 松揚 → icpno=02 帶進來
@@ -782,7 +792,7 @@
   function repFetch(wh,date,page){
     var u=STK+'/report.jpg?warehouse='+encodeURIComponent(wh)+'&date='+encodeURIComponent(date)
       +'&icpno='+encodeURIComponent(S.icpno)+'&page='+page+'&_='+Date.now();
-    return fetch(u,{headers:{'Authorization':'Bearer '+freshToken()}}).then(function(r){
+    return fetch(u,{headers:H()}).then(function(r){
       if(!r.ok) throw new Error('HTTP '+r.status);
       var n=Number(r.headers.get('X-Report-Pages')||1)||1;   // 品項多會分頁
       return r.blob().then(function(b){ return {blob:b,pages:n}; });
@@ -897,7 +907,7 @@
       alert('尚未輸入任何盤點數，請先盤點再送出\nChưa nhập số liệu kiểm kê nào');
       return;
     }
-    fetch(STK+'/submit',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+freshToken()},
+    fetch(STK+'/submit',{method:'POST',headers:H({'Content-Type':'application/json'}),
       body:JSON.stringify({warehouse:S.wh.code,icpno:S.icpno,date:S.date,name:S.name,counts:counts,baseSubmittedAt:(S.baseSubmittedAt==null?null:S.baseSubmittedAt)})
     }).then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {status:r.status,res:j,redirected:r.redirected}; }); }).then(function(o){
       var res=o.res||{};

@@ -20,6 +20,9 @@ const line_bot_control_js_1 = require("../lib/line-bot-control.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
 const stocktake_api_js_1 = require("../lib/stocktake-api.js");
+const stocktake_access_js_1 = require("../lib/stocktake-access.js");
+const audit_js_1 = require("../lib/audit.js");
+const async_router_js_1 = require("../lib/async-router.js");
 
 // 訂單審核 LIFF 允許的職稱（之後若要擴可加 "課長"、"行政"）
 const ORDER_REVIEW_ROLES = ["經理", "主任", "課長"];
@@ -40,6 +43,9 @@ function noStore(res) {
 
 function createLiffRouter() {
     const router = express_1.Router();
+    // [fix 2026-09-01 體檢] 這個 router 過去沒有 async 錯誤網，全靠每個 handler 自己
+    // 寫 try/catch；加一個忘了 try 的 handler 就會讓請求永遠 hang。與 admin 同一份。
+    (0, async_router_js_1.wrapRouterAsync)(router);
     const dbPath = process.env.DB_PATH ?? "./data/songfu.db";
 
     // 通用：把 LIFF_ID 注入頁面後回傳
@@ -79,16 +85,20 @@ function createLiffRouter() {
         serveLiffPage(res, "basket-log.html", (process.env.LIFF_ID_BASKET_LOG || "").trim());
     });
 
-    // ── 盤點 LIFF 頁 + API（誰都可以盤，需 LINE 登入；群組白名單由 #盤點 控制）──
+    // ── 盤點 LIFF 頁 + API ──
+    // [security 2026-09-01] 舊版只驗「ID Token 有效」＝任何有 LINE 帳號的人，只要知道 LIFF ID
+    // （印在每張 #盤點 卡片上）就能讀全倉庫存量／匯出條碼對照表／送假盤點／改條碼對應。
+    // 現改為：綁定員工 or 授權記憶 or（群組開著盤點 ＋ LINE API 驗成員）。
+    // 判斷邏輯與逃生門說明見 dist/lib/stocktake-access.js。
     const STOCKTAKE_LIFF_ID = (process.env.LIFF_ID_STOCKTAKE || "2010106501-VocNwkbA").trim();
     router.get("/stocktake", (_req, res) => { serveLiffPage(res, "stocktake.html", STOCKTAKE_LIFF_ID); });
     // 台北時區日期改用 lib/stocktake-api.js 的 stkTaipeiDate（單一實作）
     async function stkAuth(req, res) {
-        const idToken = (0, liff_auth_js_1.readBearerIdToken)(req);
-        if (!idToken) { res.status(401).json({ error: "需 LINE 登入" }); return null; }
-        const v = await (0, liff_verify_js_1.verifyLineIdToken)(idToken);
-        if (!v.ok) { res.status(401).json({ error: v.error || "登入驗證失敗" }); return null; }
-        return v;
+        const db = (0, index_js_1.getDb)(dbPath);
+        const a = await (0, stocktake_access_js_1.resolveStocktakeAccess)(db, req);
+        if (!a.ok) { res.status(a.status || 403).json({ error: a.error }); return null; }
+        // 回傳形狀保持與舊版 verifyLineIdToken 相容（呼叫處用 v.sub / v.name）
+        return { ok: true, sub: a.lineUserId, name: a.lineName || a.employee?.name || null, via: a.via, employee: a.employee || null };
     }
     // [refactor 2026-07-14] warehouses/items/submit 三套端點（LIFF／後台掃碼／後台網頁盤點）
     // 的資料邏輯收斂到 dist/lib/stocktake-api.js 單一權威；這裡只剩認證＋參數＋身分。
@@ -304,20 +314,9 @@ function createLiffRouter() {
 
     // ===== 訂單審核 LIFF API =====
     // 寫入 data_change_log（無 admin session，僅記錄是哪個員工從 LIFF 操作）
+    // 實作收斂到 dist/lib/audit.js；這裡只負責把 LIFF 的 actor 前綴組出來。
     async function logFromLiff(db, employee, opts) {
-        try {
-            const id_js = require("../lib/id.js");
-            const logId = id_js.newId("dcl");
-            const actor = `liff:${employee.username}`;
-            const metaJson = opts.meta != null ? JSON.stringify(opts.meta) : null;
-            const isPg = Boolean(process.env.DATABASE_URL);
-            const tsSql = isPg ? "CURRENT_TIMESTAMP" : "datetime('now')";
-            await db
-                .prepare(`INSERT INTO data_change_log (id, entity_type, entity_id, product_id, action, summary, meta_json, actor_username, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${tsSql})`)
-                .run(logId, opts.entityType, opts.entityId, opts.productId ?? null, opts.action, opts.summary ?? null, metaJson, actor);
-        } catch (e) {
-            console.warn("[liff] data_change_log insert failed:", e?.message || e);
-        }
+        await (0, audit_js_1.writeAuditSafe)(db, { ...opts, actor: `liff:${employee.username}` });
     }
 
     // GET /liff/api/order-review/list?date=YYYY-MM-DD&only_pending=1
