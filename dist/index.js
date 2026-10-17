@@ -310,6 +310,7 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
         }
     });
 
+    const wholesale_trend_js_1 = require("./lib/wholesale-trend.js");
     const livestock_price_js_1 = require("./lib/livestock-price.js");
     /** Cloud Scheduler 預抓畜產／家禽（毛豬/白肉雞/雞蛋）行情：建議每日 07:00 / 11:00 / 15:00。
      *  與 wholesale-prefetch 同一 job secret 機制。 */
@@ -327,11 +328,15 @@ console.log("[startup] PORT=%s dbPath=%s DATABASE_URL=%s", PORT, dbPath, process
             // 順便預熱＋回補北農行情（近 30 天，讓北農頁秒開、歷史走勢自動累積）
             try { await (0, wholesale_snapshot_js_1.backfillWholesaleHistory)(db, 30); }
             catch (e) { console.warn("[wholesale-prewarm]", e?.message || e); }
+            // 再往回補一段更早的歷史（目標兩年，每次 60 天約 30 秒、游標記在 app_settings），供行情看板季節線／去年同期
+            let deep = null;
+            try { deep = await (0, wholesale_trend_js_1.backfillWholesaleDeep)(db, { targetDays: 730, chunk: 60 }); }
+            catch (e) { console.warn("[wholesale-deep-backfill]", e?.message || e); }
             // 抓完偵測明顯漲跌，必要時推播（每個資料日只推一次；需設 LINE_MARKET_NOTIFY_TO）
             let notify = null;
             try { notify = await (0, livestock_price_js_1.notifyLivestockMovesIfAny)(db); }
             catch (e) { console.warn("[livestock-notify]", e?.message || e); }
-            res.json({ ok: true, date: dateStr, dataDate: r.dataDate, source: r.source, status: r.status, count: (r.prices || []).length, errors: r.errors || [], moves: notify ? notify.moves.length : 0, notified: notify ? notify.notified : false });
+            res.json({ ok: true, date: dateStr, dataDate: r.dataDate, source: r.source, status: r.status, count: (r.prices || []).length, errors: r.errors || [], wholesaleDeep: deep, moves: notify ? notify.moves.length : 0, notified: notify ? notify.notified : false });
         }
         catch (e) {
             console.error("[livestock-prefetch]", e?.message || e);

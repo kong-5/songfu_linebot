@@ -630,6 +630,10 @@ function initSqlite(dbPath) {
             try { sqlite.exec(`ALTER TABLE wholesale_market_snapshots ADD COLUMN ${col}`); } catch (_) { /* 欄位已存在 */ }
         }
         try { sqlite.exec("CREATE INDEX IF NOT EXISTS idx_wholesale_snap_crop ON wholesale_market_snapshots(crop_name)"); } catch (_) {}
+        // [feat 2026-10-17] 北農行情看板：北農品名↔我們的 ERP 料號對照（含每單位幾公斤）、全公司共用關注品項
+        sqlite.exec("CREATE TABLE IF NOT EXISTS market_crop_map (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, crop_name TEXT NOT NULL, kg_per_unit REAL, updated_by TEXT, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
+        sqlite.exec("CREATE INDEX IF NOT EXISTS idx_market_crop_map_crop ON market_crop_map(crop_name)");
+        sqlite.exec("CREATE TABLE IF NOT EXISTS market_watch (crop_name TEXT PRIMARY KEY, created_by TEXT, created_at TEXT)");
         // [feat 2026-07-08] 畜產／家禽（毛豬/白肉雞/雞蛋）行情快照
         sqlite.exec("CREATE TABLE IF NOT EXISTS livestock_price_snapshots (id TEXT PRIMARY KEY, record_date TEXT NOT NULL, category TEXT NOT NULL, item_label TEXT NOT NULL, price REAL, unit TEXT, market_name TEXT, extra_json TEXT, created_at TEXT)");
         sqlite.exec("CREATE INDEX IF NOT EXISTS idx_livestock_price_date ON livestock_price_snapshots(record_date)");
@@ -1480,6 +1484,10 @@ async function initPg() {
                     try { await client.query(`ALTER TABLE wholesale_market_snapshots ADD COLUMN IF NOT EXISTS ${col}`); } catch (_) { /* 欄位已存在 */ }
                 }
                 await client.query("CREATE INDEX IF NOT EXISTS idx_wholesale_snap_crop ON wholesale_market_snapshots(crop_name)");
+                // [feat 2026-10-17] 北農行情看板：北農品名↔ERP 料號對照、全公司共用關注品項
+                await client.query("CREATE TABLE IF NOT EXISTS market_crop_map (icpno TEXT NOT NULL DEFAULT '00', erp_code TEXT NOT NULL, crop_name TEXT NOT NULL, kg_per_unit DOUBLE PRECISION, updated_by TEXT, updated_at TEXT, PRIMARY KEY (icpno, erp_code))");
+                await client.query("CREATE INDEX IF NOT EXISTS idx_market_crop_map_crop ON market_crop_map(crop_name)");
+                await client.query("CREATE TABLE IF NOT EXISTS market_watch (crop_name TEXT PRIMARY KEY, created_by TEXT, created_at TEXT)");
             }
             catch (_) { /* table may already exist */ }
             // [feat 2026-07-08] 畜產／家禽行情快照

@@ -233,6 +233,25 @@
 - smoke test：`test/cash-sales-off.test.js`（含「開關頁不得掛 requireCash」「機器端點閘門在寫入之前」
   等不變式）。
 
+## 北農行情走勢看板（2026-10-17）
+- `/admin/logistics/market` 改成**一品名一列**（台北一/二中價量加權合併）＋近 30 交易日小走勢、
+  30 日價位位置條、相對低檔/高檔＋走升/走跌標籤；點列開走勢面板（中價＋上下價帶＋7日均＋量，30日～一年）。
+  頁面＝`dist/admin/market-board.js`（前端程式以 `Function#toString` 注入，所以 lint 也查得到）；
+  計算＝`dist/lib/wholesale-trend.js`。
+- ⚠ 休市日 API 常回 1~2 筆零星資料 → **單日 <20 筆不算交易日**；當日只公布部分市場（台北二先出）
+  → **整個視窗只用當日有的市場**並顯示提示，否則量比/漲跌會拿單市場比合併價（假 −70%）。
+- **對照我們的貨品**（`market_crop_map`，主鍵 `(icpno, erp_code)`，只對松富 00）：北農品名 ↔ 凌越料號＋每單位公斤
+  （規格「18KG/箱」自動帶，帶不出來人工填、可留白＝不換算）。用途：看板顯示我們的庫存、把元/公斤折成元/箱、
+  「只看我們有賣的」篩選。入口：看板列點開→「我們的貨品」，或批次頁 `/admin/logistics/market/mapping`
+  （常用＝近一年 LINE 訂單出現次數；建議品名用 `suggestCrops`，含 高麗菜→甘藍 等別名表）。北農品名必須在快照出現過才收。
+- **季節**：`loadSeasonalOutlook` 拿往年同一天 vs 同一天+28 天（各 ±3 天）的量加權均價比，過去兩年取平均＝「往年4週」。
+  **建議多備／少進**＝價位（相對低/高檔）＋季節（往年 4 週 ±8%）兩票加總 ≥1／≤−1 才給；走勢只當說明。純參考，不寫任何東西。
+- **兩年歷史自動回補**：`backfillWholesaleDeep` 掛在 `/api/jobs/livestock-prefetch`（每日排程），每次往回 60 天（約 30 秒），
+  游標 `app_settings.wholesale_deep_backfill_cursor`；整段抓不到資料（API 掛）不推進游標，下次重試。
+- ☆ **關注品項全公司共用**（`market_watch`，有稽核）。對照／關注寫入同交易稽核、重送冪等。
+- 進價比較**未做**：凌越 API 沒有進貨單，系統沒有進價資料（使用者決定這輪先不做）。
+- smoke test：`test/market-trend-board.test.js`、`test/market-mapping.test.js`。
+
 ## LINE 收單可靠性（2026-07-21 定案）
 - **失敗可重試閉環**：`processLineWebhookEvents` 回傳 `{failed,total}`；Cloud Tasks worker
   （`/api/worker/process-line-event`）失敗回 **500** 讓佇列重試，`X-CloudTasks-TaskRetryCount`
