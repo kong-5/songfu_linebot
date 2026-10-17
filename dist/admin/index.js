@@ -84,6 +84,7 @@ const training_js_1 = require("./training.js");
 const cash_js_1 = require("./cash.js");
 const inventory_js_1 = require("./inventory.js");
 const logistics_js_1 = require("./logistics.js");
+const market_js_1 = require("./market.js");
 const customers_js_1 = require("./customers.js");
 const products_js_1 = require("./products.js");
 const broadcast_js_1 = require("./broadcast.js");
@@ -4093,6 +4094,8 @@ function createAdminRouter() {
     (0, logistics_js_1.registerLogisticsRoutes)(router, {
         db, notionPage, getTaipeiCalendarDateYYYYMMDD, uploadImageSafe,
     });
+    // 北農行情看板：品名↔料號對照、共用關注（2026-10-17）；全是字面路徑，不與上面路由衝突
+    (0, market_js_1.registerMarketRoutes)(router, { db, notionPage });
     /** 將已解析列寫入訂單（先刪除既有品項）。 */
     async function replaceOrderItemsFromParsedRows(orderId, customerId, parsed) {
         await (0, rebuild_order_from_sources_js_1.replaceOrderItemsFromParsedRows)(db, orderId, customerId, parsed);

@@ -16,6 +16,12 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.loadWholesaleTrendBoard = loadWholesaleTrendBoard;
 exports.summarizeCropSeries = summarizeCropSeries;
+exports.loadSeasonalOutlook = loadSeasonalOutlook;
+exports.parseKgPerUnit = parseKgPerUnit;
+exports.suggestCrops = suggestCrops;
+exports.backfillWholesaleDeep = backfillWholesaleDeep;
+
+const wholesale_snapshot_js_1 = require("./wholesale-snapshot.js");
 
 const SIGNAL_MIN_DAYS = 10;
 const MIN_ROWS_PER_DAY = 20;
@@ -120,4 +126,133 @@ async function loadWholesaleTrendBoard(db, anchorDate, cat = "veg") {
     }
     items.sort((a, b) => (b.volume || 0) - (a.volume || 0));
     return { dates, items, markets: partial ? anchorMarkets : allMarkets, partial };
+}
+
+const DAY_MS = 86400000;
+const isoAdd = (iso, days) => new Date(new Date(iso + "T00:00:00Z").getTime() + days * DAY_MS).toISOString().slice(0, 10);
+/** 同月同日的 N 年前（2/29 → 3/1，交給 Date 處理） */
+const isoYearsAgo = (iso, y) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCFullYear(d.getUTCFullYear() - y); return d.toISOString().slice(0, 10); };
+const catWhere = (cat) => (cat === "fruit" ? " AND COALESCE(category_code,'') = 'N05'" : (cat === "veg" ? " AND COALESCE(category_code,'') <> 'N05'" : ""));
+
+/** 某段期間每個品名的量加權中價（跨市場、跨日合併成一個數） */
+async function windowMidByCrop(db, from, to, cat) {
+    const rows = await db.prepare(`SELECT crop_name,
+        SUM(CASE WHEN mid_price IS NOT NULL AND volume IS NOT NULL THEN mid_price * volume ELSE 0 END) AS wsum,
+        SUM(CASE WHEN mid_price IS NOT NULL AND volume IS NOT NULL THEN volume ELSE 0 END) AS wvol,
+        AVG(mid_price) AS amid
+      FROM wholesale_market_snapshots WHERE record_date >= ? AND record_date <= ?${catWhere(cat)}
+      GROUP BY crop_name`).all(from, to);
+    const m = new Map();
+    for (const r of rows || []) {
+        const wvol = Number(r.wvol) || 0;
+        const mid = wvol > 0 ? Number(r.wsum) / wvol : (r.amid != null ? Number(r.amid) : null);
+        if (mid != null && Number.isFinite(mid) && mid > 0) m.set(String(r.crop_name || "").trim(), mid);
+    }
+    return m;
+}
+
+/**
+ * 季節性展望：拿過去幾年「同一天」與「同一天＋aheadDays」各前後 3 天的均價比，
+ * 回答「往年這時候，接下來幾週通常漲還是跌」。各年取平均；沒有歷史的年份不算。
+ * @returns {Promise<Map<string, {lastYear:number|null, nextPct:number|null, years:number, perYear:{y:number,pct:number}[]}>>}
+ */
+async function loadSeasonalOutlook(db, anchorDate, cat = "veg", { years = [1, 2], aheadDays = 28 } = {}) {
+    const out = new Map();
+    for (const y of years) {
+        const base = isoYearsAgo(anchorDate, y);
+        const now = await windowMidByCrop(db, isoAdd(base, -3), isoAdd(base, 3), cat);
+        if (!now.size) continue;
+        const later = await windowMidByCrop(db, isoAdd(base, aheadDays - 3), isoAdd(base, aheadDays + 3), cat);
+        for (const [name, v] of now) {
+            if (!out.has(name)) out.set(name, { lastYear: null, nextPct: null, years: 0, perYear: [] });
+            const o = out.get(name);
+            if (y === 1) o.lastYear = round1(v);
+            const l = later.get(name);
+            if (l != null) o.perYear.push({ y, pct: round1((l - v) / v * 100) });
+        }
+    }
+    for (const o of out.values()) {
+        o.years = o.perYear.length;
+        o.nextPct = o.years ? round1(mean(o.perYear.map((p) => p.pct))) : null;
+    }
+    return out;
+}
+
+/**
+ * 從凌越規格／單位推「每單位幾公斤」：單位本身是公斤＝1；規格寫「18KG/箱」「600g」「10台斤」就換算。
+ * 推不出來回 null（交給人填）。
+ */
+function parseKgPerUnit(spec, unit) {
+    const u = String(unit || "").trim().toUpperCase();
+    if (u === "KG" || u === "公斤") return 1;
+    if (u === "台斤" || u === "斤") return 0.6;
+    const sp = String(spec || "");
+    let m = sp.match(/(\d+(?:\.\d+)?)\s*(?:KG|公斤)/i);
+    if (m) return Number(m[1]);
+    m = sp.match(/(\d+(?:\.\d+)?)\s*(?:台斤|斤)/);
+    if (m) return Math.round(Number(m[1]) * 0.6 * 1000) / 1000;
+    m = sp.match(/(\d+(?:\.\d+)?)\s*(?:G|克)(?![A-Z])/i);
+    if (m) return Number(m[1]) / 1000;
+    return null;
+}
+
+/**
+ * 我們的品名 → 最像的北農品名（最多 3 個）。北農品名是「作物-品種」，比對作物部分：
+ * 我們的品名含作物名（高麗菜 vs 甘藍 這種別名對不到，留給人工），長的作物名優先、同分看交易量。
+ * @param {string} name 我們的品名
+ * @param {{name:string, volume?:number}[]} crops
+ */
+// 我們常用叫法 → 北農作物名（只收兩邊叫法不同的；建議僅供參考，最後由人確認）
+const CROP_ALIASES = {
+    高麗菜: "甘藍", 青江菜: "青江白菜", 地瓜葉: "甘薯葉", 地瓜: "甘薯", 大陸妹: "萵苣菜", A菜: "萵苣菜", 油麥菜: "萵苣菜-油麥菜",
+    紅蘿蔔: "胡蘿蔔", 小黃瓜: "胡瓜", 大黃瓜: "胡瓜", 空心菜: "蕹菜", 香菜: "芫荽", 青花菜: "青花苔", 綠花椰: "青花苔",
+    白花椰: "花椰菜", 白蘿蔔: "蘿蔔", 蒜頭: "大蒜", 芥藍: "芥藍菜", 蔥: "青蔥", 豆芽: "豆芽菜", 皇宮菜: "落葵", 山蘇: "山蘇花",
+    牛番茄: "番茄", 番茄: "番茄", 洋蔥: "洋蔥",
+};
+function suggestCrops(name, crops) {
+    const n0 = String(name || "").replace(/\s+/g, "").replace(/[（(][^）)]*[）)]/g, "");
+    if (n0.length < 2 && !CROP_ALIASES[n0]) return [];
+    const variants = [n0];
+    for (const [k, v] of Object.entries(CROP_ALIASES)) if (n0.includes(k)) variants.push(n0.replace(k, v), v);
+    const best = new Map();
+    for (const c of crops || []) {
+        const full = String(c.name || "").replace(/\s+/g, "");
+        const [base, variety] = full.split("-");
+        if (!base || base.length < 2) continue;
+        let score = 0;
+        for (const n of variants) {
+            let sc = 0;
+            if (n === full) sc = 100;
+            else if (variety && n.includes(base) && n.includes(variety)) sc = 80 + base.length;
+            else if (n === base) sc = 60;
+            else if (n.includes(base)) sc = 40 + base.length;
+            else if (base.includes(n) && n.length >= 2) sc = 30 + n.length;
+            if (sc > score) score = sc;
+        }
+        if (score) best.set(c.name, { name: c.name, score, volume: c.volume || 0 });
+    }
+    return [...best.values()].sort((a, b) => (b.score - a.score) || (b.volume - a.volume)).slice(0, 3).map((x) => x.name);
+}
+
+/**
+ * 自動往回補歷史到 targetDays（預設兩年），每次只補 chunk 天、游標記在 app_settings，
+ * 由每日排程順手呼叫，幾天內補齊、不會一次打爆農業部 API。
+ * 整段都抓不到資料（API 掛了）就不推進游標，下次重試，避免留下一整段空洞。
+ */
+async function backfillWholesaleDeep(db, { targetDays = 730, chunk = 60, todayIso = null } = {}) {
+    const KEY = "wholesale_deep_backfill_cursor";
+    const today = todayIso || new Date().toISOString().slice(0, 10);
+    const floor = isoAdd(today, -targetDays);
+    const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get(KEY);
+    const cursor = row && /^\d{4}-\d{2}-\d{2}$/.test(String(row.value || "")) ? String(row.value) : isoAdd(today, -29);
+    if (cursor <= floor) return { done: true, cursor };
+    const end = isoAdd(cursor, -1);
+    const span = Math.round((new Date(end + "T00:00:00Z") - new Date(floor + "T00:00:00Z")) / DAY_MS) + 1;
+    const days = Math.max(1, Math.min(chunk, span));
+    const r = await (0, wholesale_snapshot_js_1.backfillWholesaleHistory)(db, days, end, true);
+    const from = isoAdd(end, -(days - 1));
+    const fetched = r.days + r.empties;
+    if (fetched >= 20 && r.days === 0) return { done: false, cursor, error: "整段抓不到資料（農業部 API 可能異常），下次再試" };
+    await db.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value").run(KEY, from);
+    return { done: from <= floor, cursor: from, from, to: end, daysWithData: r.days, rows: r.total };
 }

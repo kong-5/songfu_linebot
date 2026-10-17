@@ -14,6 +14,7 @@ const wholesale_price_js_1 = require("../lib/wholesale-price.js");
 const wholesale_snapshot_js_1 = require("../lib/wholesale-snapshot.js");
 const wholesale_trend_js_1 = require("../lib/wholesale-trend.js");
 const market_board_js_1 = require("./market-board.js");
+const market_js_1 = require("./market.js");
 const livestock_price_js_1 = require("../lib/livestock-price.js");
 const unit_conversion_js_1 = require("../lib/unit-conversion.js");
 const gemini_order_helpers_js_1 = require("../lib/gemini-order-helpers.js");
@@ -323,6 +324,21 @@ function registerLogisticsRoutes(router, ctx) {
             try { board = await (0, wholesale_trend_js_1.loadWholesaleTrendBoard)(db, dateStr, cat); }
             catch (e) { console.warn("[admin] market trend board failed:", e?.message || e); msg = msg || "走勢資料讀取失敗，請重新整理；一直失敗請回報（細節已記錄在系統 log）。"; }
         }
+        // 往年同期（季節）、我們的對照與共用關注、歷史涵蓋範圍——任一失敗都不擋看板主體
+        let maps = {}, watch = [], coverage = { minDate: null };
+        if (board.items.length) {
+            try {
+                const season = await (0, wholesale_trend_js_1.loadSeasonalOutlook)(db, dateStr, cat);
+                for (const it of board.items) {
+                    const so = season.get(it.name);
+                    if (so) { it.lastYear = so.lastYear; it.seasonPct = so.nextPct; it.seasonYears = so.years; }
+                }
+            } catch (e) { console.warn("[admin] market season failed:", e?.message || e); }
+            try { maps = await (0, market_js_1.loadMarketMappings)(db); watch = await (0, market_js_1.loadMarketWatch)(db); }
+            catch (e) { console.warn("[admin] market maps/watch failed:", e?.message || e); }
+            try { const r = await db.prepare("SELECT MIN(record_date) AS d FROM wholesale_market_snapshots").get(); coverage.minDate = r?.d || null; }
+            catch (_) { /* 只是說明文字 */ }
+        }
         const markets = {};
         for (const p of shown) {
             const k = (p.cropName || "").trim();
@@ -330,7 +346,7 @@ function registerLogisticsRoutes(router, ctx) {
             (markets[k] = markets[k] || []).push({ m: p.marketName || "", hi: p.highPrice ?? null, mid: p.midPrice ?? null, lo: p.lowPrice ?? null, avg: p.avgPrice ?? null, vol: p.volume ?? null });
         }
         const body = (0, market_board_js_1.buildMarketBoardBody)({
-            reqDate, dateStr, fellBack, snapSource, cat, msg, board, markets, rulesText,
+            reqDate, dateStr, fellBack, snapSource, cat, msg, board, markets, rulesText, maps, watch, coverage,
             query: { ok: String(req.query.ok || ""), err: String(req.query.err || "") }, icons: SF_ICONS,
         });
         res.type("text/html").send(notionPage("北農行情", body, "logistics-reports", res));

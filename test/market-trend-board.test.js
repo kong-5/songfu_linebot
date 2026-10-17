@@ -45,27 +45,27 @@ test.before(async () => {
     const ins = db.prepare(`INSERT INTO wholesale_market_snapshots (id, record_date, market_name, crop_name, category, crop_code, category_code, high_price, mid_price, low_price, avg_price, volume, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     let n = 0;
-    const put = (d, mkt, name, code, catCode, mid, vol) => ins.run("t" + (n++), d, mkt, name, "", code, catCode, mid + 5, mid, mid - 5, mid, vol, "x");
+    const put = (d, mkt, name, code, catCode, mid, vol) => ins.run("t" + (n++), d, mkt, name, "", code, catCode, mid + 5, mid, mid - 5, mid, vol, new Date().toISOString());
     for (let i = 0; i < N; i++) {
         const d = day(i);
         // 高麗菜：一路漲到最高（相對高檔＋走升）；台北二價錢不同、量小 → 驗證加權合併
-        put(d, "台北一", "甘藍-初秋", "LA1", "N04", 20 + i, 9000);
-        put(d, "台北二", "甘藍-初秋", "LA1", "N04", 40 + i, 1000);
+        await put(d, "台北一", "甘藍-初秋", "LA1", "N04", 20 + i, 9000);
+        await put(d, "台北二", "甘藍-初秋", "LA1", "N04", 40 + i, 1000);
         // 小白菜：一路跌到最低（相對低檔＋走跌）
-        put(d, "台北一", "小白菜-土白菜", "LB1", "N04", 60 - i, 3000);
+        await put(d, "台北一", "小白菜-土白菜", "LB1", "N04", 60 - i, 3000);
         // 香蕉：水果、持平
-        put(d, "台北一", "香蕉", "A1", "N05", 30, 5000);
+        await put(d, "台北一", "香蕉", "A1", "N05", 30, 5000);
         // 停賣品項：錨點日沒交易，不該上看板
-        if (i < N - 1) put(d, "台北一", "龍鬚菜", "SX", "N04", 50, 800);
+        if (i < N - 1) await put(d, "台北一", "龍鬚菜", "SX", "N04", 50, 800);
         // 填充列：讓每天兩市場都有正常筆數（少於 20 筆的日子視為休市零星資料）
-        for (let k = 0; k < 22; k++) { put(d, "台北一", "填充" + k, "Z" + k, "N04", 10, 1); put(d, "台北二", "填充" + k, "Z" + k, "N04", 10, 1); }
+        for (let k = 0; k < 22; k++) { await put(d, "台北一", "填充" + k, "Z" + k, "N04", 10, 1); await put(d, "台北二", "填充" + k, "Z" + k, "N04", 10, 1); }
     }
     // 休市日：只有 2 筆零星資料，不算交易日
-    put(day(N), "台北一", "甘藍-初秋", "LA1", "N04", 999, 1);
-    put(day(N), "台北二", "甘藍-初秋", "LA1", "N04", 999, 1);
+    await put(day(N), "台北一", "甘藍-初秋", "LA1", "N04", 999, 1);
+    await put(day(N), "台北二", "甘藍-初秋", "LA1", "N04", 999, 1);
     // 部分公布日：只有台北二
-    put(day(N + 1), "台北二", "甘藍-初秋", "LA1", "N04", 40 + N + 4, 1200);
-    for (let k = 0; k < 22; k++) put(day(N + 1), "台北二", "填充" + k, "Z" + k, "N04", 10, 1);
+    await put(day(N + 1), "台北二", "甘藍-初秋", "LA1", "N04", 40 + N + 4, 1200);
+    for (let k = 0; k < 22; k++) await put(day(N + 1), "台北二", "填充" + k, "Z" + k, "N04", 10, 1);
     const app = express();
     app.use(express.json());
     app.use(express.urlencoded({ extended: true }));
