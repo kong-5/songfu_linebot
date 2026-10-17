@@ -7,6 +7,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 
 // ── 線條圖示（line art；16px、1.4 stroke、currentColor、無填色）──
 const SF_ICONS = {
+  star: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M8 2.2l1.75 3.6 3.95.55-2.87 2.77.7 3.93L8 11.2l-3.53 1.85.7-3.93L2.3 6.35l3.95-.55z"/></svg>',
   bell: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 11h10l-1.5-2V6a3.5 3.5 0 0 0-7 0v3L3 11z"/><path d="M6.5 13a1.5 1.5 0 0 0 3 0"/></svg>',
   check: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 8.5l3 3 6-6"/></svg>',
   x: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>',

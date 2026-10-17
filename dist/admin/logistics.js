@@ -12,6 +12,8 @@ const resolve_product_js_1 = require("../lib/resolve-product.js");
 const vision_ocr_js_1 = require("../lib/vision-ocr.js");
 const wholesale_price_js_1 = require("../lib/wholesale-price.js");
 const wholesale_snapshot_js_1 = require("../lib/wholesale-snapshot.js");
+const wholesale_trend_js_1 = require("../lib/wholesale-trend.js");
+const market_board_js_1 = require("./market-board.js");
 const livestock_price_js_1 = require("../lib/livestock-price.js");
 const unit_conversion_js_1 = require("../lib/unit-conversion.js");
 const gemini_order_helpers_js_1 = require("../lib/gemini-order-helpers.js");
@@ -254,7 +256,7 @@ function registerLogisticsRoutes(router, ctx) {
         res.type("text/html").send(notionPage("新增紙本訂單", body, "logistics", res));
     });
     router.get("/logistics/market", async (req, res) => {
-        const reqDate = (req.query.date || "").toString().trim() || new Date().toISOString().slice(0, 10);
+        const reqDate = (req.query.date || "").toString().trim() || getTaipeiCalendarDateYYYYMMDD();
         let dateStr = reqDate;      // 實際顯示的資料日期（可能因休市/尚未更新而退回最近營業日）
         let prices = [];
         let msg = "";
@@ -311,83 +313,26 @@ function registerLogisticsRoutes(router, ctx) {
         }
         const row = await db.prepare("SELECT value FROM app_settings WHERE key = ?").get("line_price_prefix_rules");
         const rulesText = row?.value || JSON.stringify({ "*": 2, LM: 10 }, null, 2);
-        // 價格一律顯示 1 位小數；交易量顯示整數（千分位）
-        const fmtP = (v) => (v == null ? "—" : Number(v).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
-        const fmtV = (v) => (v == null ? "—" : Number(v).toLocaleString("en-US", { maximumFractionDigits: 0 }));
-        // 較前日／較前月：抓「前一個有資料日」與「約前 28 天最接近日」的中價做對照（依 料號|市場 比對）
-        let prevDay = null, prevMonth = null, dayMap = null, monMap = null;
-        if (prices.length && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-            try {
-                const dts = await db.prepare("SELECT DISTINCT record_date FROM wholesale_market_snapshots WHERE record_date < ? ORDER BY record_date DESC").all(dateStr);
-                const dlist = (dts || []).map((r) => r.record_date);
-                prevDay = dlist[0] || null;
-                const target = new Date(dateStr + "T00:00:00Z").getTime() - 28 * 86400000;
-                for (const d of dlist) { if (new Date(d + "T00:00:00Z").getTime() <= target) { prevMonth = d; break; } }
-                const buildMap = async (d) => { if (!d) return null; const list = await (0, wholesale_snapshot_js_1.loadWholesaleMarketSnapshot)(db, d); const m = {}; for (const p of list) { m[(p.cropCode || p.cropName) + "|" + (p.marketName || "")] = p.midPrice; } return m; };
-                dayMap = await buildMap(prevDay);
-                monMap = await buildMap(prevMonth);
-            } catch (_) { /* 對照資料缺就略過 */ }
-        }
-        const chgCell = (cur, prev) => {
-            if (cur == null || prev == null || !prev) return `<td style="text-align:right;color:var(--txt-3);font-size:12px;">—</td>`;
-            const pct = (cur - prev) / prev * 100;
-            const up = pct > 0.05, dn = pct < -0.05;
-            const col = up ? "#dc2626" : (dn ? "#16a34a" : "#787774");
-            return `<td style="text-align:right;font-variant-numeric:tabular-nums;color:${col};font-size:12px;white-space:nowrap;">${up ? "▲" : (dn ? "▼" : "")}${pct > 0 ? "+" : ""}${pct.toFixed(1)}%</td>`;
-        };
-        // 依蔬菜／水果篩選要顯示的列（種類代碼 N05=水果）
+        // [2026-10-17] 改走勢看板：一品名一列（台北一/二量加權合併）＋近 30 交易日走勢／價位位置，
+        // 當日各市場明細改放在點開的走勢面板。口徑見 lib/wholesale-trend.js。
         const isFruit = (p) => (p.categoryCode || "") === "N05";
         const catFilter = cat === "fruit" ? isFruit : (cat === "all" ? () => true : (p) => !isFruit(p));
         const shown = prices.filter(catFilter);
-        const rows = shown.slice(0, 2000).map((p) => {
-            const key = `${(p.cropCode || "")} ${(p.cropName || "")} ${(p.marketName || "")}`.toLowerCase();
-            const mkKey = (p.cropCode || p.cropName) + "|" + (p.marketName || "");
-            const dCell = dayMap ? chgCell(p.midPrice, dayMap[mkKey]) : "";
-            const mCell = monMap ? chgCell(p.midPrice, monMap[mkKey]) : "";
-            return `<tr data-k="${escapeAttr(key)}"><td style="font-variant-numeric:tabular-nums;color:var(--txt-3);">${escapeHtml(p.cropCode || "—")}</td><td>${escapeHtml(p.cropName || "")}</td><td style="color:var(--txt-3);font-size:12px;">${escapeHtml(p.marketName || "")}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtP(p.highPrice)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtP(p.midPrice)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtP(p.lowPrice)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtP(p.avgPrice)}</td>${dCell}${mCell}<td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--txt-3);">${fmtV(p.volume)}</td></tr>`;
-        }).join("");
-        const colCount = 8 + (dayMap ? 1 : 0) + (monMap ? 1 : 0);
-        const sourceTag = snapSource === "api" ? `<span class="sf-pill" style="background:#e7f5e9;color:#047857;">即時 API</span>`
-            : snapSource === "snapshot" ? `<span class="sf-pill" style="background:#fef3c7;color:#92400e;">本地快照</span>`
-            : "";
-        const body = `
-        <div class="notion-breadcrumb"><a href="/admin">儀表板</a> / 行情報表</div>
-        <div class="sf-seg" style="margin:2px 0 14px;display:inline-flex;">
-          <button type="button" class="active" onclick="location.href='/admin/logistics/market'">北農行情</button>
-          <button type="button" onclick="location.href='/admin/logistics/livestock'">畜產雞蛋行情</button>
-        </div>
-        <h1 class="notion-page-title">北農行情 — 台北一、台北二 批發</h1>
-        <p class="notion-hint">資料來源為<a href="${wholesale_price_js_1.TAPMC_PRICE_URL}" target="_blank" rel="noopener">臺北農產運銷「單日交易行情」</a>同一批發市場（農業部開放資料）。價格單位<strong>元／公斤</strong>、交易量<strong>公斤</strong>。每日自動抓存本地快照可回查。</p>
-        <div style="display:flex;align-items:center;gap:10px;margin:4px 0 10px;flex-wrap:wrap;">
-          <span style="font-size:15px;font-weight:600;">資料日期 ${escapeHtml(dateStr)}</span>${sourceTag}
-          ${fellBack ? `<span class="sf-pill" style="background:#eef2ff;color:#3730a3;">已自動顯示最近營業日（${escapeHtml(reqDate)} 尚無資料）</span>` : ""}
-          ${prices.length ? `<span style="font-size:12px;color:var(--txt-3);">${cat === "fruit" ? "水果" : cat === "all" ? "全部" : "蔬菜"} ${shown.length} 筆</span>` : ""}
-        </div>
-        ${req.query.ok === "1" ? '<p class="notion-msg ok">已儲存加價規則。</p>' : ""}
-        ${req.query.err === "rules" ? '<p class="notion-msg err">規則格式錯誤，請輸入 JSON 物件。</p>' : ""}
-        <form method="get" action="/admin/logistics/market" style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
-          <label>日期 <input type="date" name="date" value="${escapeAttr(reqDate)}"></label>
-          <input type="hidden" name="cat" value="${escapeAttr(cat)}">
-          <button type="submit" class="btn">查詢</button>
-          <a href="/admin/logistics/market?date=${escapeAttr(reqDate)}&cat=${cat}&refresh=1" class="btn btn-primary" title="即時向農業部 API 抓取（可能需數秒）">更新最新</a>
-          <a href="/admin/logistics/market/history" class="btn" title="查品項的每日走勢與折線圖">歷史查詢</a>
-          ${shown.length ? `<a href="/admin/logistics/market/export.csv?date=${escapeAttr(dateStr)}&cat=${cat}" class="btn">下載 CSV</a><a href="/admin/logistics/market/export.xlsx?date=${escapeAttr(dateStr)}&cat=${cat}" class="btn">下載 Excel</a>` : ""}
-        </form>
-        ${msg ? `<p class="notion-msg warn" style="margin:8px 0;padding:8px 12px;border-radius:6px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;">${escapeHtml(msg)}</p>` : ""}
-        ${prices.length ? `<div style="display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:10px;">${[["veg", "蔬菜"], ["fruit", "水果"], ["all", "全部"]].map(([v, label], i) => `<a href="/admin/logistics/market?date=${escapeAttr(dateStr)}&cat=${v}" style="padding:7px 18px;font-size:14px;text-decoration:none;${i < 2 ? "border-right:1px solid var(--border);" : ""}${cat === v ? "background:#2563eb;color:#fff;font-weight:600;" : "color:var(--txt-2);background:#fff;"}">${label}</a>`).join("")}</div>` : ""}
-        ${prices.length ? `<input id="mktSearch" type="search" placeholder="搜尋品名或品號…" oninput="(function(q){q=q.toLowerCase();document.querySelectorAll('#mktTable tbody tr').forEach(function(tr){tr.style.display=(!q||(tr.getAttribute('data-k')||'').indexOf(q)>=0)?'':'none';});})(this.value)" style="width:100%;max-width:360px;padding:8px 12px;margin-bottom:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">` : ""}
-        <div class="notion-card" style="padding:0;overflow-x:auto;">
-          <table id="mktTable" style="min-width:640px;"><thead><tr><th>品號</th><th>品名</th><th>市場</th><th style="text-align:right;">上價</th><th style="text-align:right;">中價</th><th style="text-align:right;">下價</th><th style="text-align:right;">平均</th>${dayMap ? `<th style="text-align:right;" title="與 ${escapeAttr(prevDay || "")} 中價相比">較前日</th>` : ""}${monMap ? `<th style="text-align:right;" title="與 ${escapeAttr(prevMonth || "")} 中價相比">較前月</th>` : ""}<th style="text-align:right;">交易量(kg)</th></tr></thead><tbody>${rows || `<tr><td colspan='${colCount}' style='color:#999;text-align:center;padding:24px;'>無資料</td></tr>`}</tbody></table>
-        </div>
-        <div class="notion-card" style="margin-top:16px;">
-          <h2 style="margin-top:0;">LINE 報價加價規則</h2>
-          <p class="notion-hint">格式為 JSON，key 為 ERP 料號前綴、value 為加價。<code>*</code> 代表預設。例：<code>{"*":2,"LM":10}</code>。</p>
-          <form method="post" action="/admin/logistics/market/rules">
-            <textarea name="rules_json" rows="8" style="width:100%;box-sizing:border-box;">${escapeHtml(rulesText)}</textarea>
-            <p style="margin-top:8px;"><button type="submit" class="btn btn-primary">儲存規則</button></p>
-          </form>
-        </div>
-      `;
+        let board = { dates: [], items: [] };
+        if (shown.length) {
+            try { board = await (0, wholesale_trend_js_1.loadWholesaleTrendBoard)(db, dateStr, cat); }
+            catch (e) { console.warn("[admin] market trend board failed:", e?.message || e); msg = msg || "走勢資料讀取失敗，請重新整理；一直失敗請回報（細節已記錄在系統 log）。"; }
+        }
+        const markets = {};
+        for (const p of shown) {
+            const k = (p.cropName || "").trim();
+            if (!k) continue;
+            (markets[k] = markets[k] || []).push({ m: p.marketName || "", hi: p.highPrice ?? null, mid: p.midPrice ?? null, lo: p.lowPrice ?? null, avg: p.avgPrice ?? null, vol: p.volume ?? null });
+        }
+        const body = (0, market_board_js_1.buildMarketBoardBody)({
+            reqDate, dateStr, fellBack, snapSource, cat, msg, board, markets, rulesText,
+            query: { ok: String(req.query.ok || ""), err: String(req.query.err || "") }, icons: SF_ICONS,
+        });
         res.type("text/html").send(notionPage("北農行情", body, "logistics-reports", res));
     });
 

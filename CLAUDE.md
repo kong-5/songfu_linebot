@@ -233,6 +233,15 @@
 - smoke test：`test/cash-sales-off.test.js`（含「開關頁不得掛 requireCash」「機器端點閘門在寫入之前」
   等不變式）。
 
+## 北農行情走勢看板（2026-10-17）
+- `/admin/logistics/market` 改成**一品名一列**（台北一/二中價量加權合併）＋近 30 交易日小走勢、
+  30 日價位位置條、相對低檔/高檔＋走升/走跌標籤；點列開走勢面板（中價＋上下價帶＋7日均＋量，30日～一年）。
+  頁面＝`dist/admin/market-board.js`（前端程式以 `Function#toString` 注入，所以 lint 也查得到）；
+  計算＝`dist/lib/wholesale-trend.js`。
+- ⚠ 休市日 API 常回 1~2 筆零星資料 → **單日 <20 筆不算交易日**；當日只公布部分市場（台北二先出）
+  → **整個視窗只用當日有的市場**並顯示提示，否則量比/漲跌會拿單市場比合併價（假 −70%）。
+- ☆ 關注品項存在裝置 localStorage（per-viewer），不寫 DB。smoke test：`test/market-trend-board.test.js`。
+
 ## LINE 收單可靠性（2026-07-21 定案）
 - **失敗可重試閉環**：`processLineWebhookEvents` 回傳 `{failed,total}`；Cloud Tasks worker
   （`/api/worker/process-line-event`）失敗回 **500** 讓佇列重試，`X-CloudTasks-TaskRetryCount`
