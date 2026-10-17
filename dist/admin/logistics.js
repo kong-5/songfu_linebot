@@ -331,7 +331,7 @@ function registerLogisticsRoutes(router, ctx) {
                 const season = await (0, wholesale_trend_js_1.loadSeasonalOutlook)(db, dateStr, cat);
                 for (const it of board.items) {
                     const so = season.get(it.name);
-                    if (so) { it.lastYear = so.lastYear; it.seasonPct = so.nextPct; it.seasonYears = so.years; }
+                    if (so) { it.lastYear = so.lastYear; it.twoYearsAgo = so.twoYearsAgo; it.seasonPct = so.nextPct; it.seasonYears = so.years; }
                 }
             } catch (e) { console.warn("[admin] market season failed:", e?.message || e); }
             try { maps = await (0, market_js_1.loadMarketMappings)(db); watch = await (0, market_js_1.loadMarketWatch)(db); }

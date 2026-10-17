@@ -88,12 +88,15 @@ test("parseKgPerUnit／suggestCrops", () => {
     assert.deepEqual(trend.suggestCrops("高麗菜", crops), ["甘藍-改良種", "甘藍-初秋"], "別名＋同分看交易量");
     assert.deepEqual(trend.suggestCrops("青江菜", crops), ["青江白菜-小梗"]);
     assert.deepEqual(trend.suggestCrops("豬肉", crops), []);
+    const onions = [{ name: "青蔥-粉蔥", volume: 9 }, { name: "洋蔥-本產", volume: 1 }, { name: "洋蔥-進口", volume: 1 }];
+    assert.deepEqual(trend.suggestCrops("洋蔥(進口)", onions), ["洋蔥-進口", "洋蔥-本產"], "括號內當品種；洋蔥裡的「蔥」不能被別名表當成青蔥");
 });
 
 test("loadSeasonalOutlook：去年同期價＋往年接下來 4 週平均漲跌", async () => {
     const m = await trend.loadSeasonalOutlook(db, ANCHOR, "veg");
     const s = m.get("甘藍-初秋");
     assert.equal(s.lastYear, 10);
+    assert.equal(s.twoYearsAgo, 10);
     assert.equal(s.years, 2);
     assert.equal(s.nextPct, 35);
 });

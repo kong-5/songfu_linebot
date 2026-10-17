@@ -75,7 +75,7 @@ const CSS = `
 .mk-om,.mk-or{display:grid;grid-template-columns:minmax(0,1.4fr) auto minmax(0,1.6fr) auto;gap:8px;align-items:center;padding:7px 0;border-top:1px solid var(--notion-border-soft,#f0efed);font-size:13px;}
 .mk-or{grid-template-columns:minmax(0,1fr) 92px auto;}
 .mk-om .c,.mk-or .c,.mk-ours .c{font-size:11.5px;color:var(--txt-3);}
-.mk-x{all:unset;cursor:pointer;color:var(--txt-3);font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;}
+.mk-x{all:unset;justify-self:end;cursor:pointer;color:var(--txt-3);font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;}
 .mk-omsg{color:var(--bad);font-size:12.5px;margin-top:4px;}
 .mk-ours input[type=search]{width:100%;box-sizing:border-box;margin-top:6px;}
 .mk-more{display:block;width:100%;padding:12px;border:0;border-top:1px solid var(--notion-border-soft,#f0efed);background:transparent;color:var(--accent);font:inherit;font-weight:600;cursor:pointer;}
@@ -98,6 +98,8 @@ const CSS = `
 .mk-chart{position:relative;margin:6px 0 4px;touch-action:pan-y;}
 .mk-chart svg{display:block;width:100%;}
 .mk-tip{position:absolute;top:0;pointer-events:none;background:var(--notion-card,#fff);border:1px solid var(--line-2);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.14);padding:6px 9px;font-size:12px;line-height:1.5;display:none;white-space:nowrap;font-variant-numeric:tabular-nums;z-index:2;}
+.mk-drawer .sf-seg{display:flex;width:max-content;max-width:100%;overflow-x:auto;}
+.mk-drawer .sf-seg > button{white-space:nowrap;flex:0 0 auto;}
 .mk-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--txt-3);margin-bottom:12px;}
 .mk-legend i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:4px;border-radius:2px;}
 .mk-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:14px;}
@@ -124,7 +126,9 @@ const CSS = `
   .mk-drawer{top:auto;left:0;width:100vw;height:88vh;border-radius:16px 16px 0 0;transform:translateY(105%);}
   .mk-stats{grid-template-columns:repeat(2,minmax(0,1fr));}
   .mk-om{grid-template-columns:minmax(0,1fr) auto;}
-  .mk-om > div:nth-child(3){grid-column:1 / -1;}
+  .mk-om > div:nth-child(3){grid-column:1;}
+  .mk-om .mk-x{grid-column:2;justify-self:end;}
+  #mkRange > button{padding:6px 10px;}
   .mk-big .p{font-size:26px;}
 }
 `;
@@ -437,17 +441,13 @@ function marketBoardClient(D) {
     }
     function dayMs(iso) { return new Date(iso + "T00:00:00Z").getTime(); }
     function yearsAgo(iso, y) { var d = new Date(iso + "T00:00:00Z"); d.setUTCFullYear(d.getUTCFullYear() - y); return d.toISOString().slice(0, 10); }
-    /** 離目標日 ±7 天內最近的一筆 */
-    function near(h, iso) { var t = dayMs(iso), best = null, bd = 8 * 86400000; h.forEach(function (p) { var d = Math.abs(dayMs(p.date) - t); if (d < bd) { bd = d; best = p; } }); return best; }
     function drawStats() {
         var it = cur, h = hist || [];
         var avgN = function (n) { var a = h.slice(-n).map(function (p) { return p.mid; }); return a.length ? a.reduce(function (s, v) { return s + v; }, 0) / a.length : null; };
-        var ly = near(h, yearsAgo(D.date, 1)), ly2 = near(h, yearsAgo(D.date, 2));
         var vs = function (v) { if (v == null || !(v > 0)) return ""; var p = (it.mid - v) / v * 100; return '<div class="s ' + cls(p) + '">今日' + (p >= 0 ? "高 " : "低 ") + Math.abs(p).toFixed(0) + "%</div>"; };
         var cells = [
             ["7日均", it.ma7, true], ["30日均", it.avg30, true], ["90日均", h.length >= 30 ? avgN(90) : null, true], ["30日最低", it.min30, false],
-            ["30日最高", it.max30, false], ["去年同期" + (ly ? "（" + ly.date.slice(5) + "）" : ""), ly ? ly.mid : null, true],
-            ["前年同期" + (ly2 ? "（" + ly2.date.slice(5) + "）" : ""), ly2 ? ly2.mid : null, true],
+            ["30日最高", it.max30, false], ["去年同期", it.lastYear, true], ["前年同期", it.twoYearsAgo, true],
         ];
         var html = cells.map(function (c) { return '<div><div class="l">' + esc(c[0]) + '</div><div class="v">' + f1(c[1]) + "</div>" + (c[2] ? vs(c[1]) : "") + "</div>"; }).join("");
         html += '<div><div class="l">往年接下來 4 週</div><div class="v ' + cls(it.seasonPct) + '">' + (it.seasonYears > 0 && it.seasonPct != null ? (it.seasonPct > 0 ? "▲+" : "▼") + it.seasonPct.toFixed(0) + "%" : "—") + '</div><div class="s mk-flat">' + (it.seasonYears > 0 ? it.seasonYears + " 年平均" : "資料補齊中") + "</div></div>";

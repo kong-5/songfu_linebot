@@ -154,7 +154,8 @@ async function windowMidByCrop(db, from, to, cat) {
 /**
  * 季節性展望：拿過去幾年「同一天」與「同一天＋aheadDays」各前後 3 天的均價比，
  * 回答「往年這時候，接下來幾週通常漲還是跌」。各年取平均；沒有歷史的年份不算。
- * @returns {Promise<Map<string, {lastYear:number|null, nextPct:number|null, years:number, perYear:{y:number,pct:number}[]}>>}
+ * @returns {Promise<Map<string, {lastYear:number|null, twoYearsAgo:number|null, nextPct:number|null, years:number, perYear:{y:number,pct:number}[]}>>}
+ *   lastYear／twoYearsAgo＝去年／前年同一天前後 3 天的量加權中價（看板提示與面板數字卡共用這個值，不各算各的）
  */
 async function loadSeasonalOutlook(db, anchorDate, cat = "veg", { years = [1, 2], aheadDays = 28 } = {}) {
     const out = new Map();
@@ -164,9 +165,10 @@ async function loadSeasonalOutlook(db, anchorDate, cat = "veg", { years = [1, 2]
         if (!now.size) continue;
         const later = await windowMidByCrop(db, isoAdd(base, aheadDays - 3), isoAdd(base, aheadDays + 3), cat);
         for (const [name, v] of now) {
-            if (!out.has(name)) out.set(name, { lastYear: null, nextPct: null, years: 0, perYear: [] });
+            if (!out.has(name)) out.set(name, { lastYear: null, twoYearsAgo: null, nextPct: null, years: 0, perYear: [] });
             const o = out.get(name);
             if (y === 1) o.lastYear = round1(v);
+            if (y === 2) o.twoYearsAgo = round1(v);
             const l = later.get(name);
             if (l != null) o.perYear.push({ y, pct: round1((l - v) / v * 100) });
         }
@@ -210,24 +212,27 @@ const CROP_ALIASES = {
     牛番茄: "番茄", 番茄: "番茄", 洋蔥: "洋蔥",
 };
 function suggestCrops(name, crops) {
-    const n0 = String(name || "").replace(/\s+/g, "").replace(/[（(][^）)]*[）)]/g, "");
+    const raw = String(name || "").replace(/\s+/g, "");
+    const n0 = raw.replace(/[（(][^）)]*[）)]/g, "");
     if (n0.length < 2 && !CROP_ALIASES[n0]) return [];
-    const variants = [n0];
-    for (const [k, v] of Object.entries(CROP_ALIASES)) if (n0.includes(k)) variants.push(n0.replace(k, v), v);
+    // 括號內常是品種／產地（洋蔥(進口)），去括號後的全文也拿來比品種
+    const variants = [{ n: n0, pen: 0 }, { n: raw.replace(/[（()）]/g, ""), pen: 0 }];
+    // 別名只認「開頭」（避免 洋蔥 裡的「蔥」被當成 青蔥），且分數略低於字面相符
+    for (const [k, v] of Object.entries(CROP_ALIASES)) if (n0.startsWith(k)) variants.push({ n: v + n0.slice(k.length), pen: 5 }, { n: v, pen: 5 });
     const best = new Map();
     for (const c of crops || []) {
         const full = String(c.name || "").replace(/\s+/g, "");
         const [base, variety] = full.split("-");
         if (!base || base.length < 2) continue;
         let score = 0;
-        for (const n of variants) {
+        for (const { n, pen } of variants) {
             let sc = 0;
             if (n === full) sc = 100;
             else if (variety && n.includes(base) && n.includes(variety)) sc = 80 + base.length;
             else if (n === base) sc = 60;
             else if (n.includes(base)) sc = 40 + base.length;
             else if (base.includes(n) && n.length >= 2) sc = 30 + n.length;
-            if (sc > score) score = sc;
+            if (sc && sc - pen > score) score = sc - pen;
         }
         if (score) best.set(c.name, { name: c.name, score, volume: c.volume || 0 });
     }
