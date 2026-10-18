@@ -319,3 +319,8 @@
 - `docs/凌越回寫-工作交接.md`、`docs/凌越訂單回寫-串接說明.md`：訂單回寫規則（含 /wait vs /pending 教訓）。
 - `docs/凌越串接-通用方法說明.md`：凌越 SOAP 查詢通用方法。
 - 內網代理權威說明在「凌越整合代理」資料夾的 `規則與必備設定.md`（§9 庫存、含停用過濾）。
+
+## Agent skill
+- `.claude/skills/answer-me-with-html/`：上游 [`QingYunA/answer-me-with-html`](https://github.com/QingYunA/answer-me-with-html)
+  （commit `7e71bc0`，原樣複製）。把較複雜的回答做成一頁 HTML 圖解；附帶 `scripts/am.mjs`（Node 20+、免 npm install）。
+  雲端 session 輸出到 `.tmp/answers/`（已 gitignore，不進 repo）。更新＝從上游重新複製 `skills/answer-me-with-html/` 蓋過去。
