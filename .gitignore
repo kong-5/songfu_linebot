@@ -28,3 +28,6 @@ pg_dump*.sql
 .DS_Store
 # Claude Code 工作區（曾誤 commit 成壞掉的 submodule gitlink）
 .claude/worktrees/
+
+# answer-me-with-html skill 產出的說明頁（暫存，不進 repo）
+.tmp/answers/
