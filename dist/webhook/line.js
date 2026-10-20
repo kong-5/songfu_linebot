@@ -815,20 +815,15 @@ function createLineWebhook() {
                             continue;
                         }
                         const stkCoName = (0, erp_companies_js_1.erpCompanyName)(stkIcpno);
-                        // [2026-10-20 搬家] 盤點已搬到松揚新網站：不再回舊倉庫卡片，直接給新連結
-                        if (await (0, stocktake_moved_js_1.stocktakeMoved)(db)) {
-                            if (lineClient && event.replyToken) {
-                                try { await lineClient.replyMessage(event.replyToken, { type: "text", text: "📋 盤點已搬到新網站，請改用這個連結：\n" + stocktake_moved_js_1.NEW_STOCKTAKE_LIFF }); } catch (_) {}
-                            }
-                            console.log("[LINE] #盤點 已搬家，回新連結 group=%s", groupId);
-                            continue;
-                        }
+                        // [2026-10-20 搬家] 盤點已搬到松揚新網站，LINE 機器人留在這裡（業主：「資料都已經在了」）：
+                        // 卡片長相不變，倉庫按鈕全指向新網站（新頁吃 ?wh=倉號 直接開那一倉）
+                        const stkMoved = await (0, stocktake_moved_js_1.stocktakeMoved)(db);
                         const stkLiffId = (process.env.LIFF_ID_STOCKTAKE || "2010106501-VocNwkbA").trim();
                         // [UX 2026-07-19] 掃碼盤點頁（手機當 PDA）過去只能從後台進、現場找不到入口；卡片補一顆按鈕。
                         // 僅在 LIFF_ID_SCAN 有設定時顯示（未設定＝掃碼頁不會動，就不放避免連錯 LIFF）。
                         const scanLiffId = (process.env.LIFF_ID_SCAN || "").trim();
                         const whRows = await db.prepare("SELECT code, name, sort_order FROM erp_warehouse WHERE include_stocktake = 1 AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ? ORDER BY sort_order, code").all(stkIcpno);
-                        if (!whRows || whRows.length === 0) {
+                        if (!stkMoved && (!whRows || whRows.length === 0)) {
                             if (lineClient && event.replyToken) {
                                 try { await lineClient.replyMessage(event.replyToken, { type: "text", text: stkCoName + "目前沒有納入盤點的倉庫。請先到後台『庫存管理 → 倉庫設定』（切到" + stkCoName + "）勾選要盤點的倉庫。" }); } catch (_) {}
                             }
@@ -836,6 +831,15 @@ function createLineWebhook() {
                         }
                         const nowTwStk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }));
                         const stkDate = nowTwStk.toISOString().slice(0, 10);
+                        if (stkMoved) {
+                            if (lineClient && event.replyToken) {
+                                try {
+                                    await lineClient.replyMessage(event.replyToken, (0, stocktake_moved_js_1.movedStocktakeCard)({ whRows: whRows || [], icpno: stkIcpno, companyName: stkCoName, date: stkDate }));
+                                } catch (e) { console.warn("[LINE] #盤點（新網站）卡片回覆失敗:", e?.message || e); }
+                            }
+                            console.log("[LINE] #盤點 已搬家，回新網站卡片 group=%s 公司=%s", groupId, stkIcpno);
+                            continue;
+                        }
                         const whLabel = (w) => { const s = String(w.name || w.code || "").trim(); return s.length > 18 ? s.slice(0, 18) : s; };
                         const shown = whRows.slice(0, 11);
                         const stkIcQ = `&icpno=${encodeURIComponent(stkIcpno)}`;
