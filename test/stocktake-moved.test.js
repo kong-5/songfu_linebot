@@ -68,3 +68,20 @@ test("訊息告訴人怎麼辦：含 #盤點 與新連結；payload 三個鍵", 
     assert.deepEqual(Object.keys(movedPayload()).sort(), ["moved", "movedMessage", "movedUrl"]);
     assert.equal(movedPayload().movedUrl, NEW_STOCKTAKE_LIFF);
 });
+
+test("#盤點 卡片（旗標開）：松富逐倉按鈕指向新網站 ?wh=倉號、附掃碼鈕；其他公司一顆開啟鈕", () => {
+    const { movedStocktakeCard, NEW_SCAN_LIFF } = require("../dist/lib/stocktake-moved.js");
+    const whRows = [{ code: "FN005", name: "松富冷藏備貨庫" }, { code: "FN006", name: "松富冷凍肉類" }];
+    const card = movedStocktakeCard({ whRows, icpno: "00", companyName: "松富", date: "2026-10-20" });
+    assert.equal(card.type, "flex");
+    const uris = card.contents.body.contents.filter((c) => c.type === "button").map((b) => b.action.uri);
+    assert.equal(uris[0], NEW_STOCKTAKE_LIFF + "?wh=FN005");
+    assert.equal(uris[1], NEW_STOCKTAKE_LIFF + "?wh=FN006");
+    assert.equal(uris[2], NEW_STOCKTAKE_LIFF);
+    assert.equal(uris[3], NEW_SCAN_LIFF);
+    assert.ok(uris.every((u) => u.startsWith(NEW_STOCKTAKE_LIFF)), "沒有任何按鈕指向舊 LIFF");
+
+    const other = movedStocktakeCard({ whRows, icpno: "02", companyName: "松揚", date: "2026-10-20" });
+    const uris2 = other.contents.body.contents.filter((c) => c.type === "button").map((b) => b.action.uri);
+    assert.deepEqual(uris2, [NEW_STOCKTAKE_LIFF, NEW_SCAN_LIFF]);
+});

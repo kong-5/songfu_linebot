@@ -12,6 +12,7 @@
 exports.MOVED_KEY = "stocktake_moved_to_new_site";
 exports.NEW_STOCKTAKE_LIFF = "https://liff.line.me/2010106501-Gbx4D6WT";
 exports.NEW_STOCKTAKE_SITE = "https://songyang178go.vercel.app/songfu/stocktake";
+exports.NEW_SCAN_LIFF = exports.NEW_STOCKTAKE_LIFF + "/scan";
 exports.MOVED_MESSAGE =
     "盤點已搬到新網站，這裡不再接受送出。請在 LINE 群組輸入 #盤點 開新的盤點頁，或直接開 " + exports.NEW_STOCKTAKE_LIFF + "。" +
     "\nKiểm kê đã chuyển sang trang mới. Gõ #盤點 trong nhóm LINE để mở trang mới.";
@@ -30,3 +31,44 @@ function movedPayload() {
     return { moved: true, movedMessage: exports.MOVED_MESSAGE, movedUrl: exports.NEW_STOCKTAKE_LIFF };
 }
 exports.movedPayload = movedPayload;
+
+/**
+ * `#盤點` 卡片（旗標開著時）：長相跟舊卡片一樣——逐倉按鈕＋掃碼鈕，只是按鈕全指向新網站。
+ * 業主 2026-10-20：「我想用舊的機器人，因為資料都已經在了」→ LINE 機器人留在舊系統，只有盤點頁換新。
+ * 新頁吃 `?wh=倉號` 直接開那一倉（只有松富 00 的倉號能對上；其他公司給一顆「開啟盤點頁」，進去再切公司）。
+ * 純函式，方便測試；回傳 LINE Flex message 物件。
+ */
+function movedStocktakeCard({ whRows, icpno, companyName, date }) {
+    const base = exports.NEW_STOCKTAKE_LIFF;
+    const label = (w) => { const s = String(w.name || w.code || "").trim(); return s.length > 18 ? s.slice(0, 18) : s; };
+    const btn = (text, uri, primary) => ({
+        type: "button", style: primary ? "primary" : "secondary", height: "sm", margin: primary ? "md" : "sm",
+        ...(primary ? { color: "#1d4ed8" } : {}),
+        action: { type: "uri", label: text, uri },
+    });
+    const btns = [];
+    if (icpno === "00") {
+        for (const w of (whRows || []).slice(0, 11)) btns.push(btn(label(w), base + "?wh=" + encodeURIComponent(String(w.code)), false));
+        btns.push(btn((whRows || []).length > 11 ? "其他倉庫（共 " + whRows.length + "）" : "開啟盤點選單", base, true));
+    } else {
+        btns.push(btn("開啟盤點頁（進去切到" + companyName + "）", base, true));
+    }
+    btns.push(btn("📷 掃碼盤點", exports.NEW_SCAN_LIFF, false));
+    return {
+        type: "flex",
+        altText: companyName + "盤點 " + date + "（新網站）",
+        contents: {
+            type: "bubble", size: "kilo",
+            body: {
+                type: "box", layout: "vertical", spacing: "xs", paddingAll: "14px",
+                contents: [
+                    { type: "text", text: "📋 " + companyName + "盤點", size: "md", weight: "bold", color: "#1d4ed8" },
+                    { type: "text", text: "盤點日 " + date + " · 已搬到新網站", size: "xxs", color: "#9b9a97", margin: "xs" },
+                    { type: "separator", margin: "md" },
+                    ...btns,
+                ],
+            },
+        },
+    };
+}
+exports.movedStocktakeCard = movedStocktakeCard;
