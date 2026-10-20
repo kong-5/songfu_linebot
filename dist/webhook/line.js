@@ -29,6 +29,7 @@ const group_features_js_1 = require("../lib/group-features.js");
 const empty_baskets_js_1 = require("../lib/empty-baskets.js");
 const line_conversation_js_1 = require("../lib/line-conversation.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
+const stocktake_moved_js_1 = require("../lib/stocktake-moved.js");
 const ops_notify_js_1 = require("../lib/ops-notify.js");
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? "";
 const channelSecret = process.env.LINE_CHANNEL_SECRET ?? "";
@@ -814,6 +815,14 @@ function createLineWebhook() {
                             continue;
                         }
                         const stkCoName = (0, erp_companies_js_1.erpCompanyName)(stkIcpno);
+                        // [2026-10-20 搬家] 盤點已搬到松揚新網站：不再回舊倉庫卡片，直接給新連結
+                        if (await (0, stocktake_moved_js_1.stocktakeMoved)(db)) {
+                            if (lineClient && event.replyToken) {
+                                try { await lineClient.replyMessage(event.replyToken, { type: "text", text: "📋 盤點已搬到新網站，請改用這個連結：\n" + stocktake_moved_js_1.NEW_STOCKTAKE_LIFF }); } catch (_) {}
+                            }
+                            console.log("[LINE] #盤點 已搬家，回新連結 group=%s", groupId);
+                            continue;
+                        }
                         const stkLiffId = (process.env.LIFF_ID_STOCKTAKE || "2010106501-VocNwkbA").trim();
                         // [UX 2026-07-19] 掃碼盤點頁（手機當 PDA）過去只能從後台進、現場找不到入口；卡片補一顆按鈕。
                         // 僅在 LIFF_ID_SCAN 有設定時顯示（未設定＝掃碼頁不會動，就不放避免連錯 LIFF）。
