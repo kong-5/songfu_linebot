@@ -556,6 +556,7 @@
     showCenter('<div class="spin"></div><div>'+t('loadWh')+'</div>');
     api(STK+'/warehouses?icpno='+encodeURIComponent(S.icpno)).then(function(res){
       if(res.error){ showCenter('<div>⚠ '+esc(res.error)+'</div>'); return; }
+      if(res.moved){ showCenter('<div style="padding:8px 4px;line-height:1.6"><div style="font-size:18px;font-weight:700;margin-bottom:8px">盤點已搬到新網站</div><div style="font-size:14px;color:#555;white-space:pre-line">'+esc(res.movedMessage||'')+'</div><a href="'+esc(res.movedUrl||'')+'" style="display:inline-block;margin-top:14px;padding:12px 20px;border-radius:10px;background:#1d4ed8;color:#fff;font-weight:700;text-decoration:none">開啟新的盤點頁 / Mở trang mới</a></div>'); return; }
       var whs=res.warehouses||[], pickDate=res.date||'';
       var coseg='<div class="co-seg">'+CO_ORDER.map(function(c){return '<button data-co="'+c+'" class="'+(c===S.icpno?'on':'')+'">'+esc(COMPANY[c])+'</button>';}).join('')+'</div>';
       var html='<div class="pk-head"><div class="pk-top"><h1>'+esc(coName())+esc(t('pickTitle'))+'</h1>'

@@ -23,6 +23,7 @@ exports.submitStocktake = submitStocktake;
 const { newId } = require("./id.js");
 const stock_future_js_1 = require("./stock-future.js");
 const audit_js_1 = require("./audit.js");
+const stocktake_moved_js_1 = require("./stocktake-moved.js");
 
 function StkApiError(httpStatus, message, code) {
     const e = new Error(message);
@@ -136,6 +137,8 @@ function isUniqueConflict(e) {
 
 async function submitStocktake(db, { icpno, whCode, date: dateRaw, counts, createdBy, createdByName, baseSubmittedAt: baseRaw }) {
     if (!whCode || !Array.isArray(counts)) throw StkApiError(400, "缺少 warehouse 或 counts");
+    // [2026-10-20 搬家] 盤點已搬到松揚新網站：旗標開著就一律 410，三個入口（LIFF／掃碼／網頁版）同時擋
+    if (await (0, stocktake_moved_js_1.stocktakeMoved)(db)) throw StkApiError(410, stocktake_moved_js_1.MOVED_MESSAGE, "moved");
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(dateRaw || "")) ? String(dateRaw) : stkTaipeiDate();
     // 日期限制：只允許台北時區「今日或昨日」，不得覆寫任意歷史日
     const today = stkTaipeiDate();

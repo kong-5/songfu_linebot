@@ -20,6 +20,7 @@ const line_bot_control_js_1 = require("../lib/line-bot-control.js");
 const basket_log_js_1 = require("../lib/basket-log.js");
 const erp_companies_js_1 = require("../lib/erp-companies.js");
 const stocktake_api_js_1 = require("../lib/stocktake-api.js");
+const { stocktakeMoved, movedPayload, MOVED_MESSAGE } = require("../lib/stocktake-moved.js");
 const stocktake_access_js_1 = require("../lib/stocktake-access.js");
 const audit_js_1 = require("../lib/audit.js");
 const async_router_js_1 = require("../lib/async-router.js");
@@ -108,7 +109,10 @@ function createLiffRouter() {
             const db = (0, index_js_1.getDb)(dbPath);
             // 多公司：不帶 icpno＝'00'（松富，行為不變）；掃碼頁帶 icpno=02（松揚）等
             const icpno = (0, erp_companies_js_1.normIcpno)(req.query.icpno);
-            res.json(await stocktake_api_js_1.listStocktakeWarehouses(db, { icpno }));
+            const out = await stocktake_api_js_1.listStocktakeWarehouses(db, { icpno });
+            // [2026-10-20 搬家] 旗標開著：頁面一開就顯示新網站連結（送出端另有 410 擋，這裡只是讓人不用盤到最後才發現）
+            if (await stocktakeMoved(db)) Object.assign(out, movedPayload());
+            res.json(out);
         } catch (e) { console.error("[liff stocktake warehouses]", e); res.status(500).json({ error: String(e?.message || e).slice(0, 200) }); }
     });
     router.get("/api/stocktake/items", async (req, res) => {
@@ -233,6 +237,8 @@ function createLiffRouter() {
             if (!barcode || !erpCode) { res.status(400).json({ error: "缺少 barcode 或 erp_code" }); return; }
             if (barcode.length > 64) { res.status(400).json({ error: "條碼過長" }); return; }
             const db = (0, index_js_1.getDb)(dbPath);
+            // [2026-10-20 搬家] 條碼綁定也是寫入：綁在舊系統不會跟到新網站，旗標開著就擋
+            if (await stocktakeMoved(db)) { res.status(410).json({ error: MOVED_MESSAGE, code: "moved" }); return; }
             const item = await db.prepare("SELECT erp_code, name, spec, unit, qty FROM erp_stock_items WHERE erp_code = ? AND COALESCE(NULLIF(TRIM(icpno),''),'00') = ?").get(erpCode, icpno);
             if (!item) { res.status(404).json({ error: "查無此品項（料號 " + erpCode + "）" }); return; }
             const now = new Date().toISOString();

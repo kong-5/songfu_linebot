@@ -468,6 +468,7 @@
     showCenter('<div class="spin"></div><div>'+esc(L('loadWh'))+'</div>');
     api(apiUrl('warehouses')+'?icpno='+encodeURIComponent(S.icpno)).then(function(res){
       if(res.error){showCenter('<div>⚠ '+esc(res.error)+'</div>');return;}
+      if(res.moved){ showCenter('<div style="padding:8px 4px;line-height:1.6"><div style="font-size:18px;font-weight:700;margin-bottom:8px">盤點已搬到新網站</div><div style="font-size:14px;color:#555;white-space:pre-line">'+esc(res.movedMessage||'')+'</div><a href="'+esc(res.movedUrl||'')+'" style="display:inline-block;margin-top:14px;padding:12px 20px;border-radius:10px;background:#1d4ed8;color:#fff;font-weight:700;text-decoration:none">開啟新的盤點頁 / Mở trang mới</a></div>'); return; }
       var whs=res.warehouses||[];
       var html='<div class="pk-head"><div style="display:flex;align-items:center;gap:10px;"><h1 style="flex:1;">'+esc(L('pickTitle'))+'</h1>'
         +'<button id="scLang" style="border:1px solid var(--line,#dcdcdc);background:transparent;border-radius:8px;padding:5px 10px;font-size:13px;color:var(--txt-2,#555);">'+esc(L('langBtn'))+'</button></div>'
